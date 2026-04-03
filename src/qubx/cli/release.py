@@ -486,13 +486,17 @@ def release_strategy(
         logger.info(f"Loading strategy from config file: {config_file}")
         stg_info = load_strategy_from_config(Path(config_file), directory)
 
-        # - process git repo and pyproject.toml
+        # - process pyproject.toml and git repo (if available)
+        repo_path = None
         if stg_info.classes:
             # Normal path: use class file locations
             repos_paths = set()
             pyproject_roots = set()
             for sc in stg_info.classes:
-                repos_paths.add(find_git_root(sc.path))
+                try:
+                    repos_paths.add(find_git_root(sc.path))
+                except ValueError:
+                    pass
                 pyproject_roots.add(find_pyproject_root(sc.path))
 
             # - check if all strategy components are in the same repo and pyproject.toml
@@ -506,27 +510,39 @@ def release_strategy(
                     " >>> Multiple pyproject.toml files found for the strategy - try to put all strategies components into one project"
                 )
 
-            repo_path = repos_paths.pop()
+            repo_path = repos_paths.pop() if repos_paths else None
             pyproject_root = pyproject_roots.pop()
         else:
             # Empty classes: use config file location
             logger.info("No custom strategy classes found - using config file location for release")
             config_path = os.path.abspath(os.path.expanduser(config_file))
-            repo_path = find_git_root(config_path)
+            try:
+                repo_path = find_git_root(config_path)
+            except ValueError:
+                pass
             pyproject_root = find_pyproject_root(config_path)
 
-        # - process git repo
-        _skip_tag, _skip_commit = not commit, not commit
-
-        _git_info = process_git_repo(
-            repo_path=repo_path,
-            subdir=pyproject_root,
-            strategy_name_id=stg_info.name,
-            tag_sfx=tag,
-            message=message,
-            skip_tag=_skip_tag,
-            skip_commit=_skip_commit,
-        )
+        # - process git repo (or create minimal release info if no git)
+        if repo_path is not None:
+            _skip_tag, _skip_commit = not commit, not commit
+            _git_info = process_git_repo(
+                repo_path=repo_path,
+                subdir=pyproject_root,
+                strategy_name_id=stg_info.name,
+                tag_sfx=tag,
+                message=message,
+                skip_tag=_skip_tag,
+                skip_commit=_skip_commit,
+            )
+        else:
+            logger.info("No git repository found — skipping git operations")
+            _git_info = ReleaseInfo(
+                tag=generate_tag(stg_info.name, tag),
+                commit="none",
+                user=getpass.getuser(),
+                time=datetime.now(),
+                commited_files=[],
+            )
 
         # - create zipped pack
         create_released_pack(
