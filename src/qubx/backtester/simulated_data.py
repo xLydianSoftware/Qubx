@@ -918,16 +918,17 @@ class SimulatedDataIterator(Iterator):
     # Reader resolution (lazy, cached)
     # -----------------------------------------------------------------------
 
-    def _get_or_create_reader(self, data_type: str, exchange: str, market_type: str) -> IReader:
+    def _get_or_create_reader(self, data_type: str, exchange: str, market_type: str, subscription: str | None = None) -> IReader:
         """
         Get or create cached IReader for given (data_type, exchange, market_type).
 
-        Checks custom storage first (keyed by data_type), falls back to main storage.
+        Checks custom storage first (keyed by full subscription like "ohlc(1min)",
+        then by base data_type like "ohlc"), falls back to main storage.
         Custom storage readers are cached with data_type prefix to avoid collisions.
         Main storage readers are shared across data types for same (exchange, market_type).
         """
-        # - check custom storage first
-        custom_storage = self._custom_storages.get(data_type)
+        # - check custom storage first: try full subscription key, then base data_type
+        custom_storage = (self._custom_storages.get(subscription) if subscription else None) or self._custom_storages.get(data_type)
         if custom_storage is not None:
             cache_key = f"{data_type}:{exchange}:{market_type}"
             if cache_key not in self._readers:
@@ -965,7 +966,7 @@ class SimulatedDataIterator(Iterator):
         if pump_key in self._pumps:
             return self._pumps[pump_key]
 
-        reader = self._get_or_create_reader(data_type, exchange, market_type)
+        reader = self._get_or_create_reader(data_type, exchange, market_type, subscription)
 
         pump = DataPump(
             reader=reader,

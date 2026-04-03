@@ -257,7 +257,8 @@ def extract_external_dependencies(strategy_config: StrategyConfig, current_packa
         if isinstance(strat, str):
             package = strat.split(".")[0]
             # Only include if it's NOT the current project's package
-            if package != current_package:
+            # Normalize hyphens/underscores for comparison (PEP 503)
+            if package.replace("-", "_") != (current_package or "").replace("-", "_"):
                 external_packages.add(package)
 
     return sorted(external_packages)
