@@ -150,6 +150,7 @@ class StrategyContext(IStrategyContext):
         restored_state: RestoredState | None = None,
         data_throttler: "InstrumentThrottler | None" = None,
         state_persistence: IStatePersistence | None = None,
+        state_snapshot_interval: str | None = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -180,6 +181,7 @@ class StrategyContext(IStrategyContext):
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
         self._state_persistence = state_persistence or DummyStatePersistence()
+        self._state_snapshot_interval = state_snapshot_interval
 
         # Initialize shutdown handling
         self._stop_lock = Lock()
@@ -294,6 +296,9 @@ class StrategyContext(IStrategyContext):
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
         self._processing_manager.configure_stale_data_detection(*stale_data_config)
+
+        # Configure periodic state snapshot persistence
+        self._processing_manager.configure_state_snapshot(self._state_snapshot_interval)
 
         if self.is_simulation and isinstance(self.account, CompositeAccountProcessor):
             # Auto-assign simulation transfer manager

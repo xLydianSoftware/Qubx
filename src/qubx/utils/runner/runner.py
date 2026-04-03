@@ -577,6 +577,7 @@ def create_strategy_context(
 
     # Create state persistence if configured
     _state_persistence = create_state_persistence(config.live.state, stg_name)
+    _state_snapshot_interval = config.live.state.snapshot_interval if config.live.state else None
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
 
@@ -600,6 +601,7 @@ def create_strategy_context(
         restored_state=restored_state,
         data_throttler=_data_throttler,
         state_persistence=_state_persistence,
+        state_snapshot_interval=_state_snapshot_interval,
     )
 
     # Store the shared event loop reference for cleanup

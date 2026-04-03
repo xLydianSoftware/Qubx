@@ -145,6 +145,7 @@ class StatePersistenceConfig(StrictBaseModel):
 
     type: str  # e.g., "RedisStatePersistence"
     parameters: dict = Field(default_factory=dict)
+    snapshot_interval: str | None = "5s"  # Interval for periodic state snapshots (None to disable)
 
 
 class HealthConfig(StrictBaseModel):
