@@ -294,15 +294,7 @@ class ProcessingManager(IProcessingManager):
                 logger.info(f"State snapshot enabled with interval: {interval}")
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        # TODO: remove after debugging
-        try:
-            should_stop = self.__process_data(instrument, d_type, data, is_historical)
-        except Exception as e:
-            logger.error(
-                f"Error processing data: dtype {d_type}, instrument {instrument}, data {data}, is_historical {is_historical}, error {e}"
-            )
-            logger.opt(colors=False).error(traceback.format_exc())
-            raise e
+        should_stop = self.__process_data(instrument, d_type, data, is_historical)
         if not is_historical:
             self._logging.notify(self._time_provider.time())
             if self._context.emitter is not None:
