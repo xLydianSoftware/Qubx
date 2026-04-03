@@ -9,7 +9,7 @@ from rich.text import Text
 
 from qubx import logger
 
-from .widgets import OrdersTable, PositionsTable, QuotesTable, ReplOutput
+from .widgets import AccountSummary, OrdersTable, PositionsTable, QuotesTable, ReplOutput
 
 
 class KernelEventHandler:
@@ -21,6 +21,7 @@ class KernelEventHandler:
         positions_table: PositionsTable,
         orders_table: OrdersTable,
         quotes_table: QuotesTable,
+        account_summary: AccountSummary,
     ):
         """
         Initialize the event handler.
@@ -28,13 +29,15 @@ class KernelEventHandler:
         Args:
             output: REPL output widget for displaying text
             positions_table: Positions table widget for displaying positions data
-            orders_table: Orders table widget for displaying orders data (optional)
-            quotes_table: Quotes table widget for displaying market quotes (optional)
+            orders_table: Orders table widget for displaying orders data
+            quotes_table: Quotes table widget for displaying market quotes
+            account_summary: Account summary bar widget
         """
         self.output = output
         self.positions_table = positions_table
         self.orders_table = orders_table
         self.quotes_table = quotes_table
+        self.account_summary = account_summary
         self._dashboard_busy = False
         self._on_dashboard_update: Callable[[], None] | None = None
 
@@ -60,9 +63,11 @@ class KernelEventHandler:
                 positions = payload.get("positions", [])
                 orders = payload.get("orders", [])
                 quotes = payload.get("quotes", {})
+                account_summary = payload.get("account_summary", [])
                 self.positions_table.update_positions(positions)
                 self.orders_table.update_orders(orders)
                 self.quotes_table.update_quotes(quotes)
+                self.account_summary.update_summary(account_summary)
             except Exception as e:
                 logger.error(f"Dashboard update error: {e}")
                 self.output.write(f"Dashboard update failed: {e}")

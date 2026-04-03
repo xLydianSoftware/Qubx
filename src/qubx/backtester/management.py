@@ -50,7 +50,7 @@ import pandas as pd
 from qubx.core.metrics import TradingSessionResult
 from qubx.utils.misc import blue, cyan, green, magenta, red, yellow
 from qubx.utils.results import SimulationResultsSaver
-from qubx.utils.s3 import S3Client, is_cloud_path
+from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
 
 
 class BacktestStorage:
@@ -105,8 +105,11 @@ class BacktestStorage:
         Initialize BacktestStorage.
 
         Args:
-            base_path: Root path for backtest storage (local dir or cloud URI)
-            storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
+            base_path: Root path for backtest storage. Supports:
+                - Local directory: ``"/backtests/"``
+                - S3 URI: ``"s3://bucket/path"``
+                - Account URI: ``"r2:backtests"`` (resolved via ~/.qubx/config.json)
+            storage_options: Cloud storage credentials dict. Overrides account lookup.
         """
         try:
             import duckdb
@@ -117,6 +120,13 @@ class BacktestStorage:
                 "duckdb is required for BacktestStorage. "
                 "Install with: pip install 'qubx[storage]' or pip install duckdb"
             )
+
+        # Resolve account URI (e.g., "r2:backtests") to S3 path + credentials
+        if is_account_uri(base_path) and storage_options is None:
+            client, s3_path = S3Client.from_uri(base_path)
+            storage_options = client.storage_options
+            base_path = f"s3://{s3_path}"
+
         self.base_path = base_path.rstrip("/") + "/"
         self._is_cloud = is_cloud_path(base_path)
 
@@ -134,17 +144,37 @@ class BacktestStorage:
         self._conn.execute("INSTALL httpfs; LOAD httpfs;")
 
         opts = self._storage_options or {}
-        if "key" in opts:
-            self._conn.execute(f"SET s3_access_key_id='{opts['key']}';")
-        if "secret" in opts:
-            self._conn.execute(f"SET s3_secret_access_key='{opts['secret']}';")
+        if not opts or "key" not in opts:
+            return
+
+        # Resolve region
+        region = "auto"
+        if "client_kwargs" in opts:
+            region = opts["client_kwargs"].get("region_name", "auto")
+        elif "region" in opts:
+            region = opts["region"]
+
+        # Build CREATE SECRET with scope matching our base_path so it takes
+        # priority over any pre-existing broader secrets (e.g. from duckdb config).
+        scope = self.base_path.rstrip("/")
+        endpoint_clause = ""
+        url_style_clause = ""
         if "endpoint_url" in opts:
             endpoint = opts["endpoint_url"].removeprefix("https://").removeprefix("http://")
-            self._conn.execute(f"SET s3_endpoint='{endpoint}';")
-        if "client_kwargs" in opts:
-            region = opts["client_kwargs"].get("region_name")
-            if region:
-                self._conn.execute(f"SET s3_region='{region}';")
+            endpoint_clause = f"ENDPOINT '{endpoint}',"
+            url_style_clause = "URL_STYLE 'path',"
+
+        self._conn.execute(f"""
+            CREATE OR REPLACE SECRET qubx_s3 (
+                TYPE s3,
+                KEY_ID '{opts['key']}',
+                SECRET '{opts['secret']}',
+                {endpoint_clause}
+                {url_style_clause}
+                REGION '{region}',
+                SCOPE '{scope}'
+            )
+        """)
 
     def _glob(self, filename: str) -> str:
         """
@@ -501,6 +531,112 @@ class BacktestStorage:
         if df.empty or "backtest_id" not in df.columns:
             return []
         return df["backtest_id"].tolist()
+
+    def delete(self, backtest_id: str) -> None:
+        """
+        Delete a single backtest run directory.
+
+        Args:
+            backtest_id: Relative path within base_path,
+                        e.g. "my_strategy/Nimble/20240301_120000"
+        """
+        path = f"{self.base_path}{backtest_id.strip('/')}/"
+        if self._is_cloud:
+            S3Client(storage_options=self._storage_options).rm(path, recursive=True)
+        else:
+            import shutil
+
+            shutil.rmtree(path, ignore_errors=True)
+        self._reset_conn()
+
+    def delete_group(self, group_path: str) -> None:
+        """
+        Delete an entire group directory (class-level or config-level).
+
+        Args:
+            group_path: Relative path within base_path,
+                       e.g. "my_strategy/Nimble" (config) or "Nimble" (class)
+        """
+        path = f"{self.base_path}{group_path.strip('/')}/"
+        if self._is_cloud:
+            S3Client(storage_options=self._storage_options).rm(path, recursive=True)
+        else:
+            import shutil
+
+            shutil.rmtree(path, ignore_errors=True)
+        self._reset_conn()
+
+    def _reset_conn(self) -> None:
+        """Reset DuckDB connection to clear cached file metadata after mutations."""
+        self._conn.close()
+        self._conn = self._duckdb.connect()
+        if self._is_cloud:
+            self._setup_cloud_duckdb()
+
+    def get_log(self, backtest_id: str, config_name: str | None = None, max_lines: int = 1000) -> tuple[str, bool] | None:
+        """
+        Read the log file for a backtest run.
+
+        Args:
+            backtest_id: Relative path within base_path.
+            config_name: Config name (used for log filename).
+                        If None, searches for any .log file.
+            max_lines: Maximum number of lines to return (from the end). 0 = unlimited.
+
+        Returns:
+            (log_content, truncated) tuple, or None if not found.
+        """
+        run_dir = f"{self.base_path}{backtest_id.strip('/')}/"
+
+        if config_name:
+            log_path = f"{run_dir}{config_name}.log"
+        elif self._is_cloud:
+            try:
+                from pyarrow.fs import FileSelector, FileType
+
+                from qubx.utils.s3 import strip_scheme
+
+                client = S3Client(storage_options=self._storage_options)
+                entries = client.fs.get_file_info(FileSelector(strip_scheme(run_dir)))
+                log_files = [e.path for e in entries if e.type == FileType.File and e.path.endswith(".log")]
+                if not log_files:
+                    return None
+                log_path = f"s3://{log_files[0]}"
+            except Exception:
+                return None
+        else:
+            try:
+                files_df = self._conn.execute(f"SELECT file FROM glob('{run_dir}*.log')").df()
+                if files_df.empty:
+                    return None
+                log_path = files_df["file"].iloc[0]
+            except Exception:
+                return None
+
+        def _tail(content: str) -> tuple[str, bool]:
+            if not max_lines:
+                return content, False
+            lines = content.splitlines()
+            if len(lines) <= max_lines:
+                return content, False
+            return "\n".join(lines[-max_lines:]), True
+
+        if self._is_cloud:
+            try:
+                from qubx.utils.s3 import strip_scheme
+
+                client = S3Client(storage_options=self._storage_options)
+                with client.fs.open_input_stream(strip_scheme(log_path)) as f:
+                    return _tail(f.read().decode("utf-8"))
+            except Exception:
+                return None
+        else:
+            from pathlib import Path
+
+            p = Path(log_path)
+            if not p.is_file():
+                return None
+            return _tail(p.read_text(encoding="utf-8", errors="replace"))
 
     def export_backtests_to_markdown(self, backtest_id: str, path: str, tags: tuple[str] | None = None):
         if tsr := self.load(backtest_id):

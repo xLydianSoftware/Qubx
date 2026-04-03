@@ -15,6 +15,7 @@ from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
+from qubx.utils.time import to_timedelta
 
 if TYPE_CHECKING:
     from qubx.core.interfaces import IStrategyContext
@@ -936,7 +937,8 @@ class Position:
 
         if not np.isnan(price):
             u_pnl = self.unrealized_pnl()
-            self.pnl = u_pnl + self.r_pnl + self.cumulative_funding
+            # r_pnl already includes cumulative funding
+            self.pnl = u_pnl + self.r_pnl
             if self.instrument.is_futures():
                 # for derivatives market value of the position is the current unrealized PnL
                 self.market_value = u_pnl
@@ -955,7 +957,12 @@ class Position:
 
     def unrealized_pnl(self) -> float:
         if not np.isnan(self.last_update_price):
-            return self.quantity * self._qty_multiplier * (self.last_update_price - self.position_avg_price) / self.last_update_conversion_rate  # type: ignore
+            return (
+                self.quantity
+                * self._qty_multiplier
+                * (self.last_update_price - self.position_avg_price)
+                / self.last_update_conversion_rate
+            )  # type: ignore
         return 0.0
 
     def apply_funding_payment(self, funding_payment: FundingPayment, mark_price: float) -> float:
@@ -1021,7 +1028,9 @@ class Position:
         funds_release = self.market_value_funds
         if to_remain != 0 and self.quantity != 0 and np.sign(to_remain) == d:
             qty_to_release = max(self.quantity - to_remain, 0) if d > 0 else min(self.quantity - to_remain, 0)
-            funds_release = qty_to_release * self._qty_multiplier * self.last_update_price / self.last_update_conversion_rate
+            funds_release = (
+                qty_to_release * self._qty_multiplier * self.last_update_price / self.last_update_conversion_rate
+            )
         return abs(funds_release)
 
     @staticmethod
@@ -1254,30 +1263,30 @@ class DataType(StrEnum):
                 params = [p.strip() for p in params_str.rstrip(")").split(",")]
                 match type_name.lower():
                     case DataType.OHLC.value:
-                        return DataType.OHLC, {"timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())}
+                        return DataType.OHLC, {"timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())}
 
                     case DataType.AGGREGATED_LIQUIDATIONS.value:
                         return DataType.AGGREGATED_LIQUIDATIONS, {
-                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                            "timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())
                         }
 
                     case DataType.OHLC_QUOTES.value:
                         return DataType.OHLC_QUOTES, {
-                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                            "timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())
                         }
 
                     case DataType.OHLC_TRADES.value:
                         return DataType.OHLC_TRADES, {
-                            "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                            "timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())
                         }
 
                     case DataType.QUOTE.value:
-                        return DataType.QUOTE, {"timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())}
+                        return DataType.QUOTE, {"timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())}
 
                     case DataType.ORDERBOOK.value:
                         if len(params) == 1 and not params[0].replace(".", "").isdigit():
                             return DataType.ORDERBOOK, {
-                                "timeframe": time_delta_to_str(pd.Timedelta(params[0]).asm8.item())
+                                "timeframe": time_delta_to_str(to_timedelta(params[0]).asm8.item())
                             }
                         return DataType.ORDERBOOK, {"tick_size_pct": float(params[0]), "depth": int(params[1])}
 

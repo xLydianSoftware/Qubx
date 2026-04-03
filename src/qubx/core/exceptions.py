@@ -48,3 +48,7 @@ class SimulationError(Exception):
 
 class SimulationConfigError(Exception):
     pass
+
+
+class WarmupValidationError(Exception):
+    pass

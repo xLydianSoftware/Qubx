@@ -8,10 +8,12 @@ from qubx.loggers.csv import CsvFileLogsWriter
 from qubx.loggers.factory import create_logs_writer
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.loggers.mongo import MongoDBLogsWriter
+from qubx.loggers.postgres import PostgresLogsWriter
 
 __all__ = [
     "CsvFileLogsWriter",
     "InMemoryLogsWriter",
     "MongoDBLogsWriter",
+    "PostgresLogsWriter",
     "create_logs_writer",
 ]

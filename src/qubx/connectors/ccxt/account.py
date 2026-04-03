@@ -1,12 +1,12 @@
 import asyncio
 import concurrent.futures
+import math
 from asyncio.exceptions import CancelledError
 from collections import defaultdict
 from typing import TYPE_CHECKING, Awaitable, Callable
 
 import ccxt.pro as cxp
 import numpy as np
-import pandas as pd
 from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
 from qubx import logger
@@ -28,6 +28,7 @@ from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IHealthMonitor, ISubscriptionManager
 from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 from qubx.utils.misc import AsyncThreadLoop
+from qubx.utils.time import to_timedelta
 
 from .exceptions import CcxtSymbolNotRecognized
 from .exchange_manager import ExchangeManager
@@ -251,11 +252,11 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         interval: str,
         backoff: str | None = None,
     ):
-        sleep_time = pd.Timedelta(interval).total_seconds()
+        sleep_time = to_timedelta(interval).total_seconds()
         retries = 0
 
         if backoff is not None:
-            sleep_time = pd.Timedelta(backoff).total_seconds()
+            sleep_time = to_timedelta(backoff).total_seconds()
             await asyncio.sleep(sleep_time)
 
         while self.channel.control.is_set():
@@ -307,7 +308,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
     async def _update_subscriptions(self) -> None:
         """Subscribe to required instruments"""
         assert self._subscription_manager is not None
-        await asyncio.sleep(pd.Timedelta(self.subscription_interval).total_seconds())
+        await asyncio.sleep(to_timedelta(self.subscription_interval).total_seconds())
 
         # if required instruments have changed, subscribe to them
         if not self._latest_instruments.issuperset(self._required_instruments):
@@ -379,7 +380,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             current_pos.set_external_maint_margin(new_pos.maint_margin)
 
     def _get_start_time_in_ms(self, days_before: int) -> int:
-        return (self.time_provider.time() - days_before * pd.Timedelta("1d")).asm8.item() // 1000000  # type: ignore
+        return (self.time_provider.time() - days_before * to_timedelta("1d")).asm8.item() // 1000000  # type: ignore
 
     def _is_our_order(self, order: Order) -> bool:
         if order.client_id is None:
@@ -407,7 +408,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         _fetch_instruments: list[Instrument] = []
         for instr in instruments:
             _dt, _ = self._instrument_to_last_price.get(instr, (None, None))
-            if _dt is None or pd.Timedelta(_current_time - _dt) > pd.Timedelta(self.balance_interval):  # type: ignore
+            if _dt is None or to_timedelta(_current_time - _dt) > to_timedelta(self.balance_interval):  # type: ignore
                 _fetch_instruments.append(instr)
 
         _symbol_to_instrument = {instr.symbol: instr for instr in instruments}
@@ -419,6 +420,18 @@ class CcxtAccountProcessor(BasicAccountProcessor):
                 instr = _symbol_to_instrument.get(symbol)
                 if instr is not None:
                     quote = ccxt_convert_ticker(ticker)
+                    if not (
+                        math.isfinite(quote.bid)
+                        and math.isfinite(quote.ask)
+                        and quote.bid > 0
+                        and quote.ask > 0
+                        and quote.bid < quote.ask
+                    ):
+                        logger.debug(
+                            f"Skipping invalid ticker for {instr.symbol}: "
+                            f"bid={quote.bid}, ask={quote.ask}"
+                        )
+                        continue
                     self.update_position_price(_current_time, instr, quote)
 
     async def _init_spot_positions(self) -> None:

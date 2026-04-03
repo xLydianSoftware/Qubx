@@ -6,10 +6,11 @@ from various sources.
 """
 
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+from psycopg import Connection, sql
 from pymongo import MongoClient
 
 from qubx import logger
@@ -206,4 +207,76 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
             return balances
         except Exception as e:
             logger.error(f"Error restoring balances from MongoDB: {e}")
+            return []
+
+
+class PostgresBalanceRestorer(IBalanceRestorer):
+    """
+    Balance restorer that reads account balances from PostgreSQL tables
+    written by PostgresLogsWriter.
+    """
+
+    def __init__(
+        self,
+        strategy_name: str,
+        connection: Connection,
+        table_name: str = "qubx_logs_balance",
+    ):
+        self.strategy_name = strategy_name
+        self.connection = connection
+        self.table_name = table_name
+
+    def restore_balances(self) -> list[AssetBalance]:
+        try:
+            now = datetime.now(timezone.utc)
+            lookup_range = now - timedelta(days=7)
+
+            with self.connection.cursor() as cur:
+                # Find latest run_id
+                cur.execute(
+                    sql.SQL(
+                        "SELECT run_id FROM {table} WHERE strategy_name = %s AND timestamp >= %s "
+                        "ORDER BY timestamp DESC LIMIT 1"
+                    ).format(table=sql.Identifier(self.table_name)),
+                    (self.strategy_name, lookup_range),
+                )
+                row = cur.fetchone()
+                if not row:
+                    logger.warning("No balance logs found in PostgreSQL for given filters.")
+                    return []
+
+                latest_run_id = row[0]
+                logger.info(f"Restoring balances from PostgreSQL for run_id: {latest_run_id}")
+
+                # Get latest balance per (exchange, currency)
+                cur.execute(
+                    sql.SQL(
+                        "SELECT DISTINCT ON (exchange, currency) "
+                        "exchange, currency, total, locked "
+                        "FROM {table} "
+                        "WHERE strategy_name = %s AND run_id = %s AND timestamp >= %s "
+                        "ORDER BY exchange, currency, timestamp DESC"
+                    ).format(table=sql.Identifier(self.table_name)),
+                    (self.strategy_name, latest_run_id, lookup_range),
+                )
+
+                balances: list[AssetBalance] = []
+                for exchange, currency, total, locked in cur.fetchall():
+                    if not currency:
+                        continue
+                    total = total or 0.0
+                    locked = locked or 0.0
+                    balances.append(
+                        AssetBalance(
+                            exchange=exchange,
+                            currency=currency,
+                            total=total,
+                            locked=locked,
+                            free=total - locked,
+                        )
+                    )
+
+                return balances
+        except Exception as e:
+            logger.error(f"Error restoring balances from PostgreSQL: {e}")
             return []

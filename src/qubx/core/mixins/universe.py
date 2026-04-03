@@ -93,10 +93,10 @@ class UniverseManager(IUniverseManager):
         # - cleanup removal queue
         self.__cleanup_removal_queue(instruments)
 
+        self._subscription_manager.commit()  # apply pending changes
+
         if not skip_callback and (to_add or to_remove):
             self._strategy.on_universe_change(self._context, to_add, to_remove)
-
-        self._subscription_manager.commit()  # apply pending changes
 
         # set new instruments
         self._instruments = new_set | set(to_keep)
@@ -222,7 +222,7 @@ class UniverseManager(IUniverseManager):
         )
 
         # - reinitialize strategy loggers
-        self._logging.initialize(self._time_provider.time(), self._account.positions, self._account.get_balances())
+        self._logging.initialize(self._time_provider.time(), self._account.positions, self._account.get_balances(), self._account)
 
     def _create_and_update_positions(self, instruments: list[Instrument]):
         for instrument in instruments:

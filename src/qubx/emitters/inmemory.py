@@ -14,6 +14,7 @@ from qubx.core.basics import Instrument, dt_64
 from qubx.core.interfaces import IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.ntp import time_now
+from qubx.utils.time import to_timestamp
 
 
 class InMemoryMetricEmitter(BaseMetricEmitter):
@@ -59,7 +60,7 @@ class InMemoryMetricEmitter(BaseMetricEmitter):
             context: The strategy context to get statistics from
         """
         # Convert to pandas timestamp for easier time calculations
-        current_time = pd.Timestamp(context.time())
+        current_time = to_timestamp(context.time())
 
         # Floor current time to the stats interval
         floored_current = current_time.floor(self._stats_interval)
@@ -91,7 +92,7 @@ class InMemoryMetricEmitter(BaseMetricEmitter):
 
             # Convert numpy datetime64 to pandas Timestamp
             if isinstance(current_timestamp, dt_64):
-                current_timestamp = pd.Timestamp(current_timestamp)
+                current_timestamp = to_timestamp(current_timestamp)
 
             # Extract symbol and exchange from tags
             symbol = tags.pop("symbol", None)

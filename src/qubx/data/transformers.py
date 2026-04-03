@@ -18,7 +18,7 @@ from qubx.core.series import OHLCV, Bar, ColumnarSeries, GenericSeries, Quote, T
 from qubx.data.storage import IDataTransformer, IRawContainer
 from qubx.data.storages.utils import build_snapshots, find_column_index_in_list
 from qubx.pandaz.utils import scols, srows
-from qubx.utils.time import convert_times_to_ns, infer_series_frequency
+from qubx.utils.time import convert_times_to_ns, infer_series_frequency, to_timedelta
 
 
 def _extract_column(data: pa.RecordBatch, field_idx: int | None, default_dtype: type = np.float64) -> np.ndarray:
@@ -119,7 +119,7 @@ class PandasFrame(IDataTransformer):
                 tbl = tbl.append_column(pa.field("symbol", pa.large_string()), sym_col)
             tables.append(tbl)
 
-        tbl = pa.concat_tables(tables)
+        tbl = pa.concat_tables(tables, promote_options="permissive")
         df = tbl.to_pandas()
         df[t_name] = pd.to_datetime(df[t_name])
         return df.set_index([t_name, "symbol"]).sort_index()
@@ -230,7 +230,7 @@ class OHLCVSeries(IDataTransformer):
         times = convert_times_to_ns(_data.column(index).to_numpy(zero_copy_only=False), self.timestamp_units)
 
         # - infer timeframe from first 100 timestamps
-        timeframe = pd.Timedelta(infer_series_frequency(pd.DatetimeIndex(times[:100]))).asm8.item()
+        timeframe = to_timedelta(infer_series_frequency(pd.DatetimeIndex(times[:100]))).asm8.item()
         ohlc = OHLCV(raw_data.data_id, timeframe, max_series_length=self.max_length)
 
         # - use vectorized append_data (Cython)
@@ -498,7 +498,7 @@ class TypedGenericSeries(TypedRecords):
             times = _data.column(index).to_numpy(zero_copy_only=False)
             times = convert_times_to_ns(times, self.timestamp_units)
             ts = list(sorted(set(times[:1000].tolist())))
-            timeframe = pd.Timedelta(infer_series_frequency(ts)).asm8.item()
+            timeframe = to_timedelta(infer_series_frequency(ts)).asm8.item()
 
         gens = GenericSeries(raw_data.data_id, timeframe, max_series_length=self.max_length)
         scheme = self._recognize_type_ctor_scheme(dtype, names, index)
@@ -575,7 +575,7 @@ class ColumnarSeriesTransformer(IDataTransformer):
         timeframe = self.timeframe
         if not timeframe:
             ts_list = list(sorted(set(times[:1000].tolist())))
-            timeframe = pd.Timedelta(infer_series_frequency(ts_list)).asm8.item()
+            timeframe = to_timedelta(infer_series_frequency(ts_list)).asm8.item()
 
         # Create ColumnarSeries with known columns
         series = ColumnarSeries(raw_data.data_id, timeframe, column_names, max_series_length=self.max_length)

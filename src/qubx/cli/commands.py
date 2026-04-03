@@ -231,15 +231,6 @@ def run(
     "--report", "-r", default=None, type=str, help="Output directory for simulation reports.", show_default=True
 )
 @click.option(
-    "--log",
-    "-L",
-    "log_to_file",
-    is_flag=True,
-    default=False,
-    help="Write simulation logs to a file in the output directory.",
-    show_default=True,
-)
-@click.option(
     "--name",
     "-n",
     default=None,
@@ -261,7 +252,6 @@ def simulate(
     end: str | None,
     output: str | None,
     report: str | None,
-    log_to_file: bool,
     name: str | None,
     log_file: str | None,
 ):
@@ -276,7 +266,7 @@ def simulate(
     logo()
     logger.info(f"Process PID: <g>{os.getpid()}</g>")
     simulate_strategy(
-        config_file, output, start, end, report, log_to_file, name=name, log_file=log_file,
+        config_file, output, start, end, report, name=name, log_file=log_file,
     )
 
 
@@ -496,19 +486,16 @@ def browse(results_path: str | None):
 
         qubx browse /backtests/momentum/
 
+        qubx browse r2:backtests
+
         qubx browse s3://my-bucket/backtests/
     """
     from qubx.config import get_settings
-    from qubx.utils.s3 import is_cloud_path
 
     from .tui import run_backtest_browser
 
     if results_path is None:
         results_path = get_settings().default_browse_path or "results"
-
-    # - only resolve local paths; cloud URIs (s3://, gs://, az://) are passed as-is
-    if not is_cloud_path(results_path):
-        results_path = os.path.abspath(os.path.expanduser(results_path))
 
     run_backtest_browser(results_path)
 
@@ -571,6 +558,12 @@ def browse(results_path: str | None):
     is_flag=True,
     help="List all available built-in templates",
 )
+@click.option("--description", "-d", type=str, default=None, help="Project description (repo template)")
+@click.option("--author", type=str, default=None, help="Author name (repo template)")
+@click.option("--email", type=str, default=None, help="Author email (repo template)")
+@click.option("--github-org", type=str, default=None, help="GitHub org or username (repo template)")
+@click.option("--create-repo", is_flag=True, default=False, help="Create GitHub repository (repo template)")
+@click.option("--private/--public", default=True, help="Repository visibility (repo template)")
 def init(
     template: str,
     template_path: str | None,
@@ -580,6 +573,12 @@ def init(
     timeframe: str,
     output_dir: str,
     list_templates: bool,
+    description: str | None,
+    author: str | None,
+    email: str | None,
+    github_org: str | None,
+    create_repo: bool,
+    private: bool,
 ):
     """
     Create a new strategy from a template.
@@ -589,9 +588,14 @@ def init(
     - Configuration file for qubx run command
     - Package structure for proper imports
 
+    Use --template repo for a full repository with CI, tests, and justfile.
+
     The generated strategy can be run immediately with:
     uv run qubx run --config config.yml --paper
     """
+    import subprocess
+    import sys
+
     from qubx.templates import TemplateError, TemplateManager
 
     try:
@@ -604,38 +608,145 @@ def init(
                 return
 
             click.echo("Available templates:")
-            for template_name, metadata in templates.items():
-                description = metadata.get("description", "No description")
-                click.echo(f"  {template_name:<15} - {description}")
+            for tpl_name, metadata in templates.items():
+                tpl_desc = metadata.get("description", "No description")
+                click.echo(f"  {tpl_name:<15} - {tpl_desc}")
             return
 
-        # Generate strategy
-        strategy_path = manager.generate_strategy(
-            template_name=template if not template_path else None,
-            template_path=template_path,
-            output_dir=output_dir,
-            name=name,
-            exchange=exchange,
-            symbols=symbols,
-            timeframe=timeframe,
-        )
+        if template == "repo":
+            _init_repo(
+                manager, name, description, author, email, github_org,
+                exchange, symbols, timeframe, output_dir, create_repo, private,
+            )
+        else:
+            strategy_path = manager.generate_strategy(
+                template_name=template if not template_path else None,
+                template_path=template_path,
+                output_dir=output_dir,
+                name=name,
+                exchange=exchange,
+                symbols=symbols,
+                timeframe=timeframe,
+            )
 
-        click.echo(f"✅ Strategy '{name}' created successfully!")
-        click.echo(f"📁 Location: {strategy_path}")
-        click.echo()
-        click.echo("To run your strategy:")
-        click.echo(f"  cd {strategy_path}")
-        click.echo("  uv run qubx run config.yml --paper")
-        click.echo()
-        click.echo("To run in Jupyter mode:")
-        click.echo("  ./jpaper.sh")
+            click.echo(f"Strategy '{name}' created successfully!")
+            click.echo(f"Location: {strategy_path}")
+            click.echo()
+            click.echo("To run your strategy:")
+            click.echo(f"  cd {strategy_path}")
+            click.echo("  uv run qubx run config.yml --paper")
+            click.echo()
+            click.echo("To run in Jupyter mode:")
+            click.echo("  ./jpaper.sh")
 
     except TemplateError as e:
-        click.echo(f"❌ Template error: {e}", err=True)
+        click.echo(f"Error: {e}", err=True)
         raise click.Abort()
     except Exception as e:
-        click.echo(f"❌ Unexpected error: {e}", err=True)
+        click.echo(f"Unexpected error: {e}", err=True)
         raise click.Abort()
+
+
+def _init_repo(
+    manager,
+    name: str,
+    description: str | None,
+    author: str | None,
+    email: str | None,
+    github_org: str | None,
+    exchange: str,
+    symbols: str,
+    timeframe: str,
+    output_dir: str,
+    create_repo: bool,
+    private: bool,
+):
+    """Interactive wizard for creating a full strategy repository."""
+    import subprocess
+    import sys
+
+    from qubx.cli.user_config import load_init_config, save_init_config
+    from qubx.templates import TemplateError
+
+    config = load_init_config()
+    interactive = sys.stdin.isatty()
+
+    if interactive:
+        click.echo("\n  Strategy Repository Setup\n")
+        name = click.prompt("  Strategy name", default=name)
+        description = click.prompt("  Description", default=description or "")
+        author = click.prompt("  Author name", default=author or config.get("author_name", ""))
+        email = click.prompt("  Author email", default=email or config.get("author_email", ""))
+        github_org = click.prompt(
+            "  GitHub organization",
+            default=github_org or config.get("github_org", ""),
+        )
+        exchange = click.prompt("  Exchange", default=exchange)
+        symbols = click.prompt("  Symbols (comma-separated)", default=symbols)
+        timeframe = click.prompt("  Timeframe", default=timeframe)
+        if not create_repo:
+            create_repo = click.confirm("\n  Create GitHub repository?", default=False)
+            if create_repo:
+                private = click.confirm("  Private repository?", default=True)
+        click.echo()
+    else:
+        description = description or ""
+        author = author or config.get("author_name", "")
+        email = email or config.get("author_email", "")
+        github_org = github_org or config.get("github_org", "")
+
+    # Save preferences for next time
+    save_init_config({
+        "author_name": author,
+        "author_email": email,
+        "github_org": github_org,
+    })
+
+    # Generate project from template
+    strategy_path = manager.generate_strategy(
+        template_name="repo",
+        output_dir=output_dir,
+        name=name,
+        description=description,
+        author_name=author,
+        author_email=email,
+        github_org=github_org,
+        exchange=exchange,
+        symbols=symbols,
+        timeframe=timeframe,
+    )
+
+    # Initialize git repo with main as default branch
+    subprocess.run(["git", "init", "-b", "main"], cwd=strategy_path, capture_output=True)
+    subprocess.run(["git", "add", "-A"], cwd=strategy_path, capture_output=True)
+    subprocess.run(
+        ["git", "commit", "-m", "Initial project setup"],
+        cwd=strategy_path,
+        capture_output=True,
+    )
+
+    click.echo(f"Strategy '{name}' created at {strategy_path}")
+
+    # Create GitHub repo if requested
+    if create_repo and github_org:
+        repo_name = f"{github_org}/{name}"
+        visibility = "--private" if private else "--public"
+        result = subprocess.run(
+            ["gh", "repo", "create", repo_name, visibility, "--source=.", "--push"],
+            cwd=strategy_path,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            click.echo(f"GitHub repository created: {repo_name}")
+        else:
+            click.echo(f"Failed to create GitHub repo: {result.stderr.strip()}", err=True)
+
+    click.echo()
+    click.echo("Next steps:")
+    click.echo(f"  cd {strategy_path}")
+    click.echo("  just install")
+    click.echo("  just test")
 
 
 @main.group()
@@ -703,8 +814,9 @@ def kernel_stop(connection_file: Path):
 
 
 def _resolve_storage_path(ctx: click.Context, param: click.Parameter, value: str) -> str:
-    # - S3 and other cloud paths are returned as-is
-    if value and not (value.startswith("s3://") or value.startswith("gs://") or value.startswith("az://")):
+    from qubx.utils.s3 import is_account_uri, is_cloud_path
+
+    if value and not is_cloud_path(value) and not is_account_uri(value):
         return os.path.abspath(os.path.expanduser(value))
     return value
 

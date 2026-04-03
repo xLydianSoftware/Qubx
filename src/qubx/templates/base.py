@@ -1,10 +1,11 @@
 """Base template management system for strategy generation."""
 
+import os
 import shutil
 from pathlib import Path
 
 import yaml
-from jinja2 import Environment, FileSystemLoader, Template
+from jinja2 import Environment, FileSystemLoader
 
 from qubx import logger
 
@@ -118,16 +119,19 @@ class TemplateManager:
 
     def _render_template_directory(self, template_dir: Path, output_dir: Path, template_vars: dict):
         """Recursively render template directory to output directory."""
-        # Create Jinja2 environment
         env = Environment(loader=FileSystemLoader(template_dir))
 
-        # Walk through template directory
-        for template_file in template_dir.rglob("*"):
-            if template_file.is_file() and template_file.name != "template.yml":
-                # Calculate relative path from template directory
+        # Use os.walk to reliably find hidden files/dirs (.github, .gitignore, etc.)
+        for root, dirs, files in os.walk(template_dir):
+            dirs[:] = [d for d in dirs if d != "__pycache__"]
+            for filename in files:
+                if filename == "template.yml":
+                    continue
+
+                template_file = Path(root) / filename
                 rel_path = template_file.relative_to(template_dir)
 
-                # Create output file path with template variable substitution in path
+                # Substitute template variables in path
                 rel_path_str = str(rel_path)
                 for var_name, var_value in template_vars.items():
                     rel_path_str = rel_path_str.replace(f"{{{{ {var_name} }}}}", str(var_value))
@@ -138,28 +142,24 @@ class TemplateManager:
                 if output_file.suffix == ".j2":
                     output_file = output_file.with_suffix("")
 
-                # Create parent directories
                 output_file.parent.mkdir(parents=True, exist_ok=True)
 
-                # Render template
                 if template_file.suffix == ".j2":
-                    # Render Jinja2 template
                     template = env.get_template(str(rel_path))
                     rendered_content = template.render(**template_vars)
                     with open(output_file, "w") as f:
                         f.write(rendered_content)
-
-                    # Make shell scripts executable
                     if output_file.suffix == ".sh":
                         output_file.chmod(0o755)
                 else:
-                    # Copy non-template files as-is
                     shutil.copy2(template_file, output_file)
 
                 logger.debug(f"Created: {output_file}")
 
     def _to_class_name(self, name: str) -> str:
         """Convert strategy name to proper class name."""
-        # Convert snake_case or kebab-case to PascalCase
         words = name.replace("-", "_").split("_")
-        return "".join(word.capitalize() for word in words) + "Strategy"
+        class_name = "".join(word.capitalize() for word in words)
+        if not class_name.lower().endswith("strategy"):
+            class_name += "Strategy"
+        return class_name

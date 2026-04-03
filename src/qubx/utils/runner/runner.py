@@ -2,12 +2,10 @@ import asyncio
 import socket
 import time
 from collections import defaultdict
+from dataclasses import dataclass
 from functools import reduce
 from pathlib import Path
 from threading import Thread
-from typing import cast
-
-import pandas as pd
 
 from qubx import QubxLogConfig, logger
 from qubx.backtester.optimization import variate
@@ -31,6 +29,7 @@ from qubx.core.basics import (
     TransactionCostsCalculator,
 )
 from qubx.core.context import StrategyContext
+from qubx.core.exceptions import WarmupValidationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
@@ -63,7 +62,6 @@ from qubx.utils.runner.configs import (
     StrategyConfig,
     WarmupConfig,
     load_strategy_config_from_yaml,
-    normalize_aux_config,
     resolve_aux_config,
 )
 from qubx.utils.runner.factory import (
@@ -75,8 +73,8 @@ from qubx.utils.runner.factory import (
     create_notifiers,
     create_state_persistence,
 )
-from qubx.utils.s3 import is_cloud_path
-from qubx.utils.time import convert_seconds_to_str
+from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
+from qubx.utils.time import convert_seconds_to_str, to_timedelta, to_timestamp
 
 from .accounts import AccountConfigurationManager
 
@@ -278,7 +276,15 @@ def run_strategy(
         _health_server.start()
 
     # Restore state if configured
-    restored_state = _restore_state(config.live.warmup.restorer if config.live.warmup else None) if restore else None
+    restored_state = (
+        _restore_state(
+            restorer_config=config.live.warmup.restorer if config.live.warmup else None,
+            logging_config=config.live.logging if config.live.logging else None,
+            strategy_name=_get_strategy_name(config),
+        )
+        if restore
+        else None
+    )
 
     # Resolve aux config with live section override (needed for both warmup and live context)
     aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
@@ -309,6 +315,7 @@ def run_strategy(
             simulated_formatter=simulated_formatter,
             account_manager=account_manager,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
+            aux_configs=aux_configs,
         )
     except KeyboardInterrupt:
         logger.info("Warmup interrupted by user")
@@ -338,7 +345,50 @@ def run_strategy(
     return ctx
 
 
-def _restore_state(restorer_config: RestorerConfig | None) -> RestoredState | None:
+def _infer_restorer_from_logger(logging_config: LoggingConfig, strategy_name: str) -> RestorerConfig | None:
+    """Infer a matching state restorer config from the logger config."""
+    logger_type = logging_config.logger
+    args = logging_config.args
+
+    if logger_type == "PostgresLogsWriter":
+        return RestorerConfig(
+            type="PostgresStateRestorer",
+            parameters={
+                "strategy_name": strategy_name,
+                "postgres_uri": args.get("postgres_uri", "postgresql://localhost:5432/qubx_logs"),
+                "table_prefix": args.get("table_prefix", "qubx_logs"),
+            },
+        )
+    elif logger_type == "MongoDBLogsWriter":
+        return RestorerConfig(
+            type="MongoDBStateRestorer",
+            parameters={
+                "strategy_name": strategy_name,
+                "mongo_uri": args.get("mongo_uri", "mongodb://localhost:27017/"),
+                "db_name": args.get("db_name", "default_logs_db"),
+                "collection_name_prefix": args.get("collection_name_prefix", "qubx_logs"),
+            },
+        )
+    elif logger_type == "CsvFileLogsWriter":
+        return RestorerConfig(
+            type="CsvStateRestorer",
+            parameters={
+                "strategy_name": strategy_name,
+                "base_dir": args.get("log_folder", "logs"),
+            },
+        )
+
+    return None
+
+
+def _restore_state(
+    restorer_config: RestorerConfig | None,
+    logging_config: LoggingConfig | None = None,
+    strategy_name: str = "",
+) -> RestoredState | None:
+    if restorer_config is None and logging_config is not None:
+        restorer_config = _infer_restorer_from_logger(logging_config, strategy_name)
+
     if restorer_config is None:
         restorer_config = RestorerConfig(type="CsvStateRestorer", parameters={"base_dir": "logs"})
 
@@ -417,18 +467,6 @@ def create_strategy_context(
             else None
         )
 
-        # Auto-enable Prometheus from QUBX_METRICS_PORT if no emitter was configured
-        if _metric_emitter is None and qubx_settings.metrics_port:
-            from qubx.emitters.prometheus import PrometheusMetricEmitter
-
-            _prom_tags = {"strategy": stg_name, "run_id": run_id or "", **_platform_tags}
-            _metric_emitter = PrometheusMetricEmitter(
-                strategy_name=stg_name,
-                expose_http=True,
-                http_port=qubx_settings.metrics_port,
-                tags=_prom_tags,
-            )
-            logger.info(f"Auto-enabled Prometheus metrics on port {qubx_settings.metrics_port} (QUBX_METRICS_PORT)")
 
     # Create lifecycle notifiers
     if no_notifiers:
@@ -843,6 +881,79 @@ def _apply_inverse_exchange_mapping(exchanges: list[str]) -> list[str]:
     return mapped_exchanges
 
 
+@dataclass(frozen=True)
+class WarmupResult:
+    """Captures the outcome of a warmup simulation for validation."""
+
+    requested_start_ns: int
+    requested_stop_ns: int
+    data_start_ns: int | None
+    data_stop_ns: int | None
+    initial_capital: float
+    final_capital: float
+
+    @property
+    def requested_duration_ns(self) -> int:
+        return self.requested_stop_ns - self.requested_start_ns
+
+    @property
+    def data_duration_ns(self) -> int:
+        if self.data_start_ns is not None and self.data_stop_ns is not None:
+            return self.data_stop_ns - self.data_start_ns
+        return 0
+
+    @property
+    def coverage_ratio(self) -> float:
+        if self.requested_duration_ns <= 0:
+            return 1.0
+        if self.data_start_ns is None:
+            return 0.0
+        return max(0.0, self.data_duration_ns / self.requested_duration_ns)
+
+    @property
+    def has_data(self) -> bool:
+        return self.data_start_ns is not None
+
+
+def _validate_warmup_result(result: WarmupResult, min_coverage_ratio: float = 0.5) -> None:
+    """Validate that warmup simulation produced usable state for live trading."""
+    if not result.has_data:
+        raise WarmupValidationError(
+            f"Warmup received no data at all. "
+            f"Requested window: {to_timedelta(result.requested_duration_ns, unit='ns')}. "
+            f"Check your warmup data source configuration."
+        )
+
+    if result.coverage_ratio < min_coverage_ratio:
+        data_start_gap = to_timedelta(result.data_start_ns - result.requested_start_ns, unit="ns")
+        data_end_gap = to_timedelta(result.requested_stop_ns - result.data_stop_ns, unit="ns")
+        raise WarmupValidationError(
+            f"Warmup data coverage insufficient: "
+            f"received {to_timedelta(result.data_duration_ns, unit='ns')} "
+            f"of requested {to_timedelta(result.requested_duration_ns, unit='ns')} "
+            f"({result.coverage_ratio:.1%} coverage, minimum required: {min_coverage_ratio:.0%}). "
+            f"Data started {data_start_gap} late, ended {data_end_gap} early. "
+            f"Check your warmup data source — it may have a max_history limit "
+            f"that is shorter than the warmup period."
+        )
+
+    if result.final_capital <= 0:
+        raise WarmupValidationError(
+            f"Warmup resulted in non-positive capital: {result.final_capital:.2f} "
+            f"(started with {result.initial_capital:.2f}). "
+            f"This typically means the warmup simulation traded with insufficient data, "
+            f"causing unrealistic losses. Check warmup data coverage and indicator warmup periods."
+        )
+
+    if result.initial_capital > 0 and result.final_capital < result.initial_capital * 0.5:
+        logger.warning(
+            f"<red>Warmup capital dropped significantly: "
+            f"{result.initial_capital:.2f} -> {result.final_capital:.2f} "
+            f"({(1 - result.final_capital / result.initial_capital):.1%} loss). "
+            f"Review warmup data coverage and strategy behavior during warmup.</red>"
+        )
+
+
 def _run_warmup(
     ctx: IStrategyContext,
     restored_state: RestoredState | None,
@@ -852,6 +963,7 @@ def _run_warmup(
     simulated_formatter: SimulatedLogFormatter,
     account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
+    aux_configs: list[StorageConfig] | None = None,
     trading_sessions_time: str | None = None,
 ) -> None:
     """
@@ -874,12 +986,12 @@ def _run_warmup(
     warmup_start_time = current_time
     if restored_state is not None:
         warmup_start_time = start_time_finder(current_time, restored_state)
-        time_delta = pd.Timedelta(current_time - warmup_start_time)
+        time_delta = to_timedelta(current_time - warmup_start_time)
         if time_delta.total_seconds() > 0:
             logger.info(f"<yellow>Start time finder estimated to go back in time by {time_delta}</yellow>")
 
     if warmup_period is not None:
-        logger.info(f"<yellow>Warmup period is set to {pd.Timedelta(warmup_period)}</yellow>")
+        logger.info(f"<yellow>Warmup period is set to {to_timedelta(warmup_period)}</yellow>")
         warmup_start_time -= warmup_period
 
     if warmup_start_time == current_time:
@@ -893,12 +1005,8 @@ def _run_warmup(
     _warmup_data_storage = construct_storage(warmup.data)
     assert _warmup_data_storage is not None, f"Failed to construct warmup data storage from: {warmup.data}"
     _warmup_custom_data = create_data_type_storages(warmup.custom_data) if warmup.custom_data else None
-    # - use explicitly configured aux storage, otherwise a stub that raises on access
-    _warmup_aux_storage = (
-        construct_multi_storage(normalize_aux_config(warmup.aux))
-        if warmup.aux
-        else NoConfiguredStorage("No aux storage configured for warmup — specify 'aux:' in warmup config")
-    )
+    # - use resolved live/global aux configs (passed from caller)
+    _warmup_aux_storage = construct_multi_storage(aux_configs) if aux_configs else None
 
     # - create instruments
     instruments = []
@@ -932,20 +1040,22 @@ def _run_warmup(
             prefetch_config=prefetch_config,
             trading_sessions_time=trading_sessions_time,
         ),
-        start=cast(pd.Timestamp, pd.Timestamp(warmup_start_time)),
-        stop=cast(pd.Timestamp, pd.Timestamp(current_time)),
+        start=to_timestamp(warmup_start_time),
+        stop=to_timestamp(current_time),
         emitter=ctx.emitter,
         notifier=ctx.notifier,
         strategy_state=ctx._strategy_state,
         initializer=ctx.initializer,
         warmup_mode=True,
     )
+    _initial_capital = ctx.account.get_total_capital()
 
     # - set the time provider to the simulated runner
     _live_time_provider = simulated_formatter.time_provider
     simulated_formatter.time_provider = warmup_runner.ctx
 
     ctx._strategy_state.is_warmup_in_progress = True
+    QubxLogConfig.bind_phase("warmup")
 
     try:
         warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
@@ -957,8 +1067,20 @@ def _run_warmup(
             ctx.emitter.set_context(ctx)
         ctx._strategy_state.is_warmup_in_progress = False
         ctx.initializer.simulation = False
+        QubxLogConfig.bind_phase("live")
 
     logger.info("<yellow>Warmup completed</yellow>")
+
+    data_range = warmup_runner.data_time_range
+    warmup_result = WarmupResult(
+        requested_start_ns=to_timestamp(warmup_start_time).value,
+        requested_stop_ns=to_timestamp(current_time).value,
+        data_start_ns=data_range[0] if data_range else None,
+        data_stop_ns=data_range[1] if data_range else None,
+        initial_capital=_initial_capital,
+        final_capital=warmup_runner.ctx.account.get_total_capital(),
+    )
+    _validate_warmup_result(warmup_result)
 
     # - reset the strategy ctx to point back to live context
     if hasattr(ctx.strategy, "ctx"):
@@ -1078,13 +1200,81 @@ def _build_sim_params(
     return {"data": data, "custom_data": data_i}, sim_params
 
 
+def _safe_store_results(
+    results_saver: "SimulationResultsSaver",
+    test_res: list,
+    sim_time_sec: int,
+    cloud_log_file: str | None,
+    save_path: str | None,
+    yaml_name: str,
+    strategy_full_classes: str | list[str],
+    simulation_name: str,
+    sim_start: str,
+    sim_stop: str,
+    v_id: str,
+    config_file: Path,
+    tags: list[str],
+    descr: str,
+    is_variation: bool,
+) -> None:
+    """
+    Store simulation results, falling back to a local temp directory if cloud storage is unavailable.
+
+    If ``save_path`` is a cloud URI and writing fails (network issue, credentials, etc.),
+    results are saved to ``{tempdir}/backtests/`` so completed simulations are never lost.
+    Any cloud log file is copied to the fallback run directory before the temp file is removed.
+    For non-cloud failures the exception is re-raised as usual.
+    """
+    try:
+        results_saver.store_simulation_results(test_res, sim_time_sec, log_file=cloud_log_file)
+    except Exception as _store_err:
+        if save_path is not None and is_cloud_path(save_path):
+            import os
+            import shutil
+            import tempfile
+
+            _fallback_base = str(Path(tempfile.gettempdir()) / "backtests")
+            logger.warning(
+                f"[simulate_strategy] Failed to save results to cloud storage ({save_path}): {_store_err}"
+                f"\n  → Falling back to local storage: {_fallback_base}"
+            )
+            _fallback_saver = SimulationResultsSaver(
+                name=yaml_name,
+                strategy_class=strategy_full_classes,
+                config_name=simulation_name,
+                sim_start=sim_start,
+                sim_stop=sim_stop,
+                save_path=_fallback_base,
+                run_id=v_id,
+                config_file=str(config_file),
+                tags=tags,
+                description=descr,
+                is_variation=is_variation,
+                storage_options=None,  # - local, no cloud credentials needed
+            )
+            # - cloud log file: copy to fallback run_dir instead of uploading
+            _fallback_log: str | None = None
+            if cloud_log_file is not None:
+                try:
+                    makedirs(_fallback_saver.run_dir)
+                    _dst = Path(_fallback_saver.run_dir) / f"{simulation_name}.log"
+                    shutil.copy2(cloud_log_file, str(_dst))
+                    os.unlink(cloud_log_file)
+                    logger.info(f"[simulate_strategy] Log saved locally: {_dst}")
+                except Exception as _log_err:
+                    logger.warning(f"[simulate_strategy] Could not copy log to fallback dir: {_log_err}")
+            _fallback_saver.store_simulation_results(test_res, sim_time_sec, log_file=_fallback_log)
+            print(f" > Results saved locally (cloud fallback): {green(_fallback_saver.run_dir)}")
+        else:
+            raise
+
+
 def simulate_strategy(
     config_file: Path,
     save_path: str | None = None,
     start: str | None = None,
     stop: str | None = None,
     report: str | None = None,
-    log_to_file: bool = False,
     storage_options: dict | None = None,
     name: str | None = None,
     log_file: str | None = None,
@@ -1096,11 +1286,10 @@ def simulate_strategy(
         config_file: Path to the strategy configuration file
         save_path: Path to save the simulation results. Always uses parquet-based storage.
                    Supports local paths and cloud URIs (s3://, gs://, az://).
+                   When set, simulation logs are automatically written alongside results.
         start: Start time for the simulation
         stop: Stop time for the simulation
         report: Ignored (kept for backward compatibility — parquet storage has no separate report)
-        log_to_file: If True, writes all simulation logs to a .log file alongside results
-                     (local paths only — ignored for cloud URIs)
         storage_options: Cloud storage credentials dict. None = uses default_s3_account from settings.
         name: Override the run name used for output folder construction. When provided, takes
               precedence over the 'name:' field in the config file. Useful for distinguishing
@@ -1108,6 +1297,12 @@ def simulate_strategy(
     """
     if not config_file.exists():
         raise FileNotFoundError(f"Configuration file for simualtion not found: {config_file}")
+
+    # - resolve account URI (e.g. r2:backtests) → s3:// + credentials before any path use
+    if save_path is not None and is_account_uri(save_path) and storage_options is None:
+        _client, _s3_key = S3Client.from_uri(save_path)
+        storage_options = _client.storage_options
+        save_path = f"s3://{_s3_key}"
 
     cfg = load_strategy_config_from_yaml(config_file)
 
@@ -1125,7 +1320,7 @@ def simulate_strategy(
     stg_cls, _strategy_full_classes = _import_strategy_class(cfg.strategy)
 
     simulation_name = config_file.stem
-    _v_id = cast(pd.Timestamp, pd.Timestamp("now")).strftime("%Y%m%d_%H%M%S")
+    _v_id = to_timestamp("now").strftime("%Y%m%d_%H%M%S")
 
     # - resolve run name: CLI --name > config 'name:' field > config filename stem
     _yaml_name = name or cfg.name or simulation_name
@@ -1198,8 +1393,8 @@ def simulate_strategy(
         # - explicit log file path from CLI --log-file
         _log_file = log_file
         print(f" > Logging to file {green(_log_file)} ...")
-    elif log_to_file:
-        _is_cloud = save_path is not None and is_cloud_path(save_path)
+    elif save_path is not None:
+        _is_cloud = is_cloud_path(save_path)
 
         if _is_cloud:
             import tempfile
@@ -1236,7 +1431,23 @@ def simulate_strategy(
 
     if _results_saver is not None:
         # - for cloud: pass temp log file so saver uploads it; for local it's already in run_dir
-        _results_saver.store_simulation_results(test_res, _sim_time_sec, log_file=_cloud_log_file)
+        _safe_store_results(
+            results_saver=_results_saver,
+            test_res=test_res,
+            sim_time_sec=_sim_time_sec,
+            cloud_log_file=_cloud_log_file,
+            save_path=save_path,
+            yaml_name=_yaml_name,
+            strategy_full_classes=_strategy_full_classes,
+            simulation_name=simulation_name,
+            sim_start=cfg.simulation.start,
+            sim_stop=cfg.simulation.stop,
+            v_id=_v_id,
+            config_file=config_file,
+            tags=_tags,
+            descr=_descr,
+            is_variation=bool(cfg.simulation.variate),
+        )
     elif _use_storage is False and len(test_res) > 0:
         # - no saver (no output path) — just log timing
         print(f" > Simulation finished in {green(convert_seconds_to_str(_sim_time_sec))}")

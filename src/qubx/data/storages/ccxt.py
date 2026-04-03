@@ -49,7 +49,7 @@ from qubx.data.containers import IteratorsMaster, RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
 from qubx.utils.misc import AsyncThreadLoop
-from qubx.utils.time import handle_start_stop, now_utc
+from qubx.utils.time import handle_start_stop, now_utc, to_timedelta
 
 # - default market type per well-known exchange name
 _EXCHANGE_MARKET_DEFAULTS: dict[str, str] = {
@@ -314,7 +314,7 @@ class CcxtStorage(IStorage):
         max_history: str = "3650d",
     ) -> None:
         self._max_bars = max_bars
-        self._max_history = cast(pd.Timedelta, pd.Timedelta(max_history))
+        self._max_history = to_timedelta(max_history)
         # - shared async loop (created from first exchange connection)
         self._loop = None
         self._capabilities = None
@@ -686,7 +686,7 @@ class CcxtStorage(IStorage):
         ccxt_ex = self._exchanges[exchange]
         # - resolve start/stop through the same handle_start_stop path used by OHLC
         # - default timeframe = 8h (typical funding interval) for the fallback window
-        _start, _stop = self._get_start_stop(start, stop, pd.Timedelta("8h"))
+        _start, _stop = self._get_start_stop(start, stop, to_timedelta("8h"))
         since = int(_start.timestamp() * 1000)
         stop_ts_ms = int(_stop.timestamp() * 1000)
 
@@ -740,7 +740,7 @@ class CcxtStorage(IStorage):
                 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
 
                 timeframe = params.get("timeframe", "1h")
-                _tf = cast(pd.Timedelta, pd.Timedelta(timeframe))
+                _tf = to_timedelta(timeframe)
                 _start, _stop = self._get_start_stop(start, stop, _tf)
                 exc_tf = ccxt_convert_timeframe_to_exchange_format(timeframe)
                 if exc_tf is None or exc_tf not in ccxt_ex.timeframes:
@@ -781,7 +781,7 @@ class CcxtStorage(IStorage):
                 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
 
                 timeframe = params.get("timeframe", "1h")
-                _tf = cast(pd.Timedelta, pd.Timedelta(timeframe))
+                _tf = to_timedelta(timeframe)
                 _start, _stop = self._get_start_stop(start, stop, _tf)
                 exc_tf = ccxt_convert_timeframe_to_exchange_format(timeframe)
                 if exc_tf is None or exc_tf not in ccxt_ex.timeframes:

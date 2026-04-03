@@ -443,6 +443,25 @@ def interval_to_cron(inv: str) -> str:
         raise ValueError(f"Invalid schedule format: {inv}") from e
 
 
+def to_timestamp(value, **kwargs) -> pd.Timestamp:
+    """Convert a value to pd.Timestamp, raising if the result is NaT."""
+    result = pd.Timestamp(value, **kwargs)
+    if result is pd.NaT:
+        raise ValueError(f"Cannot convert {value!r} to Timestamp (got NaT)")
+    return result  # type: ignore[return-value]
+
+
+_SENTINEL = object()
+
+
+def to_timedelta(value=_SENTINEL, **kwargs) -> pd.Timedelta:
+    """Convert a value to pd.Timedelta, raising if the result is NaT."""
+    result = pd.Timedelta(value, **kwargs) if value is not _SENTINEL else pd.Timedelta(**kwargs)
+    if result is pd.NaT:
+        raise ValueError(f"Cannot convert {value!r} to Timedelta (got NaT)")
+    return result  # type: ignore[return-value]
+
+
 def to_utc(timestamp: pd.Timestamp | datetime | str | None) -> pd.Timestamp | None:
     """
     Convert a timestamp to UTC-aware (timezone-aware with UTC timezone).
@@ -547,7 +566,6 @@ def convert_times_to_ns(times: np.ndarray, timestamp_units: str = "ns") -> np.nd
     elif timestamp_units != "ns":
         return times.astype(f"datetime64[{timestamp_units}]").astype("datetime64[ns]").astype("int64")
     return times
-
 
 
 def find_minimal_timeframe(timestamps: list[pd.Timestamp]) -> str:

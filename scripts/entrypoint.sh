@@ -10,11 +10,16 @@ if [ -n "$STRATEGY_ARTIFACT_URL" ]; then
 
     if [[ "$STRATEGY_ARTIFACT_URL" == s3://* ]]; then
         python -c "
+import os
 from pyarrow.fs import S3FileSystem
 url = '$STRATEGY_ARTIFACT_URL'
 bucket = url.split('/')[2]
 key = '/'.join(url.split('/')[3:])
-fs = S3FileSystem()
+kwargs = {}
+endpoint = os.environ.get('AWS_ENDPOINT_URL', '')
+if endpoint:
+    kwargs['endpoint_override'] = endpoint.replace('https://', '').replace('http://', '')
+fs = S3FileSystem(**kwargs)
 with fs.open_input_stream(f'{bucket}/{key}') as src:
     with open('$ARTIFACT_FILE', 'wb') as dst:
         dst.write(src.read())
@@ -44,6 +49,10 @@ ARGS="run $CONFIG"
 
 if [ "$QUBX_PAPER" = "true" ]; then
     ARGS="$ARGS --paper"
+fi
+
+if [ "$QUBX_RESTORE" = "true" ]; then
+    ARGS="$ARGS --restore"
 fi
 
 if [ -f /app/overrides.yml ]; then

@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Literal, Optional
 from prometheus_client import REGISTRY, Counter, Gauge, Summary, push_to_gateway
 
 from qubx import logger
-from qubx.core.basics import Signal, dt_64
+from qubx.core.basics import Instrument, Signal, dt_64
 from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 
@@ -180,6 +180,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         value: float,
         tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
+        instrument: Instrument | None = None,
         metric_type: MetricType = "gauge",
     ) -> None:
         """
@@ -192,8 +193,8 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             timestamp: Optional timestamp for the metric (ignored in Prometheus)
             metric_type: Type of metric (gauge, counter, summary)
         """
-        # Add metric type to tags
-        merged_tags = self._merge_tags(tags)
+        # Merge tags with instrument decomposed into symbol/exchange/asset/quote
+        merged_tags = self._merge_tags(tags, instrument)
         merged_tags["metric_type"] = metric_type
 
         # Call the implementation

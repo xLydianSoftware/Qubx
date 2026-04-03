@@ -1,0 +1,18 @@
+help:
+	@just --list --unsorted
+
+install:
+	uv sync --all-groups
+
+test:
+	uv run pytest tests/ -v --tb=short
+
+style-check:
+	uv run ruff check .
+
+format:
+	uv run ruff format .
+	uv run ruff check . --fix
+
+install-kernel:
+	uv run python -m ipykernel install --user --name {{ strategy_name }} --display-name "{{ strategy_name }}"

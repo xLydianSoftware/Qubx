@@ -1,0 +1,47 @@
+# CLAUDE.md
+
+## Project Overview
+
+{{ description }}
+
+## Commands
+
+```bash
+just install          # Install all dependencies
+just test             # Run tests
+just style-check      # Run linter
+just format           # Auto-format code with ruff
+just install-kernel   # Install Jupyter kernel
+```
+
+**IMPORTANT**: Always use `uv run` for Python commands to ensure correct environment.
+
+## Strategy Lifecycle
+
+Strategies implement `IStrategy` with this lifecycle:
+
+`on_init` → `on_start` → `on_warmup_finished` → `on_event` / `on_market_data` → `on_order_update` → `on_stop`
+
+## Key Directories
+
+- `src/{{ strategy_name }}/` — Strategy implementation
+- `configs/` — YAML strategy configurations
+- `research/` — Jupyter notebooks
+- `tests/` — Test files
+- `.claude/skills/` — Claude skills (CLI reference, indicators guide, release guide)
+
+## Development Guidelines
+
+- Use `from qubx import logger` for logging
+- Python 3.12+ — use `list`, `dict`, `| None`, `tuple` instead of importing from typing
+- Only import `Any` type from typing if needed
+- Never use `from __future__ import annotations`
+- Strategy behavior controlled via YAML configs in `configs/`
+- Tests mirror `src/` structure in `tests/`
+- Use ruff for linting (120 char line limit)
+
+## Investigation Guidelines
+
+- **For Qubx classes/methods**: Search in `~/devs/Qubx/` directory
+- **Never guess API usage** — always read the source code
+- Before writing any YAML config, examine existing configs in `configs/` and verify strategy source code for required parameters

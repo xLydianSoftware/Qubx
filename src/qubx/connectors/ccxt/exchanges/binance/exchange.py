@@ -16,7 +16,7 @@ from ccxt.base.types import (
     Strings,
 )
 
-from qubx.utils.time import now_utc
+from qubx.utils.time import now_utc, to_timedelta
 
 from ..base import CcxtFuturePatchMixin
 
@@ -418,7 +418,7 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
         super().__init__(*args, **kwargs)
         self._funding_intervals = {}
         self._funding_intervals_updated_at = None
-        self._funding_interval_cache_ttl = cast(pd.Timedelta, pd.Timedelta(minutes=10))
+        self._funding_interval_cache_ttl = to_timedelta(minutes=10)
 
     def describe(self):
         """

@@ -16,7 +16,7 @@ from qubx.data.containers import IRawContainer, RawData, RawMultiData
 from qubx.data.storage import IDataTransformer, IReader, IStorage, Transformable
 from qubx.data.storages.utils import find_column_index_in_list
 from qubx.data.transformers import TypedRecords
-from qubx.utils.time import convert_times_to_ns, infer_series_frequency
+from qubx.utils.time import convert_times_to_ns, infer_series_frequency, to_timedelta, to_timestamp
 
 
 class EmulatedUpdatesFromOHLC(IDataTransformer):
@@ -26,7 +26,7 @@ class EmulatedUpdatesFromOHLC(IDataTransformer):
 
     @staticmethod
     def timedelta_to_numpy(x: str) -> int:
-        return pd.Timedelta(x).to_numpy().item()
+        return to_timedelta(x).to_numpy().item()
 
     D1, H1 = timedelta_to_numpy("1D"), timedelta_to_numpy("1h")
     MS1 = 1_000_000
@@ -329,9 +329,9 @@ class RawSymbolBuffer:
         if isinstance(value, pd.Timestamp):
             return value.value
         if isinstance(value, np.datetime64):
-            return pd.Timestamp(value).value
+            return to_timestamp(value).value
         # - fallback: try to convert via pd.Timestamp
-        return pd.Timestamp(value).value
+        return to_timestamp(value).value
 
     def activate(self):
         self._active = True
@@ -367,10 +367,10 @@ class RawSymbolBuffer:
         # - dedup: filter out rows already in buffer using native pyarrow comparison
         if self._watermark > 0:
             if pa.types.is_timestamp(time_col.type):
-                wm_scalar = pa.scalar(pd.Timestamp(self._watermark, unit="ns"), type=time_col.type)
+                wm_scalar = pa.scalar(to_timestamp(self._watermark, unit="ns"), type=time_col.type)
             elif pa.types.is_date(time_col.type):
                 # - date32 stores days since epoch; watermark is ns, convert to datetime.date
-                wm_scalar = pa.scalar(pd.Timestamp(self._watermark, unit="ns").date(), type=time_col.type)
+                wm_scalar = pa.scalar(to_timestamp(self._watermark, unit="ns").date(), type=time_col.type)
             else:
                 wm_scalar = pa.scalar(self._watermark, type=time_col.type)
             mask = pa.compute.greater(time_col, wm_scalar)
@@ -398,7 +398,7 @@ class RawSymbolBuffer:
         return len(self._batches)
 
     def __repr__(self) -> str:
-        _wm = pd.Timestamp(self._watermark, unit="ns") if self._watermark else "N/A"
+        _wm = to_timestamp(self._watermark, unit="ns") if self._watermark else "N/A"
         return f"RawSymbolBuffer({self._symbol}, chunks={len(self)}, wm={_wm}, active={self._active})"
 
 
@@ -644,13 +644,13 @@ class DataPump:
         Starts backend reader, creates MemReaders for all symbols.
         Returns dict suitable for slicer.put().
         """
-        self._end = pd.Timestamp(end)
+        self._end = to_timestamp(end)
         symbols = self._active_symbols()
         if not symbols:
             return {}
 
         # - all symbols need warmup on first read
-        read_start = pd.Timestamp(start)
+        read_start = to_timestamp(start)
         if self._warmup_period:
             read_start = read_start - self._warmup_period
             self._warmed.update(symbols)
@@ -686,7 +686,7 @@ class DataPump:
             dict of NEW MemReaders only (for slicer.put())
         """
         if end is not None:
-            self._end = pd.Timestamp(end)
+            self._end = to_timestamp(end)
 
         symbols = self._active_symbols()
         if not symbols:
@@ -695,7 +695,7 @@ class DataPump:
 
         # - determine start time: extend into past if new symbols need warmup
         new_symbols = [s for s in symbols if s not in self._warmed]
-        read_start = pd.Timestamp(current_time)
+        read_start = to_timestamp(current_time)
 
         if new_symbols and self._warmup_period:
             read_start = read_start - self._warmup_period
@@ -846,8 +846,16 @@ class SimulatedDataIterator(Iterator):
         self._slicer = None
         self._slicing_iterator = None
         self._current_time = None
+        self._first_data_time: int | None = None
         self._start = None
         self._stop = None
+
+    @property
+    def data_time_range(self) -> tuple[int, int] | None:
+        """Time range (ns) of historical data actually processed: (first, last), or None if no data arrived."""
+        if self._first_data_time is not None and self._current_time is not None:
+            return (self._first_data_time, self._current_time)
+        return None
 
     @property
     def emulation_time_indent_seconds(self) -> float:
@@ -876,7 +884,7 @@ class SimulatedDataIterator(Iterator):
     def set_warmup_period(self, subscription: str, warmup_period: str | None = None):
         if warmup_period:
             access_key, _, _ = self._parse_subscription_spec(subscription)
-            self._warmups[access_key] = pd.Timedelta(warmup_period)
+            self._warmups[access_key] = to_timedelta(warmup_period)
 
     def _parse_subscription_spec(self, subscription: str) -> tuple[str, str, dict[str, object]]:
         _subtype, _params = DataType.from_str(subscription)
@@ -999,7 +1007,7 @@ class SimulatedDataIterator(Iterator):
 
             # - if simulation is running, restart read to include new symbols
             if self.is_running and new_instruments:
-                new_mem_readers = pump.restart_read(pd.Timestamp(self._current_time, unit="ns"), self._stop)  # type: ignore
+                new_mem_readers = pump.restart_read(to_timestamp(self._current_time, unit="ns"), self._stop)  # type: ignore
                 if new_mem_readers and self._slicer is not None:
                     self._slicer.put(new_mem_readers)
 
@@ -1101,16 +1109,17 @@ class SimulatedDataIterator(Iterator):
         return self._current_time is not None
 
     def create_iterable(self, start: str | pd.Timestamp, stop: str | pd.Timestamp) -> Iterator:
-        self._start = pd.Timestamp(start)
-        self._stop = pd.Timestamp(stop)
+        self._start = to_timestamp(start)
+        self._stop = to_timestamp(stop)
         self._current_time = None
+        self._first_data_time = None
         self._slicer = IteratedDataStreamsSlicer()
         return self
 
     def __iter__(self) -> Iterator:
         assert self._start is not None and self._stop is not None
         assert self._slicer is not None
-        self._current_time = int(pd.Timestamp(self._start).timestamp() * 1e9)
+        self._current_time = int(to_timestamp(self._start).timestamp() * 1e9)
 
         # - initial read for all pumps
         for pump in self._pumps.values():
@@ -1137,6 +1146,8 @@ class SimulatedDataIterator(Iterator):
                 if t < self._current_time:
                     is_historical = True
                 else:
+                    if self._first_data_time is None:
+                        self._first_data_time = t
                     self._current_time = t
 
                 return instr, data_type, v, is_historical
@@ -1160,7 +1171,7 @@ class SimulatedDataIterator(Iterator):
         assert isinstance(t_records, Transformable)
 
         return self._process_bar_records(
-            t_records.transform(TypedRecords()), time_as_nsec(start), pd.Timedelta(timeframe).asm8.item()
+            t_records.transform(TypedRecords()), time_as_nsec(start), to_timedelta(timeframe).asm8.item()
         )
 
     def _process_bar_records(self, records: list[Bar], cut_time_ns: int, timeframe_ns: int) -> list[Bar]:
