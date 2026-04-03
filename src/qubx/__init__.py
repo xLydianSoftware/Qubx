@@ -115,11 +115,11 @@ def formatter(record):
     phase = record["extra"].get("phase")
     phase_tag = ""
     if phase == "warmup":
-        phase_tag = "<yellow>[WARMUP]</yellow> "
+        phase_tag = " <yellow>[WARMUP]</yellow>"
     elif phase == "live":
-        phase_tag = "<green>[LIVE]</green> "
+        phase_tag = " <green>[LIVE]</green>"
 
-    prefix = f"{ts} [ <level>{record['level'].icon}</level> ] {phase_tag}<cyan>({{module}})</cyan> "
+    prefix = f"{ts} [ <level>{record['level'].name}</level> ] <cyan>{{module}}</cyan> |{phase_tag} "
 
     if record["exception"] is not None:
         record["extra"]["stack"] = stackprinter.format(record["exception"], style="darkbg3")
@@ -143,8 +143,8 @@ def file_formatter(record):
 
     ts = _resolve_timestamp()
     phase = _format_phase_plain(record)
-    level_name = record["level"].name
-    prefix = ts + " [ " + f"{level_name:<8}" + " ] " + phase + "({module}) "
+    phase_suffix = " " + phase.rstrip() if phase else ""
+    prefix = ts + " [ " + record["level"].name + " ] " + "{module} |" + phase_suffix + " "
 
     if record["exception"] is not None:
         record["extra"]["stack"] = stackprinter.format(record["exception"], style="plaintext")
@@ -275,6 +275,7 @@ class QubxLogConfig:
 
 
 QubxLogConfig.setup_logger()
+logger = logger.opt(colors=True)  # Enable color tag parsing in message text
 
 
 # registering magic for jupyter notebook
