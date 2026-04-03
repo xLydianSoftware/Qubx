@@ -5,6 +5,7 @@ from typing import Any, Callable, TypeAlias
 
 import numpy as np
 import pandas as pd
+import stackprinter
 
 from qubx import logger
 from qubx.core.basics import (
@@ -122,6 +123,38 @@ class SimulationDataConfig:
     trading_sessions_time: dict[str, tuple[int, int]] | None = None  # per-exchange session overrides
     default_trading_sessions_time: tuple[int, int] = DEFAULT_DAILY_SESSION  # fallback for exchanges not in the dict
 # fmt: on
+
+
+class SimulatedLogFormatter:
+    def __init__(self, time_provider: ITimeProvider):
+        self.time_provider = time_provider
+
+    def formatter(self, record):
+        end = record["extra"].get("end", "\n")
+        fmt = "<lvl>{message}</lvl>%s" % end
+        if record["level"].name in {"WARNING", "SNAKY"}:
+            fmt = "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - %s" % fmt
+
+        dt = self.time_provider.time()
+        if isinstance(dt, int):
+            now = pd.Timestamp(dt).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        else:
+            now = self.time_provider.time().astype("datetime64[us]").item().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+
+        from qubx import format_phase, format_platform_identity
+
+        identity = format_platform_identity(record)
+        phase = format_phase(record)
+        prefix = f"<lc>{now}</lc> [<level>{record['level'].icon}</level>] {identity}{phase}<cyan>({{module}})</cyan> "
+
+        if record["exception"] is not None:
+            record["extra"]["stack"] = stackprinter.format(record["exception"], style="darkbg3")
+            fmt += "\n{extra[stack]}\n"
+
+        if record["level"].name in {"TEXT"}:
+            prefix = ""
+
+        return prefix + fmt
 
 
 class SimulatedScheduler(BasicScheduler):

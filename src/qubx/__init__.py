@@ -1,17 +1,12 @@
 import json as _json
 import os
-import re
 import sys
-from dataclasses import dataclass
-from typing import Any
+from typing import Callable
 
 import stackprinter
 from loguru import logger
 
 # - TODO: import some main methods from packages
-
-_COLOR_TAG_RE = re.compile(r"</?[a-z_]+>")
-_SKIP_EXTRA_KEYS = frozenset(("user", "end", "stack"))
 
 
 def runtime_env():
@@ -38,90 +33,45 @@ def runtime_env():
         return "python"  # Probably standard Python interpreter
 
 
-# ---------------------------------------------------------------------------
-#  LogContext — single source of truth for all mutable logging state
-# ---------------------------------------------------------------------------
+def format_platform_identity(record) -> str:
+    """Return a colored identity prefix from record extras (bot_id / instance_id)."""
+    bot_id = record["extra"].get("bot_id")
+    instance_id = record["extra"].get("instance_id")
+    if bot_id or instance_id:
+        parts = []
+        if bot_id:
+            parts.append(f"bot={bot_id}")
+        if instance_id:
+            parts.append(f"inst={instance_id}")
+        return "<magenta>[%s]</magenta> " % " ".join(parts)
+    return ""
 
 
-@dataclass
-class LogContext:
-    """All mutable logging state in one place — explicit, greppable, mockable."""
-
-    bot_id: str | None = None
-    instance_id: str | None = None
-    phase: str | None = None
-    time_provider: Any = None
-
-
-_log_context = LogContext()
-
-
-def get_log_context() -> LogContext:
-    """Return the global log context (useful for testing / direct access)."""
-    return _log_context
-
-
-# ---------------------------------------------------------------------------
-#  Formatting helpers
-# ---------------------------------------------------------------------------
-
-
-def _resolve_provider_time(time_provider) -> str | None:
-    """Convert time_provider.time() to a display string, or None on failure."""
-    try:
-        import pandas as pd
-
-        dt = time_provider.time()
-        if isinstance(dt, int):
-            return pd.Timestamp(dt).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        return dt.astype("datetime64[us]").item().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-    except Exception:
-        return None
-
-
-def _resolve_timestamp(fallback="{time:YYYY-MM-DD HH:mm:ss.SSS}") -> str:
-    """Return resolved time-provider string, or *fallback* (a loguru placeholder) on failure."""
-    tp = _log_context.time_provider
-    if tp is not None:
-        now = _resolve_provider_time(tp)
-        if now is not None:
-            return now
-    return fallback
-
-
-def _format_phase_plain(record) -> str:
-    """Return plain phase tag from record extras."""
+def format_phase(record) -> str:
+    """Return a colored phase tag from record extras."""
     phase = record["extra"].get("phase")
     if phase == "warmup":
-        return "[WARMUP] "
+        return "<yellow>[WARMUP]</yellow> "
     elif phase == "live":
-        return "[LIVE] "
+        return "<green>[LIVE]</green> "
     return ""
 
 
 def formatter(record):
-    """Console formatter — colored, with emoji level icons, no identity."""
     end = record["extra"].get("end", "\n")
     fmt = "<lvl>{message}</lvl>%s" % end
     if record["level"].name in {"WARNING", "SNAKY"}:
         fmt = "<cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> - %s" % fmt
 
-    ts = _resolve_timestamp()
-    if ts.startswith("{"):
-        ts = f"<green>{ts}</green>"
-    else:
-        ts = f"<lc>{ts}</lc>"
-
-    phase = record["extra"].get("phase")
-    phase_tag = ""
-    if phase == "warmup":
-        phase_tag = " <yellow>[WARMUP]</yellow>"
-    elif phase == "live":
-        phase_tag = " <green>[LIVE]</green>"
-
-    prefix = f"{ts} [ <level>{record['level'].name}</level> ] <cyan>{{module}}</cyan> |{phase_tag} "
+    identity = format_platform_identity(record)
+    phase = format_phase(record)
+    prefix = (
+        "<green>{time:YYYY-MM-DD HH:mm:ss.SSS}</green> [ <level>%s</level> ] %s%s<cyan>({module})</cyan> "
+        % (record["level"].icon, identity, phase)
+    )
 
     if record["exception"] is not None:
+        # stackprinter.set_excepthook(style='darkbg2')
         record["extra"]["stack"] = stackprinter.format(record["exception"], style="darkbg3")
         fmt += "\n{extra[stack]}\n"
 
@@ -131,98 +81,10 @@ def formatter(record):
     return prefix + fmt
 
 
-def file_formatter(record):
-    """Plain-text formatter for file sinks — no colors, no emojis, no identity."""
-    # Embed the stripped message as a literal (escape braces so loguru won't parse them)
-    clean_msg = _COLOR_TAG_RE.sub("", record["message"]).replace("{", "{{").replace("}", "}}")
-    end = record["extra"].get("end", "\n")
-    msg = clean_msg + end
-
-    if record["level"].name in {"WARNING", "SNAKY"}:
-        msg = "{name}:{function}:{line} - " + msg
-
-    ts = _resolve_timestamp()
-    phase = _format_phase_plain(record)
-    phase_suffix = " " + phase.rstrip() if phase else ""
-    prefix = ts + " [ " + record["level"].name + " ] " + "{module} |" + phase_suffix + " "
-
-    if record["exception"] is not None:
-        record["extra"]["stack"] = stackprinter.format(record["exception"], style="plaintext")
-        msg += "\n{extra[stack]}\n"
-
-    if record["level"].name == "TEXT":
-        prefix = ""
-
-    return prefix + msg
-
-
-# ---------------------------------------------------------------------------
-#  JSON sink
-# ---------------------------------------------------------------------------
-
-
-class JsonSink:
-    """Emits one JSON line per log record for Loki / Promtail ingestion."""
-
-    def __init__(self, context: LogContext):
-        self._ctx = context
-
-    def write(self, message):
-        record = message.record
-        entry = {
-            "timestamp": self._get_timestamp(record),
-            "level": record["level"].name,
-            "module": record["module"],
-            "function": record["function"],
-            "line": record["line"],
-            "message": _COLOR_TAG_RE.sub("", record["message"]),
-        }
-        for key, val in record["extra"].items():
-            if key not in _SKIP_EXTRA_KEYS:
-                entry[key] = val
-        if record["exception"] is not None:
-            entry["exception"] = stackprinter.format(record["exception"], style="plaintext")
-        sys.stdout.write(_json.dumps(entry, default=str) + "\n")
-        sys.stdout.flush()
-
-    def _get_timestamp(self, record) -> str:
-        tp = self._ctx.time_provider
-        if tp is not None:
-            try:
-                import pandas as pd
-
-                dt = tp.time()
-                if isinstance(dt, int):
-                    return pd.Timestamp(dt).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-                return dt.astype("datetime64[us]").item().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-            except Exception:
-                pass
-        return record["time"].strftime("%Y-%m-%dT%H:%M:%S.%fZ")
-
-
-# ---------------------------------------------------------------------------
-#  Patcher — injects bound fields into every log record
-# ---------------------------------------------------------------------------
-
-
-def _patcher(record):
-    ctx = _log_context
-    if ctx.bot_id:
-        record["extra"]["bot_id"] = ctx.bot_id
-    if ctx.instance_id:
-        record["extra"]["instance_id"] = ctx.instance_id
-    if ctx.phase:
-        record["extra"]["phase"] = ctx.phase
-
-
-# ---------------------------------------------------------------------------
-#  QubxLogConfig — thin façade for setup / bind operations
-# ---------------------------------------------------------------------------
-
-
 class QubxLogConfig:
     @staticmethod
     def get_log_level():
+        # Env var takes priority (for CLI --log-level override), then settings
         env_level = os.getenv("QUBX_LOG_LEVEL")
         if env_level:
             return env_level
@@ -235,47 +97,110 @@ class QubxLogConfig:
         os.environ["QUBX_LOG_LEVEL"] = level
         QubxLogConfig.setup_logger(level)
 
+    _COLOR_TAG_RE = None
+
     @staticmethod
-    def setup_logger(level: str | None = None, colorize: bool = True):
-        logger.remove()
+    def _strip_color_tags(text: str) -> str:
+        """Remove loguru color markup tags like <yellow>...</yellow> from text."""
+        import re
+
+        if QubxLogConfig._COLOR_TAG_RE is None:
+            QubxLogConfig._COLOR_TAG_RE = re.compile(r"</?[a-z_]+>")
+        return QubxLogConfig._COLOR_TAG_RE.sub("", text)
+
+    @staticmethod
+    def _json_sink(message):
+        """Emit one JSON line per log record for Loki/Promtail ingestion."""
+        record = message.record
+        entry = {
+            "timestamp": record["time"].strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "level": record["level"].name,
+            "module": record["module"],
+            "function": record["function"],
+            "line": record["line"],
+            "message": QubxLogConfig._strip_color_tags(record["message"]),
+        }
+        # Merge platform identity and any other extras (skip internal loguru keys)
+        for key, val in record["extra"].items():
+            if key not in ("user", "end", "stack"):
+                entry[key] = val
+        if record["exception"] is not None:
+            entry["exception"] = stackprinter.format(record["exception"], style="plaintext")
+        sys.stdout.write(_json.dumps(entry, default=str) + "\n")
+        sys.stdout.flush()
+
+    @staticmethod
+    def setup_logger(level: str | None = None, custom_formatter: Callable | None = None, colorize: bool = True):
+        global logger
+
+        config = {
+            "handlers": [
+                {"sink": sys.stdout, "format": "{time} - {message}"},
+            ],
+            "extra": {"user": "someone"},
+        }
+        logger.configure(**config)
+        logger.remove(None)
+
         level = level or QubxLogConfig.get_log_level()
 
+        # Check if JSON format is requested (for Loki/container deployments)
         log_format = os.getenv("QUBX_LOG_FORMAT", "text").lower()
         if log_format == "json":
-            sink = JsonSink(_log_context)
-            logger.add(sink.write, level=level, enqueue=True, backtrace=True, diagnose=True)
-        else:
             logger.add(
-                sys.stdout,
-                format=formatter,
-                colorize=colorize,
+                QubxLogConfig._json_sink,
                 level=level,
                 enqueue=True,
                 backtrace=True,
                 diagnose=True,
             )
+            # No colorize opt needed for JSON
+            return
 
-        logger.configure(patcher=_patcher)
+        # Default: human-readable text format
+        logger.add(
+            sys.stdout,
+            format=custom_formatter or formatter,
+            colorize=colorize,
+            level=level,
+            enqueue=True,
+            backtrace=True,
+            diagnose=True,
+        )
+        logger = logger.opt(colors=colorize)
+
+    _bot_id: str | None = None
+    _instance_id: str | None = None
+    _phase: str | None = None
+
+    @staticmethod
+    def _update_patcher():
+        """Reconfigure loguru with a single patcher that applies all bound fields."""
+        def patcher(record):
+            if QubxLogConfig._bot_id:
+                record["extra"]["bot_id"] = QubxLogConfig._bot_id
+            if QubxLogConfig._instance_id:
+                record["extra"]["instance_id"] = QubxLogConfig._instance_id
+            if QubxLogConfig._phase:
+                record["extra"]["phase"] = QubxLogConfig._phase
+
+        logger.configure(patcher=patcher)
 
     @staticmethod
     def bind_platform_identity(bot_id: str | None = None, instance_id: str | None = None):
-        """Bind platform identity fields to all log messages globally."""
-        _log_context.bot_id = bot_id
-        _log_context.instance_id = instance_id
+        """Bind platform identity fields (bot_id, instance_id) to all log messages globally."""
+        QubxLogConfig._bot_id = bot_id
+        QubxLogConfig._instance_id = instance_id
+        QubxLogConfig._update_patcher()
 
     @staticmethod
     def bind_phase(phase: str | None):
         """Bind phase (warmup/live) to all log messages globally."""
-        _log_context.phase = phase
-
-    @staticmethod
-    def bind_time_provider(time_provider=None):
-        """Bind a time provider for timestamps in both text and JSON logs."""
-        _log_context.time_provider = time_provider
+        QubxLogConfig._phase = phase
+        QubxLogConfig._update_patcher()
 
 
 QubxLogConfig.setup_logger()
-logger = logger.opt(colors=True)  # Enable color tag parsing in message text
 
 
 # registering magic for jupyter notebook
