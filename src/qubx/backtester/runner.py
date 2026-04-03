@@ -131,6 +131,11 @@ class SimulationRunner:
         self._create_backtest_context()
         self._handle_ctx_subscriptions()
 
+    @property
+    def data_time_range(self) -> tuple[int, int] | None:
+        """Time range (ns) of historical data actually processed: (first, last), or None if no data arrived."""
+        return self._simulated_data_source.data_time_range
+
     def run(self, silent: bool = False, catch_keyboard_interrupt: bool = True, close_data_readers: bool = False):
         """
         Run the backtest from start to stop.
