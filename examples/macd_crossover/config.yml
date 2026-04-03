@@ -13,7 +13,7 @@ parameters:
   slow_period: 26
   signal_period: 9
   leverage: 1.0
-  timeframe: 1min
+  timeframe: 1h
 
 simulation:
   capital: 10000.0
@@ -23,7 +23,7 @@ simulation:
   start: "2023-06-01"
   stop: "2023-08-01"
   commissions: "vip0_usdt"
-  debug: "WARNING"
+  debug: "DEBUG"
 
   data:
     storage: "csv::tests/data/storages/csv/"

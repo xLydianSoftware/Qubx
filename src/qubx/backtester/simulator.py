@@ -3,7 +3,7 @@ from typing import Literal, cast
 import pandas as pd
 from joblib import delayed
 
-from qubx import QubxLogConfig, logger
+from qubx import QubxLogConfig, file_formatter, logger
 from qubx.backtester.utils import SetupTypes
 from qubx.core.basics import Instrument
 from qubx.core.exceptions import SimulationError
@@ -12,13 +12,12 @@ from qubx.data.storage import IStorage
 from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.utils.misc import ProgressParallel, Stopwatch, get_current_user
 from qubx.utils.runner.configs import PrefetchConfig
-from qubx.utils.time import handle_start_stop, to_utc_naive
+from qubx.utils.time import handle_start_stop, to_timestamp, to_utc_naive
 
 from .runner import SimulationRunner
 from .transfers import SimulationTransferManager
 from .utils import (
     ExchangeName_t,
-    SimulatedLogFormatter,
     SimulationDataConfig,
     SimulationSetup,
     StrategiesDecls_t,
@@ -261,7 +260,7 @@ def _run_setup(
         # TODO: this can be removed once we add some artificial data stream to move the simulation
         if setup.setup_type in [SetupTypes.SIGNAL, SetupTypes.SIGNAL_AND_TRACKER]:
             onboard_dates = [
-                to_utc_naive(pd.Timestamp(instrument.onboard_date))
+                to_utc_naive(to_timestamp(instrument.onboard_date))
                 for instrument in setup.instruments
                 if instrument.onboard_date is not None
             ]
@@ -280,16 +279,14 @@ def _run_setup(
 
         # - we want to see simulate time in log messages
         QubxLogConfig.bind_time_provider(runner.ctx)
-        QubxLogConfig.setup_logger(
-            level=QubxLogConfig.get_log_level(), custom_formatter=SimulatedLogFormatter(runner.ctx).formatter
-        )
+        QubxLogConfig.setup_logger(level=QubxLogConfig.get_log_level())
 
         # - add file sink after setup_logger (which removes all existing sinks and re-adds stdout)
         _log_sink_id = None
         if log_file:
             _log_sink_id = logger.add(
                 log_file,
-                format=SimulatedLogFormatter(runner.ctx).formatter,
+                format=file_formatter,
                 colorize=False,
                 level=QubxLogConfig.get_log_level(),
                 enqueue=True,

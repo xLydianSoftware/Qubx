@@ -291,7 +291,14 @@ class ProcessingManager(IProcessingManager):
         ):
             return False
 
-        handler = self._handlers.get(d_type)
+        if not d_type:
+            handler = None
+        else:
+            handler = self._handlers.get(d_type)
+            if handler is None:
+                _dtype, _ = DataType.from_str(d_type)
+                handler = self._handlers.get(_dtype.value)
+
         if not d_type:
             event = None
         elif is_historical:
