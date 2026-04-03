@@ -272,12 +272,16 @@ def run_strategy(
         _health_server = HealthServer(_qubx_settings.health_port, ready_check=_ready_check)
         _health_server.start()
 
+    # Resolve strategy identity once — BOT_ID takes precedence over config name.
+    # This identity is used for state restoration, logging, metric emission, and persistence.
+    stg_name = _qubx_settings.bot_id or _get_strategy_name(config)
+
     # Restore state if configured
     restored_state = (
         _restore_state(
             restorer_config=config.live.warmup.restorer if config.live.warmup else None,
             logging_config=config.live.logging if config.live.logging else None,
-            strategy_name=_get_strategy_name(config),
+            strategy_name=stg_name,
         )
         if restore
         else None
@@ -292,6 +296,7 @@ def run_strategy(
         account_manager=account_manager,
         paper=paper,
         restored_state=restored_state,
+        stg_name=stg_name,
         no_color=no_color,
         aux_configs=aux_configs,
         loop=loop,
@@ -409,6 +414,7 @@ def create_strategy_context(
     account_manager: AccountConfigurationManager,
     paper: bool,
     restored_state: RestoredState | None,
+    stg_name: str,
     no_color: bool = False,
     aux_configs: list[StorageConfig] | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
@@ -418,6 +424,12 @@ def create_strategy_context(
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
+
+    Args:
+        stg_name: Strategy identity — BOT_ID when running on the platform,
+                  otherwise derived from the config name. Resolved once by the
+                  caller and used consistently for logging, metrics, state
+                  persistence, and state restoration.
     """
     # Validate that live configuration exists
     if not config.live:
@@ -427,9 +439,6 @@ def create_strategy_context(
     from qubx.config import settings as qubx_settings
 
     _bot_id = qubx_settings.bot_id
-
-    # Use BOT_ID as the primary identifier when provided, otherwise fall back to strategy name
-    stg_name = _bot_id or _get_strategy_name(config)
     _run_mode = "paper" if paper else "live"
 
     # Generate run_id once to be shared between logging and metric emissions
