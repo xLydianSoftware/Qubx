@@ -503,7 +503,21 @@ class StrategyContext(IStrategyContext):
             logger.error(f"[StrategyContext] :: Failed to stop health monitor: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
 
-        # PRIORITY 5: Close logging
+        # PRIORITY 5: Stop metric emitter and data exporter
+        try:
+            self.emitter.stop()
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to stop metric emitter: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
+
+        if self._exporter is not None:
+            try:
+                self._exporter.stop()
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to stop data exporter: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
+
+        # PRIORITY 6: Close logging
         try:
             self._logging.close()
         except Exception as e:

@@ -72,6 +72,7 @@ class RedisStreamsExporter(ITradeDataExport):
         self._instrument_to_previous_leverage = {}
 
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="redis_exporter")
+        self._stopped = False
 
         if account:
             self._instrument_to_previous_leverage = dict(account.get_leverages())
@@ -81,12 +82,30 @@ class RedisStreamsExporter(ITradeDataExport):
             f"signals: {export_signals}, targets: {export_targets}, position_changes: {export_position_changes}"
         )
 
-    def __del__(self):
-        """Clean up resources when the object is destroyed."""
+    def _log_warning(self, msg: str) -> None:
         try:
-            self._executor.shutdown(wait=False)
-        except:
+            logger.warning(f"[RedisStreamsExporter] {msg}")
+        except Exception:
             pass
+
+    def __del__(self):
+        self.stop()
+
+    def stop(self) -> None:
+        """Shut down the executor and close the Redis connection."""
+        if self._stopped:
+            return
+        self._stopped = True
+
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            self._log_warning(f"Error during executor shutdown: {e}")
+
+        try:
+            self._redis.close()
+        except Exception as e:
+            self._log_warning(f"Failed to close Redis connection: {e}")
 
     def _prepare_for_redis(self, data: Dict[str, Any]) -> Dict[FieldT, EncodableT]:
         """

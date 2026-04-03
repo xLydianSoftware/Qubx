@@ -25,6 +25,7 @@ class SlackClient:
         self._bot_token = bot_token
         self._environment = environment
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="slack_client")
+        self._stopped = False
         self._msg_registry_lock = threading.Lock()
         # Maps your arbitrary "key" -> (channel, ts)
         self._message_registry: dict[str, tuple[str, str]] = {}
@@ -250,11 +251,25 @@ class SlackClient:
         except Exception:
             return message
 
-    def __del__(self):
+    def _log_warning(self, msg: str) -> None:
         try:
-            self._executor.shutdown(wait=False)
+            logger.warning(f"[SlackClient] {msg}")
         except Exception:
             pass
+
+    def __del__(self):
+        self.stop()
+
+    def stop(self) -> None:
+        """Shut down the executor."""
+        if self._stopped:
+            return
+        self._stopped = True
+
+        try:
+            self._executor.shutdown(wait=False, cancel_futures=True)
+        except Exception as e:
+            self._log_warning(f"Error during executor shutdown: {e}")
 
 
 def _cell_text(text: str, *, bold: bool = False, code: bool = False) -> dict[str, Any]:
