@@ -371,7 +371,7 @@ class BasicScheduler:
             self._is_started = False
 
         if _has_tasks:
-            Thread(target=_watcher).start()
+            Thread(target=_watcher, daemon=True).start()
             self._is_started = True
 
 

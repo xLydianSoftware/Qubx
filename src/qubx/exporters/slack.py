@@ -172,3 +172,10 @@ class SlackExporter(ITradeDataExport):
             logger.debug(f"Queued position change for {instrument} to be exported to Slack")
         except Exception as e:
             logger.error(f"Failed to export position change: {e}")
+
+    def stop(self) -> None:
+        """Stop the Slack exporter by shutting down the Slack client."""
+        try:
+            self._slack_client.stop()
+        except Exception as e:
+            logger.error(f"[SlackExporter] Error stopping Slack client: {e}")

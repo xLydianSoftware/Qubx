@@ -166,6 +166,14 @@ class ITradeDataExport:
         """
         pass
 
+    def stop(self) -> None:
+        """Stop the exporter and release resources.
+
+        Implementations should flush pending data and shut down background threads/connections.
+        Default is a no-op for backwards compatibility.
+        """
+        pass
+
 
 class IAccountViewer:
     """Interface for viewing account information.
@@ -2818,6 +2826,14 @@ class IMetricEmitter:
             instrument: Instrument the deals belong to
             deals: List of deals to emit
             account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
+
+    def stop(self) -> None:
+        """Stop the metric emitter and release resources.
+
+        Implementations should flush pending metrics and shut down background threads/connections.
+        Default is a no-op for backwards compatibility.
         """
         pass
 
