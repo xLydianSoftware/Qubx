@@ -1,7 +1,7 @@
 import json as _json
 import os
 import sys
-from typing import Callable
+from typing import Any, Callable
 
 import stackprinter
 from loguru import logger
@@ -109,11 +109,27 @@ class QubxLogConfig:
         return QubxLogConfig._COLOR_TAG_RE.sub("", text)
 
     @staticmethod
+    def _get_timestamp_for_json(record) -> str:
+        """Get timestamp string, preferring simulation time when available."""
+        tp = QubxLogConfig._time_provider
+        if tp is not None:
+            try:
+                import pandas as pd
+
+                dt = tp.time()
+                if isinstance(dt, int):
+                    return pd.Timestamp(dt).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+                return dt.astype("datetime64[us]").item().strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+            except Exception:
+                pass
+        return record["time"].strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+
+    @staticmethod
     def _json_sink(message):
         """Emit one JSON line per log record for Loki/Promtail ingestion."""
         record = message.record
         entry = {
-            "timestamp": record["time"].strftime("%Y-%m-%dT%H:%M:%S.%fZ"),
+            "timestamp": QubxLogConfig._get_timestamp_for_json(record),
             "level": record["level"].name,
             "module": record["module"],
             "function": record["function"],
@@ -172,6 +188,7 @@ class QubxLogConfig:
     _bot_id: str | None = None
     _instance_id: str | None = None
     _phase: str | None = None
+    _time_provider: Any = None
 
     @staticmethod
     def _update_patcher():
@@ -198,6 +215,11 @@ class QubxLogConfig:
         """Bind phase (warmup/live) to all log messages globally."""
         QubxLogConfig._phase = phase
         QubxLogConfig._update_patcher()
+
+    @staticmethod
+    def bind_time_provider(time_provider=None):
+        """Bind a time provider for simulation timestamps in JSON logs."""
+        QubxLogConfig._time_provider = time_provider
 
 
 QubxLogConfig.setup_logger()

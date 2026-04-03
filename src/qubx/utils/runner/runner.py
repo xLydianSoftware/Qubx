@@ -980,12 +980,14 @@ def _run_warmup(
 
     ctx._strategy_state.is_warmup_in_progress = True
     QubxLogConfig.bind_phase("warmup")
+    QubxLogConfig.bind_time_provider(warmup_runner.ctx)
 
     try:
         warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
     finally:
         # Restore the live time provider
         simulated_formatter.time_provider = _live_time_provider
+        QubxLogConfig.bind_time_provider(None)
         # Set back the context for metric emitters to use live context
         if ctx.emitter is not None:
             ctx.emitter.set_context(ctx)

@@ -279,6 +279,7 @@ def _run_setup(
         )
 
         # - we want to see simulate time in log messages
+        QubxLogConfig.bind_time_provider(runner.ctx)
         QubxLogConfig.setup_logger(
             level=QubxLogConfig.get_log_level(), custom_formatter=SimulatedLogFormatter(runner.ctx).formatter
         )
@@ -300,6 +301,9 @@ def _run_setup(
         # - remove file sink if it was added (stdout sink remains untouched)
         if _log_sink_id is not None:
             logger.remove(_log_sink_id)
+
+        # - unbind simulation time provider
+        QubxLogConfig.bind_time_provider(None)
 
         # - service latency report
         if show_latency_report:
