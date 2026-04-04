@@ -256,21 +256,22 @@ def run_strategy(
     QubxLogConfig.bind_time_provider(_live_time_provider)
     QubxLogConfig.setup_logger(level=QubxLogConfig.get_log_level(), colorize=not no_color)
 
-    # Start health server early so liveness probe works during init/warmup
+    # Start control server early so liveness probe works during init/warmup
     from qubx.config import settings as _qubx_settings
 
-    _health_server = None
+    _control_server = None
     _health_ctx_ref: list[IStrategyContext | None] = [None]  # mutable ref for closure
+    _control_port = _qubx_settings.control_port or _qubx_settings.health_port
 
-    if _qubx_settings.health_port:
-        from qubx.health import HealthServer
+    if _control_port:
+        from qubx.control import ControlServer
 
         def _ready_check() -> bool:
             c = _health_ctx_ref[0]
             return c is not None and c._strategy_state.is_on_warmup_finished_called
 
-        _health_server = HealthServer(_qubx_settings.health_port, ready_check=_ready_check)
-        _health_server.start()
+        _control_server = ControlServer(_control_port, ready_check=_ready_check)
+        _control_server.start()
 
     # Resolve strategy identity once — BOT_ID takes precedence over config name.
     # This identity is used for state restoration, logging, metric emission, and persistence.
@@ -304,7 +305,10 @@ def run_strategy(
         no_notifiers=no_notifiers,
         no_exporters=no_exporters,
     )
-    _health_ctx_ref[0] = ctx  # expose to health server ready_check
+    _health_ctx_ref[0] = ctx  # expose to control server ready_check
+
+    if _control_server:
+        _control_server.attach_context(ctx)
 
     try:
         _run_warmup(
@@ -337,8 +341,8 @@ def run_strategy(
             logger.info("Stopped by user")
         finally:
             ctx.stop()
-            if _health_server:
-                _health_server.stop()
+            if _control_server:
+                _control_server.stop()
             _cleanup_event_loop(loop)
     else:
         ctx.start()
