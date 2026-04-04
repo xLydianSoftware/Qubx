@@ -91,7 +91,8 @@ class QubxSettings(BaseSettings):
     bot_id: str | None = None
     instance_id: str | None = None
     metrics_port: int | None = None
-    health_port: int | None = None
+    control_port: int | None = None
+    health_port: int | None = None  # deprecated: use control_port
     log_format: str = "text"  # "text" or "json"
     default_browse_path: str | None = None
 
