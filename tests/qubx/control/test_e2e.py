@@ -72,6 +72,7 @@ def _make_mock_data_provider(instruments: list[Instrument], is_simulation: bool 
 
 def _make_mock_broker():
     broker = MagicMock()
+    broker.exchange.return_value = "BINANCE.UM"
     return broker
 
 
@@ -79,17 +80,26 @@ def _make_mock_account(instruments: list[Instrument]):
     account = MagicMock()
     pos = MagicMock()
     pos.quantity = 0.0
-    pos.avg_price = 0.0
-    pos.market_price = 0.0
-    pos.unrealized_pnl = 0.0
-    pos.realized_pnl = 0.0
+    pos.position_avg_price = 0.0
+    pos.last_update_price = 0.0
+    pos.unrealized_pnl.return_value = 0.0
+    pos.r_pnl = 0.0
+    pos.market_value_funds = 0.0
     pos.is_open.return_value = False
     account.get_positions.return_value = {i: pos for i in instruments}
-    account.get_balances.return_value = {}
-    account.get_open_orders.return_value = {}
+    bal = MagicMock()
+    bal.currency = "USDT"
+    bal.total = 10000.0
+    bal.free = 10000.0
+    bal.locked = 0.0
+    account.get_balances.return_value = [bal]
+    account.get_orders.return_value = {}
     account.get_total_capital.return_value = 10000.0
+    account.get_capital.return_value = 10000.0
     account.get_net_leverage.return_value = 0.0
     account.get_gross_leverage.return_value = 0.0
+    account.get_base_currency.return_value = "USDT"
+    account.get_leverage.return_value = 0.0
     return account
 
 

@@ -1,5 +1,5 @@
 
-from qubx.control.decorator import action, collect_actions, execute_decorated_action
+from qubx.control.decorator import action, collect_actions, collect_state, execute_decorated_action, state
 from qubx.control.types import ActionDef, ActionResult
 
 
@@ -147,3 +147,65 @@ class TestExecuteDecoratedAction:
         result = execute_decorated_action(s, ctx=None, name="boom", params={})
         assert result.status == "error"
         assert result.error is not None and "kaboom" in result.error
+
+
+class TestStateDecorator:
+    def test_decorator_marks_method(self):
+        class S:
+            @state(description="Current regime")
+            def regime(self, ctx):
+                return "trending"
+
+        s = S()
+        assert hasattr(s.regime, "__state__")
+        assert s.regime.__state__ == "Current regime"
+
+    def test_collect_state(self):
+        class S:
+            @state(description="Regime")
+            def regime(self, ctx):
+                return "trending"
+
+            @state(description="Score")
+            def score(self, ctx):
+                return 42
+
+            def not_state(self):
+                pass
+
+        s = S()
+        result = collect_state(s, ctx=None)
+        assert result["regime"] == "trending"
+        assert result["score"] == 42
+        assert "not_state" not in result
+
+    def test_collect_state_handles_errors(self):
+        class S:
+            @state(description="Broken")
+            def broken(self, ctx):
+                raise ValueError("oops")
+
+        s = S()
+        result = collect_state(s, ctx=None)
+        assert "error:" in result["broken"]
+
+    def test_state_and_action_coexist(self):
+        class S:
+            @state(description="Regime")
+            def regime(self, ctx):
+                return "trending"
+
+            @action(description="Get params", read_only=True)
+            def get_params(self, ctx):
+                return {"x": 1}
+
+        s = S()
+        # State works
+        result = collect_state(s, ctx=None)
+        assert result["regime"] == "trending"
+        assert "get_params" not in result
+
+        # Action works
+        actions = collect_actions(s)
+        assert any(a.name == "get_params" for a in actions)
+        assert not any(a.name == "regime" for a in actions)
