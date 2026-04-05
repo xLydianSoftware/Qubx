@@ -38,9 +38,9 @@ print('Downloaded from $STRATEGY_ARTIFACT_URL')
         exit 1
     fi
 
-    # 2. Deploy using qubx deploy --system (pip install wheels, no venv/uv)
+    # 2. Deploy using qubx deploy (uv sync --frozen, creates .venv in strategy dir)
     echo "Deploying strategy..."
-    qubx deploy "$ARTIFACT_FILE" -o "$STRATEGY_DIR" --system
+    qubx deploy "$ARTIFACT_FILE" -o "$STRATEGY_DIR"
 fi
 
 # 3. Build run command
@@ -59,7 +59,7 @@ if [ -f /app/overrides.yml ]; then
     ARGS="$ARGS --override /app/overrides.yml"
 fi
 
-# 4. Run directly (wheels installed into system site-packages)
+# 4. Run via the strategy venv (installed by uv sync --frozen from uv.lock)
 echo "Starting: qubx $ARGS"
 cd "$STRATEGY_DIR"
-exec qubx $ARGS
+exec .venv/bin/qubx $ARGS
