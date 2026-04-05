@@ -246,6 +246,12 @@ class CcxtReader(IReader):
 
         if isinstance(data_id, (list, tuple, set)):
             symbols: list[str] = self.get_data_id(dt) if not data_id else list(data_id)
+            if len(symbols) > 20:
+                logger.warning(
+                    f"[CCXT] Skipping bulk read of {len(symbols)} symbols for {dtype_str} on {self._exchange} — "
+                    f"ccxt is too slow for bulk queries. Use a database storage (e.g., qdb) instead."
+                )
+                return RawMultiData([])
             raw_list: list[RawData] = self._storage._fetch_multi(
                 self._exchange, self._market, symbols, dt, params, dtype_str, start, stop
             )

@@ -750,7 +750,7 @@ def _create_account_processor(
             exchange=simulated_exchange,
             channel=channel,
             health_monitor=health_monitor,
-            base_currency=settings.base_currency,
+            base_currency=base_currency,
             exchange_name=exchange_name,
             initial_capital=settings.initial_capital,
             restored_state=restored_state,
