@@ -83,6 +83,41 @@ def _infer_params(method: Callable) -> list[ActionParam]:
     return params
 
 
+def state(description: str):
+    """Mark a strategy method as a state provider.
+
+    The method is called automatically when building state snapshots.
+    It receives `ctx` as first arg (injected). Must be fast and read-only.
+    The return value is included under the "custom" key in get_state responses.
+    """
+
+    def decorator(method: Callable) -> Callable:
+        @functools.wraps(method)
+        def wrapper(*args, **kwargs):
+            return method(*args, **kwargs)
+
+        setattr(wrapper, "__state__", description)
+        return wrapper
+
+    return decorator
+
+
+def collect_state(strategy: Any, ctx: Any) -> dict:
+    """Scan a strategy instance for @state-decorated methods and collect their values."""
+    result = {}
+    for attr_name in dir(strategy):
+        try:
+            attr = getattr(strategy, attr_name, None)
+        except Exception:
+            continue
+        if callable(attr) and hasattr(attr, "__state__"):
+            try:
+                result[attr.__name__] = attr(ctx)
+            except Exception as e:
+                result[attr.__name__] = f"error: {e}"
+    return result
+
+
 def collect_actions(strategy: Any) -> list[ActionDef]:
     """Scan a strategy instance for @action-decorated methods."""
     actions = []
