@@ -11,7 +11,7 @@ from qubx.core.basics import Instrument, MarketType, Signal
 from qubx.core.lookups import lookup
 from qubx.utils.time import to_timedelta, to_timestamp
 
-from .decorator import collect_state
+from .decorator import collect_state, collect_state_schema
 from .types import ActionDef, ActionParam, ActionResult
 
 if TYPE_CHECKING:
@@ -512,6 +512,11 @@ def _get_health(ctx: IStrategyContext, **kwargs) -> ActionResult:
     )
 
 
+def _get_state_schema(ctx: IStrategyContext, **kwargs) -> ActionResult:
+    schema = collect_state_schema(ctx.strategy)
+    return ActionResult(status="ok", data={"fields": schema})
+
+
 # --- Trading actions ---
 
 
@@ -761,6 +766,10 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
     "get_health": (
         ActionDef(name="get_health", description="Get health metrics: connectivity, queue size, data latencies", category="diagnostics", read_only=True),
         _get_health,
+    ),
+    "get_state_schema": (
+        ActionDef(name="get_state_schema", description="Get descriptions of custom state fields returned by get_state", category="diagnostics", read_only=True),
+        _get_state_schema,
     ),
     "get_total_capital": (
         ActionDef(name="get_total_capital", description="Get total capital across all exchanges", category="diagnostics", read_only=True),

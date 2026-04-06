@@ -118,6 +118,19 @@ def collect_state(strategy: Any, ctx: Any) -> dict:
     return result
 
 
+def collect_state_schema(strategy: Any) -> dict[str, str]:
+    """Scan a strategy instance for @state-decorated methods and return their descriptions."""
+    schema = {}
+    for attr_name in dir(strategy):
+        try:
+            attr = getattr(strategy, attr_name, None)
+        except Exception:
+            continue
+        if callable(attr) and hasattr(attr, "__state__"):
+            schema[attr.__name__] = attr.__state__
+    return schema
+
+
 def collect_actions(strategy: Any) -> list[ActionDef]:
     """Scan a strategy instance for @action-decorated methods."""
     actions = []

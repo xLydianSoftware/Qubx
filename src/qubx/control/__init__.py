@@ -1,4 +1,4 @@
-from .decorator import action, collect_actions, collect_state, execute_decorated_action, state
+from .decorator import action, collect_actions, collect_state, collect_state_schema, execute_decorated_action, state
 from .interfaces import IControllable
 from .server import ControlServer
 from .types import ActionDef, ActionParam, ActionResult
@@ -13,5 +13,6 @@ __all__ = [
     "state",
     "collect_actions",
     "collect_state",
+    "collect_state_schema",
     "execute_decorated_action",
 ]
