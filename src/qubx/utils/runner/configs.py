@@ -170,6 +170,16 @@ class ThrottlingConfig(StrictBaseModel):
     throttles: list[DataTypeThrottleConfig] = Field(default_factory=list)
 
 
+class RateLimitingConfig(StrictBaseModel):
+    """Configuration for exchange rate limiting."""
+
+    backend: str = "local"  # "local" (in-memory) or "redis"
+    redis_url: str | None = None  # Required when backend is "redis"
+    egress_ip: str = "auto"  # "auto" for periodic discovery, or explicit IP
+    ip_check_interval: int = 60  # Seconds between egress IP checks (when "auto")
+    metrics_interval: str = "60s"  # Interval for emitting rate limit metrics (None to disable)
+
+
 class LiveConfig(StrictBaseModel):
     read_only: bool = False
     base_currency: str | None = None
@@ -184,6 +194,7 @@ class LiveConfig(StrictBaseModel):
     aux: list[StorageConfig] | StorageConfig | None = None
     prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
     state: StatePersistenceConfig | None = None
+    rate_limiting: RateLimitingConfig | None = None
 
 
 class SimulationConfig(StrictBaseModel):
