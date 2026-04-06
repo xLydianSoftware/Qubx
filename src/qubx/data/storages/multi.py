@@ -74,6 +74,13 @@ class MultiReader(IReader):
         self._tolerance = tolerance
         self._keep = keep
 
+    def _get_readers(self, **kwargs) -> list[IReader]:
+        """Return readers to use, optionally filtering out rate-limited ones."""
+        skip_rate_limited = kwargs.pop("skip_rate_limited", False)
+        if skip_rate_limited:
+            return [r for r in self._readers if not r.is_rate_limited]
+        return self._readers
+
     def read(
         self,
         data_id: str | list[str],
@@ -83,9 +90,10 @@ class MultiReader(IReader):
         chunksize: int = 0,
         **kwargs,
     ) -> Iterator | Any:
+        readers = self._get_readers(**kwargs)
         if isinstance(data_id, list):
-            return self._read_multi(data_id, dtype, start, stop, chunksize, **kwargs)
-        return self._read_single(data_id, dtype, start, stop, chunksize, **kwargs)
+            return self._read_multi(data_id, dtype, start, stop, chunksize, readers=readers, **kwargs)
+        return self._read_single(data_id, dtype, start, stop, chunksize, readers=readers, **kwargs)
 
     def _read_single(
         self,
@@ -94,9 +102,10 @@ class MultiReader(IReader):
         start: str | None,
         stop: str | None,
         chunksize: int,
+        readers: list[IReader] | None = None,
         **kwargs,
     ) -> Any:
-        batches, time_idx, schema, dtype_ref = self._collect_single(data_id, dtype, start, stop, **kwargs)
+        batches, time_idx, schema, dtype_ref = self._collect_single(data_id, dtype, start, stop, readers=readers, **kwargs)
 
         if not batches:
             raise ValueError(f"No data for '{data_id}' ({dtype}) in any of the {len(self._readers)} readers")
@@ -115,6 +124,7 @@ class MultiReader(IReader):
         dtype: DataType | str,
         start: str | None,
         stop: str | None,
+        readers: list[IReader] | None = None,
         **kwargs,
     ) -> tuple[list[pa.RecordBatch], int, pa.Schema | None, DataType | str]:
         batches: list[pa.RecordBatch] = []
@@ -122,7 +132,7 @@ class MultiReader(IReader):
         schema: pa.Schema | None = None
         dtype_ref: DataType | str = dtype
 
-        for reader in self._readers:
+        for reader in (readers if readers is not None else self._readers):
             try:
                 result = reader.read(data_id, dtype, start, stop, chunksize=0, **kwargs)
                 if result is None:
@@ -156,6 +166,7 @@ class MultiReader(IReader):
         start: str | None,
         stop: str | None,
         chunksize: int,
+        readers: list[IReader] | None = None,
         **kwargs,
     ) -> Any:
         batches_per_id: dict[str, list[pa.RecordBatch]] = {}
@@ -163,7 +174,7 @@ class MultiReader(IReader):
         schema: pa.Schema | None = None
         dtype_ref: DataType | str = dtype
 
-        for reader in self._readers:
+        for reader in (readers if readers is not None else self._readers):
             try:
                 result = reader.read(data_ids, dtype, start, stop, chunksize=0, **kwargs)
                 if result is None:

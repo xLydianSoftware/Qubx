@@ -191,6 +191,8 @@ class CcxtReader(IReader):
     ``close()`` on a reader; call ``CcxtStorage.close()`` instead.
     """
 
+    is_rate_limited: bool = True
+
     def __init__(self, exchange: str, market: str, storage_ref: "CcxtStorage") -> None:
         self._exchange = exchange.upper()
         self._market = market.upper()
@@ -246,12 +248,6 @@ class CcxtReader(IReader):
 
         if isinstance(data_id, (list, tuple, set)):
             symbols: list[str] = self.get_data_id(dt) if not data_id else list(data_id)
-            if len(symbols) > 20:
-                logger.warning(
-                    f"[CCXT] Skipping bulk read of {len(symbols)} symbols for {dtype_str} on {self._exchange} — "
-                    f"ccxt is too slow for bulk queries. Use a database storage (e.g., qdb) instead."
-                )
-                return RawMultiData([])
             raw_list: list[RawData] = self._storage._fetch_multi(
                 self._exchange, self._market, symbols, dt, params, dtype_str, start, stop
             )

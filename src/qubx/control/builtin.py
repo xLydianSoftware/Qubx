@@ -206,7 +206,7 @@ def _rank_by_turnover(
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "turnover"})
 
         symbols = [i.symbol for i in instruments]
-        candles = reader.read(symbols, f"ohlc({timeframe})", start=str(start), stop=str(stop)).to_pd(True)
+        candles = reader.read(symbols, f"ohlc({timeframe})", start=str(start), stop=str(stop), skip_rate_limited=True).to_pd(True)
 
         if candles is None or candles.empty:
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "turnover"})
@@ -232,7 +232,7 @@ def _rank_by_market_cap(
 
     try:
         coins = reader.get_data_id()
-        raw = reader.read(coins, "fundamental", start=str(start), stop=str(stop)).to_pd(True)
+        raw = reader.read(coins, "fundamental", start=str(start), stop=str(stop), skip_rate_limited=True).to_pd(True)
 
         if raw is None or raw.empty:
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "market_cap"})
@@ -266,7 +266,7 @@ def _rank_by_funding(
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "funding"})
 
         symbols = [i.symbol for i in instruments]
-        fp = reader.read(symbols, "funding_payment", start=str(start), stop=str(stop)).to_pd(True)
+        fp = reader.read(symbols, "funding_payment", start=str(start), stop=str(stop), skip_rate_limited=True).to_pd(True)
 
         if fp is None or fp.empty:
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "funding"})
