@@ -13,9 +13,11 @@ References:
 - Bybit: https://bybit-exchange.github.io/docs/v5/rate-limit
 """
 
+from qubx.connectors.registry import rate_limit_config
 from qubx.rate_limiting import EndpointCosts, ExchangeRateLimitConfig, PoolConfig
 
 
+@rate_limit_config("ccxt")
 def create_ccxt_rate_limit_config(exchange_name: str, ccxt_exchange=None) -> ExchangeRateLimitConfig:
     """Create rate limit config for a CCXT exchange.
 

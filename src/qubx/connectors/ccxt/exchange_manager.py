@@ -276,11 +276,9 @@ class ExchangeManager:
         if rate_limiter is None:
             return
 
-        exchange.enableRateLimit = False
-
-        # Override the throttle method to use our rate limiter
-        # CCXT calls self.throttle(cost) in fetch2() before every REST request
-        # cost comes from calculateRateLimiterCost() which uses per-endpoint weights
+        # Keep enableRateLimit=True so CCXT calls self.throttle(cost) in fetch2()
+        # We override the throttle method to use our rate limiter instead of CCXT's built-in
+        exchange.enableRateLimit = True
         async def _rate_limit_throttle(cost=None):
             if cost is None:
                 cost = 1.0

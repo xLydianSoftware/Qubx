@@ -29,6 +29,14 @@ def _resolve(ctx: IStrategyContext, symbol: str, exchange: str | None = None) ->
         return None
 
 
+def _default_quote(ctx: IStrategyContext) -> str:
+    """Get default quote currency from the first exchange's base currency."""
+    try:
+        return ctx.account.get_base_currency()
+    except Exception:
+        return "USDT"
+
+
 # --- Rounding helpers ---
 
 
@@ -121,7 +129,9 @@ def _set_universe(ctx: IStrategyContext, symbols: list[str], exchange: str | Non
 # --- Instrument discovery actions ---
 
 
-def _get_available_instruments(ctx: IStrategyContext, exchange: str, quote: str = "USDT", market_type: str = "SWAP", **kwargs) -> ActionResult:
+def _get_available_instruments(ctx: IStrategyContext, exchange: str, quote: str | None = None, market_type: str = "SWAP", **kwargs) -> ActionResult:
+    if quote is None:
+        quote = _default_quote(ctx)
     mt = MarketType(market_type) if market_type else None
     as_of = to_timestamp(ctx.time())
     instruments = lookup.find_instruments(exchange, quote=quote, market_type=mt, as_of=as_of)
@@ -173,10 +183,12 @@ def _get_top_instruments(
     sort_by: str = "turnover",
     period: str = "3d",
     timeframe: str = "1d",
-    quote: str = "USDT",
+    quote: str | None = None,
     market_type: str = "SWAP",
     **kwargs,
 ) -> ActionResult:
+    if quote is None:
+        quote = _default_quote(ctx)
     stop = to_timestamp(ctx.time())
     start = stop - to_timedelta(period)
 
@@ -308,10 +320,10 @@ def _get_balances(ctx: IStrategyContext, **kwargs) -> ActionResult:
     return ActionResult(status="ok", data={"balances": balances})
 
 
-def _get_orders(ctx: IStrategyContext, symbol: str | None = None, **kwargs) -> ActionResult:
+def _get_orders(ctx: IStrategyContext, symbol: str | None = None, exchange: str | None = None, **kwargs) -> ActionResult:
     orders_data = []
     if symbol:
-        instr = _resolve(ctx, symbol)
+        instr = _resolve(ctx, symbol, exchange)
         if instr is None:
             return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
         orders = ctx.get_orders(instrument=instr)
@@ -333,8 +345,8 @@ def _get_orders(ctx: IStrategyContext, symbol: str | None = None, **kwargs) -> A
     return ActionResult(status="ok", data={"orders": orders_data})
 
 
-def _get_quote(ctx: IStrategyContext, symbol: str, **kwargs) -> ActionResult:
-    instr = _resolve(ctx, symbol)
+def _get_quote(ctx: IStrategyContext, symbol: str, exchange: str | None = None, **kwargs) -> ActionResult:
+    instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
 
@@ -354,8 +366,8 @@ def _get_quote(ctx: IStrategyContext, symbol: str, **kwargs) -> ActionResult:
     )
 
 
-def _get_ohlc(ctx: IStrategyContext, symbol: str, timeframe: str = "1h", length: int = 20, **kwargs) -> ActionResult:
-    instr = _resolve(ctx, symbol)
+def _get_ohlc(ctx: IStrategyContext, symbol: str, timeframe: str = "1h", length: int = 20, exchange: str | None = None, **kwargs) -> ActionResult:
+    instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
 
@@ -520,8 +532,8 @@ def _get_state_schema(ctx: IStrategyContext, **kwargs) -> ActionResult:
 # --- Trading actions ---
 
 
-def _trade(ctx: IStrategyContext, symbol: str, amount: float, price: float | None = None, time_in_force: str = "gtc", **kwargs) -> ActionResult:
-    instr = _resolve(ctx, symbol)
+def _trade(ctx: IStrategyContext, symbol: str, amount: float, price: float | None = None, time_in_force: str = "gtc", exchange: str | None = None, **kwargs) -> ActionResult:
+    instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
 
@@ -535,8 +547,8 @@ def _trade(ctx: IStrategyContext, symbol: str, amount: float, price: float | Non
         return ActionResult(status="error", error=str(e))
 
 
-def _set_target_position(ctx: IStrategyContext, symbol: str, target: float, price: float | None = None, **kwargs) -> ActionResult:
-    instr = _resolve(ctx, symbol)
+def _set_target_position(ctx: IStrategyContext, symbol: str, target: float, price: float | None = None, exchange: str | None = None, **kwargs) -> ActionResult:
+    instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
 
@@ -550,8 +562,8 @@ def _set_target_position(ctx: IStrategyContext, symbol: str, target: float, pric
         return ActionResult(status="error", error=str(e))
 
 
-def _set_target_leverage(ctx: IStrategyContext, symbol: str, leverage: float, price: float | None = None, **kwargs) -> ActionResult:
-    instr = _resolve(ctx, symbol)
+def _set_target_leverage(ctx: IStrategyContext, symbol: str, leverage: float, price: float | None = None, exchange: str | None = None, **kwargs) -> ActionResult:
+    instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
 
@@ -562,8 +574,8 @@ def _set_target_leverage(ctx: IStrategyContext, symbol: str, leverage: float, pr
         return ActionResult(status="error", error=str(e))
 
 
-def _close_position(ctx: IStrategyContext, symbol: str, **kwargs) -> ActionResult:
-    instr = _resolve(ctx, symbol)
+def _close_position(ctx: IStrategyContext, symbol: str, exchange: str | None = None, **kwargs) -> ActionResult:
+    instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
 
@@ -586,10 +598,10 @@ def _close_positions(ctx: IStrategyContext, **kwargs) -> ActionResult:
         return ActionResult(status="error", error=str(e))
 
 
-def _cancel_orders(ctx: IStrategyContext, symbol: str | None = None, **kwargs) -> ActionResult:
+def _cancel_orders(ctx: IStrategyContext, symbol: str | None = None, exchange: str | None = None, **kwargs) -> ActionResult:
     try:
         if symbol:
-            instr = _resolve(ctx, symbol)
+            instr = _resolve(ctx, symbol, exchange)
             if instr is None:
                 return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
             ctx.cancel_orders(instr)
@@ -601,8 +613,8 @@ def _cancel_orders(ctx: IStrategyContext, symbol: str | None = None, **kwargs) -
         return ActionResult(status="error", error=str(e))
 
 
-def _emit_signal(ctx: IStrategyContext, symbol: str, signal_value: float, price: float | None = None, group: str = "", **kwargs) -> ActionResult:
-    instr = _resolve(ctx, symbol)
+def _emit_signal(ctx: IStrategyContext, symbol: str, signal_value: float, price: float | None = None, group: str = "", exchange: str | None = None, **kwargs) -> ActionResult:
+    instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
 
@@ -623,6 +635,7 @@ def _emit_signal(ctx: IStrategyContext, symbol: str, signal_value: float, price:
 # --- Action registry ---
 
 _MARKET_TYPE_DOC = "Market type: SPOT, SWAP (perpetual futures), FUTURE (dated futures), OPTION, MARGIN"
+_EXCHANGE_PARAM = ActionParam(name="exchange", type="string", description="Exchange for symbol resolution (required when bot trades on multiple exchanges)", required=False, default=None)
 
 BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
     # Universe
@@ -679,7 +692,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             read_only=True,
             params=[
                 ActionParam(name="exchange", type="string", description="Exchange name (e.g., BINANCE.UM, KRAKEN, BYBIT)"),
-                ActionParam(name="quote", type="string", description="Quote currency filter", required=False, default="USDT"),
+                ActionParam(name="quote", type="string", description="Quote currency filter (defaults to bot's base currency)", required=False, default=None),
                 ActionParam(name="market_type", type="string", description=_MARKET_TYPE_DOC, required=False, default="SWAP"),
             ],
         ),
@@ -710,7 +723,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
                 ActionParam(name="sort_by", type="string", description="Ranking metric: turnover, market_cap, or funding", required=False, default="turnover"),
                 ActionParam(name="period", type="string", description="Lookback period (e.g., 3d, 7d, 1h)", required=False, default="3d"),
                 ActionParam(name="timeframe", type="string", description="Candle timeframe for turnover (e.g., 1d, 1h)", required=False, default="1d"),
-                ActionParam(name="quote", type="string", description="Quote currency filter", required=False, default="USDT"),
+                ActionParam(name="quote", type="string", description="Quote currency filter (defaults to bot's base currency)", required=False, default=None),
                 ActionParam(name="market_type", type="string", description=_MARKET_TYPE_DOC, required=False, default="SWAP"),
             ],
         ),
@@ -731,7 +744,10 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             description="Get open orders",
             category="diagnostics",
             read_only=True,
-            params=[ActionParam(name="symbol", type="string", description="Filter by symbol", required=False, default=None)],
+            params=[
+                ActionParam(name="symbol", type="string", description="Filter by symbol", required=False, default=None),
+                _EXCHANGE_PARAM,
+            ],
         ),
         _get_orders,
     ),
@@ -741,7 +757,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             description="Get latest quote for an instrument",
             category="diagnostics",
             read_only=True,
-            params=[ActionParam(name="symbol", type="string", description="Trading instrument symbol")],
+            params=[ActionParam(name="symbol", type="string", description="Trading instrument symbol"), _EXCHANGE_PARAM],
         ),
         _get_quote,
     ),
@@ -755,6 +771,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
                 ActionParam(name="symbol", type="string", description="Trading instrument symbol"),
                 ActionParam(name="timeframe", type="string", description="Bar timeframe", required=False, default="1h"),
                 ActionParam(name="length", type="integer", description="Number of bars", required=False, default=20),
+                _EXCHANGE_PARAM,
             ],
         ),
         _get_ohlc,
@@ -801,6 +818,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
                 ActionParam(name="amount", type="number", description="Order amount (positive=buy, negative=sell)"),
                 ActionParam(name="price", type="number", description="Limit price", required=False, default=None),
                 ActionParam(name="time_in_force", type="string", description="Time in force", required=False, default="gtc"),
+                _EXCHANGE_PARAM,
             ],
         ),
         _trade,
@@ -815,6 +833,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
                 ActionParam(name="symbol", type="string", description="Trading instrument symbol"),
                 ActionParam(name="target", type="number", description="Target position size"),
                 ActionParam(name="price", type="number", description="Limit price", required=False, default=None),
+                _EXCHANGE_PARAM,
             ],
         ),
         _set_target_position,
@@ -829,6 +848,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
                 ActionParam(name="symbol", type="string", description="Trading instrument symbol"),
                 ActionParam(name="leverage", type="number", description="Target leverage"),
                 ActionParam(name="price", type="number", description="Limit price", required=False, default=None),
+                _EXCHANGE_PARAM,
             ],
         ),
         _set_target_leverage,
@@ -839,7 +859,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             description="Close position for an instrument",
             category="trading",
             dangerous=True,
-            params=[ActionParam(name="symbol", type="string", description="Trading instrument symbol")],
+            params=[ActionParam(name="symbol", type="string", description="Trading instrument symbol"), _EXCHANGE_PARAM],
         ),
         _close_position,
     ),
@@ -852,7 +872,10 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             name="cancel_orders",
             description="Cancel open orders",
             category="trading",
-            params=[ActionParam(name="symbol", type="string", description="Filter by symbol", required=False, default=None)],
+            params=[
+                ActionParam(name="symbol", type="string", description="Filter by symbol", required=False, default=None),
+                _EXCHANGE_PARAM,
+            ],
         ),
         _cancel_orders,
     ),
@@ -867,6 +890,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
                 ActionParam(name="signal_value", type="number", description="Signal value (target position)"),
                 ActionParam(name="price", type="number", description="Limit price", required=False, default=None),
                 ActionParam(name="group", type="string", description="Signal group", required=False, default=""),
+                _EXCHANGE_PARAM,
             ],
         ),
         _emit_signal,

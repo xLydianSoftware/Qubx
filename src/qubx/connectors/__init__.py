@@ -19,6 +19,7 @@ from qubx.connectors.registry import (  # noqa: F401
 from qubx.connectors.ccxt.account import CcxtAccountProcessor  # noqa: F401
 from qubx.connectors.ccxt.broker import CcxtBroker  # noqa: F401
 from qubx.connectors.ccxt.data import CcxtDataProvider  # noqa: F401
+from qubx.connectors.ccxt.rate_limits import create_ccxt_rate_limit_config  # noqa: F401
 from qubx.connectors.tardis.data import TardisDataProvider  # noqa: F401
 
 # Note: Paper trading connectors (SimulatedAccountProcessor, SimulatedBroker) are

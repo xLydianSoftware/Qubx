@@ -327,7 +327,7 @@ class ProcessingManager(IProcessingManager):
             except concurrent.futures.TimeoutError:
                 logger.warning(f"Rate limit metrics collection timed out for {exchange_name}")
             except Exception as e:
-                logger.error(f"Failed to collect rate limit metrics for {exchange_name}: {e}")
+                logger.opt(colors=False).error(f"Failed to collect rate limit metrics for {exchange_name}: {e}")
 
     @staticmethod
     def _do_emit_metrics(ctx, metrics: list[dict]) -> None:
