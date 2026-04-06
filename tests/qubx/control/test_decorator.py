@@ -1,5 +1,12 @@
 
-from qubx.control.decorator import action, collect_actions, collect_state, execute_decorated_action, state
+from qubx.control.decorator import (
+    action,
+    collect_actions,
+    collect_state,
+    collect_state_schema,
+    execute_decorated_action,
+    state,
+)
 from qubx.control.types import ActionDef, ActionResult
 
 
@@ -209,3 +216,19 @@ class TestStateDecorator:
         actions = collect_actions(s)
         assert any(a.name == "get_params" for a in actions)
         assert not any(a.name == "regime" for a in actions)
+
+    def test_collect_state_schema(self):
+        class S:
+            @state(description="Current regime")
+            def regime(self, ctx):
+                return "trending"
+
+            @state(description="Score metric")
+            def score(self, ctx):
+                return 42
+
+        s = S()
+        schema = collect_state_schema(s)
+        assert schema["regime"] == "Current regime"
+        assert schema["score"] == "Score metric"
+        assert len(schema) == 2

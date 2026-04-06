@@ -241,9 +241,9 @@ class TestBuiltinRegistry:
     def test_read_only_actions_are_marked(self):
         read_only = {
             "get_universe", "get_positions", "get_balances", "get_orders", "get_quote",
-            "get_ohlc", "get_state", "get_health", "get_total_capital", "get_leverages",
-            "get_subscriptions", "get_available_instruments", "get_instrument_details",
-            "get_top_instruments",
+            "get_ohlc", "get_state", "get_health", "get_state_schema", "get_total_capital",
+            "get_leverages", "get_subscriptions", "get_available_instruments",
+            "get_instrument_details", "get_top_instruments",
         }
         for name in read_only:
             action_def, _ = BUILTIN_ACTIONS[name]
@@ -259,5 +259,4 @@ class TestBuiltinRegistry:
             assert action_def.dangerous is True, f"{name} should be dangerous"
 
     def test_expected_action_count(self):
-        # 4 universe + 3 discovery + 7 diagnostics + 7 trading = 21... now 24
-        assert len(BUILTIN_ACTIONS) == 24
+        assert len(BUILTIN_ACTIONS) == 25
