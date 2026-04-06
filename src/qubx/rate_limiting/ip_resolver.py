@@ -93,6 +93,6 @@ class EgressIPResolver:
                         try:
                             cb(old_ip, new_ip)
                         except Exception as e:
-                            logger.error(f"IP change callback error: {e}")
+                            logger.opt(colors=False).error(f"IP change callback error: {e}")
         except asyncio.CancelledError:
             pass

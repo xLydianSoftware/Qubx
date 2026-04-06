@@ -47,6 +47,7 @@ class ExchangeRateLimiter:
         config: ExchangeRateLimitConfig,
         backend: IRateLimitBackend | None = None,
         scope_ids: dict[str, str] | None = None,
+        event_loop: "asyncio.AbstractEventLoop | None" = None,
     ):
         """
         Args:
@@ -54,11 +55,13 @@ class ExchangeRateLimiter:
             config: Rate limit configuration with pools and endpoint mappings
             backend: Storage backend (default: InMemoryBackend)
             scope_ids: Maps scope type to identifier, e.g. {"ip": "1.2.3.4", "account": "abc123"}
+            event_loop: Event loop this rate limiter operates on (for metrics collection)
         """
         self._exchange = exchange
         self._config = config
         self._backend = backend or InMemoryBackend()
         self._scope_ids = scope_ids or {}
+        self._event_loop = event_loop
 
         # Per-pool gates (asyncio.Event: set = open, clear = closed)
         self._gates: dict[str, asyncio.Event] = {}
@@ -83,6 +86,15 @@ class ExchangeRateLimiter:
     @property
     def exchange(self) -> str:
         return self._exchange
+
+    @property
+    def event_loop(self):
+        """Event loop this rate limiter operates on (set by connector)."""
+        return getattr(self, "_event_loop", None)
+
+    @event_loop.setter
+    def event_loop(self, loop):
+        self._event_loop = loop
 
     @property
     def config(self) -> ExchangeRateLimitConfig:

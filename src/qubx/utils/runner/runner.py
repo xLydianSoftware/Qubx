@@ -536,9 +536,10 @@ def create_strategy_context(
     _instruments = []
 
     for exchange_name, exchange_config in config.live.exchanges.items():
-        # Inject rate limit backend and egress IP into connector params
+        # Inject rate limiting params into connector kwargs
         if _rate_limit_backend is not None:
             exchange_config.params["rate_limit_backend"] = _rate_limit_backend
+            exchange_config.params["rate_limit_loop"] = loop  # so connectors + Redis use the same loop
         if _egress_ip is not None:
             exchange_config.params["rate_limit_egress_ip"] = _egress_ip
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
