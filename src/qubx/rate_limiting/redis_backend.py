@@ -51,10 +51,20 @@ end
 
 _LUA_GET_REMAINING = """
 local key = KEYS[1]
-local now = tonumber(ARGV[1])
+local capacity = tonumber(ARGV[1])
+local refill_rate = tonumber(ARGV[2])
+local now = tonumber(ARGV[3])
 
 local tokens = tonumber(redis.call('HGET', key, 'tokens'))
 if tokens == nil then return -1 end
+
+-- Compute refilled value (same logic as acquire)
+if refill_rate > 0 then
+    local last_refill = tonumber(redis.call('HGET', key, 'last_refill') or now)
+    local elapsed = now - last_refill
+    local tokens_to_add = elapsed * refill_rate
+    tokens = math.min(capacity, tokens + tokens_to_add)
+end
 
 -- Refresh TTL on read (keeps keys alive while bot is running)
 redis.call('EXPIRE', key, 600)
@@ -107,11 +117,11 @@ class RedisBackend(IRateLimitBackend):
             await __import__("asyncio").sleep(wait_s)
             now = time.time()
 
-    async def get_remaining(self, key: str) -> float | None:
+    async def get_remaining(self, key: str, capacity: float = 0, refill_rate: float = 0) -> float | None:
         now = time.time()
         result = await self._get_remaining_script(
             keys=[key],
-            args=[now],
+            args=[capacity, refill_rate, now],
         )
         result = float(result)
         if result < 0:

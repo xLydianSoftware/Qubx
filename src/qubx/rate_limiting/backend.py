@@ -33,11 +33,16 @@ class IRateLimitBackend(ABC):
         """
 
     @abstractmethod
-    async def get_remaining(self, key: str) -> float | None:
+    async def get_remaining(self, key: str, capacity: float = 0, refill_rate: float = 0) -> float | None:
         """Get remaining tokens for a key (non-blocking).
 
+        Args:
+            key: Bucket identifier
+            capacity: Pool capacity (for computing refill on read)
+            refill_rate: Tokens per second (for computing refill on read)
+
         Returns:
-            Token count, or None if key doesn't exist
+            Token count (with refill applied), or None if key doesn't exist
         """
 
     @abstractmethod
@@ -70,7 +75,7 @@ class InMemoryBackend(IRateLimitBackend):
         await limiter.acquire(weight)
         return time.monotonic() - start
 
-    async def get_remaining(self, key: str) -> float | None:
+    async def get_remaining(self, key: str, capacity: float = 0, refill_rate: float = 0) -> float | None:
         limiter = self._limiters.get(key)
         if limiter is None:
             return None

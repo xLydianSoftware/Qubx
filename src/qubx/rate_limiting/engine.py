@@ -333,7 +333,7 @@ class ExchangeRateLimiter:
             remaining = self._quota_remaining.get(pool_name, 0)
         else:
             key = self._key_for(pool)
-            remaining = await self._backend.get_remaining(key)
+            remaining = await self._backend.get_remaining(key, pool.capacity, pool.refill_rate)
             if remaining is None:
                 remaining = pool.capacity
 
