@@ -47,6 +47,8 @@ class CcxtDataProvider(IDataProvider):
     ):
         from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 
+        rate_limiter = kwargs.pop("rate_limiter", None)
+
         settings = account_manager.get_exchange_settings(exchange_name)
         self._exchange_manager = get_ccxt_exchange_manager(
             exchange=exchange_name,
@@ -57,6 +59,10 @@ class CcxtDataProvider(IDataProvider):
             **kwargs,
         )
         self.orderbook_limit = orderbook_limit
+
+        # Attach rate limiter to exchange manager (overrides CCXT's built-in throttle)
+        if rate_limiter is not None:
+            self._exchange_manager.attach_rate_limiter(rate_limiter)
 
         self.time_provider = time_provider
         self.channel = channel
