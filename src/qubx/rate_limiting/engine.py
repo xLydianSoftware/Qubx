@@ -368,7 +368,6 @@ class ExchangeRateLimiter:
         """Collect current metrics for all pools.
 
         Returns a list of metric dicts suitable for emitting via ctx.emitter.emit().
-        Each dict has: name, value, tags.
 
         Call this periodically (e.g., once per minute) and emit via:
             for m in await rate_limiter.collect_metrics():

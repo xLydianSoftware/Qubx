@@ -321,11 +321,7 @@ class ProcessingManager(IProcessingManager):
 
         for exchange_name, rate_limiter in ctx.rate_limiters.items():
             try:
-                # Run on the rate limiter's own event loop (where its Redis client lives)
-                loop = rate_limiter.event_loop or ctx.event_loop
-                if loop is None:
-                    continue
-                future = asyncio.run_coroutine_threadsafe(rate_limiter.collect_metrics(), loop)
+                future = asyncio.run_coroutine_threadsafe(rate_limiter.collect_metrics(), ctx.event_loop)
                 metrics = future.result(timeout=5)
                 self._do_emit_metrics(ctx, metrics)
             except concurrent.futures.TimeoutError:
