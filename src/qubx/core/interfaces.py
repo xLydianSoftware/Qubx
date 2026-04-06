@@ -831,11 +831,6 @@ class IDataProvider:
         """
         raise NotImplementedError("exchange() is not implemented")
 
-    @property
-    def rate_limiter(self):
-        """Return the ExchangeRateLimiter for this provider, if any."""
-        return None
-
     def is_connected(self) -> bool:
         """
         Check if the data provider is currently connected to the exchange.

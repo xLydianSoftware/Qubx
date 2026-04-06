@@ -159,7 +159,6 @@ class StrategyContext(IStrategyContext):
         data_throttler: "InstrumentThrottler | None" = None,
         state_persistence: IStatePersistence | None = None,
         state_snapshot_interval: str | None = None,
-        rate_limit_backend: Any | None = None,
         rate_limiting_config: Any | None = None,
         event_loop: "asyncio.AbstractEventLoop | None" = None,
     ) -> None:
@@ -193,7 +192,6 @@ class StrategyContext(IStrategyContext):
         self.health = self._health_monitor
         self._state_persistence = state_persistence or DummyStatePersistence()
         self._state_snapshot_interval = state_snapshot_interval
-        self._rate_limit_backend = rate_limit_backend
         self._rate_limiting_config = rate_limiting_config
         self.event_loop = event_loop
 
@@ -313,12 +311,6 @@ class StrategyContext(IStrategyContext):
 
         # Configure periodic state snapshot persistence
         self._processing_manager.configure_state_snapshot(self._state_snapshot_interval)
-
-        # Collect rate limiters from data providers
-        for dp in self._data_providers:
-            rl = dp.rate_limiter
-            if rl is not None:
-                self.rate_limiters[rl.exchange] = rl
 
         # Configure periodic rate limit metric emission
         _rl_metrics_interval = self._rate_limiting_config.metrics_interval if self._rate_limiting_config else None
@@ -599,11 +591,6 @@ class StrategyContext(IStrategyContext):
         if not hasattr(self, "_rate_limiters"):
             self._rate_limiters: dict = {}
         return self._rate_limiters
-
-    @property
-    def rate_limit_backend(self):
-        """Rate limit storage backend (InMemoryBackend or RedisBackend)."""
-        return self._rate_limit_backend
 
     # IAccountViewer delegation
 

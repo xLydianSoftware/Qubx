@@ -70,7 +70,6 @@ from qubx.utils.runner.factory import (
     create_exporters,
     create_metric_emitters,
     create_notifiers,
-    create_rate_limit_backend,
     create_state_persistence,
 )
 from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
@@ -499,35 +498,10 @@ def create_strategy_context(
 
     exchanges = list(config.live.exchanges.keys())
 
-    # Create rate limit backend early so connectors can use it
-    _rate_limit_backend = create_rate_limit_backend(config.live.rate_limiting)
-    _ip_resolver = None
+    # Rate limiting (backend, IP discovery, per-exchange limiters)
+    from qubx.rate_limiting.manager import RateLimitManager
 
-    # Resolve egress IP for rate limit scoping (before connectors start)
-    if _rate_limit_backend is not None and config.live.rate_limiting:
-        rl_cfg = config.live.rate_limiting
-        if rl_cfg.egress_ip == "auto":
-            from qubx.rate_limiting.ip_resolver import EgressIPResolver
-
-            _ip_resolver = EgressIPResolver(check_interval=rl_cfg.ip_check_interval)
-            # Do initial discovery synchronously on the shared loop
-            import concurrent.futures
-
-            future = asyncio.run_coroutine_threadsafe(_ip_resolver.discover(), loop)
-            try:
-                ip = future.result(timeout=10)
-                if ip:
-                    _ip_resolver._current_ip = ip
-                    logger.info(f"Egress IP discovered: {ip}")
-            except (concurrent.futures.TimeoutError, Exception) as e:
-                logger.warning(f"Failed to discover egress IP: {e}")
-
-            # Start periodic monitoring on the shared loop
-            asyncio.run_coroutine_threadsafe(_ip_resolver.start(), loop)
-
-    _egress_ip = (_ip_resolver.current_ip if _ip_resolver else None) or (
-        config.live.rate_limiting.egress_ip if config.live.rate_limiting and config.live.rate_limiting.egress_ip != "auto" else None
-    )
+    _rl_manager = RateLimitManager(config.live.rate_limiting, loop)
 
     _exchange_to_tcc = {}
     _exchange_to_broker = {}
@@ -536,12 +510,9 @@ def create_strategy_context(
     _instruments = []
 
     for exchange_name, exchange_config in config.live.exchanges.items():
-        # Inject rate limiting params into connector kwargs
-        if _rate_limit_backend is not None:
-            exchange_config.params["rate_limit_backend"] = _rate_limit_backend
-            exchange_config.params["rate_limit_loop"] = loop  # so connectors + Redis use the same loop
-        if _egress_ip is not None:
-            exchange_config.params["rate_limit_egress_ip"] = _egress_ip
+        rate_limiter = _rl_manager.get_or_create(exchange_name, exchange_config.connector)
+        if rate_limiter is not None:
+            exchange_config.params["rate_limiter"] = rate_limiter
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
         _exchange_to_data_provider[exchange_name] = (
             data_provider := _create_data_provider(
@@ -656,7 +627,6 @@ def create_strategy_context(
         data_throttler=_data_throttler,
         state_persistence=_state_persistence,
         state_snapshot_interval=_state_snapshot_interval,
-        rate_limit_backend=_rate_limit_backend,
         rate_limiting_config=_rate_limiting_config,
         event_loop=loop,
     )
@@ -665,15 +635,9 @@ def create_strategy_context(
     if _metric_emitter is not None:
         _metric_emitter.set_context(ctx)
 
-    # Register IP change callback to update rate limiter scope IDs
-    if _ip_resolver is not None and ctx.rate_limiters:
-
-        def _on_ip_changed(old_ip, new_ip):
-            for rl in ctx.rate_limiters.values():
-                rl.update_scope_id("ip", f"ip_{new_ip}")
-
-        _ip_resolver.on_ip_changed(_on_ip_changed)
-        ctx._ip_resolver = _ip_resolver  # type: ignore  # prevent GC
+    # Register rate limiters from manager on context (for metrics emission)
+    ctx._rate_limiters = _rl_manager.rate_limiters
+    ctx._rl_manager = _rl_manager  # prevent GC
 
     return ctx
 
