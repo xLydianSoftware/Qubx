@@ -254,6 +254,45 @@ class ExchangeManager:
     # === Exchange Property Access ===
     # Explicit property to access underlying CCXT exchange
 
+    # === Rate Limiting ===
+
+    def attach_rate_limiter(self, rate_limiter) -> None:
+        """Attach an ExchangeRateLimiter to this exchange manager.
+
+        Disables CCXT's built-in rate limiting and replaces the throttle
+        method with our rate limiter. Survives exchange recreation.
+
+        Args:
+            rate_limiter: ExchangeRateLimiter instance
+        """
+        self._rate_limiter = rate_limiter
+        self._apply_rate_limiter_to_exchange(self._exchange)
+        self.register_recreation_callback(lambda: self._apply_rate_limiter_to_exchange(self._exchange))
+        logger.info(f"Rate limiter attached to {self._exchange_name}")
+
+    def _apply_rate_limiter_to_exchange(self, exchange: cxp.Exchange) -> None:
+        """Disable CCXT's built-in rate limiter and install our throttle override."""
+        rate_limiter = getattr(self, "_rate_limiter", None)
+        if rate_limiter is None:
+            return
+
+        exchange.enableRateLimit = False
+
+        # Override the throttle method to use our rate limiter
+        # CCXT calls self.throttle(cost) in fetch2() before every REST request
+        # cost comes from calculateRateLimiterCost() which uses per-endpoint weights
+        async def _rate_limit_throttle(cost=None):
+            if cost is None:
+                cost = 1.0
+            await rate_limiter.acquire("ccxt_rest", weight_override=float(cost))
+
+        exchange.throttle = _rate_limit_throttle
+
+    @property
+    def rate_limiter(self):
+        """Access the attached rate limiter (if any)."""
+        return getattr(self, "_rate_limiter", None)
+
     @property
     def exchange(self) -> cxp.Exchange:
         """Access to the underlying CCXT exchange instance.

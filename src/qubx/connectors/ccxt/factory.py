@@ -129,6 +129,11 @@ def get_ccxt_exchange_manager(
         check_interval_seconds=check_interval_seconds,
     )
 
+    # Attach rate limiter if provided in kwargs
+    rate_limiter = kwargs.pop("rate_limiter", None)
+    if rate_limiter is not None:
+        manager.attach_rate_limiter(rate_limiter)
+
     _exchange_manager_cache[cache_key] = manager
     return manager
 
