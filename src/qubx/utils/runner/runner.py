@@ -560,6 +560,11 @@ def create_strategy_context(
     if aux_configs is None:
         aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
 
+    # Inject rate limiters into aux storage args (for CcxtStorage, LighterStorage, etc.)
+    if _rl_manager.rate_limiters and aux_configs:
+        for sc in aux_configs:
+            sc.args["rate_limiters"] = _rl_manager.rate_limiters
+
     # - create aux storage from config
     _aux_storage = construct_multi_storage(aux_configs)
 
