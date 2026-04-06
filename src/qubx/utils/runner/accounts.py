@@ -84,11 +84,24 @@ class AccountConfigurationManager:
     def get_exchange_settings(self, exchange: str) -> ExchangeSettings:
         """
         Get the basic settings for an exchange such as the base currency and commission tier.
+
+        Priority: [[accounts]] credentials > [[defaults]] > hardcoded defaults.
+        Credentials are more specific (the actual trading account) so they take precedence.
         """
         exchange = exchange.upper()
-        if exchange not in self._exchange_settings:
-            return ExchangeSettings(exchange=exchange)
-        return self._exchange_settings[exchange.upper()].model_copy()
+        # Credentials take priority — they represent the actual account being used
+        if exchange in self._exchange_credentials:
+            creds = self._exchange_credentials[exchange]
+            return ExchangeSettings(
+                exchange=creds.exchange,
+                testnet=creds.testnet,
+                base_currency=creds.base_currency,
+                commissions=creds.commissions,
+                initial_capital=creds.initial_capital,
+            )
+        if exchange in self._exchange_settings:
+            return self._exchange_settings[exchange].model_copy()
+        return ExchangeSettings(exchange=exchange)
 
     def get_exchange_credentials(self, exchange: str) -> ExchangeCredentials:
         """

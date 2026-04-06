@@ -293,6 +293,47 @@ class ProcessingManager(IProcessingManager):
                 self._scheduler.schedule_event(cron_schedule, "state_snapshot")
                 logger.info(f"State snapshot enabled with interval: {interval}")
 
+    def configure_rate_limit_metrics(self, interval: str | None) -> None:
+        """
+        Configure periodic rate limit metric emission.
+
+        Emits pool utilization, gate state, hit counts etc. for all registered
+        rate limiters via ctx.emitter.emit(). Only active in live mode.
+
+        Args:
+            interval: Emission interval (e.g., "60s", "1m"). None to disable.
+        """
+        self._scheduler.unschedule_event("rate_limit_metrics")
+
+        if interval is not None and not self._is_simulation:
+            cron_schedule = interval_to_cron(interval)
+            self._scheduler.schedule_event(cron_schedule, "rate_limit_metrics")
+            self._custom_scheduled_methods["rate_limit_metrics"] = self._emit_rate_limit_metrics
+            logger.info(f"Rate limit metrics emission enabled with interval: {interval}")
+
+    def _emit_rate_limit_metrics(self, ctx) -> None:
+        """Emit rate limit metrics for all registered rate limiters."""
+        import asyncio
+        import concurrent.futures
+
+        if ctx.emitter is None or ctx.event_loop is None:
+            return
+
+        for exchange_name, rate_limiter in ctx.rate_limiters.items():
+            try:
+                future = asyncio.run_coroutine_threadsafe(rate_limiter.collect_metrics(), ctx.event_loop)
+                metrics = future.result(timeout=5)
+                self._do_emit_metrics(ctx, metrics)
+            except concurrent.futures.TimeoutError:
+                logger.warning(f"Rate limit metrics collection timed out for {exchange_name}")
+            except Exception as e:
+                logger.error(f"Failed to collect rate limit metrics for {exchange_name}: {e}")
+
+    @staticmethod
+    def _do_emit_metrics(ctx, metrics: list[dict]) -> None:
+        for m in metrics:
+            ctx.emitter.emit(m["name"], m["value"], m["tags"])
+
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
         if not is_historical:

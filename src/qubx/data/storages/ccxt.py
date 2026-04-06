@@ -191,6 +191,8 @@ class CcxtReader(IReader):
     ``close()`` on a reader; call ``CcxtStorage.close()`` instead.
     """
 
+    is_rate_limited: bool = True
+
     def __init__(self, exchange: str, market: str, storage_ref: "CcxtStorage") -> None:
         self._exchange = exchange.upper()
         self._market = market.upper()

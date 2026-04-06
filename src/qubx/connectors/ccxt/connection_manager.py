@@ -12,7 +12,16 @@ from asyncio.exceptions import CancelledError
 from collections import defaultdict
 from typing import Awaitable, Callable
 
-from ccxt import BadSymbol, ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError, UnsubscribeError
+from ccxt import (
+    BadSymbol,
+    DDoSProtection,
+    ExchangeClosedByUser,
+    ExchangeError,
+    ExchangeNotAvailable,
+    NetworkError,
+    RateLimitExceeded,
+    UnsubscribeError,
+)
 from ccxt.async_support.base.ws.client import Client as _WsClient
 from ccxt.pro import Exchange
 
@@ -144,6 +153,18 @@ class ConnectionManager:
                     f"<yellow>{self._exchange_id}</yellow> UnsubscribeError in {stream_name} (expected during restart): {e}"
                 )
                 await asyncio.sleep(1)
+                continue
+            except (RateLimitExceeded, DDoSProtection) as e:
+                # Rate limit hit — report to rate limiter if available and backoff
+                logger.warning(
+                    f"<yellow>{self._exchange_id}</yellow> Rate limited in {stream_name}: {e}"
+                )
+                if hasattr(self, "_exchange_manager") and self._exchange_manager.rate_limiter:
+                    self._exchange_manager.rate_limiter.report_limit_hit(
+                        pool_name="ccxt_rest", reason=f"{e.__class__.__name__}: {e}"
+                    )
+                await asyncio.sleep(min(2 ** (n_retry + 1), 60))
+                n_retry += 1
                 continue
             except (NetworkError, ExchangeError, ExchangeNotAvailable) as e:
                 # Network/exchange errors - retry after short delay

@@ -16,6 +16,7 @@ from qubx.utils.runner.configs import (
     EmissionConfig,
     ExporterConfig,
     NotifierConfig,
+    RateLimitingConfig,
     StatePersistenceConfig,
     StorageConfig,
     TypedStorageConfig,
@@ -474,3 +475,30 @@ def create_state_persistence(
         logger.error(f"Failed to create state persistence {persistence_class_name}: {e}")
         logger.opt(colors=False).error(f"State persistence parameters: {config.parameters}")
         raise
+
+
+def create_rate_limit_backend(config: RateLimitingConfig | None):
+    """
+    Create rate limit backend from configuration.
+
+    Returns:
+        IRateLimitBackend instance, or None if rate limiting is not configured.
+    """
+    if config is None:
+        return None
+
+    from qubx.rate_limiting.backend import InMemoryBackend
+
+    if config.backend == "redis":
+        if not config.redis_url:
+            logger.warning("Rate limiting backend set to 'redis' but no redis_url provided, falling back to local")
+            return InMemoryBackend()
+        try:
+            from qubx.rate_limiting.redis_backend import RedisBackend
+
+            return RedisBackend(config.redis_url)
+        except Exception as e:
+            logger.error(f"Failed to create Redis rate limit backend: {e}, falling back to local")
+            return InMemoryBackend()
+
+    return InMemoryBackend()

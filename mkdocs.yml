@@ -21,6 +21,7 @@ nav:
   - Trading:
       - Paper Trading: trading/paper-trading.md
       - Live Trading: trading/live-trading.md
+      - Bot Control Protocol: trading/control-protocol.md
       - Risk Management: trading/risk-management.md
   - Analysis and Reporting:
       - Visualization: analysis/visualization.md
