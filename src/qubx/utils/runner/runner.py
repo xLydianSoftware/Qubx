@@ -657,11 +657,8 @@ def create_strategy_context(
         state_snapshot_interval=_state_snapshot_interval,
         rate_limit_backend=_rate_limit_backend,
         rate_limiting_config=_rate_limiting_config,
+        event_loop=loop,
     )
-
-    # Store the shared event loop reference for cleanup
-    if loop is not None:
-        ctx._shared_event_loop = loop  # type: ignore
 
     # Set context for metric emitters to enable is_live tag and time access
     if _metric_emitter is not None:

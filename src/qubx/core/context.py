@@ -161,6 +161,7 @@ class StrategyContext(IStrategyContext):
         state_snapshot_interval: str | None = None,
         rate_limit_backend: Any | None = None,
         rate_limiting_config: Any | None = None,
+        event_loop: "asyncio.AbstractEventLoop | None" = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -194,6 +195,7 @@ class StrategyContext(IStrategyContext):
         self._state_snapshot_interval = state_snapshot_interval
         self._rate_limit_backend = rate_limit_backend
         self._rate_limiting_config = rate_limiting_config
+        self.event_loop = event_loop
 
         # Initialize shutdown handling
         self._stop_lock = Lock()

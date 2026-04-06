@@ -314,22 +314,18 @@ class ProcessingManager(IProcessingManager):
     def _emit_rate_limit_metrics(self, ctx) -> None:
         """Emit rate limit metrics for all registered rate limiters."""
         import asyncio
+        import concurrent.futures
 
-        if ctx.emitter is None:
+        if ctx.emitter is None or ctx.event_loop is None:
             return
 
         for exchange_name, rate_limiter in ctx.rate_limiters.items():
             try:
-                # collect_metrics is async but we're in sync context
-                loop = asyncio.get_event_loop()
-                if loop.is_running():
-                    future = asyncio.ensure_future(rate_limiter.collect_metrics())
-                    future.add_done_callback(
-                        lambda f, _ctx=ctx: self._do_emit_metrics(_ctx, f.result()) if not f.cancelled() else None
-                    )
-                else:
-                    metrics = loop.run_until_complete(rate_limiter.collect_metrics())
-                    self._do_emit_metrics(ctx, metrics)
+                future = asyncio.run_coroutine_threadsafe(rate_limiter.collect_metrics(), ctx.event_loop)
+                metrics = future.result(timeout=5)
+                self._do_emit_metrics(ctx, metrics)
+            except concurrent.futures.TimeoutError:
+                logger.warning(f"Rate limit metrics collection timed out for {exchange_name}")
             except Exception as e:
                 logger.error(f"Failed to collect rate limit metrics for {exchange_name}: {e}")
 

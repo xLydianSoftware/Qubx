@@ -35,7 +35,7 @@ tokens = math.min(capacity, tokens + tokens_to_add)
 if tokens >= weight then
     tokens = tokens - weight
     redis.call('HSET', key, 'tokens', tokens, 'last_refill', now)
-    redis.call('EXPIRE', key, 300)  -- 5 min TTL to auto-cleanup stale keys
+    redis.call('EXPIRE', key, 600)  -- 10 min TTL to auto-cleanup stale keys
     return 0  -- no wait needed
 else
     -- Calculate wait time
@@ -51,17 +51,13 @@ end
 
 _LUA_GET_REMAINING = """
 local key = KEYS[1]
-local capacity = tonumber(ARGV[1])
-local refill_rate = tonumber(ARGV[2])
-local now = tonumber(ARGV[3])
+local now = tonumber(ARGV[1])
 
 local tokens = tonumber(redis.call('HGET', key, 'tokens'))
-if tokens == nil then return capacity * 1000 end
+if tokens == nil then return -1 end
 
-local last_refill = tonumber(redis.call('HGET', key, 'last_refill') or now)
-local elapsed = now - last_refill
-local tokens_to_add = elapsed * refill_rate
-tokens = math.min(capacity, tokens + tokens_to_add)
+-- Refresh TTL on read (keeps keys alive while bot is running)
+redis.call('EXPIRE', key, 600)
 
 return math.floor(tokens * 1000)  -- return as millitokens for precision
 """
@@ -72,7 +68,7 @@ local remaining = tonumber(ARGV[1])
 local now = tonumber(ARGV[2])
 
 redis.call('HSET', key, 'tokens', remaining, 'last_refill', now)
-redis.call('EXPIRE', key, 300)
+redis.call('EXPIRE', key, 600)
 return 1
 """
 
@@ -112,12 +108,15 @@ class RedisBackend(IRateLimitBackend):
             now = time.time()
 
     async def get_remaining(self, key: str) -> float | None:
-        # We need capacity and refill_rate to compute remaining after refill,
-        # but we don't have them here. Return raw stored tokens.
-        raw = await self._redis.hget(key, "tokens")
-        if raw is None:
+        now = time.time()
+        result = await self._get_remaining_script(
+            keys=[key],
+            args=[now],
+        )
+        result = float(result)
+        if result < 0:
             return None
-        return float(raw)
+        return result / 1000.0  # convert millitokens back
 
     async def set_remaining(self, key: str, remaining: float) -> None:
         now = time.time()
