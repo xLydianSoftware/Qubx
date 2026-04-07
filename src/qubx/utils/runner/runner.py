@@ -476,7 +476,6 @@ def create_strategy_context(
             else None
         )
 
-
     # Create lifecycle notifiers
     if no_notifiers:
         logger.info("Lifecycle notifiers disabled via CLI flag")
@@ -792,6 +791,7 @@ def _create_account_processor(
         restored_state=restored_state,
         read_only=read_only,
         loop=loop,
+        base_currency=base_currency,
     )
 
 

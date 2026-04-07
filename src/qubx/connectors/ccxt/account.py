@@ -103,6 +103,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         max_position_restore_days: int = 5,
         max_retries: int = 10,
         connection_timeout: int = 30,
+        base_currency: str | None = None,
         **kwargs,
     ):
         from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
@@ -123,7 +124,7 @@ class CcxtAccountProcessor(BasicAccountProcessor):
         super().__init__(
             account_id=exchange_name,
             time_provider=time_provider,
-            base_currency=creds.base_currency,
+            base_currency=base_currency or creds.base_currency,
             exchange=exchange_name,
             tcc=tcc,
             health_monitor=health_monitor,
