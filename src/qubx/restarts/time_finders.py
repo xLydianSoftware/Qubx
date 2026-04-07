@@ -27,14 +27,20 @@ class TimeFinder:
         """
         Use the time of the last signal as the start time.
 
+        Only considers instruments with currently-open positions, since instruments
+        without open positions do not need to be replayed during warmup.
+
         Args:
             state (RestoredState): The restored state from a previous run
 
         Returns:
             dt_64: The time of the last signal
         """
+        open_instruments = {instr for instr, pos in state.positions.items() if pos.is_open()}
         instrument_to_start_time = {}
         for instrument, signals in state.instrument_to_signal_positions.items():
+            if instrument not in open_instruments:
+                continue
             if not signals:
                 continue
 
@@ -70,14 +76,20 @@ class TimeFinder:
         """
         Use the time of the last target as the start time.
 
+        Only considers instruments with currently-open positions, since instruments
+        without open positions do not need to be replayed during warmup.
+
         Args:
             state (RestoredState): The restored state from a previous run
 
         Returns:
             dt_64: The time of the last target
         """
+        open_instruments = {instr for instr, pos in state.positions.items() if pos.is_open()}
         instrument_to_start_time = {}
         for instrument, target_positions in state.instrument_to_target_positions.items():
+            if instrument not in open_instruments:
+                continue
             if not target_positions:
                 continue
 
