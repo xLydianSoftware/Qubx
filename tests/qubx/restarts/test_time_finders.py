@@ -268,6 +268,99 @@ class TestTimeFinderLASTSIGNAL:
         # Minimum: 2023-01-01T10:30:00
         assert result == np.datetime64("2023-01-01T10:30:00")
 
+    def test_ignores_instruments_without_open_positions(self, sample_time, sample_instrument):
+        """Stale instruments (no current open position) must not pull warmup start back."""
+        stale_instrument = Instrument(
+            symbol="ETHUSDT",
+            market_type=MarketType.FUTURE,
+            exchange="BINANCE",
+            base="ETH",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="ETHUSDT",
+            tick_size=0.01,
+            lot_size=0.01,
+            min_size=0.01,
+        )
+        # Open position for BTC with recent signals
+        btc_signals = [
+            Signal(time=np.datetime64("2023-01-01T11:00:00"), instrument=sample_instrument, signal=1.0, price=50000.0),
+            Signal(time=np.datetime64("2023-01-01T10:00:00"), instrument=sample_instrument, signal=0.0, price=50000.0),
+        ]
+        # Stale instrument with very old signals — should be ignored
+        stale_signals = [
+            Signal(time=np.datetime64("2022-06-01T00:00:00"), instrument=stale_instrument, signal=1.0, price=3000.0),
+        ]
+        state = RestoredState(
+            time=sample_time,
+            balances=[],
+            instrument_to_target_positions={},
+            instrument_to_signal_positions={
+                sample_instrument: btc_signals,
+                stale_instrument: stale_signals,
+            },
+            positions={
+                sample_instrument: Position(sample_instrument, 1.0, 50000.0),
+                # stale_instrument has no open position
+                stale_instrument: Position(stale_instrument, 0.0, 3000.0),
+            },
+        )
+        result = TimeFinder.LAST_SIGNAL(sample_time, state)
+        # Should return BTC's entry time (11:00), ignoring the stale ETH signal from 2022
+        assert result == np.datetime64("2023-01-01T11:00:00")
+
+    def test_returns_current_time_when_no_open_positions(self, sample_time, sample_instrument):
+        """When no positions are open, should return current time (no warmup needed)."""
+        signals = [
+            Signal(time=np.datetime64("2022-06-01T00:00:00"), instrument=sample_instrument, signal=1.0, price=50000.0),
+        ]
+        state = RestoredState(
+            time=sample_time,
+            balances=[],
+            instrument_to_target_positions={},
+            instrument_to_signal_positions={sample_instrument: signals},
+            positions={sample_instrument: Position(sample_instrument, 0.0, 50000.0)},
+        )
+        result = TimeFinder.LAST_SIGNAL(sample_time, state)
+        assert result == sample_time
+
+    def test_last_target_ignores_instruments_without_open_positions(self, sample_time, sample_instrument):
+        """LAST_TARGET should also filter by open positions."""
+        stale_instrument = Instrument(
+            symbol="ETHUSDT",
+            market_type=MarketType.FUTURE,
+            exchange="BINANCE",
+            base="ETH",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="ETHUSDT",
+            tick_size=0.01,
+            lot_size=0.01,
+            min_size=0.01,
+        )
+        btc_targets = [
+            TargetPosition(time=np.datetime64("2023-01-01T11:00:00"), instrument=sample_instrument, target_position_size=1.0),
+            TargetPosition(time=np.datetime64("2023-01-01T10:00:00"), instrument=sample_instrument, target_position_size=0.0),
+        ]
+        stale_targets = [
+            TargetPosition(time=np.datetime64("2022-06-01T00:00:00"), instrument=stale_instrument, target_position_size=1.0),
+        ]
+        state = RestoredState(
+            time=sample_time,
+            balances=[],
+            instrument_to_target_positions={
+                sample_instrument: btc_targets,
+                stale_instrument: stale_targets,
+            },
+            instrument_to_signal_positions={},
+            positions={
+                sample_instrument: Position(sample_instrument, 1.0, 50000.0),
+                stale_instrument: Position(stale_instrument, 0.0, 3000.0),
+            },
+        )
+        result = TimeFinder.LAST_TARGET(sample_time, state)
+        assert result == np.datetime64("2023-01-01T11:00:00")
+
 
 # Tests for TimeFinder.with_max_lookback
 class TestTimeFinderWithMaxLookback:
@@ -285,7 +378,7 @@ class TestTimeFinderWithMaxLookback:
             balances=[],
             instrument_to_target_positions={},
             instrument_to_signal_positions={sample_instrument: signals},
-            positions={},
+            positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
         )
         capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_SIGNAL, "30d")
         result = capped_finder(sample_time, state)
@@ -304,7 +397,7 @@ class TestTimeFinderWithMaxLookback:
             balances=[],
             instrument_to_target_positions={},
             instrument_to_signal_positions={sample_instrument: signals},
-            positions={},
+            positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
         )
         capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_SIGNAL, "30d")
         result = capped_finder(sample_time, state)
@@ -322,7 +415,7 @@ class TestTimeFinderWithMaxLookback:
             balances=[],
             instrument_to_target_positions={},
             instrument_to_signal_positions={sample_instrument: signals},
-            positions={},
+            positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
         )
         capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_SIGNAL, "2h")
         result = capped_finder(sample_time, state)
@@ -346,7 +439,7 @@ class TestTimeFinderWithMaxLookback:
             balances=[],
             instrument_to_target_positions={sample_instrument: targets},
             instrument_to_signal_positions={},
-            positions={},
+            positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
         )
         capped_finder = TimeFinder.with_max_lookback(TimeFinder.LAST_TARGET, "7d")
         result = capped_finder(sample_time, state)
