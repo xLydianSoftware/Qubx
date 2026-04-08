@@ -784,12 +784,26 @@ def _find_uv_git_checkout(commit_sha: str) -> str | None:
     """
     Find the uv git cache checkout directory for a given commit SHA.
 
-    uv stores git checkouts at: ~/.cache/uv/git-v0/checkouts/{url_hash}/{commit[:7]}/
+    uv stores git checkouts at: {cache_dir}/git-v0/checkouts/{url_hash}/{commit[:7]}/
+    The cache dir is determined by UV_CACHE_DIR env var, or defaults to ~/.cache/uv.
     """
     import glob
+    import subprocess
 
     short = commit_sha[:7]
-    uv_cache = os.path.expanduser("~/.cache/uv/git-v0/checkouts")
+
+    # Ask uv for its actual cache directory (respects UV_CACHE_DIR)
+    try:
+        result = subprocess.run(
+            ["uv", "cache", "dir"],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        uv_cache = os.path.join(result.stdout.strip(), "git-v0", "checkouts")
+    except (subprocess.CalledProcessError, FileNotFoundError):
+        uv_cache = os.path.expanduser("~/.cache/uv/git-v0/checkouts")
+
     matches = glob.glob(os.path.join(uv_cache, "*", short))
     for match in matches:
         if os.path.isdir(match):
