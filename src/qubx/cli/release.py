@@ -1101,10 +1101,34 @@ def create_released_pack(
 
 
 def _save_strategy_config(config_file: str, release_dir: str) -> None:
-    """Copy the original strategy configuration file to preserve comments and structure."""
+    """Copy the strategy config, stripping the release section (not needed at runtime)."""
     config_path = os.path.join(release_dir, "config.yml")
-    shutil.copy2(config_file, config_path)
-    logger.debug(f"Copied strategy config to {config_path}")
+
+    with open(config_file) as f:
+        lines = f.readlines()
+
+    # Remove the top-level 'release:' block to avoid validation errors
+    # on older qubx versions that don't know the field.
+    filtered: list[str] = []
+    in_release_block = False
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("release:"):
+            in_release_block = True
+            continue
+        if in_release_block:
+            # Still inside the release block if indented
+            if stripped and not line[0].isspace():
+                in_release_block = False
+            else:
+                continue
+        if not in_release_block:
+            filtered.append(line)
+
+    with open(config_path, "w") as f:
+        f.writelines(filtered)
+
+    logger.debug(f"Saved strategy config to {config_path} (release section stripped)")
 
 
 def _create_metadata(stg_name: str, git_info: ReleaseInfo, release_dir: str) -> None:
