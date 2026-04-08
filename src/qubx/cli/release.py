@@ -638,13 +638,15 @@ def release_from_source(
         # while uv lock alone does not. Use --all-extras to include optional deps
         # (plugins like qubx-lighter, xmetals are typically in optional extras).
         logger.info("Resolving and fetching dependencies in cloned project...")
-        subprocess.run(
+        result = subprocess.run(
             ["uv", "sync", "--no-install-project", "--all-extras"],
             cwd=clone_dir,
-            check=True,
             capture_output=True,
             text=True,
         )
+        if result.returncode != 0:
+            logger.error(f"uv sync failed:\n{result.stderr}")
+            raise subprocess.CalledProcessError(result.returncode, result.args)
 
         # Copy the config into the clone root so release can find it
         config_basename = os.path.basename(config_path)
@@ -1368,13 +1370,26 @@ def _bundle_source_overrides(
 
             checkout_dir = _find_uv_git_checkout(commit_sha)
             if not checkout_dir:
-                logger.warning(
-                    f"  {pkg_name}: git checkout not found in uv cache (commit {commit_sha[:7]}), "
-                    "run `uv sync` first to populate the cache"
-                )
-                continue
+                # Cache miss — clone the repo at the exact commit
+                git_url = source["git"]
+                git_ref = source.get("tag") or source.get("branch") or commit_sha
+                logger.info(f"  {pkg_name}: cache miss, cloning {git_url} at {git_ref} ...")
+                checkout_dir = os.path.join(os.path.dirname(wheels_dir), f".git-clone-{pkg_norm}")
+                try:
+                    subprocess.run(
+                        ["git", "clone", "--depth", "1", "--branch", git_ref, git_url, checkout_dir],
+                        check=True,
+                        capture_output=True,
+                        text=True,
+                    )
+                except subprocess.CalledProcessError:
+                    # --branch doesn't work with commit SHAs
+                    shutil.rmtree(checkout_dir, ignore_errors=True)
+                    os.makedirs(checkout_dir, exist_ok=True)
+                    subprocess.run(["git", "clone", git_url, checkout_dir], check=True, capture_output=True, text=True)
+                    subprocess.run(["git", "checkout", commit_sha], cwd=checkout_dir, check=True, capture_output=True, text=True)
 
-            logger.info(f"  Bundling {pkg_name}=={pkg_ver} from git checkout {checkout_dir} ...")
+            logger.info(f"  Bundling {pkg_name}=={pkg_ver} from {checkout_dir} ...")
             os.makedirs(wheels_dir, exist_ok=True)
             try:
                 result = subprocess.run(
