@@ -412,6 +412,47 @@ def release(
     )
 
 
+@main.command("release-from-source")
+@click.option(
+    "--config",
+    "-c",
+    type=click.Path(exists=True, resolve_path=True),
+    help="Path to a config YAML file with a release.source section",
+    required=True,
+)
+@click.option(
+    "--output-dir",
+    "-o",
+    type=click.Path(exists=False),
+    help="Output directory to put zip file.",
+    default=".releases",
+    show_default=True,
+)
+@click.option(
+    "--tag",
+    "-t",
+    type=click.STRING,
+    help="Additional tag for this release",
+    required=False,
+)
+def release_from_source_cmd(config: str, output_dir: str, tag: str | None) -> None:
+    """
+    Build a release by cloning the source repo specified in the config's release.source section.
+
+    Used for CI-driven releases where the config lives in a separate repo from the strategy code.
+    The config must have a release.source section specifying the GitHub repo and ref.
+    """
+    from .release import release_from_source
+
+    zip_path = release_from_source(
+        config_file=config,
+        output_dir=output_dir,
+        tag=tag,
+    )
+    if zip_path:
+        click.echo(zip_path)
+
+
 @main.command()
 @click.argument(
     "zip-file",

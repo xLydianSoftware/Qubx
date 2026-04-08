@@ -447,6 +447,10 @@ def load_strategy_from_config(config_path: Path, directory: str) -> StrategyInfo
         if len(strat_name) > 16 and len(_found_classes) > 1:
             strat_name = _name_leader + generate_name(strat_name, 8)
 
+        # - fall back to the config name field when no local classes found
+        if not strat_name and strategy_config.name:
+            strat_name = strategy_config.name.replace(".", "_").replace(" ", "_")
+
         return StrategyInfo(name=strat_name, classes=_found_classes, config=strategy_config)
 
     except Exception as e:
@@ -558,6 +562,132 @@ def release_strategy(
         logger.opt(colors=False).error(f"Error releasing strategy: {e}")
 
 
+def release_from_source(
+    config_file: str,
+    output_dir: str,
+    tag: str | None = None,
+) -> str | None:
+    """
+    Build a release by cloning the source repo specified in the config's release.source section.
+
+    This is the entry point for CI-driven releases (e.g., from xrelease GitHub Action).
+    It reads the release.source.repo and release.source.ref from the config YAML,
+    clones that repo at the specified ref into a temp directory, copies the config
+    into the clone, and runs the standard release flow.
+
+    Args:
+        config_file: Path to the strategy config YAML (must have a release.source section)
+        output_dir: Directory to write the release ZIP
+        tag: Optional tag suffix for the release name
+
+    Returns:
+        Path to the created ZIP file, or None on failure
+    """
+    import subprocess
+    import tempfile
+
+    from qubx import QubxLogConfig
+
+    QubxLogConfig.set_log_level("INFO")
+
+    try:
+        config_path = os.path.abspath(os.path.expanduser(config_file))
+        if not is_config_file(config_path):
+            raise ValueError(f"Not a valid config file: {config_file}")
+
+        # Parse the config to extract release.source
+        stg_config = load_strategy_config_from_yaml(config_path, resolve_env=False)
+        if not stg_config.release or not stg_config.release.source:
+            raise ValueError("Config must have a release.source section with repo and ref")
+
+        source = stg_config.release.source
+        repo_url = f"https://github.com/{source.repo}.git"
+        ref = source.ref
+
+        logger.info(f"Cloning {source.repo} at ref '{ref}' ...")
+        clone_dir = tempfile.mkdtemp(prefix="qubx-release-")
+
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", ref, repo_url, clone_dir],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError:
+            # --branch doesn't work with commit SHAs, fall back to full clone + checkout
+            logger.info(f"Shallow clone failed for ref '{ref}', trying full clone...")
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            os.makedirs(clone_dir)
+            subprocess.run(
+                ["git", "clone", repo_url, clone_dir],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "checkout", ref],
+                cwd=clone_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        # Resolve dependencies in the cloned project
+        logger.info("Resolving dependencies in cloned project...")
+        subprocess.run(
+            ["uv", "lock"],
+            cwd=clone_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Copy the config into the clone root so release can find it
+        config_basename = os.path.basename(config_path)
+        cloned_config = os.path.join(clone_dir, config_basename)
+        shutil.copy2(config_path, cloned_config)
+
+        # Run the standard release flow from the cloned project
+        logger.info(f"Running release from {clone_dir} ...")
+        output_dir = os.path.abspath(output_dir)
+        stg_info = load_strategy_from_config(Path(cloned_config), clone_dir)
+        pyproject_root = clone_dir
+
+        git_info = ReleaseInfo(
+            tag=generate_tag(stg_info.name, tag),
+            commit=ref,
+            user=getpass.getuser(),
+            time=datetime.now(),
+            commited_files=[],
+        )
+
+        create_released_pack(
+            stg_info=stg_info,
+            git_info=git_info,
+            pyproject_root=pyproject_root,
+            output_dir=output_dir,
+            config_file=cloned_config,
+        )
+
+        # Find the created ZIP
+        zip_path = os.path.join(output_dir, f"{git_info.tag}.zip")
+        if os.path.exists(zip_path):
+            logger.info(f"Release created: {zip_path}")
+            return zip_path
+
+        logger.error("Release ZIP not found after build")
+        return None
+
+    except Exception as e:
+        logger.opt(colors=False).error(f"Error in release_from_source: {e}")
+        return None
+    finally:
+        # Clean up temp clone
+        if "clone_dir" in locals():
+            shutil.rmtree(clone_dir, ignore_errors=True)
+
+
 def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
     """Find the source package directory for a project.
 
@@ -592,34 +722,6 @@ def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
     return None
 
 
-def _collect_all_imports(strategy_files: list[str], project_root: str) -> set[str]:
-    """
-    Collect all top-level import module names from strategy source files.
-
-    Scans each file's AST for import/from-import statements and returns
-    the set of top-level (first component) module names, excluding stdlib
-    and the project's own package.
-
-    Args:
-        strategy_files: List of absolute paths to strategy .py files
-        project_root: Project root for resolving relative imports
-
-    Returns:
-        Set of top-level import names (e.g. {"numpy", "cachetools", "qubx"})
-    """
-    top_level_modules: set[str] = set()
-
-    for file_path in strategy_files:
-        try:
-            # Pass empty what_to_look to get ALL imports (no filter)
-            for imp in get_imports(file_path, what_to_look=[], project_root=project_root):
-                if imp.module:
-                    top_level_modules.add(imp.module[0])
-        except Exception as e:
-            logger.warning(f"Failed to scan imports from {file_path}: {e}")
-
-    return top_level_modules
-
 
 def _parse_uv_lock(uv_lock_path: str) -> dict[str, str]:
     """
@@ -649,96 +751,48 @@ def _parse_uv_lock(uv_lock_path: str) -> dict[str, str]:
     return versions
 
 
-def _scan_strategy_deps(
-    strategy_files: list[str],
-    pyproject_root: str,
-    lock_versions: dict[str, str],
-    pyproject_data: dict,
-    external_imports: set[str] | None = None,
-) -> list[str]:
+def _parse_uv_lock_git_commits(uv_lock_path: str) -> dict[str, str]:
     """
-    Scan strategy source files for external imports, map to packages, pin versions from lock.
+    Parse uv.lock and return {normalized_name: commit_sha} for git-sourced packages.
 
-    For each dependency declared in pyproject.toml [project.dependencies]:
-    1. Extract the package name from the dep spec
-    2. Look up its top-level import names via importlib.metadata
-    3. Check if any of those import names appear in the strategy's imports
-    4. If yes, include that dep with the exact version from uv.lock
-
-    Args:
-        strategy_files: List of absolute paths to strategy .py files
-        pyproject_root: Root directory containing pyproject.toml
-        lock_versions: Pre-parsed {normalized_name: version} from uv.lock
-        pyproject_data: Parsed pyproject.toml dict
-        external_imports: Pre-computed set of external top-level import names.
-            If provided, skips internal import collection.
-
-    Returns:
-        List of pinned dependency specs like ["cachetools==6.2.5", "Qubx==1.0.1.dev1"]
+    Lock entries look like:
+        source = { git = "https://github.com/org/repo?tag=v1.0#abcdef1234..." }
     """
-    import importlib.metadata
+    import toml
 
-    # Step 1: collect all imports from strategy files (or use pre-computed)
-    if external_imports is not None:
-        strategy_imports = external_imports
-    else:
-        strategy_imports = _collect_all_imports(strategy_files, pyproject_root)
-    logger.info(f"Strategy imports (top-level modules): {sorted(strategy_imports)}")
+    if not os.path.exists(uv_lock_path):
+        return {}
 
-    # Step 3: gather all declared deps (regular + optional)
-    all_deps: list[str] = list(pyproject_data.get("project", {}).get("dependencies", []))
-    for group_deps in pyproject_data.get("project", {}).get("optional-dependencies", {}).values():
-        all_deps.extend(group_deps)
+    with open(uv_lock_path) as f:
+        lock_data = toml.load(f)
 
-    # Step 4: for each declared dep, check if the strategy uses it
-    scanned_deps: list[str] = []
-    for dep_spec in all_deps:
-        # Parse dep spec like "qubx[connectors,db,k8,tui]==1.0.3" or "cachetools>=6.2.1,<7"
-        # Extract: package name, extras (if any), version specifiers
-        match = re.match(r"^([A-Za-z0-9_.-]+)(\[[^\]]*\])?", dep_spec)
-        pkg_name = (
-            match.group(1).strip()
-            if match
-            else dep_spec.split("[")[0].split(">")[0].split("=")[0].split("<")[0].strip()
-        )
-        extras = match.group(2) or "" if match else ""
-        pkg_name_normalized = pkg_name.lower().replace("-", "_")
+    commits: dict[str, str] = {}
+    for pkg in lock_data.get("package", []):
+        source = pkg.get("source", {})
+        git_url = source.get("git", "")
+        if git_url and "#" in git_url:
+            commit_sha = git_url.split("#")[-1]
+            name = pkg.get("name", "").lower().replace("-", "_")
+            if name and commit_sha:
+                commits[name] = commit_sha
+    return commits
 
-        # Determine import names for this package
-        import_names: set[str] = set()
-        try:
-            dist = importlib.metadata.distribution(pkg_name)
-            top_level_text = dist.read_text("top_level.txt")
-            if top_level_text:
-                for line in top_level_text.strip().splitlines():
-                    import_names.add(line.strip())
-            else:
-                # Fallback: check RECORD for package directories
-                if dist.files:
-                    for f in dist.files:
-                        parts = str(f).split("/")
-                        if len(parts) > 1 and parts[0] and not parts[0].endswith(".dist-info"):
-                            import_names.add(parts[0].replace("-", "_"))
-                if not import_names:
-                    import_names.add(pkg_name_normalized)
-        except importlib.metadata.PackageNotFoundError:
-            # Package not installed — use fallback name mapping
-            import_names.add(pkg_name_normalized)
 
-        # Check if any import name is used by strategy
-        if import_names & strategy_imports:
-            # Pin version from lock file, preserving extras
-            version = lock_versions.get(pkg_name_normalized)
-            if version:
-                pinned = f"{pkg_name}{extras}=={version}"
-            else:
-                # Fallback to declared spec
-                pinned = dep_spec
-            scanned_deps.append(pinned)
-            logger.debug(f"  Matched dep: {pinned} (imports: {import_names & strategy_imports})")
+def _find_uv_git_checkout(commit_sha: str) -> str | None:
+    """
+    Find the uv git cache checkout directory for a given commit SHA.
 
-    logger.info(f"Scanned strategy deps ({len(scanned_deps)}): {scanned_deps}")
-    return scanned_deps
+    uv stores git checkouts at: ~/.cache/uv/git-v0/checkouts/{url_hash}/{commit[:7]}/
+    """
+    import glob
+
+    short = commit_sha[:7]
+    uv_cache = os.path.expanduser("~/.cache/uv/git-v0/checkouts")
+    matches = glob.glob(os.path.join(uv_cache, "*", short))
+    for match in matches:
+        if os.path.isdir(match):
+            return match
+    return None
 
 
 def _build_strategy_wheel(
@@ -762,7 +816,7 @@ def _build_strategy_wheel(
     """
     import subprocess
 
-    wheels_dir = os.path.join(release_dir, "wheels")
+    wheels_dir = os.path.abspath(os.path.join(release_dir, "wheels"))
     os.makedirs(wheels_dir, exist_ok=True)
 
     logger.info("Building strategy wheel...")
@@ -981,6 +1035,8 @@ def create_released_pack(
         name = pdep.split(">=")[0].split("==")[0].split("<")[0].split("[")[0].strip().lower()
         required_packages.add(name)
 
+    git_commits = _parse_uv_lock_git_commits(uv_lock_path)
+
     bundled_packages: list[str] = []
     if required_packages:
         logger.info("Resolving private/local source dependencies...")
@@ -990,6 +1046,7 @@ def create_released_pack(
             release_dir,
             required_packages,
             lock_versions,
+            git_commits,
         )
         if bundled_packages:
             logger.info(f"Bundled {len(bundled_packages)} package(s): {', '.join(bundled_packages)}")
@@ -1192,12 +1249,14 @@ def _bundle_source_overrides(
     release_dir: str,
     required_packages: set[str],
     lock_versions: dict[str, str],
+    git_commits: dict[str, str] | None = None,
 ) -> list[str]:
     """
     For each [tool.uv.sources] entry that is required by this release:
     - path source + version on public PyPI → skip (will resolve from PyPI)
     - path source + NOT on public PyPI → build wheel from local path and bundle in wheels/
     - index source (private registry) → download wheel from that index and bundle in wheels/
+    - git source → build wheel from uv's cached checkout and bundle in wheels/
 
     Uses uv.lock as the single source of truth for package versions.
 
@@ -1209,7 +1268,7 @@ def _bundle_source_overrides(
     if not sources:
         return []
 
-    wheels_dir = os.path.join(release_dir, "wheels")
+    wheels_dir = os.path.abspath(os.path.join(release_dir, "wheels"))
     bundled: list[str] = []
 
     for pkg_name, source in sources.items():
@@ -1279,6 +1338,46 @@ def _bundle_source_overrides(
                 logger.info(f"  Downloaded {pkg_name}=={pkg_ver}")
             except Exception as e:
                 logger.opt(colors=False).warning(f"  Failed to download wheel for {pkg_name}: {e}")
+
+        elif "git" in source:
+            if not pkg_ver:
+                logger.warning(f"  {pkg_name} not found in uv.lock, skipping bundle")
+                continue
+
+            commit_sha = (git_commits or {}).get(pkg_norm)
+            if not commit_sha:
+                logger.warning(f"  {pkg_name}: no git commit found in uv.lock, skipping bundle")
+                continue
+
+            checkout_dir = _find_uv_git_checkout(commit_sha)
+            if not checkout_dir:
+                logger.warning(
+                    f"  {pkg_name}: git checkout not found in uv cache (commit {commit_sha[:7]}), "
+                    "run `uv sync` first to populate the cache"
+                )
+                continue
+
+            logger.info(f"  Bundling {pkg_name}=={pkg_ver} from git checkout {checkout_dir} ...")
+            os.makedirs(wheels_dir, exist_ok=True)
+            try:
+                result = subprocess.run(
+                    ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
+                    cwd=checkout_dir,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                logger.debug(f"uv build stdout: {result.stdout}")
+                for whl in os.listdir(wheels_dir):
+                    if whl.lower().startswith(pkg_norm) and "none-any" not in whl:
+                        logger.warning(
+                            f"  {whl} is platform-specific. "
+                            "Ensure the container architecture matches the build machine."
+                        )
+                bundled.append(pkg_name.lower())
+                logger.info(f"  Bundled {pkg_name}=={pkg_ver} from git")
+            except subprocess.CalledProcessError as e:
+                logger.opt(colors=False).warning(f"  Failed to build wheel for {pkg_name}: {e.stderr or e}")
 
     return bundled
 
@@ -1401,7 +1500,7 @@ def generate_tag(strategy_name_id: str, tag_sfx: str | None) -> str:
     _tn = datetime.now()
     tag_s = f".{tag_sfx}" if tag_sfx else ""
     _strategy_name_id = strategy_name_id.replace(",", "_")
-    tag = f"R_{_strategy_name_id}_{_tn.strftime('%Y%m%d%H%M%S')}{tag_s}"
+    tag = f"{_tn.strftime('%Y%m%d%H%M%S')}_{_strategy_name_id}{tag_s}"
     return tag
 
 

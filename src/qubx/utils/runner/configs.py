@@ -228,6 +228,42 @@ class PluginsConfig(StrictBaseModel):
     """Module names to import (for pip-installed packages)."""
 
 
+class ReleaseSourceConfig(StrictBaseModel):
+    """Source repository for building a release."""
+
+    repo: str
+    """GitHub org/repo (e.g., 'xLydianSoftware/xincubator')."""
+
+    ref: str
+    """Git ref to build from — tag, branch, or commit SHA."""
+
+
+class ReleasePlatformConfig(StrictBaseModel):
+    """Platform deployment configuration."""
+
+    name: str
+    """Release name on platform.xlydian.com."""
+
+    exchanges: list[str] = Field(default_factory=list)
+    """Exchange identifiers (e.g., ['binance'])."""
+
+    image_tag: str | None = None
+    """Qubx Docker image tag (e.g., '1.1.3.dev16'). Defaults to latest."""
+
+    tags: list[str] = Field(default_factory=list)
+    """Descriptive tags for the release."""
+
+
+class ReleaseConfig(StrictBaseModel):
+    """Configuration for automated release packaging and platform deployment."""
+
+    source: ReleaseSourceConfig
+    """Source repository and ref to build from."""
+
+    platform: ReleasePlatformConfig | None = None
+    """Platform deployment settings. If omitted, release is built but not deployed."""
+
+
 class StrategyConfig(StrictBaseModel):
     name: str | None = None
     description: str | list[str] | None = None
@@ -238,6 +274,7 @@ class StrategyConfig(StrictBaseModel):
     plugins: PluginsConfig | None = None
     live: LiveConfig | None = None
     simulation: SimulationConfig | None = None
+    release: ReleaseConfig | None = None
 
 
 def normalize_aux_config(aux_config: list[StorageConfig] | StorageConfig | None) -> list[StorageConfig]:

@@ -301,42 +301,6 @@ def incomplete_function(
                 os.unlink(f.name)
 
 
-class TestCollectAllImports:
-    """Test the _collect_all_imports function that scans strategy files for external imports."""
-
-    def test_collects_top_level_modules(self):
-        """Test that top-level module names are collected from strategy files."""
-        from qubx.cli.release import _collect_all_imports
-
-        code = """
-import numpy as np
-from scipy.stats import norm
-from qubx.core import IStrategy
-from xincubator.utils import helper
-import cachetools
-"""
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.py', delete=False) as f:
-            f.write(code)
-            f.flush()
-
-            try:
-                imports = _collect_all_imports([f.name], os.path.dirname(f.name))
-                assert "numpy" in imports
-                assert "scipy" in imports
-                assert "qubx" in imports
-                assert "xincubator" in imports
-                assert "cachetools" in imports
-            finally:
-                os.unlink(f.name)
-
-    def test_handles_empty_file_list(self):
-        """Test that empty file list returns empty set."""
-        from qubx.cli.release import _collect_all_imports
-
-        imports = _collect_all_imports([], "/tmp")
-        assert imports == set()
-
-
 class TestParseUvLock:
     """Test the _parse_uv_lock function."""
 
