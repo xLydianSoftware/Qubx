@@ -562,6 +562,132 @@ def release_strategy(
         logger.opt(colors=False).error(f"Error releasing strategy: {e}")
 
 
+def release_from_source(
+    config_file: str,
+    output_dir: str,
+    tag: str | None = None,
+) -> str | None:
+    """
+    Build a release by cloning the source repo specified in the config's release.source section.
+
+    This is the entry point for CI-driven releases (e.g., from xrelease GitHub Action).
+    It reads the release.source.repo and release.source.ref from the config YAML,
+    clones that repo at the specified ref into a temp directory, copies the config
+    into the clone, and runs the standard release flow.
+
+    Args:
+        config_file: Path to the strategy config YAML (must have a release.source section)
+        output_dir: Directory to write the release ZIP
+        tag: Optional tag suffix for the release name
+
+    Returns:
+        Path to the created ZIP file, or None on failure
+    """
+    import subprocess
+    import tempfile
+
+    from qubx import QubxLogConfig
+
+    QubxLogConfig.set_log_level("INFO")
+
+    try:
+        config_path = os.path.abspath(os.path.expanduser(config_file))
+        if not is_config_file(config_path):
+            raise ValueError(f"Not a valid config file: {config_file}")
+
+        # Parse the config to extract release.source
+        stg_config = load_strategy_config_from_yaml(config_path, resolve_env=False)
+        if not stg_config.release or not stg_config.release.source:
+            raise ValueError("Config must have a release.source section with repo and ref")
+
+        source = stg_config.release.source
+        repo_url = f"https://github.com/{source.repo}.git"
+        ref = source.ref
+
+        logger.info(f"Cloning {source.repo} at ref '{ref}' ...")
+        clone_dir = tempfile.mkdtemp(prefix="qubx-release-")
+
+        try:
+            subprocess.run(
+                ["git", "clone", "--depth", "1", "--branch", ref, repo_url, clone_dir],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError:
+            # --branch doesn't work with commit SHAs, fall back to full clone + checkout
+            logger.info(f"Shallow clone failed for ref '{ref}', trying full clone...")
+            shutil.rmtree(clone_dir, ignore_errors=True)
+            os.makedirs(clone_dir)
+            subprocess.run(
+                ["git", "clone", repo_url, clone_dir],
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+            subprocess.run(
+                ["git", "checkout", ref],
+                cwd=clone_dir,
+                check=True,
+                capture_output=True,
+                text=True,
+            )
+
+        # Resolve dependencies in the cloned project
+        logger.info("Resolving dependencies in cloned project...")
+        subprocess.run(
+            ["uv", "lock"],
+            cwd=clone_dir,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        # Copy the config into the clone root so release can find it
+        config_basename = os.path.basename(config_path)
+        cloned_config = os.path.join(clone_dir, config_basename)
+        shutil.copy2(config_path, cloned_config)
+
+        # Run the standard release flow from the cloned project
+        logger.info(f"Running release from {clone_dir} ...")
+        output_dir = os.path.abspath(output_dir)
+        stg_info = load_strategy_from_config(Path(cloned_config), clone_dir)
+        pyproject_root = clone_dir
+
+        git_info = ReleaseInfo(
+            tag=generate_tag(stg_info.name, tag),
+            commit=ref,
+            user=getpass.getuser(),
+            time=datetime.now(),
+            commited_files=[],
+        )
+
+        create_released_pack(
+            stg_info=stg_info,
+            git_info=git_info,
+            pyproject_root=pyproject_root,
+            output_dir=output_dir,
+            config_file=cloned_config,
+        )
+
+        # Find the created ZIP
+        zip_path = os.path.join(output_dir, f"{git_info.tag}.zip")
+        if os.path.exists(zip_path):
+            logger.info(f"Release created: {zip_path}")
+            return zip_path
+
+        logger.error("Release ZIP not found after build")
+        return None
+
+    except Exception as e:
+        logger.opt(colors=False).error(f"Error in release_from_source: {e}")
+        return None
+    finally:
+        # Clean up temp clone
+        if "clone_dir" in locals():
+            shutil.rmtree(clone_dir, ignore_errors=True)
+
+
 def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
     """Find the source package directory for a project.
 
