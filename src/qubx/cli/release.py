@@ -633,10 +633,12 @@ def release_from_source(
                 text=True,
             )
 
-        # Resolve dependencies in the cloned project
-        logger.info("Resolving dependencies in cloned project...")
+        # Resolve and fetch dependencies in the cloned project.
+        # uv sync populates the git checkout cache (needed for _find_uv_git_checkout),
+        # while uv lock alone does not.
+        logger.info("Resolving and fetching dependencies in cloned project...")
         subprocess.run(
-            ["uv", "lock"],
+            ["uv", "sync", "--no-install-project"],
             cwd=clone_dir,
             check=True,
             capture_output=True,
