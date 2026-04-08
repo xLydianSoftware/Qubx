@@ -447,6 +447,10 @@ def load_strategy_from_config(config_path: Path, directory: str) -> StrategyInfo
         if len(strat_name) > 16 and len(_found_classes) > 1:
             strat_name = _name_leader + generate_name(strat_name, 8)
 
+        # - fall back to the config name field when no local classes found
+        if not strat_name and strategy_config.name:
+            strat_name = strategy_config.name.replace(".", "_").replace(" ", "_")
+
         return StrategyInfo(name=strat_name, classes=_found_classes, config=strategy_config)
 
     except Exception as e:
@@ -1370,7 +1374,7 @@ def generate_tag(strategy_name_id: str, tag_sfx: str | None) -> str:
     _tn = datetime.now()
     tag_s = f".{tag_sfx}" if tag_sfx else ""
     _strategy_name_id = strategy_name_id.replace(",", "_")
-    tag = f"R_{_strategy_name_id}_{_tn.strftime('%Y%m%d%H%M%S')}{tag_s}"
+    tag = f"{_tn.strftime('%Y%m%d%H%M%S')}_{_strategy_name_id}{tag_s}"
     return tag
 
 
