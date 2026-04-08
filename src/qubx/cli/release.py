@@ -635,10 +635,11 @@ def release_from_source(
 
         # Resolve and fetch dependencies in the cloned project.
         # uv sync populates the git checkout cache (needed for _find_uv_git_checkout),
-        # while uv lock alone does not.
+        # while uv lock alone does not. Use --all-extras to include optional deps
+        # (plugins like qubx-lighter, xmetals are typically in optional extras).
         logger.info("Resolving and fetching dependencies in cloned project...")
         subprocess.run(
-            ["uv", "sync", "--no-install-project"],
+            ["uv", "sync", "--no-install-project", "--all-extras"],
             cwd=clone_dir,
             check=True,
             capture_output=True,
