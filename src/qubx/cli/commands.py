@@ -110,6 +110,20 @@ def main(debug: bool, debug_port: int, log_level: str):
 @click.option("--no-notifiers", is_flag=True, default=False, help="Disable lifecycle notifiers.", show_default=True)
 @click.option("--no-exporters", is_flag=True, default=False, help="Disable trade exporters.", show_default=True)
 @click.option("--override", type=Path, default=None, help="Sparse YAML file to deep-merge on top of config.", show_default=False)
+@click.option(
+    "--from-sources",
+    is_flag=True,
+    default=False,
+    help="Clone the repo pinned in config.release.source and run the strategy from that checkout.",
+    show_default=True,
+)
+@click.option(
+    "--refresh-sources",
+    is_flag=True,
+    default=False,
+    help="Force re-clone of the source cache (only with --from-sources).",
+    show_default=True,
+)
 def run(
     config_file: Path,
     account_file: Path | None,
@@ -129,6 +143,8 @@ def run(
     no_notifiers: bool,
     no_exporters: bool,
     override: Path | None,
+    from_sources: bool,
+    refresh_sources: bool,
 ):
     """
     Starts the strategy with the given configuration file. If paper mode is enabled, account is not required.
@@ -137,6 +153,11 @@ def run(
     - If provided, the account file is searched first.\n
     - If exists, accounts.toml located in the same folder with the config searched.\n
     - If neither of the above are provided, the accounts.toml in the ~/qubx/accounts.toml path is searched.
+
+    With --from-sources, the repo pinned in ``config.release.source`` is cloned into
+    ``.releases/sources/<repo>_<ref>/``, its dependencies installed via ``uv sync``,
+    and then ``qubx run`` is re-invoked inside that checkout. Useful for verifying
+    that a release config actually boots against its pinned strategy code.
     """
     from qubx.utils.misc import add_project_to_system_path, logo
     from qubx.utils.runner.runner import run_strategy_yaml, run_strategy_yaml_in_jupyter
@@ -146,6 +167,68 @@ def run(
     if jupyter and textual:
         click.echo("Error: --jupyter and --textual cannot be used together.", err=True)
         raise click.Abort()
+
+    if from_sources:
+        import subprocess
+        import sys
+
+        from .release import prepare_source_checkout
+
+        abs_config = str(config_file.resolve())
+        try:
+            clone_dir, _ = prepare_source_checkout(
+                config_file=abs_config,
+                refresh=refresh_sources,
+                install_project=True,
+            )
+        except Exception as e:
+            click.echo(click.style(f"Failed to prepare source checkout: {e}", fg="red"), err=True)
+            raise click.Abort()
+
+        # Re-invoke `qubx run` inside the cloned venv. Forward every flag the user passed,
+        # minus --from-sources/--refresh-sources, and replace the config path with its
+        # absolute form so the inner invocation finds it regardless of CWD.
+        forwarded: list[str] = []
+        if account_file:
+            forwarded += ["--account-file", str(Path(account_file).resolve())]
+        if paper:
+            forwarded.append("--paper")
+        if jupyter:
+            forwarded.append("--jupyter")
+        if textual:
+            forwarded.append("--textual")
+        if textual_dev:
+            forwarded.append("--textual-dev")
+        if textual_web:
+            forwarded.append("--textual-web")
+        if textual_port is not None:
+            forwarded += ["--textual-port", str(textual_port)]
+        if textual_host and textual_host != "0.0.0.0":
+            forwarded += ["--textual-host", textual_host]
+        if kernel_only:
+            forwarded.append("--kernel-only")
+        if connect:
+            forwarded += ["--connect", str(Path(connect).resolve())]
+        if restore:
+            forwarded.append("--restore")
+        if no_color:
+            forwarded.append("--no-color")
+        if dev:
+            forwarded.append("--dev")
+        if no_emission:
+            forwarded.append("--no-emission")
+        if no_notifiers:
+            forwarded.append("--no-notifiers")
+        if no_exporters:
+            forwarded.append("--no-exporters")
+        if override:
+            forwarded += ["--override", str(Path(override).resolve())]
+
+        cmd = ["uv", "run", "qubx", "run", abs_config, *forwarded]
+        logger.info(f"Running inside source checkout: <cyan>{clone_dir}</cyan>")
+        logger.info(f"<dim>$ {' '.join(cmd)}</dim>")
+        result = subprocess.run(cmd, cwd=str(clone_dir))
+        sys.exit(result.returncode)
 
     if dev:
         add_project_to_system_path()  # Adds ~/projects in dev mode
@@ -378,6 +461,20 @@ def validate(config_file: Path, no_check_imports: bool):
     help="Commit changes and create tag in repo (default: False)",
     show_default=True,
 )
+@click.option(
+    "--from-sources",
+    is_flag=True,
+    default=False,
+    help="Clone the repo pinned in config.release.source and build the release from that checkout.",
+    show_default=True,
+)
+@click.option(
+    "--refresh-sources",
+    is_flag=True,
+    default=False,
+    help="Force re-clone of the source cache (only with --from-sources).",
+    show_default=True,
+)
 def release(
     directory: str,
     config: str,
@@ -385,6 +482,8 @@ def release(
     message: str | None,
     commit: bool,
     output_dir: str,
+    from_sources: bool,
+    refresh_sources: bool,
 ) -> None:
     """
     Releases the strategy to a zip file.
@@ -399,8 +498,26 @@ def release(
     - logging: Logging configuration
 
     All of the dependencies are included in the zip file.
+
+    With --from-sources, the config's ``release.source`` section is used to clone
+    the referenced repo at the specified ref and build the release from that
+    checkout instead of the local ``directory``. Used for CI-driven releases
+    where the config lives in a separate repo from the strategy code.
     """
-    from .release import release_strategy
+    from .release import release_from_source, release_strategy
+
+    if from_sources:
+        zip_path = release_from_source(
+            config_file=config,
+            output_dir=output_dir,
+            tag=tag,
+            refresh=refresh_sources,
+        )
+        if zip_path:
+            click.echo(zip_path)
+        else:
+            raise click.Abort()
+        return
 
     release_strategy(
         directory=directory,
@@ -410,47 +527,6 @@ def release(
         commit=commit,
         output_dir=output_dir,
     )
-
-
-@main.command("release-from-source")
-@click.option(
-    "--config",
-    "-c",
-    type=click.Path(exists=True, resolve_path=True),
-    help="Path to a config YAML file with a release.source section",
-    required=True,
-)
-@click.option(
-    "--output-dir",
-    "-o",
-    type=click.Path(exists=False),
-    help="Output directory to put zip file.",
-    default=".releases",
-    show_default=True,
-)
-@click.option(
-    "--tag",
-    "-t",
-    type=click.STRING,
-    help="Additional tag for this release",
-    required=False,
-)
-def release_from_source_cmd(config: str, output_dir: str, tag: str | None) -> None:
-    """
-    Build a release by cloning the source repo specified in the config's release.source section.
-
-    Used for CI-driven releases where the config lives in a separate repo from the strategy code.
-    The config must have a release.source section specifying the GitHub repo and ref.
-    """
-    from .release import release_from_source
-
-    zip_path = release_from_source(
-        config_file=config,
-        output_dir=output_dir,
-        tag=tag,
-    )
-    if zip_path:
-        click.echo(zip_path)
 
 
 @main.command()
