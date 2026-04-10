@@ -1314,6 +1314,11 @@ cdef class OHLCV(TimeSeries):
 
             return self._is_new_item
         else:
+            # - skip past-data bars: when live feed sends a final closed bar after
+            # - the series has already advanced to a newer bar (e.g. via update_by_bars)
+            if time - self.times[0] < 0:
+                return False
+
             l_bar = self[0]
             l_bar.high = max(high, l_bar.high)
             l_bar.low = min(low, l_bar.low)
