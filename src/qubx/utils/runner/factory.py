@@ -71,6 +71,13 @@ def construct_storage(storage_config: StorageConfig | None) -> IStorage | None:
         )
         raise
 
+    # - drop kwargs the storage class doesn't accept (e.g. rate_limiters injected by runner)
+    import inspect
+
+    sig = inspect.signature(storage_cls.__init__)
+    if not any(p.kind == inspect.Parameter.VAR_KEYWORD for p in sig.parameters.values()):
+        kwargs = {k: v for k, v in kwargs.items() if k in sig.parameters}
+
     # - URI-style 'name::host' — first segment after '::' is the positional host/path arg
     if "::" in storage_name:
         db_path = storage_name.split("::", 1)[1]
@@ -474,3 +481,5 @@ def create_state_persistence(
         logger.error(f"Failed to create state persistence {persistence_class_name}: {e}")
         logger.opt(colors=False).error(f"State persistence parameters: {config.parameters}")
         raise
+
+

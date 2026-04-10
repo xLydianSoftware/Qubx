@@ -191,6 +191,8 @@ class CcxtReader(IReader):
     ``close()`` on a reader; call ``CcxtStorage.close()`` instead.
     """
 
+    is_rate_limited: bool = True
+
     def __init__(self, exchange: str, market: str, storage_ref: "CcxtStorage") -> None:
         self._exchange = exchange.upper()
         self._market = market.upper()
@@ -312,9 +314,11 @@ class CcxtStorage(IStorage):
         _uri_hint: str = "",  # - ignored; absorbed from URI "ccxt::EXCHANGE" via StorageRegistry
         max_bars: int = 10_000,
         max_history: str = "3650d",
+        rate_limiters: dict | None = None,
     ) -> None:
         self._max_bars = max_bars
         self._max_history = to_timedelta(max_history)
+        self._rate_limiters = rate_limiters or {}
         # - shared async loop (created from first exchange connection)
         self._loop = None
         self._capabilities = None
@@ -446,6 +450,16 @@ class CcxtStorage(IStorage):
             _start = _max_time
         return _start, _stop
 
+    def _get_rate_limiter(self, ccxt_ex: Exchange):
+        """Find the rate limiter for a CCXT exchange instance."""
+        if not self._rate_limiters:
+            return None
+        # Match by exchange key in our cache (e.g., "BINANCE.UM", "OKX.F")
+        for exch_key, ex in self._exchanges.items():
+            if ex is ccxt_ex:
+                return self._rate_limiters.get(exch_key)
+        return None
+
     async def _async_paginated_fetch(
         self,
         ccxt_ex: Exchange,
@@ -470,7 +484,12 @@ class CcxtStorage(IStorage):
         all_items: list = []
         current_since = since
 
+        # Get rate limiter for this exchange (if available)
+        _rl = self._get_rate_limiter(ccxt_ex)
+
         for _ in range(max_pages):
+            if _rl:
+                await _rl.acquire("ccxt_rest")
             batch = await method(since=current_since, limit=limit, **method_kwargs)
             if not batch:
                 break
@@ -523,10 +542,16 @@ class CcxtStorage(IStorage):
         until: int,
     ) -> dict[str, list]:
         """
-        Concurrent OHLCV fetch for multiple instruments via asyncio.gather.
+        Concurrent OHLCV fetch for multiple instruments with bounded concurrency.
         Returns ``{qubx_sym: raw_candles}``.
         """
-        coros = [self._async_fetch_ohlcv(ccxt_ex, ccxt_sym, exc_tf, since, until) for ccxt_sym, _ in instruments_info]
+        sem = asyncio.Semaphore(5)  # max 5 concurrent fetches
+
+        async def _fetch_with_sem(ccxt_sym: str, exc_tf: str, since: int, until: int) -> list:
+            async with sem:
+                return await self._async_fetch_ohlcv(ccxt_ex, ccxt_sym, exc_tf, since, until)
+
+        coros = [_fetch_with_sem(ccxt_sym, exc_tf, since, until) for ccxt_sym, _ in instruments_info]
         results = await asyncio.gather(*coros, return_exceptions=True)
         out: dict[str, list] = {}
         for i, result in enumerate(results):
@@ -598,11 +623,17 @@ class CcxtStorage(IStorage):
         default_hours: float,
     ) -> dict[str, list[tuple[int, float, float]]]:
         """
-        Concurrent per-instrument funding fetch via asyncio.gather.
+        Concurrent per-instrument funding fetch with bounded concurrency.
         Returns ``{qubx_sym: [(ts_ms, rate, hours), ...]}``.
         """
+        sem = asyncio.Semaphore(5)
+
+        async def _fetch_with_sem(ccxt_ex, instr, ccxt_sym, since, until, default_hours):
+            async with sem:
+                return await self._async_fetch_funding_one(ccxt_ex, instr, ccxt_sym, since, until, default_hours)
+
         coros = [
-            self._async_fetch_funding_one(ccxt_ex, instr, ccxt_sym, since, until, default_hours)
+            _fetch_with_sem(ccxt_ex, instr, ccxt_sym, since, until, default_hours)
             for ccxt_sym, instr in instruments_info
         ]
         results = await asyncio.gather(*coros, return_exceptions=True)

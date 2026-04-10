@@ -272,6 +272,68 @@ class ProcessingManager(IProcessingManager):
                 cron_schedule = interval_to_cron("10m")  # default check interval
             self._scheduler.schedule_event(cron_schedule, "stale_data_check")
 
+    def configure_state_snapshot(self, interval: str | None) -> None:
+        """
+        Configure periodic state snapshot persistence.
+
+        When enabled, periodically saves strategy state (capital, positions, leverage, orders)
+        to the configured state persistence backend (e.g., Redis) under the key "state".
+        Only active in live mode when a real state persistence backend is configured.
+
+        Args:
+            interval: Snapshot interval (e.g., "5s", "30s", "1m"). None to disable.
+        """
+        self._scheduler.unschedule_event("state_snapshot")
+
+        if interval is not None and not self._is_simulation:
+            from qubx.state.dummy import DummyStatePersistence
+
+            if not isinstance(self._context.persistence, DummyStatePersistence):
+                cron_schedule = interval_to_cron(interval)
+                self._scheduler.schedule_event(cron_schedule, "state_snapshot")
+                logger.info(f"State snapshot enabled with interval: {interval}")
+
+    def configure_rate_limit_metrics(self, interval: str | None) -> None:
+        """
+        Configure periodic rate limit metric emission.
+
+        Emits pool utilization, gate state, hit counts etc. for all registered
+        rate limiters via ctx.emitter.emit(). Only active in live mode.
+
+        Args:
+            interval: Emission interval (e.g., "60s", "1m"). None to disable.
+        """
+        self._scheduler.unschedule_event("rate_limit_metrics")
+
+        if interval is not None and not self._is_simulation:
+            cron_schedule = interval_to_cron(interval)
+            self._scheduler.schedule_event(cron_schedule, "rate_limit_metrics")
+            self._custom_scheduled_methods["rate_limit_metrics"] = self._emit_rate_limit_metrics
+            logger.info(f"Rate limit metrics emission enabled with interval: {interval}")
+
+    def _emit_rate_limit_metrics(self, ctx) -> None:
+        """Emit rate limit metrics for all registered rate limiters."""
+        import asyncio
+        import concurrent.futures
+
+        if ctx.emitter is None or ctx.event_loop is None:
+            return
+
+        for exchange_name, rate_limiter in ctx.rate_limiters.items():
+            try:
+                future = asyncio.run_coroutine_threadsafe(rate_limiter.collect_metrics(), ctx.event_loop)
+                metrics = future.result(timeout=5)
+                self._do_emit_metrics(ctx, metrics)
+            except concurrent.futures.TimeoutError:
+                logger.warning(f"Rate limit metrics collection timed out for {exchange_name}")
+            except Exception as e:
+                logger.opt(colors=False).error(f"Failed to collect rate limit metrics for {exchange_name}: {e}")
+
+    @staticmethod
+    def _do_emit_metrics(ctx, metrics: list[dict]) -> None:
+        for m in metrics:
+            ctx.emitter.emit(m["name"], m["value"], m["tags"])
+
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
         if not is_historical:
@@ -291,7 +353,14 @@ class ProcessingManager(IProcessingManager):
         ):
             return False
 
-        handler = self._handlers.get(d_type)
+        if not d_type:
+            handler = None
+        else:
+            handler = self._handlers.get(d_type)
+            if handler is None:
+                _dtype, _ = DataType.from_str(d_type)
+                handler = self._handlers.get(_dtype.value)
+
         if not d_type:
             event = None
         elif is_historical:
@@ -955,6 +1024,92 @@ class ProcessingManager(IProcessingManager):
                 f"Removing {len(stale_instruments)} stale instruments from universe: {[i.symbol for i in stale_instruments]}"
             )
             self._universe_manager.remove_instruments(stale_instruments, if_has_position_then="close")
+
+    def _handle_state_snapshot(
+        self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]
+    ) -> None:
+        """
+        Periodic state snapshot — persists current strategy state (capital, positions,
+        leverage, orders, balances) per exchange to the configured state persistence
+        backend for dashboard monitoring.
+        """
+        if not self._context._strategy_state.is_on_start_called:
+            return
+
+        account = self._context.account
+
+        exchanges = self._context.exchanges
+
+        exchanges_snapshot: dict[str, dict] = {}
+        for exchange in exchanges:
+            positions = account.get_positions(exchange)
+            orders = account.get_orders(exchange=exchange)
+
+            # Group orders by instrument symbol
+            orders_by_symbol: dict[str, list[dict]] = defaultdict(list)
+            for order in orders.values():
+                orders_by_symbol[order.instrument.symbol].append(
+                    {
+                        "id": order.id,
+                        "type": order.type,
+                        "side": order.side,
+                        "quantity": order.quantity,
+                        "price": order.price,
+                        "status": order.status,
+                    }
+                )
+
+            # Build positions snapshot
+            positions_snapshot: dict[str, dict] = {}
+            open_positions = 0
+            for instr, pos in positions.items():
+                if pos.is_open():
+                    open_positions += 1
+                positions_snapshot[instr.symbol] = {
+                    "quantity": pos.quantity,
+                    "avg_price": pos.position_avg_price,
+                    "market_value": pos.market_value_funds,
+                    "unrealized_pnl": pos.unrealized_pnl(),
+                    "current_price": pos.last_update_price,
+                    "leverage": account.get_leverage(instr),
+                }
+
+            # Add order-only instruments (no position yet) to orders snapshot
+            for symbol in orders_by_symbol:
+                if symbol not in positions_snapshot:
+                    orders_by_symbol[symbol]  # ensure key exists in defaultdict
+
+            # Build balances snapshot
+            balances_snapshot: dict[str, dict] = {}
+            for bal in account.get_balances(exchange):
+                balances_snapshot[bal.currency] = {
+                    "total": bal.total,
+                    "free": bal.free,
+                    "locked": bal.locked,
+                }
+
+            exchanges_snapshot[exchange] = {
+                "capital": {
+                    "total": account.get_total_capital(exchange),
+                    "available": account.get_capital(exchange),
+                },
+                "balances": balances_snapshot,
+                "net_leverage": account.get_net_leverage(exchange),
+                "gross_leverage": account.get_gross_leverage(exchange),
+                "open_positions": open_positions,
+                "positions": positions_snapshot,
+                "orders": dict(orders_by_symbol),
+            }
+
+        snapshot = {
+            "timestamp": str(self._time_provider.time()),
+            "exchanges": exchanges_snapshot,
+        }
+
+        try:
+            self._context.persistence.save("state", snapshot)
+        except Exception as e:
+            logger.warning(f"Failed to save state snapshot: {e}")
 
     def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, bar)

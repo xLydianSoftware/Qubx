@@ -2,12 +2,15 @@ import atexit
 import signal
 import traceback
 from functools import wraps
+from queue import Empty, Queue
 from threading import Lock, Thread
 from typing import TYPE_CHECKING, Any, Callable
 
 import pandas as pd
 
 from qubx import logger
+from qubx.control.executor import CommandEvent
+from qubx.control.types import ActionResult
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
     AssetBalance,
@@ -27,7 +30,7 @@ from qubx.core.basics import (
 )
 from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
-from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.exceptions import QueueTimeout, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
     BasicScheduler,
     set_parameters_to_object,
@@ -73,6 +76,7 @@ from .mixins import (
 )
 
 if TYPE_CHECKING:
+    from qubx.control.executor import ActionExecutor
     from qubx.utils.throttler import InstrumentThrottler
 
 DEFAULT_POSITION_TRACKER: Callable[[], PositionsTracker] = lambda: PositionsTracker(
@@ -120,6 +124,10 @@ class StrategyContext(IStrategyContext):
     _warmup_orders: dict[Instrument, list[Order]] | None = None
     _warmup_active_targets: dict[Instrument, list[TargetPosition]] | None = None
 
+    # Command queue for control server actions (drained in data loop)
+    _command_queue: Queue | None = None
+    _control_executor: "ActionExecutor | None" = None
+
     # Shutdown handling
     _is_stopping: bool = False
     _stop_lock: Lock
@@ -150,6 +158,9 @@ class StrategyContext(IStrategyContext):
         restored_state: RestoredState | None = None,
         data_throttler: "InstrumentThrottler | None" = None,
         state_persistence: IStatePersistence | None = None,
+        state_snapshot_interval: str | None = None,
+        rate_limiting_config: Any | None = None,
+        event_loop: "asyncio.AbstractEventLoop | None" = None,
     ) -> None:
         self.account = account
         self.strategy = self.__instantiate_strategy(strategy, config)
@@ -180,6 +191,9 @@ class StrategyContext(IStrategyContext):
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
         self._state_persistence = state_persistence or DummyStatePersistence()
+        self._state_snapshot_interval = state_snapshot_interval
+        self._rate_limiting_config = rate_limiting_config
+        self.event_loop = event_loop
 
         # Initialize shutdown handling
         self._stop_lock = Lock()
@@ -294,6 +308,13 @@ class StrategyContext(IStrategyContext):
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
         self._processing_manager.configure_stale_data_detection(*stale_data_config)
+
+        # Configure periodic state snapshot persistence
+        self._processing_manager.configure_state_snapshot(self._state_snapshot_interval)
+
+        # Configure periodic rate limit metric emission
+        _rl_metrics_interval = self._rate_limiting_config.metrics_interval if self._rate_limiting_config else None
+        self._processing_manager.configure_rate_limit_metrics(_rl_metrics_interval)
 
         if self.is_simulation and isinstance(self.account, CompositeAccountProcessor):
             # Auto-assign simulation transfer manager
@@ -498,7 +519,23 @@ class StrategyContext(IStrategyContext):
             logger.error(f"[StrategyContext] :: Failed to stop health monitor: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
 
-        # PRIORITY 5: Close logging
+        # PRIORITY 5: Stop metric emitter and data exporter
+        # Skip during simulation/warmup — the emitter may be borrowed from the live context
+        if not self.is_simulation:
+            try:
+                self.emitter.stop()
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to stop metric emitter: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
+
+            if self._exporter is not None:
+                try:
+                    self._exporter.stop()
+                except Exception as e:
+                    logger.error(f"[StrategyContext] :: Failed to stop data exporter: {e}")
+                    logger.opt(colors=False).error(traceback.format_exc())
+
+        # PRIORITY 6: Close logging
         try:
             self._logging.close()
         except Exception as e:
@@ -543,6 +580,17 @@ class StrategyContext(IStrategyContext):
     @property
     def persistence(self) -> IStatePersistence:
         return self._state_persistence
+
+    @property
+    def rate_limiters(self) -> dict:
+        """Registry of ExchangeRateLimiter instances by exchange name.
+
+        Connectors register their rate limiters here at startup.
+        Used by the processing mixin for periodic metric emission.
+        """
+        if not hasattr(self, "_rate_limiters"):
+            self._rate_limiters: dict = {}
+        return self._rate_limiters
 
     # IAccountViewer delegation
 
@@ -854,9 +902,12 @@ class StrategyContext(IStrategyContext):
     def __process_incoming_data_loop(self, channel: CtrlChannel):
         logger.info("[StrategyContext] :: Start processing market data")
         while channel.control.is_set():
+            # Drain pending control commands (non-blocking)
+            self._drain_command_queue()
+
             try:
-                # - waiting for incoming market data
-                instrument, d_type, data, hist = channel.receive()
+                # - waiting for incoming market data (with timeout so commands are checked regularly)
+                instrument, d_type, data, hist = channel.receive(timeout=1)
 
                 # - notify error if error level is medium or higher
                 if self._notifier and isinstance(data, BaseErrorEvent) and data.level.value >= ErrorLevel.MEDIUM.value:
@@ -870,6 +921,9 @@ class StrategyContext(IStrategyContext):
             except StrategyExceededMaxNumberOfRuntimeFailuresError:
                 channel.stop()
                 break
+            except QueueTimeout:
+                # Expected when using receive(timeout=) — loop back to check commands
+                continue
             except Exception as e:
                 logger.error(f"Error processing market data: {e}")
                 logger.opt(colors=False).error(traceback.format_exc())
@@ -878,6 +932,31 @@ class StrategyContext(IStrategyContext):
                 # Don't stop the channel here, let it continue processing
 
         logger.info("[StrategyContext] :: Market data processing stopped")
+
+    def _drain_command_queue(self):
+        """Process all pending commands from the control server."""
+        if self._command_queue is None:
+            return
+        while True:
+            try:
+                cmd = self._command_queue.get_nowait()
+            except Empty:
+                break
+            try:
+                if isinstance(cmd, CommandEvent) and self._control_executor is not None:
+                    logger.info(f"[StrategyContext] :: Executing control command: {cmd.name} {cmd.params}")
+                    result = self._control_executor.execute_command(cmd)
+                    if result.status == "error":
+                        logger.warning(f"[StrategyContext] :: Control command '{cmd.name}' failed: {result.error}")
+                    cmd.future.set_result(result)
+                else:
+                    cmd.future.set_result(ActionResult(status="error", error="Executor not available"))
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Error executing control command '{cmd.name}': {e}")
+                try:
+                    cmd.future.set_result(ActionResult(status="error", error=str(e)))
+                except Exception:
+                    pass
 
     def __instantiate_strategy(self, strategy: IStrategy, config: dict[str, Any] | None) -> IStrategy:
         __strategy = strategy() if isinstance(strategy, type) else strategy

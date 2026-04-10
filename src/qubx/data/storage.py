@@ -48,6 +48,8 @@ class IDataTransformer:
 
 
 class IReader:
+    is_rate_limited: bool = False
+
     def read(
         self,
         data_id: str | list[str],

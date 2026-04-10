@@ -7,13 +7,12 @@ from functools import reduce
 from pathlib import Path
 from threading import Thread
 
-from qubx import QubxLogConfig, logger
+from qubx import QubxLogConfig, file_formatter, logger
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulator import simulate
 from qubx.backtester.utils import (
     SetupTypes,
-    SimulatedLogFormatter,
     SimulationConfigError,
     SimulationSetup,
     recognize_simulation_data_config,
@@ -253,34 +252,37 @@ def run_strategy(
 
     register_accounts(account_manager)
 
-    QubxLogConfig.setup_logger(
-        level=QubxLogConfig.get_log_level(),
-        custom_formatter=(simulated_formatter := SimulatedLogFormatter(LiveTimeProvider())).formatter,
-        colorize=not no_color,
-    )
+    _live_time_provider = LiveTimeProvider()
+    QubxLogConfig.bind_time_provider(_live_time_provider)
+    QubxLogConfig.setup_logger(level=QubxLogConfig.get_log_level(), colorize=not no_color)
 
-    # Start health server early so liveness probe works during init/warmup
+    # Start control server early so liveness probe works during init/warmup
     from qubx.config import settings as _qubx_settings
 
-    _health_server = None
+    _control_server = None
     _health_ctx_ref: list[IStrategyContext | None] = [None]  # mutable ref for closure
+    _control_port = _qubx_settings.control_port or _qubx_settings.health_port
 
-    if _qubx_settings.health_port:
-        from qubx.health import HealthServer
+    if _control_port:
+        from qubx.control import ControlServer
 
         def _ready_check() -> bool:
             c = _health_ctx_ref[0]
             return c is not None and c._strategy_state.is_on_warmup_finished_called
 
-        _health_server = HealthServer(_qubx_settings.health_port, ready_check=_ready_check)
-        _health_server.start()
+        _control_server = ControlServer(_control_port, ready_check=_ready_check)
+        _control_server.start()
+
+    # Resolve strategy identity once — BOT_ID takes precedence over config name.
+    # This identity is used for state restoration, logging, metric emission, and persistence.
+    stg_name = _qubx_settings.bot_id or _get_strategy_name(config)
 
     # Restore state if configured
     restored_state = (
         _restore_state(
             restorer_config=config.live.warmup.restorer if config.live.warmup else None,
             logging_config=config.live.logging if config.live.logging else None,
-            strategy_name=_get_strategy_name(config),
+            strategy_name=stg_name,
         )
         if restore
         else None
@@ -295,7 +297,7 @@ def run_strategy(
         account_manager=account_manager,
         paper=paper,
         restored_state=restored_state,
-        simulated_formatter=simulated_formatter,
+        stg_name=stg_name,
         no_color=no_color,
         aux_configs=aux_configs,
         loop=loop,
@@ -303,7 +305,10 @@ def run_strategy(
         no_notifiers=no_notifiers,
         no_exporters=no_exporters,
     )
-    _health_ctx_ref[0] = ctx  # expose to health server ready_check
+    _health_ctx_ref[0] = ctx  # expose to control server ready_check
+
+    if _control_server:
+        _control_server.attach_context(ctx)
 
     try:
         _run_warmup(
@@ -312,7 +317,7 @@ def run_strategy(
             exchanges=config.live.exchanges,
             warmup=config.live.warmup,
             prefetch_config=config.live.prefetch,
-            simulated_formatter=simulated_formatter,
+            live_time_provider=_live_time_provider,
             account_manager=account_manager,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
             aux_configs=aux_configs,
@@ -336,8 +341,8 @@ def run_strategy(
             logger.info("Stopped by user")
         finally:
             ctx.stop()
-            if _health_server:
-                _health_server.stop()
+            if _control_server:
+                _control_server.stop()
             _cleanup_event_loop(loop)
     else:
         ctx.start()
@@ -413,7 +418,7 @@ def create_strategy_context(
     account_manager: AccountConfigurationManager,
     paper: bool,
     restored_state: RestoredState | None,
-    simulated_formatter: SimulatedLogFormatter,
+    stg_name: str,
     no_color: bool = False,
     aux_configs: list[StorageConfig] | None = None,
     loop: asyncio.AbstractEventLoop | None = None,
@@ -423,12 +428,21 @@ def create_strategy_context(
 ) -> IStrategyContext:
     """
     Create a strategy context from the given configuration.
+
+    Args:
+        stg_name: Strategy identity — BOT_ID when running on the platform,
+                  otherwise derived from the config name. Resolved once by the
+                  caller and used consistently for logging, metrics, state
+                  persistence, and state restoration.
     """
     # Validate that live configuration exists
     if not config.live:
         raise ValueError("Live configuration is required for strategy execution")
 
-    stg_name = _get_strategy_name(config)
+    # --- Platform identity from unified settings ---
+    from qubx.config import settings as qubx_settings
+
+    _bot_id = qubx_settings.bot_id
     _run_mode = "paper" if paper else "live"
 
     # Generate run_id once to be shared between logging and metric emissions
@@ -441,12 +455,7 @@ def create_strategy_context(
     else:
         _strategy_class = config.strategy
 
-    _logging = _setup_strategy_logging(stg_name, config.live.logging, simulated_formatter, run_id)
-
-    # --- Platform identity from unified settings ---
-    from qubx.config import settings as qubx_settings
-
-    _bot_id = qubx_settings.bot_id
+    _logging = _setup_strategy_logging(stg_name, config.live.logging, run_id)
     _instance_id = qubx_settings.instance_id or socket.gethostname()
     _platform_tags: dict[str, str] = {}
     if _bot_id:
@@ -466,7 +475,6 @@ def create_strategy_context(
             if config.live.emission
             else None
         )
-
 
     # Create lifecycle notifiers
     if no_notifiers:
@@ -489,6 +497,11 @@ def create_strategy_context(
 
     exchanges = list(config.live.exchanges.keys())
 
+    # Rate limiting (backend, IP discovery, per-exchange limiters)
+    from qubx.rate_limiting.manager import RateLimitManager
+
+    _rl_manager = RateLimitManager(config.live.rate_limiting, loop)
+
     _exchange_to_tcc = {}
     _exchange_to_broker = {}
     _exchange_to_data_provider = {}
@@ -496,6 +509,9 @@ def create_strategy_context(
     _instruments = []
 
     for exchange_name, exchange_config in config.live.exchanges.items():
+        rate_limiter = _rl_manager.get_or_create(exchange_name, exchange_config.connector)
+        if rate_limiter is not None:
+            exchange_config.params["rate_limiter"] = rate_limiter
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
         _exchange_to_data_provider[exchange_name] = (
             data_provider := _create_data_provider(
@@ -543,6 +559,11 @@ def create_strategy_context(
     if aux_configs is None:
         aux_configs = resolve_aux_config(config.aux, getattr(config.live, "aux", None))
 
+    # Inject rate limiters into aux storage args (for CcxtStorage, LighterStorage, etc.)
+    if _rl_manager.rate_limiters and aux_configs:
+        for sc in aux_configs:
+            sc.args["rate_limiters"] = _rl_manager.rate_limiters
+
     # - create aux storage from config
     _aux_storage = construct_multi_storage(aux_configs)
 
@@ -583,6 +604,9 @@ def create_strategy_context(
 
     # Create state persistence if configured
     _state_persistence = create_state_persistence(config.live.state, stg_name)
+    _state_snapshot_interval = config.live.state.snapshot_interval if config.live.state else None
+
+    _rate_limiting_config = config.live.rate_limiting
 
     logger.info(f"- Strategy: <blue>{stg_name}</blue>\n- Mode: {_run_mode}\n- Parameters: {config.parameters}")
 
@@ -606,15 +630,18 @@ def create_strategy_context(
         restored_state=restored_state,
         data_throttler=_data_throttler,
         state_persistence=_state_persistence,
+        state_snapshot_interval=_state_snapshot_interval,
+        rate_limiting_config=_rate_limiting_config,
+        event_loop=loop,
     )
-
-    # Store the shared event loop reference for cleanup
-    if loop is not None:
-        ctx._shared_event_loop = loop  # type: ignore
 
     # Set context for metric emitters to enable is_live tag and time access
     if _metric_emitter is not None:
         _metric_emitter.set_context(ctx)
+
+    # Register rate limiters from manager on context (for metrics emission)
+    ctx._rate_limiters = _rl_manager.rate_limiters
+    ctx._rl_manager = _rl_manager  # prevent GC
 
     return ctx
 
@@ -633,7 +660,6 @@ def _get_strategy_name(cfg: StrategyConfig) -> str:
 def _setup_strategy_logging(
     stg_name: str,
     log_config: LoggingConfig,
-    simulated_formatter: SimulatedLogFormatter,
     run_id: str,
 ) -> StrategyLogging:
     if not hasattr(log_config, "args") or not isinstance(log_config.args, dict):
@@ -643,9 +669,9 @@ def _setup_strategy_logging(
     run_folder = f"{log_folder}/run_{log_id}"
     logger.add(
         f"{run_folder}/strategy/{stg_name}_{{time}}.log",
-        format=simulated_formatter.formatter,
+        format=file_formatter,
         rotation="100 MB",
-        colorize=False,  # File logs should never have colors
+        colorize=False,
         level=QubxLogConfig.get_log_level(),
     )
 
@@ -740,7 +766,7 @@ def _create_account_processor(
             exchange=simulated_exchange,
             channel=channel,
             health_monitor=health_monitor,
-            base_currency=settings.base_currency,
+            base_currency=base_currency,
             exchange_name=exchange_name,
             initial_capital=settings.initial_capital,
             restored_state=restored_state,
@@ -765,6 +791,7 @@ def _create_account_processor(
         restored_state=restored_state,
         read_only=read_only,
         loop=loop,
+        base_currency=base_currency,
     )
 
 
@@ -960,7 +987,7 @@ def _run_warmup(
     exchanges: dict[str, ExchangeConfig],
     warmup: WarmupConfig | None,
     prefetch_config: PrefetchConfig,
-    simulated_formatter: SimulatedLogFormatter,
+    live_time_provider,
     account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
     aux_configs: list[StorageConfig] | None = None,
@@ -1050,18 +1077,15 @@ def _run_warmup(
     )
     _initial_capital = ctx.account.get_total_capital()
 
-    # - set the time provider to the simulated runner
-    _live_time_provider = simulated_formatter.time_provider
-    simulated_formatter.time_provider = warmup_runner.ctx
-
     ctx._strategy_state.is_warmup_in_progress = True
     QubxLogConfig.bind_phase("warmup")
+    QubxLogConfig.bind_time_provider(warmup_runner.ctx)
 
     try:
         warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
     finally:
         # Restore the live time provider
-        simulated_formatter.time_provider = _live_time_provider
+        QubxLogConfig.bind_time_provider(live_time_provider)
         # Set back the context for metric emitters to use live context
         if ctx.emitter is not None:
             ctx.emitter.set_context(ctx)

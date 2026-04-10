@@ -83,3 +83,13 @@ class CompositeExporter(ITradeDataExport):
                 from qubx import logger
 
                 logger.error(f"Error exporting position changes to {exporter.__class__.__name__}: {e}")
+
+    def stop(self) -> None:
+        """Stop all child exporters."""
+        for exporter in self._exporters:
+            try:
+                exporter.stop()
+            except Exception as e:
+                from qubx import logger
+
+                logger.error(f"[CompositeExporter] Error stopping {exporter.__class__.__name__}: {e}")

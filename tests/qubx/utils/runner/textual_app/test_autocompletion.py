@@ -6,6 +6,7 @@ from qubx.utils.runner.textual.kernel import IPyKernel
 
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group("kernel")
 async def test_kernel_completion():
     """Test that kernel completion works."""
     kernel = IPyKernel()
@@ -36,6 +37,7 @@ async def test_kernel_completion():
 
 
 @pytest.mark.asyncio
+@pytest.mark.xdist_group("kernel")
 async def test_kernel_completion_empty():
     """Test that kernel returns empty list for invalid completion."""
     kernel = IPyKernel()

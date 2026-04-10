@@ -26,6 +26,7 @@ class ConnectorRegistry:
     _data_providers: dict[str, Type[IDataProvider]] = {}
     _account_processors: dict[str, Type[IAccountProcessor]] = {}
     _brokers: dict[str, Type[IBroker]] = {}
+    _rate_limit_configs: dict[str, Callable] = {}
 
     @classmethod
     def register_data_provider(cls, name: str) -> Callable[[Type[T]], Type[T]]:
@@ -154,6 +155,32 @@ class ConnectorRegistry:
         return broker_cls(**kwargs)
 
     @classmethod
+    def register_rate_limit_config(cls, name: str) -> Callable:
+        """Decorator to register a rate limit config factory for a connector.
+
+        The factory receives (exchange_name: str) and returns ExchangeRateLimitConfig or None.
+        """
+
+        def decorator(func: Callable) -> Callable:
+            cls._rate_limit_configs[name.lower()] = func
+            logger.debug(f"Registered rate limit config: {name}")
+            return func
+
+        return decorator
+
+    @classmethod
+    def get_rate_limit_config(cls, name: str, exchange_name: str):
+        """Get rate limit config for a connector/exchange pair.
+
+        Returns:
+            ExchangeRateLimitConfig or None if connector has no rate limiting registered
+        """
+        factory = cls._rate_limit_configs.get(name.lower())
+        if factory is None:
+            return None
+        return factory(exchange_name)
+
+    @classmethod
     def is_data_provider_registered(cls, name: str) -> bool:
         """Check if a data provider is registered."""
         return name.lower() in cls._data_providers
@@ -222,3 +249,15 @@ def broker(name: str) -> Callable[[Type[T]], Type[T]]:
                 ...
     """
     return ConnectorRegistry.register_broker(name)
+
+
+def rate_limit_config(name: str) -> Callable:
+    """
+    Decorator for registering a rate limit config factory.
+
+    Usage:
+        @rate_limit_config("my_exchange")
+        def create_my_exchange_rate_limits(exchange_name: str) -> ExchangeRateLimitConfig:
+            return ExchangeRateLimitConfig(pools={...}, ...)
+    """
+    return ConnectorRegistry.register_rate_limit_config(name)

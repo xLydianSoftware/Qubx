@@ -111,13 +111,13 @@ def get_ccxt_exchange_manager(
         "exchange": exchange,
         "api_key": api_key,
         "secret": secret,
-        "loop": None,
+        "loop": loop,
         "use_testnet": use_testnet,
         **kwargs,
     }
 
     ccxt_exchange = get_ccxt_exchange(
-        exchange=exchange, api_key=api_key, secret=secret, loop=None, use_testnet=use_testnet, **kwargs
+        exchange=exchange, api_key=api_key, secret=secret, loop=loop, use_testnet=use_testnet, **kwargs
     )
 
     manager = ExchangeManager(
