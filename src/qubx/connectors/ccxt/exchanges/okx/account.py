@@ -57,14 +57,29 @@ class OkxAccountProcessor(CcxtAccountProcessor):
             ),
         )
 
+    def _extract_portfolio_value(self, balances_raw: dict) -> float | None:
+        """Extract OKX total equity from raw balance response."""
+        data = balances_raw.get("info", {}).get("data", [{}])[0]
+        total_eq = data.get("totalEq")
+        if total_eq is not None:
+            try:
+                return float(total_eq)
+            except (ValueError, TypeError):
+                pass
+        return None
+
     async def _update_balance(self) -> None:
-        """OKX balance override: use cashBal instead of eq (equity) to avoid double-counting unrealized PnL.
+        """OKX balance override: use cashBal for per-currency balances.
 
         CCXT maps OKX's `eq` (equity = cashBal + unrealizedPnL) to balance `total`.
-        Since get_total_capital() adds position market values (= unrealized PnL) on top,
-        using `eq` would double-count unrealized PnL. We use `cashBal` instead.
+        We use `cashBal` for individual currency balances, and extract `totalEq`
+        as the authoritative portfolio value via _extract_portfolio_value().
         """
         balances_raw = await self.exchange_manager.exchange.fetch_balance()
+
+        equity = self._extract_portfolio_value(balances_raw)
+        if equity is not None:
+            self._exchange_total_capital = equity
 
         # Extract cashBal from raw OKX response instead of CCXT-parsed eq
         balances: list[AssetBalance] = []
