@@ -1,9 +1,7 @@
-"""
-Exchange rate limiting engine.
+"""Exchange rate limiting engine.
 
-The central component that connectors interact with. Handles multi-pool
-token acquisition, gate mechanism for cooldowns, exchange state sync,
-and metric collection.
+The central component that connectors interact with. Delegates pool-specific
+behavior (gate management, acquisition, sync) to polymorphic pool objects.
 """
 
 import asyncio
@@ -13,11 +11,9 @@ from typing import Any
 from qubx import logger
 
 from .backend import InMemoryBackend, IRateLimitBackend
-from .config import ExchangeRateLimitConfig, PoolConfig
-
-
-class RateLimitGateTimeout(Exception):
-    """Raised when acquire() times out waiting for a gate to reopen."""
+from .config import ExchangeRateLimitConfig
+from .pools import BasePool, QuotaPool, RatePool
+from .pools import RateLimitGateTimeout as RateLimitGateTimeout  # re-export
 
 
 class ExchangeRateLimiter:
@@ -59,29 +55,18 @@ class ExchangeRateLimiter:
         """
         self._exchange = exchange
         self._config = config
-        self._backend = backend or InMemoryBackend()
         self._scope_ids = scope_ids or {}
         self._event_loop = event_loop
-
-        # Per-pool gates (asyncio.Event: set = open, clear = closed)
-        self._gates: dict[str, asyncio.Event] = {}
-        self._gate_tasks: dict[str, asyncio.Task] = {}
-        for pool_name in config.pools:
-            gate = asyncio.Event()
-            gate.set()
-            self._gates[pool_name] = gate
-
-        # Quota pools: externally-managed remaining count
-        self._quota_remaining: dict[str, float] = {}
-        for pool_name, pool in config.pools.items():
-            if pool.pool_type == "quota":
-                self._quota_remaining[pool_name] = pool.capacity
-
-        # Stats tracking
-        self._hits: dict[str, int] = {}
-        self._total_wait: dict[str, float] = {}
-        self._consumed: dict[str, float] = {}
         self._last_metrics_time = time.monotonic()
+
+        backend = backend or InMemoryBackend()
+        self._pools: dict[str, BasePool] = {}
+        for pool_name, pool_config in config.pools.items():
+            scope_id = self._scope_ids.get(pool_config.scope, "local")
+            if pool_config.pool_type == "quota":
+                self._pools[pool_name] = QuotaPool(pool_config, exchange, scope_id)
+            else:
+                self._pools[pool_name] = RatePool(pool_config, exchange, scope_id, backend)
 
     @property
     def exchange(self) -> str:
@@ -100,11 +85,6 @@ class ExchangeRateLimiter:
     def config(self) -> ExchangeRateLimitConfig:
         return self._config
 
-    def _key_for(self, pool: PoolConfig) -> str:
-        """Construct Redis/backend key for a pool based on its scope."""
-        scope_id = self._scope_ids.get(pool.scope, "local")
-        return f"ratelimit:{self._exchange}:{pool.name}:{scope_id}"
-
     def update_scope_id(self, scope: str, new_id: str) -> None:
         """Update scope identifier (e.g., when egress IP changes).
 
@@ -114,6 +94,9 @@ class ExchangeRateLimiter:
         if old_id != new_id:
             logger.info(f"Rate limiter {self._exchange}: {scope} scope changed {old_id} → {new_id}")
             self._scope_ids[scope] = new_id
+            for pool in self._pools.values():
+                if pool.config.scope == scope:
+                    pool.update_scope_id(new_id)
 
     async def acquire(self, endpoint: str, weight_override: float | None = None) -> None:
         """Wait until all pools for this endpoint have sufficient budget.
@@ -134,50 +117,11 @@ class ExchangeRateLimiter:
             return
 
         for i, (pool_name, weight) in enumerate(endpoint_costs.costs):
-            pool = self._config.pools.get(pool_name)
+            pool = self._pools.get(pool_name)
             if pool is None:
                 continue
-
             actual_weight = weight_override if (weight_override is not None and i == 0) else weight
-
-            # Wait for gate to be open
-            gate = self._gates.get(pool_name)
-            if gate is not None and not gate.is_set():
-                try:
-                    await asyncio.wait_for(gate.wait(), timeout=self._config.gate_max_wait)
-                except asyncio.TimeoutError:
-                    raise RateLimitGateTimeout(
-                        f"{self._exchange}: gate for pool '{pool_name}' did not reopen "
-                        f"within {self._config.gate_max_wait:.0f}s"
-                    ) from None
-
-            # For quota pools, check remaining (no time-based refill)
-            if pool.pool_type == "quota":
-                remaining = self._quota_remaining.get(pool_name, 0)
-                if remaining <= 0:
-                    # Gate should already be closed, but double-check
-                    self._close_gate(pool_name, pool.cooldown, "quota depleted")
-                    gate = self._gates.get(pool_name)
-                    if gate is not None:
-                        try:
-                            await asyncio.wait_for(gate.wait(), timeout=self._config.gate_max_wait)
-                        except asyncio.TimeoutError:
-                            raise RateLimitGateTimeout(
-                                f"{self._exchange}: quota pool '{pool_name}' depleted, "
-                                f"gate did not reopen within {self._config.gate_max_wait:.0f}s"
-                            ) from None
-                # Decrement quota locally
-                if pool_name in self._quota_remaining:
-                    self._quota_remaining[pool_name] = max(0, self._quota_remaining[pool_name] - actual_weight)
-                continue
-
-            # For rate pools, acquire from backend
-            key = self._key_for(pool)
-            wait_time = await self._backend.acquire(key, actual_weight, pool.capacity, pool.refill_rate)
-
-            # Track stats
-            self._total_wait[pool_name] = self._total_wait.get(pool_name, 0) + wait_time
-            self._consumed[pool_name] = self._consumed.get(pool_name, 0) + actual_weight
+            await pool.acquire(actual_weight, self._config.gate_max_wait)
 
     def report_limit_hit(
         self,
@@ -197,7 +141,7 @@ class ExchangeRateLimiter:
             retry_after: Seconds to wait (from Retry-After header)
             reason: Human-readable reason for logging
         """
-        pools_to_close = []
+        pools_to_close: list[str] = []
 
         if pool_name:
             pools_to_close.append(pool_name)
@@ -206,15 +150,17 @@ class ExchangeRateLimiter:
             pools_to_close = [p for p, _ in costs.costs]
         else:
             # Close all rate pools
-            pools_to_close = [name for name, pool in self._config.pools.items() if pool.pool_type == "rate"]
+            pools_to_close = [
+                name for name, pool in self._pools.items() if pool.config.pool_type == "rate"
+            ]
 
         for pname in pools_to_close:
-            pool = self._config.pools.get(pname)
+            pool = self._pools.get(pname)
             if pool is None:
                 continue
-            cooldown = retry_after if retry_after is not None else pool.cooldown
-            self._close_gate(pname, cooldown, reason or f"rate limit hit on {pname}")
-            self._hits[pname] = self._hits.get(pname, 0) + 1
+            cooldown = retry_after if retry_after is not None else pool.config.cooldown
+            pool.close_gate(cooldown, reason or f"rate limit hit on {pname}")
+            pool.hits += 1
 
     def sync_from_exchange(
         self,
@@ -235,11 +181,11 @@ class ExchangeRateLimiter:
             used: Used tokens reported by exchange (remaining = capacity - used)
             capacity: Total capacity reported by exchange (overrides config if provided)
         """
-        pool = self._config.pools.get(pool_name)
+        pool = self._pools.get(pool_name)
         if pool is None:
             return
 
-        actual_capacity = capacity or pool.capacity
+        actual_capacity = capacity or pool.config.capacity
 
         if remaining is not None:
             actual_remaining = remaining
@@ -248,77 +194,25 @@ class ExchangeRateLimiter:
         else:
             return
 
-        if pool.pool_type == "quota":
-            self._quota_remaining[pool_name] = actual_remaining
-            if actual_remaining <= 0:
-                self._close_gate(pool_name, pool.cooldown, f"exchange reports {pool_name} depleted")
-            return
+        pool.sync(actual_remaining, capacity)
 
-        # For rate pools, update backend
-        key = self._key_for(pool)
-        # Fire-and-forget since set_remaining may be async but we're in sync context
-        # Use a helper to run it
-        try:
-            loop = asyncio.get_running_loop()
-            loop.create_task(self._backend.set_remaining(key, actual_remaining))
-        except RuntimeError:
-            pass  # No running loop — skip sync (e.g., during shutdown)
+    def get_quota_remaining(self, pool_name: str) -> float:
+        """Get remaining budget for a quota pool.
 
-    def sync_quota(self, pool_name: str, remaining: float) -> None:
-        """Update externally-managed quota pool from exchange response.
-
-        Convenience wrapper for quota pools (e.g., Lighter volume quota
-        reported in sendTx responses).
-
-        Args:
-            pool_name: Quota pool name
-            remaining: Remaining quota reported by exchange
+        Returns 0 if pool doesn't exist or isn't a quota pool.
         """
-        self._quota_remaining[pool_name] = remaining
-        if remaining <= 0:
-            pool = self._config.pools.get(pool_name)
-            cooldown = pool.cooldown if pool else 15.0
-            self._close_gate(pool_name, cooldown, f"quota {pool_name} depleted (remaining={remaining})")
-
-    def _close_gate(self, pool_name: str, cooldown: float, reason: str) -> None:
-        """Close a pool's gate for the given cooldown period."""
-        gate = self._gates.get(pool_name)
-        if gate is None:
-            return
-
-        verb = "extended" if not gate.is_set() else "closed"
-        logger.warning(f"Rate limit gate {verb} for {self._exchange}:{pool_name} ({cooldown:.1f}s): {reason}")
-        gate.clear()
-
-        # Cancel existing reopen task
-        old_task = self._gate_tasks.get(pool_name)
-        if old_task is not None and not old_task.done():
-            old_task.cancel()
-
-        self._gate_tasks[pool_name] = asyncio.ensure_future(self._reopen_gate_after(pool_name, cooldown))
-
-    async def _reopen_gate_after(self, pool_name: str, delay: float) -> None:
-        """Reopen a pool's gate after a cooldown delay."""
-        try:
-            await asyncio.sleep(delay)
-            gate = self._gates.get(pool_name)
-            if gate is not None:
-                gate.set()
-                logger.info(f"Rate limit gate reopened for {self._exchange}:{pool_name} after {delay:.1f}s")
-        except asyncio.CancelledError:
-            pass
+        pool = self._pools.get(pool_name)
+        if isinstance(pool, QuotaPool):
+            return pool.remaining
+        return 0
 
     def reset_gates(self) -> None:
         """Reopen all gates and cancel pending reopen tasks.
 
         Call on connection reset / reconnection.
         """
-        for pool_name, gate in self._gates.items():
-            gate.set()
-        for pool_name, task in self._gate_tasks.items():
-            if not task.done():
-                task.cancel()
-        self._gate_tasks.clear()
+        for pool in self._pools.values():
+            pool.reset_gate()
 
     def is_gate_closed(self, pool_name: str | None = None) -> bool:
         """Check if a gate is closed.
@@ -327,9 +221,9 @@ class ExchangeRateLimiter:
             pool_name: Specific pool, or None to check if ANY gate is closed
         """
         if pool_name:
-            gate = self._gates.get(pool_name)
-            return gate is not None and not gate.is_set()
-        return any(not gate.is_set() for gate in self._gates.values())
+            pool = self._pools.get(pool_name)
+            return pool is not None and pool.is_gate_closed
+        return any(pool.is_gate_closed for pool in self._pools.values())
 
     async def get_pool_state(self, pool_name: str) -> dict[str, Any] | None:
         """Get current state of a pool for monitoring.
@@ -337,32 +231,10 @@ class ExchangeRateLimiter:
         Returns:
             Dict with remaining, capacity, gate_closed, hits, etc. or None if pool doesn't exist
         """
-        pool = self._config.pools.get(pool_name)
+        pool = self._pools.get(pool_name)
         if pool is None:
             return None
-
-        if pool.pool_type == "quota":
-            remaining = self._quota_remaining.get(pool_name, 0)
-        else:
-            key = self._key_for(pool)
-            remaining = await self._backend.get_remaining(key, pool.capacity, pool.refill_rate)
-            if remaining is None:
-                remaining = pool.capacity
-
-        return {
-            "pool": pool_name,
-            "exchange": self._exchange,
-            "scope": pool.scope,
-            "scope_id": self._scope_ids.get(pool.scope, "local"),
-            "pool_type": pool.pool_type,
-            "remaining": remaining,
-            "capacity": pool.capacity,
-            "utilization": 1.0 - (remaining / pool.capacity) if pool.capacity > 0 else 0,
-            "gate_closed": self.is_gate_closed(pool_name),
-            "hits": self._hits.get(pool_name, 0),
-            "total_wait_s": self._total_wait.get(pool_name, 0),
-            "consumed": self._consumed.get(pool_name, 0),
-        }
+        return await pool.get_state()
 
     async def collect_metrics(self) -> list[dict[str, Any]]:
         """Collect current metrics for all pools.
@@ -374,7 +246,7 @@ class ExchangeRateLimiter:
                 ctx.emitter.emit(m["name"], m["value"], m["tags"])
         """
         metrics = []
-        for pool_name in self._config.pools:
+        for pool_name in self._pools:
             state = await self.get_pool_state(pool_name)
             if state is None:
                 continue
@@ -399,5 +271,5 @@ class ExchangeRateLimiter:
         return metrics
 
     def __repr__(self) -> str:
-        pools = ", ".join(f"{name}({pool.scope})" for name, pool in self._config.pools.items())
+        pools = ", ".join(f"{name}({pool.config.scope})" for name, pool in self._pools.items())
         return f"ExchangeRateLimiter({self._exchange}, pools=[{pools}])"
