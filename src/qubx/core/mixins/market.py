@@ -220,9 +220,16 @@ class CachedMarketDataHolder(IMarketDataCache):
             ohlc.update_by_bars(bars)
             self._ohlcvs[instrument][tf] = ohlc
 
-        # Update the last update for this instrument
+        # - update last update for this instrument
         if bars:
-            self._updates[instrument] = bars[-1]  # Use the last bar as the last update
+            self._updates[instrument] = bars[-1]  # - use the last bar as the last update
+            # - sync _last_bar to the newest fetched bar so the guard in update_by_bar
+            # - correctly skips stale WebSocket updates that arrive after a historical refetch
+            # - advanced the series beyond the current _last_bar position
+            _cur_last = self._last_bar[instrument]
+            _newest = bars[-1]
+            if _cur_last is None or _newest.time > _cur_last.time:
+                self._last_bar[instrument] = _newest
 
         return ohlc
 

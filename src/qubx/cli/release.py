@@ -562,102 +562,146 @@ def release_strategy(
         logger.opt(colors=False).error(f"Error releasing strategy: {e}")
 
 
-def release_from_source(
+def prepare_source_checkout(
     config_file: str,
-    output_dir: str,
-    tag: str | None = None,
-) -> str | None:
+    cache_root: str | Path = ".releases/sources",
+    refresh: bool = False,
+    install_project: bool = True,
+) -> tuple[Path, StrategyConfig]:
     """
-    Build a release by cloning the source repo specified in the config's release.source section.
+    Prepare a source checkout for --from-sources workflows.
 
-    This is the entry point for CI-driven releases (e.g., from xrelease GitHub Action).
-    It reads the release.source.repo and release.source.ref from the config YAML,
-    clones that repo at the specified ref into a temp directory, copies the config
-    into the clone, and runs the standard release flow.
+    Clones the repo specified in ``config.release.source`` into a cached dir
+    (reusing it across invocations) and runs ``uv sync --all-extras`` so
+    dependencies are resolved and the strategy package is importable.
 
     Args:
-        config_file: Path to the strategy config YAML (must have a release.source section)
-        output_dir: Directory to write the release ZIP
-        tag: Optional tag suffix for the release name
+        config_file: Path to the strategy config YAML (must have release.source).
+        cache_root: Root dir for cached checkouts. Relative paths are resolved
+            against the current working directory.
+        refresh: If True, wipe any existing cached checkout and re-clone.
+        install_project: If True (default), install the project package into the
+            cloned venv (needed for ``qubx run``). Set to False for release flows
+            that only need deps in the uv git cache.
 
     Returns:
-        Path to the created ZIP file, or None on failure
+        Tuple of (clone_dir, parsed_strategy_config).
     """
     import subprocess
-    import tempfile
 
-    from qubx import QubxLogConfig
+    config_path = os.path.abspath(os.path.expanduser(config_file))
+    if not is_config_file(config_path):
+        raise ValueError(f"Not a valid config file: {config_file}")
 
-    QubxLogConfig.set_log_level("INFO")
+    stg_config = load_strategy_config_from_yaml(config_path, resolve_env=False)
+    if not stg_config.release or not stg_config.release.source:
+        raise ValueError("Config must have a release.source section with repo and ref")
 
-    try:
-        config_path = os.path.abspath(os.path.expanduser(config_file))
-        if not is_config_file(config_path):
-            raise ValueError(f"Not a valid config file: {config_file}")
+    source = stg_config.release.source
+    repo_url = f"https://github.com/{source.repo}.git"
+    ref = source.ref
 
-        # Parse the config to extract release.source
-        stg_config = load_strategy_config_from_yaml(config_path, resolve_env=False)
-        if not stg_config.release or not stg_config.release.source:
-            raise ValueError("Config must have a release.source section with repo and ref")
+    # Cache key: <owner>_<name>_<ref>, with ref sanitized for the filesystem.
+    owner, name = source.repo.split("/", 1)
+    safe_ref = re.sub(r"[^A-Za-z0-9._-]", "_", ref)
+    cache_dir = Path(cache_root).expanduser().resolve() / f"{owner}_{name}_{safe_ref}"
 
-        source = stg_config.release.source
-        repo_url = f"https://github.com/{source.repo}.git"
-        ref = source.ref
+    if refresh and cache_dir.exists():
+        logger.info(f"Refreshing cached checkout at <cyan>{cache_dir}</cyan>")
+        shutil.rmtree(cache_dir)
 
-        logger.info(f"Cloning {source.repo} at ref '{ref}' ...")
-        clone_dir = tempfile.mkdtemp(prefix="qubx-release-")
-
+    if not cache_dir.exists():
+        cache_dir.parent.mkdir(parents=True, exist_ok=True)
+        logger.info(f"Cloning <cyan>{source.repo}</cyan> at ref '<yellow>{ref}</yellow>' to {cache_dir}")
         try:
             subprocess.run(
-                ["git", "clone", "--depth", "1", "--branch", ref, repo_url, clone_dir],
+                ["git", "clone", "--depth", "1", "--branch", ref, repo_url, str(cache_dir)],
                 check=True,
                 capture_output=True,
                 text=True,
             )
         except subprocess.CalledProcessError:
-            # --branch doesn't work with commit SHAs, fall back to full clone + checkout
+            # --branch doesn't work with commit SHAs; fall back to full clone + checkout.
             logger.info(f"Shallow clone failed for ref '{ref}', trying full clone...")
-            shutil.rmtree(clone_dir, ignore_errors=True)
-            os.makedirs(clone_dir)
+            if cache_dir.exists():
+                shutil.rmtree(cache_dir)
+            cache_dir.mkdir(parents=True, exist_ok=True)
             subprocess.run(
-                ["git", "clone", repo_url, clone_dir],
+                ["git", "clone", repo_url, str(cache_dir)],
                 check=True,
                 capture_output=True,
                 text=True,
             )
             subprocess.run(
                 ["git", "checkout", ref],
-                cwd=clone_dir,
+                cwd=str(cache_dir),
                 check=True,
                 capture_output=True,
                 text=True,
             )
+    else:
+        logger.info(f"Reusing cached checkout at <cyan>{cache_dir}</cyan>")
 
-        # Resolve and fetch dependencies in the cloned project.
-        # uv sync populates the git checkout cache (needed for _find_uv_git_checkout),
-        # while uv lock alone does not. Use --all-extras to include optional deps
-        # (plugins like qubx-lighter, xmetals are typically in optional extras).
-        logger.info("Resolving and fetching dependencies in cloned project...")
-        result = subprocess.run(
-            ["uv", "sync", "--no-install-project", "--all-extras"],
-            cwd=clone_dir,
-            capture_output=True,
-            text=True,
+    # Resolve and install dependencies in the cloned project.
+    # --all-extras pulls in optional extras (qubx-lighter, xmetals plugins).
+    # Skipping --no-install-project installs the strategy package itself into
+    # the cloned venv — required for `qubx run` to import the strategy.
+    sync_args = ["uv", "sync", "--all-extras"]
+    if not install_project:
+        sync_args.insert(2, "--no-install-project")
+    logger.info(f"Running <cyan>{' '.join(sync_args)}</cyan> in {cache_dir}")
+    result = subprocess.run(sync_args, cwd=str(cache_dir), capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.opt(colors=False).error(f"uv sync failed:\n{result.stderr}")
+        raise subprocess.CalledProcessError(result.returncode, result.args, output=result.stdout, stderr=result.stderr)
+
+    return cache_dir, stg_config
+
+
+def release_from_source(
+    config_file: str,
+    output_dir: str,
+    tag: str | None = None,
+    refresh: bool = False,
+) -> str | None:
+    """
+    Build a release by cloning the source repo specified in ``config.release.source``.
+
+    Thin wrapper around ``prepare_source_checkout`` + the standard release flow.
+    Used by ``qubx release --from-sources``.
+
+    Args:
+        config_file: Path to the strategy config YAML (must have a release.source section)
+        output_dir: Directory to write the release ZIP
+        tag: Optional tag suffix for the release name
+        refresh: Force re-clone of the source cache
+
+    Returns:
+        Path to the created ZIP file, or None on failure
+    """
+    from qubx import QubxLogConfig
+
+    QubxLogConfig.set_log_level("INFO")
+
+    try:
+        config_path = os.path.abspath(os.path.expanduser(config_file))
+        # release flow reads source files directly from the clone; no need to install the project.
+        clone_dir, stg_config = prepare_source_checkout(
+            config_file=config_path,
+            refresh=refresh,
+            install_project=False,
         )
-        if result.returncode != 0:
-            logger.error(f"uv sync failed:\n{result.stderr}")
-            raise subprocess.CalledProcessError(result.returncode, result.args)
+        assert stg_config.release and stg_config.release.source  # verified in helper
+        ref = stg_config.release.source.ref
 
-        # Copy the config into the clone root so release can find it
+        # Copy the config into the clone root so the release flow can find it.
         config_basename = os.path.basename(config_path)
-        cloned_config = os.path.join(clone_dir, config_basename)
+        cloned_config = os.path.join(str(clone_dir), config_basename)
         shutil.copy2(config_path, cloned_config)
 
-        # Run the standard release flow from the cloned project
-        logger.info(f"Running release from {clone_dir} ...")
+        logger.info(f"Running release from <cyan>{clone_dir}</cyan>")
         output_dir = os.path.abspath(output_dir)
-        stg_info = load_strategy_from_config(Path(cloned_config), clone_dir)
-        pyproject_root = clone_dir
+        stg_info = load_strategy_from_config(Path(cloned_config), str(clone_dir))
 
         git_info = ReleaseInfo(
             tag=generate_tag(stg_info.name, tag),
@@ -670,12 +714,11 @@ def release_from_source(
         create_released_pack(
             stg_info=stg_info,
             git_info=git_info,
-            pyproject_root=pyproject_root,
+            pyproject_root=str(clone_dir),
             output_dir=output_dir,
             config_file=cloned_config,
         )
 
-        # Find the created ZIP
         zip_path = os.path.join(output_dir, f"{git_info.tag}.zip")
         if os.path.exists(zip_path):
             logger.info(f"Release created: {zip_path}")
@@ -687,10 +730,6 @@ def release_from_source(
     except Exception as e:
         logger.opt(colors=False).error(f"Error in release_from_source: {e}")
         return None
-    finally:
-        # Clean up temp clone
-        if "clone_dir" in locals():
-            shutil.rmtree(clone_dir, ignore_errors=True)
 
 
 def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
