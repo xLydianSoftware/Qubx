@@ -36,6 +36,9 @@ nav:
       - Deployment: tutorials/deployment.ipynb
       - QuestDB setup: tutorials/questdb-setup.md
       - Signal Export: tutorials/signal-export.md
+  - Connectors:
+      - Creating Connectors: connectors/creating-connectors.md
+      - Rate Limiting: connectors/rate-limiting.md
   - Development:
       - Contributing: development/contributing.md
       - Development Setup: development/setup.md
