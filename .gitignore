@@ -184,3 +184,5 @@ accounts/
 *.code-workspace
 
 **/_version.py
+.mcp.json
+.vscode/skena-mcp.js
