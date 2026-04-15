@@ -1,0 +1,2368 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Qubx - Quantitative Trading Framework">
+      
+      
+      
+        <link rel="canonical" href="https://xlydian.com/stable/connectors/creating-connectors/">
+      
+      
+        <link rel="prev" href="../../tutorials/signal-export/">
+      
+      
+        <link rel="next" href="../rate-limiting/">
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.5">
+    
+    
+      
+        <title>Creating Connectors - Qubx</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.8608ea7d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/qx.extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#creating-exchange-connectors-for-qubx" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Qubx" class="md-header__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Qubx
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Creating Connectors
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+
+<!-- Main navigation -->
+
+
+<div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Qubx" class="md-nav__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Qubx
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quick Start Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/configuration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Core Concepts
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Core Concepts
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/backtesting-framework/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtesting Framework
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/strategies/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategies
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/data-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/release-deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release & Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Backtesting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Backtesting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backtesting/simulations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Simulations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backtesting/management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtest Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backtesting/scheduling/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Scheduling
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backtesting/performance-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Metrics
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Trading
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Trading
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../trading/paper-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Paper Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../trading/live-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Live Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../trading/control-protocol/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Bot Control Protocol
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../trading/risk-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Risk Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Analysis and Reporting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Analysis and Reporting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../analysis/visualization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Visualization
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../analysis/reporting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reporting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    API Reference
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            API Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/core-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Core API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/strategy-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategy API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/data-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Tutorials and Examples
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Tutorials and Examples
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/basic/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Basic
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/data-preparation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Preparation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/questdb-setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    QuestDB setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/signal-export/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Signal Export
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--active md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" checked>
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="true">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    Creating Connectors
+    
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  <span class="md-ellipsis">
+    Creating Connectors
+    
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-system-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Plugin System Architecture
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      Project Structure
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pyprojecttoml-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      pyproject.toml Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#component-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Component Implementation
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Component Implementation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-data-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Data Provider
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-account-processor" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Account Processor
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-broker" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Broker
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-data-reader" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Data Reader
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Data Reader">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#using-the-reader-in-strategies" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using the Reader in Strategies
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../rate-limiting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Rate Limiting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Development
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Development
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Development Setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/release/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release Process
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../about/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    About
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+        </div>
+    </div>
+</div>
+
+
+<!-- Table of contents -->
+<!-- 
+
+<div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#overview" class="md-nav__link">
+    <span class="md-ellipsis">
+      Overview
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#plugin-system-architecture" class="md-nav__link">
+    <span class="md-ellipsis">
+      Plugin System Architecture
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#project-structure" class="md-nav__link">
+    <span class="md-ellipsis">
+      Project Structure
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#pyprojecttoml-configuration" class="md-nav__link">
+    <span class="md-ellipsis">
+      pyproject.toml Configuration
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#component-implementation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Component Implementation
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Component Implementation">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-data-provider" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Data Provider
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-account-processor" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Account Processor
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-broker" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Broker
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-data-reader" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Data Reader
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="4. Data Reader">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#using-the-reader-in-strategies" class="md-nav__link">
+    <span class="md-ellipsis">
+      Using the Reader in Strategies
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+        </div>
+    </div>
+</div>
+ -->
+
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="creating-exchange-connectors-for-qubx">Creating Exchange Connectors for Qubx<a class="headerlink" href="#creating-exchange-connectors-for-qubx" title="Permanent link">&para;</a></h1>
+<p>This guide explains how to build exchange connectors for Qubx. Connectors enable Qubx to communicate with exchanges for market data streaming and order execution.</p>
+<h2 id="overview">Overview<a class="headerlink" href="#overview" title="Permanent link">&para;</a></h2>
+<p>A complete exchange connector consists of four main components:</p>
+<ol>
+<li><strong>Data Provider</strong> (<code>IDataProvider</code>) - Streams real-time market data (quotes, trades, orderbooks, etc.)</li>
+<li><strong>Account Processor</strong> (<code>IAccountProcessor</code>) - Tracks positions, balances, and orders</li>
+<li><strong>Broker</strong> (<code>IBroker</code>) - Executes orders on the exchange</li>
+<li><strong>Data Reader</strong> (<code>DataReader</code>) - Fetches historical data (OHLC, funding rates, etc.)</li>
+</ol>
+<p>These components are registered with Qubx's plugin system using decorators, allowing them to be loaded dynamically.</p>
+<h2 id="plugin-system-architecture">Plugin System Architecture<a class="headerlink" href="#plugin-system-architecture" title="Permanent link">&para;</a></h2>
+<p>Qubx uses a registry-based plugin system. Connectors are registered using decorators:</p>
+<p>```python
+from qubx.connectors.registry import data_provider, account_processor, broker
+from qubx.data.registry import reader</p>
+<p>@data_provider("myexchange")
+class MyDataProvider(IDataProvider):
+    ...</p>
+<p>@account_processor("myexchange")
+class MyAccountProcessor(BasicAccountProcessor):
+    ...</p>
+<p>@broker("myexchange")
+class MyBroker(IBroker):
+    ...</p>
+<p>@reader("myexchange")
+class MyDataReader(DataReader):
+    ...
+```</p>
+<p>When users specify <code>connector: myexchange</code> in their configuration, Qubx looks up the registered classes and instantiates them.</p>
+<h2 id="project-structure">Project Structure<a class="headerlink" href="#project-structure" title="Permanent link">&para;</a></h2>
+<p>A typical connector package follows this structure:</p>
+<p><code>my_connector/
+├── pyproject.toml
+├── README.md
+├── src/
+│   └── my_connector/
+│       ├── __init__.py      # Exports + registration
+│       ├── data.py          # IDataProvider implementation
+│       ├── account.py       # IAccountProcessor implementation
+│       ├── broker.py        # IBroker implementation
+│       ├── reader.py        # DataReader implementation
+│       ├── client.py        # Exchange API client
+│       ├── factory.py       # Shared resource caching
+│       ├── websocket.py     # WebSocket management
+│       ├── parsers.py       # Message parsing utilities
+│       └── handlers/        # Message handlers
+│           ├── __init__.py
+│           ├── orderbook.py
+│           └── trades.py
+└── tests/
+    ├── unit/
+    └── integration/</code></p>
+<h2 id="pyprojecttoml-configuration">pyproject.toml Configuration<a class="headerlink" href="#pyprojecttoml-configuration" title="Permanent link">&para;</a></h2>
+<p>```toml
+[project]
+name = "my-connector"
+version = "0.1.0"
+description = "My exchange connector for Qubx"
+requires-python = "&gt;=3.12,&lt;4.0"
+dependencies = [
+    "qubx&gt;=0.12.0",      # Peer dependency on Qubx
+    # ... exchange-specific dependencies
+]</p>
+<p>[build-system]
+requires = ["hatchling&gt;=1.21.0"]
+build-backend = "hatchling.build"</p>
+<p>[tool.hatch.build.targets.wheel]
+packages = ["src/my_connector"]
+```</p>
+<h2 id="component-implementation">Component Implementation<a class="headerlink" href="#component-implementation" title="Permanent link">&para;</a></h2>
+<h3 id="1-data-provider">1. Data Provider<a class="headerlink" href="#1-data-provider" title="Permanent link">&para;</a></h3>
+<p>The data provider streams market data from the exchange:</p>
+<p>```python
+from qubx.connectors.registry import data_provider
+from qubx.core.interfaces import IDataProvider</p>
+<p>@data_provider("myexchange")
+class MyDataProvider(IDataProvider):
+    SUPPORTED_SUBSCRIPTIONS = [
+        DataType.ORDERBOOK,
+        DataType.TRADE,
+        DataType.QUOTE,
+    ]</p>
+<div class="codehilite"><pre><span></span><code>def __init__(
+    self,
+    exchange_name: str,
+    time_provider: ITimeProvider,
+    channel: CtrlChannel,
+    health_monitor: IHealthMonitor,
+    account_manager: &quot;AccountConfigurationManager&quot;,
+    **kwargs,
+):
+    # Get credentials from account manager
+    creds = account_manager.get_exchange_credentials(exchange_name)
+    settings = account_manager.get_exchange_settings(exchange_name)
+
+    # Initialize client and WebSocket
+    self.client = get_my_client(creds.api_key, creds.secret)
+    self._ws_manager = get_my_ws_manager()
+
+@property
+def is_simulation(self) -&gt; bool:
+    return False
+
+def exchange(self) -&gt; str:
+    return &quot;MYEXCHANGE&quot;
+
+def subscribe(
+    self,
+    subscription_type: str,
+    instruments: set[Instrument],
+    reset: bool = False,
+) -&gt; None:
+    # Subscribe to market data channels
+    for instrument in instruments:
+        self._subscribe_instrument(subscription_type, instrument)
+
+def get_quote(self, instrument: Instrument) -&gt; Quote | None:
+    return self._last_quotes.get(instrument)
+
+def close(self) -&gt; None:
+    if self._ws_manager:
+        self._ws_manager.disconnect()
+</code></pre></div>
+
+<p>```</p>
+<h3 id="2-account-processor">2. Account Processor<a class="headerlink" href="#2-account-processor" title="Permanent link">&para;</a></h3>
+<p>The account processor tracks positions, balances, and orders:</p>
+<p>```python
+from qubx.connectors.registry import account_processor
+from qubx.core.account import BasicAccountProcessor</p>
+<p>@account_processor("myexchange")
+class MyAccountProcessor(BasicAccountProcessor):
+    def <strong>init</strong>(
+        self,
+        exchange_name: str,
+        channel: CtrlChannel,
+        time_provider: ITimeProvider,
+        account_manager: "AccountConfigurationManager",
+        tcc: TransactionCostsCalculator,
+        health_monitor: IHealthMonitor,
+        **kwargs,
+    ):
+        creds = account_manager.get_exchange_credentials(exchange_name)
+        account_id = creds.get_extra_field("account_index", exchange_name)</p>
+<div class="codehilite"><pre><span></span><code>    super().__init__(
+        account_id=str(account_id),
+        time_provider=time_provider,
+        base_currency=creds.base_currency,
+        health_monitor=health_monitor,
+        exchange=&quot;MYEXCHANGE&quot;,
+        tcc=tcc,
+        initial_capital=0,
+    )
+
+    # Initialize WebSocket for account updates
+    self.ws_manager = get_my_ws_manager()
+    self.channel = channel
+
+def start(self):
+    # Subscribe to account updates
+    self._async_loop.submit(self._subscribe_account_updates())
+
+def stop(self):
+    # Cleanup
+    pass
+</code></pre></div>
+
+<p>```</p>
+<h3 id="3-broker">3. Broker<a class="headerlink" href="#3-broker" title="Permanent link">&para;</a></h3>
+<p>The broker executes orders on the exchange:</p>
+<p>```python
+from qubx.connectors.registry import broker
+from qubx.core.interfaces import IBroker</p>
+<p>@broker("myexchange")
+class MyBroker(IBroker):
+    def <strong>init</strong>(
+        self,
+        exchange_name: str,
+        channel: CtrlChannel,
+        time_provider: ITimeProvider,
+        account: IAccountProcessor,
+        data_provider: IDataProvider,
+        account_manager: "AccountConfigurationManager",
+        health_monitor: IHealthMonitor,
+        **kwargs,
+    ):
+        creds = account_manager.get_exchange_credentials(exchange_name)
+        self.client = get_my_client(creds.api_key, creds.secret)
+        self.time_provider = time_provider
+        self.account = account</p>
+<div class="codehilite"><pre><span></span><code>@property
+def is_simulated_trading(self) -&gt; bool:
+    return False
+
+def exchange(self) -&gt; str:
+    return &quot;MYEXCHANGE&quot;
+
+def send_order(self, request: OrderRequest) -&gt; Order:
+    # Execute order synchronously
+    return self._async_loop.submit(
+        self._create_order(request)
+    ).result()
+
+def send_order_async(self, request: OrderRequest) -&gt; str | None:
+    # Execute order asynchronously
+    self._async_loop.submit(self._create_order(request))
+    return request.client_id
+
+def cancel_order(self, order_id: str | None = None,
+                 client_order_id: str | None = None) -&gt; bool:
+    # Cancel order
+    ...
+
+def update_order(self, price: float, amount: float,
+                 order_id: str | None = None,
+                 client_order_id: str | None = None) -&gt; Order:
+    # Modify order
+    ...
+</code></pre></div>
+
+<p>```</p>
+<h3 id="4-data-reader">4. Data Reader<a class="headerlink" href="#4-data-reader" title="Permanent link">&para;</a></h3>
+<p>The data reader fetches historical data from the exchange REST API. This is essential for:
+- Strategy warmup (loading recent OHLC data before live trading starts)
+- Backtesting with recent exchange data
+- Fetching funding rate history for analysis
+- Research and data exploration</p>
+<p>```python
+from qubx.data.readers import DataReader, DataTransformer
+from qubx.data.registry import reader</p>
+<p>@reader("myexchange")
+class MyDataReader(DataReader):
+    """
+    Data reader for MyExchange.</p>
+<div class="codehilite"><pre><span></span><code>Fetches historical OHLC data and funding payments via REST API.
+&quot;&quot;&quot;
+
+SUPPORTED_DATA_TYPES = {&quot;ohlc&quot;, &quot;funding_payment&quot;}
+
+def __init__(
+    self,
+    client: MyClient,
+    max_bars: int = 10_000,
+    max_history: str = &quot;30d&quot;,
+):
+    &quot;&quot;&quot;
+    Initialize data reader.
+
+    Args:
+        client: Pre-configured API client instance
+        max_bars: Maximum bars to fetch per request
+        max_history: Maximum historical data lookback
+    &quot;&quot;&quot;
+    self.client = client
+    self._max_bars = max_bars
+    self._max_history = pd.Timedelta(max_history)
+
+def read(
+    self,
+    data_id: str,
+    start: str | None = None,
+    stop: str | None = None,
+    transform: DataTransformer = DataTransformer(),
+    chunksize: int = 0,
+    timeframe: str = &quot;1m&quot;,
+    data_type: str = &quot;ohlc&quot;,
+    **kwargs,
+) -&gt; Iterable | list:
+    &quot;&quot;&quot;
+    Read historical data for a single instrument.
+
+    Args:
+        data_id: Data identifier (e.g., &quot;MYEXCHANGE:BTCUSDC&quot;)
+        start: Start timestamp
+        stop: End timestamp
+        transform: Data transformer for output format
+        chunksize: If &gt; 0, return iterator of chunks
+        timeframe: Candle timeframe (e.g., &quot;1m&quot;, &quot;1h&quot;, &quot;1d&quot;)
+        data_type: Type of data (&quot;ohlc&quot; or &quot;funding_payment&quot;)
+
+    Returns:
+        List of data or iterator if chunksize &gt; 0
+    &quot;&quot;&quot;
+    if data_type not in self.SUPPORTED_DATA_TYPES:
+        return []
+
+    instrument = self._get_instrument(data_id)
+    if instrument is None:
+        return []
+
+    # Fetch data from exchange
+    data = self._fetch_data(instrument, data_type, timeframe, start, stop)
+
+    # Apply transformation
+    column_names = self._get_column_names(data_type)
+    transform.start_transform(data_id, column_names, start=start, stop=stop)
+    transform.process_data(data)
+    return transform.collect()
+
+def get_candles(
+    self,
+    exchange: str,
+    symbols: list[str] | None = None,
+    start: str | pd.Timestamp | None = None,
+    stop: str | pd.Timestamp | None = None,
+    timeframe: str = &quot;1d&quot;,
+) -&gt; pd.DataFrame:
+    &quot;&quot;&quot;
+    Fetch OHLC candles for multiple symbols.
+
+    This method is used by strategies to get historical price data
+    for warmup or analysis.
+
+    Args:
+        exchange: Exchange name (must match reader name)
+        symbols: List of symbols to fetch (None = all)
+        start: Start timestamp
+        stop: End timestamp
+        timeframe: Candle timeframe
+
+    Returns:
+        DataFrame with MultiIndex (timestamp, symbol) and
+        columns: open, high, low, close, volume
+    &quot;&quot;&quot;
+    if exchange not in self.get_names():
+        return pd.DataFrame()
+
+    instruments = self._get_instruments_for_symbols(symbols)
+
+    # Fetch candles for all instruments concurrently
+    all_data = []
+    for instrument in instruments:
+        candles = self._fetch_ohlcv(instrument, timeframe, start, stop)
+        for candle in candles:
+            all_data.append({
+                &quot;timestamp&quot;: candle[0],
+                &quot;symbol&quot;: instrument.symbol,
+                &quot;open&quot;: candle[1],
+                &quot;high&quot;: candle[2],
+                &quot;low&quot;: candle[3],
+                &quot;close&quot;: candle[4],
+                &quot;volume&quot;: candle[5],
+            })
+
+    df = pd.DataFrame(all_data)
+    df = df.sort_values(&quot;timestamp&quot;)
+    df = df.set_index([&quot;timestamp&quot;, &quot;symbol&quot;])
+    return df
+
+def get_funding_payment(
+    self,
+    exchange: str,
+    symbols: list[str] | None = None,
+    start: str | pd.Timestamp | None = None,
+    stop: str | pd.Timestamp | None = None,
+) -&gt; pd.DataFrame:
+    &quot;&quot;&quot;
+    Fetch funding rate history for perpetual contracts.
+
+    Args:
+        exchange: Exchange name
+        symbols: List of symbols (None = all)
+        start: Start timestamp
+        stop: End timestamp
+
+    Returns:
+        DataFrame with columns: funding_rate, funding_interval_hours
+    &quot;&quot;&quot;
+    # Implementation similar to get_candles but for funding data
+    ...
+
+def get_names(self, **kwargs) -&gt; list[str]:
+    &quot;&quot;&quot;Return list of exchange names this reader supports.&quot;&quot;&quot;
+    return [&quot;MYEXCHANGE&quot;]
+
+def get_symbols(self, exchange: str, dtype: str) -&gt; list[str]:
+    &quot;&quot;&quot;Return available symbols for the given data type.&quot;&quot;&quot;
+    if dtype not in self.SUPPORTED_DATA_TYPES:
+        return []
+    instruments = lookup.find_instruments(exchange=exchange)
+    return [i.symbol for i in instruments]
+
+def get_time_ranges(
+    self, symbol: str, dtype: str
+) -&gt; tuple[np.datetime64 | None, np.datetime64 | None]:
+    &quot;&quot;&quot;Return available time range for the symbol.&quot;&quot;&quot;
+    if dtype not in self.SUPPORTED_DATA_TYPES:
+        return None, None
+    end_time = now_utc()
+    start_time = end_time - self._max_history
+    return start_time.to_datetime64(), end_time.to_datetime64()
+
+def close(self):
+    &quot;&quot;&quot;Clean up resources.&quot;&quot;&quot;
+    pass
+</code></pre></div>
+
+<p>```</p>
+<h4 id="using-the-reader-in-strategies">Using the Reader in Strategies<a class="headerlink" href="#using-the-reader-in-strategies" title="Permanent link">&para;</a></h4>
+<p>The reader is configured via the <code>aux</code> section in strategy configuration:</p>
+<p>```yaml
+strategy: my_strategy.MyStrategy
+parameters:
+  lookback_days: 30</p>
+<p>live:
+  exchanges:
+    MYEXCHANGE:
+      connector: myexchange
+      universe:
+        - BTCUSDC
+        - ETHUSDC</p>
+<h1 id="configure-auxiliary-data-reader">Configure auxiliary data reader<a class="headerlink" href="#configure-auxiliary-data-reader" title="Permanent link">&para;</a></h1>
+<p>aux:
+  reader: myexchange
+  args:
+    max_history: "30d"
+```</p>
+<p>In the strategy, access historical data via the context:</p>
+<p>```python
+class MyStrategy(IStrategy):
+    def on_init(self, initializer: IStrategyInitializer):
+        # Request OHLC warmup data
+        initializer.set_subscription_warmup({
+            DataType.OHLC["1h"]: "7d"  # Warmup with 7 days of hourly data
+        })</p>
+<div class="codehilite"><pre><span></span><code>def on_start(self, ctx: IStrategyContext):
+    # Fetch funding rate history for analysis
+    funding_data = ctx.get_aux_data(
+        &quot;funding_payment&quot;,
+        exchange=&quot;MYEXCHANGE&quot;,
+        symbols=[&quot;BTCUSDC&quot;, &quot;ETHUSDC&quot;],
+        start=&quot;2024-01-01&quot;,
+    )
+
+    # Calculate average funding rate
+    avg_funding = funding_data[&quot;funding_rate&quot;].mean()
+    logger.info(f&quot;Average funding rate: {avg_funding:.4%}&quot;)
+</code></pre></div>
+
+<p>```</p>
+<h2 id="factory-pattern">Factory Pattern<a class="headerlink" href="#factory-pattern" title="Permanent link">&para;</a></h2>
+<p>Use a factory pattern to cache shared resources (clients, WebSocket connections):</p>
+<p>```python
+from functools import lru_cache</p>
+<p>@lru_cache(maxsize=32)
+def get_my_client(api_key: str, secret: str, <strong>kwargs) -&gt; MyClient:
+    """Get cached client instance."""
+    return MyClient(api_key=api_key, secret=secret, </strong>kwargs)</p>
+<p>@lru_cache(maxsize=32)
+def get_my_ws_manager(api_key: str, secret: str, <strong>kwargs) -&gt; MyWSManager:
+    """Get cached WebSocket manager instance."""
+    client = get_my_client(api_key, secret, </strong>kwargs)
+    return MyWSManager(client=client)</p>
+<p>def clear_cache() -&gt; None:
+    """Clear all caches. Useful for testing."""
+    get_my_client.cache_clear()
+    get_my_ws_manager.cache_clear()
+```</p>
+<h2 id="websocket-message-handling">WebSocket Message Handling<a class="headerlink" href="#websocket-message-handling" title="Permanent link">&para;</a></h2>
+<p>For real-time data, extend <code>BaseWebSocketManager</code>:</p>
+<p>```python
+from qubx.utils.websocket_manager import BaseWebSocketManager</p>
+<p>class MyWSManager(BaseWebSocketManager):
+    def <strong>init</strong>(self, client: MyClient, **kwargs):
+        super().<strong>init</strong>(
+            url="wss://api.myexchange.com/stream",
+            ping_interval=None,
+            app_ping_interval=20.0,
+        )
+        self._client = client</p>
+<div class="codehilite"><pre><span></span><code>async def _send_subscription_message(self, channel: str, params: dict) -&gt; None:
+    &quot;&quot;&quot;Send exchange-specific subscription message.&quot;&quot;&quot;
+    message = {&quot;type&quot;: &quot;subscribe&quot;, &quot;channel&quot;: channel}
+    await self.send(message)
+
+async def _send_unsubscription_message(self, channel: str) -&gt; None:
+    &quot;&quot;&quot;Send exchange-specific unsubscription message.&quot;&quot;&quot;
+    message = {&quot;type&quot;: &quot;unsubscribe&quot;, &quot;channel&quot;: channel}
+    await self.send(message)
+
+def _extract_channel(self, message: dict) -&gt; str | None:
+    &quot;&quot;&quot;Extract channel identifier from message.&quot;&quot;&quot;
+    return message.get(&quot;channel&quot;)
+</code></pre></div>
+
+<p>```</p>
+<h2 id="message-handlers">Message Handlers<a class="headerlink" href="#message-handlers" title="Permanent link">&para;</a></h2>
+<p>Create handlers for different message types:</p>
+<p>```python
+from abc import ABC, abstractmethod
+from typing import Generic, TypeVar</p>
+<p>T = TypeVar("T")</p>
+<p>class BaseHandler(ABC, Generic[T]):
+    @abstractmethod
+    def can_handle(self, message: dict) -&gt; bool:
+        """Check if handler can process this message."""
+        ...</p>
+<div class="codehilite"><pre><span></span><code>@abstractmethod
+def handle(self, message: dict) -&gt; T | None:
+    &quot;&quot;&quot;Process message and return Qubx data type.&quot;&quot;&quot;
+    ...
+</code></pre></div>
+
+<p>class OrderbookHandler(BaseHandler[OrderBook]):
+    def <strong>init</strong>(self, market_id: int, instrument: Instrument):
+        self.market_id = market_id
+        self.instrument = instrument
+        self._lob = LOB(depth=200)</p>
+<div class="codehilite"><pre><span></span><code>def can_handle(self, message: dict) -&gt; bool:
+    return message.get(&quot;channel&quot;) == f&quot;orderbook:{self.market_id}&quot;
+
+def handle(self, message: dict) -&gt; OrderBook | None:
+    # Parse message and update LOB state
+    # Return OrderBook snapshot
+    ...
+</code></pre></div>
+
+<p>```</p>
+<h2 id="configuration">Configuration<a class="headerlink" href="#configuration" title="Permanent link">&para;</a></h2>
+<p>Users configure your connector in their strategy YAML:</p>
+<p>```yaml
+strategy: my_strategy.MyStrategy
+parameters:
+  param1: value1</p>
+<p>live:
+  read_only: false
+  exchanges:
+    MYEXCHANGE:
+      connector: myexchange
+      universe:
+        - BTCUSDC
+        - ETHUSDC
+      extra:
+        # Connector-specific options
+        account_index: 12345</p>
+<h1 id="optional-configure-data-reader-for-historical-data">Optional: Configure data reader for historical data<a class="headerlink" href="#optional-configure-data-reader-for-historical-data" title="Permanent link">&para;</a></h1>
+<p>aux:
+  reader: myexchange
+  args:
+    max_history: "30d"
+    max_bars: 10000
+```</p>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<h3 id="unit-tests">Unit Tests<a class="headerlink" href="#unit-tests" title="Permanent link">&para;</a></h3>
+<p>```python
+import pytest
+from my_connector.handlers import OrderbookHandler</p>
+<p>def test_orderbook_handler():
+    handler = OrderbookHandler(market_id=0, instrument=mock_instrument)</p>
+<div class="codehilite"><pre><span></span><code>message = {
+    &quot;channel&quot;: &quot;orderbook:0&quot;,
+    &quot;type&quot;: &quot;snapshot&quot;,
+    &quot;bids&quot;: [{&quot;price&quot;: &quot;100.0&quot;, &quot;size&quot;: &quot;1.0&quot;}],
+    &quot;asks&quot;: [{&quot;price&quot;: &quot;101.0&quot;, &quot;size&quot;: &quot;1.0&quot;}],
+}
+
+result = handler.handle(message)
+assert result is not None
+assert result.top_bid == 100.0
+assert result.top_ask == 101.0
+</code></pre></div>
+
+<p>```</p>
+<h3 id="integration-tests">Integration Tests<a class="headerlink" href="#integration-tests" title="Permanent link">&para;</a></h3>
+<p>```python
+import pytest</p>
+<p>@pytest.mark.integration
+async def test_websocket_connection():
+    client = MyClient(api_key="test", secret="test")
+    ws = MyWSManager(client=client)</p>
+<div class="codehilite"><pre><span></span><code>await ws.connect()
+assert ws.is_connected
+
+await ws.disconnect()
+</code></pre></div>
+
+<p>```</p>
+<h2 id="installation-and-usage">Installation and Usage<a class="headerlink" href="#installation-and-usage" title="Permanent link">&para;</a></h2>
+<p>After publishing your connector:</p>
+<p><code>bash
+pip install my-connector</code></p>
+<p>Users import the connector to register it:</p>
+<p>```python
+import my_connector  # Registers with Qubx</p>
+<h1 id="then-use-in-configuration">Then use in configuration<a class="headerlink" href="#then-use-in-configuration" title="Permanent link">&para;</a></h1>
+<p>```</p>
+<p>Or specify in plugins configuration:</p>
+<p><code>yaml
+plugins:
+  modules:
+    - my_connector</code></p>
+<h2 id="best-practices">Best Practices<a class="headerlink" href="#best-practices" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong>Use Caching</strong>: Cache shared resources (clients, connections) to avoid duplication</li>
+<li><strong>Handle Reconnection</strong>: Implement proper WebSocket reconnection with state reset</li>
+<li><strong>Rate Limiting</strong>: Respect exchange rate limits using <code>RateLimiterRegistry</code></li>
+<li><strong>Error Handling</strong>: Send errors through the channel for strategy notification</li>
+<li><strong>Logging</strong>: Use <code>from qubx import logger</code> for consistent logging</li>
+<li><strong>Type Hints</strong>: Use modern Python type hints (<code>list</code>, <code>dict</code>, <code>| None</code>)</li>
+<li><strong>Testing</strong>: Write both unit tests and integration tests</li>
+</ol>
+<h2 id="examples">Examples<a class="headerlink" href="#examples" title="Permanent link">&para;</a></h2>
+<p>See these connectors for reference implementations:</p>
+<ul>
+<li><strong>CCXT Connector</strong>: General-purpose connector using CCXT library (<code>qubx.connectors.ccxt</code>)</li>
+<li><strong>XLighter Connector</strong>: WebSocket-based connector for Lighter exchange (<code>qubx_lighter</code> package)</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+
+        <footer class="md-footer">
+  
+    
+      
+      <nav class="md-footer__inner md-grid" aria-label="Footer" >
+        
+          
+          <a href="../../tutorials/signal-export/" class="md-footer__link md-footer__link--prev" aria-label="Previous: Signal Export">
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+            </div>
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Previous
+              </span>
+              <div class="md-ellipsis">
+                Signal Export
+              </div>
+            </div>
+          </a>
+        
+        
+          
+          <a href="../rate-limiting/" class="md-footer__link md-footer__link--next" aria-label="Next: Rate Limiting">
+            <div class="md-footer__title">
+              <span class="md-footer__direction">
+                Next
+              </span>
+              <div class="md-ellipsis">
+                Rate Limiting
+              </div>
+            </div>
+            <div class="md-footer__button md-icon">
+              
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M4 11v2h12l-5.5 5.5 1.42 1.42L19.84 12l-7.92-7.92L10.5 5.5 16 11z"/></svg>
+            </div>
+          </a>
+        
+      </nav>
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+
+<!-- Place this tag in your head or just before your close body tag. -->
+<script async defer src="https://buttons.github.io/buttons.js"></script>
+<script src="https://code.jquery.com/jquery-3.4.1.min.js"
+    integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
+
+
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../..", "features": ["content.code.annotate", "search.share", "content.code.copy", "navigation.top", "navigation.footer"], "search": "../../assets/javascripts/workers/search.f8cc74c7.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.f1b6f286.min.js"></script>
+      
+        <script src="../../javascripts/config.js"></script>
+      
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
