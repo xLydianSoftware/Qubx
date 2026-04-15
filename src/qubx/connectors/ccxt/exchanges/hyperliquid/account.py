@@ -23,6 +23,19 @@ class HyperliquidAccountProcessor(CcxtAccountProcessor):
     so we must subscribe to both channels separately.
     """
 
+    def _extract_portfolio_value(self, balances_raw: dict) -> float | None:
+        """Extract Hyperliquid account value from raw balance response."""
+        info = balances_raw.get("info", {})
+        for key in ("marginSummary", "crossMarginSummary"):
+            summary = info.get(key, {})
+            val = summary.get("accountValue")
+            if val is not None:
+                try:
+                    return float(val)
+                except (ValueError, TypeError):
+                    pass
+        return None
+
     async def _subscribe_instruments(self, instruments: list[Instrument]):
         """Override to filter out instruments from other exchanges (e.g., spot vs futures)."""
         # Filter instruments to only those belonging to this exchange
