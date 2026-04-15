@@ -1432,12 +1432,14 @@ def _bundle_source_overrides(
                 continue
 
             checkout_dir = _find_uv_git_checkout(commit_sha)
+            cloned_locally = False
             if not checkout_dir:
                 # Cache miss — clone the repo at the exact commit
                 git_url = source["git"]
                 git_ref = source.get("tag") or source.get("branch") or commit_sha
                 logger.info(f"  {pkg_name}: cache miss, cloning {git_url} at {git_ref} ...")
                 checkout_dir = os.path.join(os.path.dirname(wheels_dir), f".git-clone-{pkg_norm}")
+                cloned_locally = True
                 try:
                     subprocess.run(
                         ["git", "clone", "--depth", "1", "--branch", git_ref, git_url, checkout_dir],
@@ -1473,6 +1475,9 @@ def _bundle_source_overrides(
                 logger.info(f"  Bundled {pkg_name}=={pkg_ver} from git")
             except subprocess.CalledProcessError as e:
                 logger.opt(colors=False).warning(f"  Failed to build wheel for {pkg_name}: {e.stderr or e}")
+            finally:
+                if cloned_locally and os.path.isdir(checkout_dir):
+                    shutil.rmtree(checkout_dir, ignore_errors=True)
 
     return bundled
 
