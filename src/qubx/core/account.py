@@ -66,6 +66,7 @@ class BasicAccountProcessor(IAccountProcessor):
         self._pending_order_requests = {}
         self._balances = {}
         self._exchange_total_capital: float | None = None
+        self._exchange_margin_ratio: float | None = None
         # Initialize with base currency balance
         self._balances[self.base_currency] = AssetBalance(
             exchange=self.exchange, currency=self.base_currency, free=initial_capital, locked=0.0, total=initial_capital
@@ -183,7 +184,9 @@ class BasicAccountProcessor(IAccountProcessor):
         return self.get_total_capital(exchange) - self.get_total_required_margin(exchange)
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
-        # total capital / total required margin
+        if self._exchange_margin_ratio is not None:
+            return self._exchange_margin_ratio
+        # fallback: total capital / total required margin
         required_margin = self.get_total_required_margin(exchange)
         if required_margin == 0:
             return 100.0

@@ -8,6 +8,12 @@ NS = 1_000_000_000
 
 cpdef recognize_time(time):
     if isinstance(time, str):
+        # Strip timezone suffix (e.g. 'Z', '+00:00') — np.datetime64 expects tz-naive ISO strings.
+        # All incoming timestamps are assumed UTC.
+        if time.endswith('Z') or time.endswith('z'):
+            time = time[:-1]
+        elif '+' in time[10:]:
+            time = time[:time.rindex('+')]
         return np.datetime64(time, 'ns')
     elif isinstance(time, np.datetime64):
         return time
