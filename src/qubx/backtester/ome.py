@@ -190,11 +190,19 @@ class OrdersManagementEngine:
             if so.side == "BUY" and _as >= so.price:
                 _exec_price = _as if not _emulate_price_exec else so.price
                 self.stop_orders.pop(soid)
+                logger.debug(
+                    f"    [OME({self.instrument.symbol})] :: STOP BUY TRIGGERED {soid} "
+                    f"price={so.price} _as={_as} _bs={_bs} exec_price={_exec_price} | {_mkt_state}"
+                )
                 _exec_report.append(self._execute_order(timestamp, _exec_price, so, True, _mkt_state))
 
             elif so.side == "SELL" and _bs <= so.price:
                 _exec_price = _bs if not _emulate_price_exec else so.price
                 self.stop_orders.pop(soid)
+                logger.debug(
+                    f"    [OME({self.instrument.symbol})] :: STOP SELL TRIGGERED {soid} "
+                    f"price={so.price} _bs={_bs} _as={_as} exec_price={_exec_price} | {_mkt_state}"
+                )
                 _exec_report.append(self._execute_order(timestamp, _exec_price, so, True, _mkt_state))
 
         self._last_update_time = timestamp
