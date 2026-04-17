@@ -198,7 +198,8 @@ cdef class Rsi(Indicator):
     cdef object down_moves
     cdef object smooth_up
     cdef object smooth_down
-    cdef double prev_value
+    cdef double prev_value    # - close of the previous COMPLETED bar (reference for diff)
+    cdef double last_value    # - current bar's working value (updates on every tick)
 
     cpdef double calculate(self, long long time, double value, short new_item_started)
 

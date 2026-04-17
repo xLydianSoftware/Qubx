@@ -1264,6 +1264,7 @@ cdef class Rsi(Indicator):
     def __init__(self, str name, TimeSeries series, int period, str smoother="ema"):
         self.period = period
         self.prev_value = np.nan
+        self.last_value = np.nan
 
         # - create internal series for up and down moves
         self.up_moves = TimeSeries("up_moves", series.timeframe, series.max_series_length)
@@ -1278,20 +1279,33 @@ cdef class Rsi(Indicator):
     cpdef double calculate(self, long long time, double value, short new_item_started):
         cdef double diff, up_move, down_move, smooth_u, smooth_d
 
-        # - for the first value, store it and return NaN
-        if np.isnan(self.prev_value):
-            self.prev_value = value
+        # - very first tick ever: initialize working value, emit 0 up/down moves,
+        # - keep prev_value = NaN so no diff is computed until the first bar finalizes
+        if np.isnan(self.last_value):
+            self.last_value = value
             self.up_moves.update(time, 0.0)
             self.down_moves.update(time, 0.0)
             return np.nan
 
-        # - calculate price change
+        # - on new bar: the previously tracked working value (last_value) has just
+        # - been finalized as the previous bar's close — promote it to prev_value
+        # - so diff is measured against the true previous-bar close, not against
+        # - any intrabar tick we may have seen earlier.
         if new_item_started:
-            diff = value - self.prev_value
-            self.prev_value = value
-        else:
-            # - when updating the same bar, calculate diff from previous closed bar
-            diff = value - self.prev_value
+            self.prev_value = self.last_value
+
+        # - track current working value for the bar (updates on every tick)
+        self.last_value = value
+
+        # - still in the first bar (no finalized prev close yet): emit 0 moves
+        # - and NaN — matches the single-call init path from batch replay
+        if np.isnan(self.prev_value):
+            self.up_moves.update(time, 0.0)
+            self.down_moves.update(time, 0.0)
+            return np.nan
+
+        # - diff is always against the previous COMPLETED bar's close
+        diff = value - self.prev_value
 
         # - calculate up and down moves
         if diff > 0:
