@@ -240,6 +240,31 @@ class TestPortfolioLoggers:
 
         assert not any(t == "positions" for t, _ in captured)
 
+    def test_save_deals_defaults_to_off(self):
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        pos = Position(btc)
+        pos.change_position_by(_DT(0), 0.1, 50000)
+
+        captured: list[tuple[str, list[dict]]] = []
+
+        class _CapturingWriter(LogsWriter):
+            def write_data(self, log_type: str, data: list[dict]):
+                captured.append((log_type, data))
+
+        # Omit positions_log_on_change to exercise the default (False: unchanged behavior).
+        logging = StrategyLogging(
+            logs_writer=_CapturingWriter("acc", "strat", "run"),
+            positions_log_freq="1Min",
+            portfolio_log_freq=None,
+        )
+        assert logging.positions_dumper is not None
+        logging.positions_dumper.attach_positions(pos)
+
+        logging.save_deals(btc, [Deal("1", "o1", _DT(5), 0.1, 50050, False)])
+
+        assert not any(t == "positions" for t, _ in captured)
+
     def test_strategy_logging_disables_loggers_when_none(self):
         captured: list[tuple[str, list[dict]]] = []
 

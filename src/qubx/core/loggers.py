@@ -356,7 +356,7 @@ class StrategyLogging:
         num_exec_records_to_write=1,  # in live let's write every execution
         num_signals_records_to_write=1,
         heartbeat_freq: str | None = None,
-        positions_log_on_change: bool = True,
+        positions_log_on_change: bool = False,
     ) -> None:
         # - instantiate loggers
         if logs_writer:
