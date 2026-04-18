@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
@@ -100,27 +101,34 @@ class PositionsDumper(_BaseIntervalDumper):
             self.positions[p.instrument] = p
         return self
 
+    @staticmethod
+    def _position_row(instrument: Instrument, position: Position, timestamp: np.datetime64) -> dict[str, Any]:
+        return {
+            "timestamp": str(timestamp),
+            "symbol": instrument.symbol,
+            "exchange": instrument.exchange,
+            "market_type": instrument.market_type,
+            "pnl_quoted": position.pnl,
+            "funding_pnl_quoted": position.cumulative_funding,
+            "realized_pnl_quoted": position.r_pnl,
+            "quantity": position.quantity,
+            "notional": position.notional_value,
+            "avg_position_price": position.position_avg_price if position.quantity != 0.0 else 0.0,
+            "current_price": position.last_update_price,
+            "market_value_quoted": position.market_value_funds,
+            "commissions_quoted": position.commissions,
+        }
+
     def dump(self, interval_start_time: np.datetime64, actual_timestamp: np.datetime64):
-        data = []
-        for i, p in self.positions.items():
-            data.append(
-                {
-                    "timestamp": str(actual_timestamp),
-                    "symbol": i.symbol,
-                    "exchange": i.exchange,
-                    "market_type": i.market_type,
-                    "pnl_quoted": p.pnl,
-                    "funding_pnl_quoted": p.cumulative_funding,
-                    "realized_pnl_quoted": p.r_pnl,
-                    "quantity": p.quantity,
-                    "notional": p.notional_value,
-                    "avg_position_price": p.position_avg_price if p.quantity != 0.0 else 0.0,
-                    "current_price": p.last_update_price,
-                    "market_value_quoted": p.market_value_funds,
-                    "commissions_quoted": p.commissions,
-                }
-            )
+        data = [self._position_row(i, p, actual_timestamp) for i, p in self.positions.items()]
         self._writer.write_data("positions", data)
+
+    def dump_instrument(self, instrument: Instrument, timestamp: np.datetime64) -> None:
+        """Write a single position snapshot row for ``instrument`` (used for on-fill event logging)."""
+        position = self.positions.get(instrument)
+        if position is None:
+            return
+        self._writer.write_data("positions", [self._position_row(instrument, position, timestamp)])
 
 
 class PortfolioLogger(PositionsDumper):
@@ -343,11 +351,12 @@ class StrategyLogging:
     def __init__(
         self,
         logs_writer: LogsWriter | None = None,
-        positions_log_freq: str = "1Min",
-        portfolio_log_freq: str = "5Min",
+        positions_log_freq: str | None = "1Min",
+        portfolio_log_freq: str | None = "5Min",
         num_exec_records_to_write=1,  # in live let's write every execution
         num_signals_records_to_write=1,
         heartbeat_freq: str | None = None,
+        positions_log_on_change: bool = False,
     ) -> None:
         # - instantiate loggers
         if logs_writer:
@@ -367,13 +376,16 @@ class StrategyLogging:
             if num_signals_records_to_write >= 1:
                 self.signals_logger = SignalsAndTargetsLogger(logs_writer, num_signals_records_to_write)
 
-            # - balance logger
-            self.balance_logger = BalanceLogger(logs_writer, positions_log_freq)
+            # - balance logger (tracks positions_log_freq when set, otherwise portfolio_log_freq)
+            balance_freq = positions_log_freq or portfolio_log_freq
+            if balance_freq:
+                self.balance_logger = BalanceLogger(logs_writer, balance_freq)
         else:
             logger.warning("Log writer is not defined - strategy activity will not be saved !")
 
         self.logs_writer = logs_writer
         self.heartbeat_freq = convert_tf_str_td64(heartbeat_freq) if heartbeat_freq else None
+        self.positions_log_on_change = positions_log_on_change
 
     def initialize(
         self,
@@ -431,6 +443,10 @@ class StrategyLogging:
     def save_deals(self, instrument: Instrument, deals: list[Deal]):
         if self.executions_logger:
             self.executions_logger.record_deals(instrument, deals)
+        if self.positions_log_on_change and self.positions_dumper and deals:
+            latest_deal_time = max(d.time for d in deals)
+            ts = latest_deal_time.as_unit("ns").asm8 if isinstance(latest_deal_time, pd.Timestamp) else latest_deal_time
+            self.positions_dumper.dump_instrument(instrument, ts)
 
     def save_targets(self, targets: list[TargetPosition]):
         if self.signals_logger and targets:

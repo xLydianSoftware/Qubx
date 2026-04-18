@@ -693,6 +693,7 @@ def _setup_strategy_logging(
         positions_log_freq=log_config.position_interval,
         portfolio_log_freq=log_config.portfolio_interval,
         heartbeat_freq=log_config.heartbeat_interval,
+        positions_log_on_change=log_config.position_log_on_change,
     )
     return stg_logging
 
