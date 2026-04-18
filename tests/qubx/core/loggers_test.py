@@ -13,6 +13,7 @@ from qubx.core.loggers import (
     ExecutionsLogger,
     LogsWriter,
     PositionsDumper,
+    StrategyLogging,
 )
 from qubx.core.lookups import lookup
 from qubx.loggers.csv import CsvFileLogsWriter
@@ -154,6 +155,106 @@ class TestPortfolioLoggers:
         # Cleanup: close writer and remove temporary directory
         writer.close()
         shutil.rmtree(test_dir, ignore_errors=True)
+
+    def test_dump_instrument_writes_single_row(self):
+        btc = lookup.find_symbol("BINANCE", "BTCUSDT")
+        eth = lookup.find_symbol("BINANCE", "ETHUSDT")
+        assert btc is not None and eth is not None
+        pos_btc = Position(btc)
+        pos_eth = Position(eth)
+        pos_btc.change_position_by(_DT(0), 0.05, 63000)
+        pos_eth.change_position_by(_DT(0), 0.5, 3200)
+
+        captured: list[tuple[str, list[dict]]] = []
+
+        class _CapturingWriter(LogsWriter):
+            def write_data(self, log_type: str, data: list[dict]):
+                captured.append((log_type, data))
+
+        dumper = PositionsDumper(_CapturingWriter("acc", "strat", "run"), "1Sec").attach_positions(pos_btc, pos_eth)
+
+        dumper.dump_instrument(btc, _DT(1))
+        assert len(captured) == 1
+        log_type, data = captured[0]
+        assert log_type == "positions"
+        assert len(data) == 1
+        assert data[0]["symbol"] == "BTCUSDT"
+        assert data[0]["quantity"] == pos_btc.quantity
+
+        # Unknown instrument is a no-op.
+        unknown = lookup.find_symbol("BINANCE", "SOLUSDT")
+        assert unknown is not None
+        dumper.dump_instrument(unknown, _DT(2))
+        assert len(captured) == 1
+
+    def test_save_deals_triggers_on_change_dump(self):
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        pos = Position(btc)
+        pos.change_position_by(_DT(0), 0.1, 50000)
+
+        captured: list[tuple[str, list[dict]]] = []
+
+        class _CapturingWriter(LogsWriter):
+            def write_data(self, log_type: str, data: list[dict]):
+                captured.append((log_type, data))
+
+        writer = _CapturingWriter("acc", "strat", "run")
+        logging = StrategyLogging(
+            logs_writer=writer,
+            positions_log_freq="1Min",
+            portfolio_log_freq=None,
+            positions_log_on_change=True,
+        )
+        assert logging.positions_dumper is not None
+        logging.positions_dumper.attach_positions(pos)
+
+        logging.save_deals(btc, [Deal("1", "o1", _DT(5), 0.1, 50050, False)])
+
+        position_writes = [d for t, d in captured if t == "positions"]
+        assert len(position_writes) == 1
+        assert position_writes[0][0]["symbol"] == "BTCUSDT"
+
+    def test_save_deals_respects_flag_off(self):
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        pos = Position(btc)
+        pos.change_position_by(_DT(0), 0.1, 50000)
+
+        captured: list[tuple[str, list[dict]]] = []
+
+        class _CapturingWriter(LogsWriter):
+            def write_data(self, log_type: str, data: list[dict]):
+                captured.append((log_type, data))
+
+        logging = StrategyLogging(
+            logs_writer=_CapturingWriter("acc", "strat", "run"),
+            positions_log_freq="1Min",
+            portfolio_log_freq=None,
+            positions_log_on_change=False,
+        )
+        assert logging.positions_dumper is not None
+        logging.positions_dumper.attach_positions(pos)
+
+        logging.save_deals(btc, [Deal("1", "o1", _DT(5), 0.1, 50050, False)])
+
+        assert not any(t == "positions" for t, _ in captured)
+
+    def test_strategy_logging_disables_loggers_when_none(self):
+        captured: list[tuple[str, list[dict]]] = []
+
+        class _CapturingWriter(LogsWriter):
+            def write_data(self, log_type: str, data: list[dict]):
+                captured.append((log_type, data))
+
+        logging = StrategyLogging(
+            logs_writer=_CapturingWriter("acc", "strat", "run"),
+            positions_log_freq=None,
+            portfolio_log_freq=None,
+        )
+        assert logging.positions_dumper is None
+        assert logging.portfolio_logger is None
+        assert logging.balance_logger is None
 
     def test_balance_logger(self):
         writer = ConsolePositionsWriter("Account1", "Strategy1", "test-run-id-0")
