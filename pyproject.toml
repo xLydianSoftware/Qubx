@@ -13,10 +13,7 @@ readme = "README.md"
 requires-python = ">=3.12,<4.0"
 dependencies = [
     # Data & numerics
-    # NumPy 2.0 broke the C-API ABI. Our Cython extensions (qubx.core.series, etc.)
-    # are built against 1.x and won't import under 2.x without a rebuild. Bump the
-    # upper bound when we rebuild wheels against numpy 2.x.
-    "numpy>=1.26.3,<2",
+    "numpy>=1.26.3",
     "pandas>=2.2.2,<3",
     "pyarrow>=15.0.0",
     "scipy>=1.12.0,<2",
@@ -110,10 +107,7 @@ requires = [
     "hatchling>=1.21.0",
     "hatch-vcs>=0.4.0",
     "setuptools>=61.0",
-    # Keep build-time numpy aligned with the runtime bound — Cython extensions
-    # compiled against numpy 2.x are ABI-incompatible with a numpy 1.x runtime
-    # (and vice versa). See runtime dependency note above.
-    "numpy>=1.26.3,<2",
+    "numpy>=1.26.3",
     "cython==3.0.8",
     "toml>=0.10.2",
 ]
