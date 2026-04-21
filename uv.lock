@@ -3718,7 +3718,7 @@ requires-dist = [
     { name = "msgspec", specifier = ">=0.18.6,<1" },
     { name = "ntplib", specifier = ">=0.4.0,<1" },
     { name = "numba", specifier = ">=0.59.1,<1" },
-    { name = "numpy", specifier = ">=1.26.3" },
+    { name = "numpy", specifier = ">=1.26.3,<2" },
     { name = "orjson", specifier = ">=3.10.15,<4" },
     { name = "pandas", specifier = ">=2.2.2,<3" },
     { name = "plotly", marker = "extra == 'viz'", specifier = ">=5.22.0,<6" },

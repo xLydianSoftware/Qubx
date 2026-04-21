@@ -277,3 +277,21 @@ def get_header_parser(exchange_name: str):
     """Get the response header parser for an exchange."""
     name = exchange_name.lower().split(".")[0]
     return HEADER_PARSERS.get(name)
+
+
+# NOTE: As of #264 these parsers are invoked from two fetch paths:
+#
+#   * ``qubx.data.storages.ccxt._sync_rate_limiter_from_response_headers`` after
+#     each successful OHLCV page fetch. Best-effort — ``last_response_headers`` is
+#     an exchange-wide attribute so under concurrent fetches the read may be from a
+#     neighboring request. Since all concurrent requests drain the same IP-scoped
+#     budget, an approximate reading is still strictly better than no sync.
+#
+#   * ``qubx.connectors.ccxt.exchange_manager.ExchangeManager._apply_rate_limiter_to_exchange``
+#     via CCXT's ``on_rest_response`` hook. This one is atomic per-request (the
+#     hook runs inside CCXT's fetch pipeline with the actual response headers), so
+#     the live path gets exact sync rather than best-effort.
+#
+# Both code paths call the parser, which in turn calls
+# ``rate_limiter.sync_from_exchange(...)`` to pin the modeled budget to the
+# server-reported remaining.
