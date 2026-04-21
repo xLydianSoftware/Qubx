@@ -80,6 +80,27 @@ from .accounts import AccountConfigurationManager
 INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE_MAPPINGS.items()}
 
 
+def _inject_warmup_rate_limiters(warmup: WarmupConfig | None, rate_limiters: dict | None) -> None:
+    """
+    Inject rate limiters into warmup storage configs.
+
+    Mirrors the aux_configs injection done in ``create_strategy_context`` — without this,
+    warmup data fetches (e.g. via ``CcxtStorage``) bypass the per-exchange rate limiter
+    and can be rate-limited by the exchange with no retry, producing empty bars and
+    corrupting downstream indicators (see xLydianSoftware/Qubx#264).
+
+    Args:
+        warmup: Warmup config. If None or no rate_limiters, this is a no-op.
+        rate_limiters: Dict of rate limiters keyed by exchange name (from ``RateLimitManager``).
+    """
+    if warmup is None or not rate_limiters:
+        return
+    warmup.data.args["rate_limiters"] = rate_limiters
+    for typed_cfg in warmup.custom_data or []:
+        for sc in typed_cfg.storages:
+            sc.args["rate_limiters"] = rate_limiters
+
+
 def _cleanup_event_loop(loop: asyncio.AbstractEventLoop | None) -> None:
     """
     Cleanup the shared event loop.
@@ -1027,6 +1048,11 @@ def _run_warmup(
         return
 
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
+
+    # - inject rate limiters into warmup storage configs (for CcxtStorage, LighterStorage, etc.)
+    #   mirrors the aux_configs injection done in create_strategy_context.
+    #   without this, warmup OHLCV fetches bypass the configured per-exchange rate limiter.
+    _inject_warmup_rate_limiters(warmup, getattr(ctx, "_rate_limiters", None))
 
     # - resolve warmup data sources (mirrors SimulationConfig layout)
     # - warmup.data is required (StorageConfig, not None) so construct_storage always returns IStorage

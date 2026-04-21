@@ -35,9 +35,11 @@ Supported data types
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Callable, Iterator
+import random
+from collections.abc import Awaitable, Callable, Iterator
 from typing import Any, cast
 
+import ccxt
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -272,6 +274,149 @@ class CcxtReader(IReader):
         pass
 
 
+_T = Any  # explicit alias keeps the retry helper signature readable
+
+# retry defaults — conservative. tuned for warmup OHLCV bursts where transient
+# RateLimitExceeded / NetworkError are the dominant failure modes (see #264).
+_RETRY_MAX_ATTEMPTS = 5
+_RETRY_BASE_DELAY_S = 1.0
+_RETRY_MAX_DELAY_S = 30.0
+_RETRY_JITTER_S = 1.0
+
+
+def _sync_rate_limiter_from_response_headers(ccxt_ex: Any, rate_limiter: Any) -> None:
+    """
+    Best-effort sync of the rate limiter's modeled state from the exchange's
+    last HTTP response headers.
+
+    Without this, the client-side token bucket flies blind to:
+        * cross-process / cross-bot contention on the same IP or account,
+        * drift between our ``PoolConfig`` and the exchange's real limits,
+        * pre-existing budget debt at process start.
+
+    This is a *best-effort* correction because ``ccxt_ex.last_response_headers``
+    is exchange-wide, not per-request — under concurrent fetches the attribute
+    may have been overwritten between the awaited response and this read.
+    That is acceptable in practice: every concurrent request drains the same
+    IP-scoped budget, so whatever remaining value we read is approximately
+    correct, and the limiter converges on subsequent syncs.
+
+    Any exception (missing attr, malformed header, parser bug) is swallowed
+    at DEBUG — header sync must never break a fetch.
+    """
+    if rate_limiter is None:
+        return
+    try:
+        from qubx.connectors.ccxt.rate_limits import get_header_parser
+
+        parser = get_header_parser(getattr(ccxt_ex, "id", ""))
+        if parser is None:
+            return
+        headers = getattr(ccxt_ex, "last_response_headers", None)
+        if not headers:
+            return
+        parser(headers, rate_limiter)
+    except Exception as e:
+        logger.debug(f"[CCXT] header sync failed (non-fatal): {e}")
+
+
+class CcxtFetchExhausted(RuntimeError):
+    """
+    Raised when one or more symbols exhaust all retry attempts during a
+    multi-symbol fetch. The caller cannot silently proceed with partial data,
+    because downstream indicators may compute nonsense on zero bars and
+    propagate into corrupt live state (see #264).
+
+    The ``failures`` attribute maps ``qubx_sym -> last_exception`` so callers
+    can log or dispatch based on specific failures.
+    """
+
+    def __init__(self, failures: dict[str, BaseException], total_requested: int) -> None:
+        self.failures = failures
+        self.total_requested = total_requested
+        failed_symbols = sorted(failures.keys())
+        preview = ", ".join(
+            f"{s}={type(failures[s]).__name__}" for s in failed_symbols[:5]
+        )
+        more = f" (+{len(failed_symbols) - 5} more)" if len(failed_symbols) > 5 else ""
+        super().__init__(
+            f"OHLCV fetch exhausted retries for {len(failures)}/{total_requested} "
+            f"symbols: {preview}{more}"
+        )
+
+
+async def _retryable_fetch(
+    call: Callable[[], Awaitable[_T]],
+    *,
+    rate_limiter: Any = None,
+    rate_limiter_endpoint: str = "ccxt_rest",
+    max_attempts: int = _RETRY_MAX_ATTEMPTS,
+    base_delay: float = _RETRY_BASE_DELAY_S,
+    max_delay: float = _RETRY_MAX_DELAY_S,
+    jitter: float = _RETRY_JITTER_S,
+    context: str = "",
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> _T:
+    """
+    Invoke ``call()`` with exponential backoff + jitter on transient CCXT errors.
+
+    Retryable errors:
+        * ``ccxt.RateLimitExceeded`` — exchange-level 429 / OKX 50011.
+        * ``ccxt.NetworkError`` (parent; also covers ``ExchangeNotAvailable``
+          and ``OnMaintenance``).
+        * ``asyncio.TimeoutError``.
+
+    Everything else (``ccxt.ExchangeError`` and subclasses like ``BadSymbol``,
+    ``AuthenticationError``, plus any non-CCXT exception) is re-raised
+    immediately — permanent errors should not consume retry budget.
+
+    The rate-limiter interaction is handled here in two stages per attempt:
+        1. ``acquire(endpoint)`` before each call to block while the gate is closed.
+        2. ``report_limit_hit(endpoint=...)`` on ``RateLimitExceeded`` so the
+           gate closes for ``cooldown`` seconds, pausing all concurrent callers.
+
+    Args:
+        call: Zero-arg callable returning the coroutine to invoke.
+        rate_limiter: Optional ``ExchangeRateLimiter``; if provided, calls are
+            gated and rate-limit hits are reported back to it.
+        rate_limiter_endpoint: Endpoint name used for ``acquire`` /
+            ``report_limit_hit`` lookups.
+        max_attempts: Total attempts including the initial one.
+        base_delay: First retry delay in seconds; doubles each attempt.
+        max_delay: Cap on the exponential delay.
+        jitter: Uniform jitter (0..jitter) added to each delay.
+        context: Short human label included in log lines (e.g. ``"OKX BTCUSDT"``).
+        sleep: Async sleep function (injectable for tests).
+
+    Raises:
+        The last retryable exception once ``max_attempts`` is exhausted.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        if rate_limiter is not None:
+            await rate_limiter.acquire(rate_limiter_endpoint)
+        try:
+            return await call()
+        except (ccxt.NetworkError, asyncio.TimeoutError) as e:
+            last_exc = e
+            if isinstance(e, ccxt.RateLimitExceeded) and rate_limiter is not None:
+                rate_limiter.report_limit_hit(
+                    endpoint=rate_limiter_endpoint,
+                    reason=(f"{context}: " if context else "") + str(e)[:120],
+                )
+            if attempt >= max_attempts:
+                break
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay) + random.uniform(0, jitter)
+            logger.warning(
+                f"[CCXT] transient error on {context or 'fetch'} "
+                f"(attempt {attempt}/{max_attempts}): {type(e).__name__}: {e}; "
+                f"retrying in {delay:.2f}s"
+            )
+            await sleep(delay)
+    assert last_exc is not None  # unreachable: the loop always raises or returns
+    raise last_exc
+
+
 @storage("ccxt")
 class CcxtStorage(IStorage):
     """
@@ -315,10 +460,20 @@ class CcxtStorage(IStorage):
         max_bars: int = 10_000,
         max_history: str = "3650d",
         rate_limiters: dict | None = None,
+        retry_max_attempts: int = _RETRY_MAX_ATTEMPTS,
+        retry_base_delay: float = _RETRY_BASE_DELAY_S,
+        retry_max_delay: float = _RETRY_MAX_DELAY_S,
+        retry_jitter: float = _RETRY_JITTER_S,
+        strict_fetch: bool = True,
     ) -> None:
         self._max_bars = max_bars
         self._max_history = to_timedelta(max_history)
         self._rate_limiters = rate_limiters or {}
+        self._retry_max_attempts = retry_max_attempts
+        self._retry_base_delay = retry_base_delay
+        self._retry_max_delay = retry_max_delay
+        self._retry_jitter = retry_jitter
+        self._strict_fetch = strict_fetch
         # - shared async loop (created from first exchange connection)
         self._loop = None
         self._capabilities = None
@@ -484,13 +639,31 @@ class CcxtStorage(IStorage):
         all_items: list = []
         current_since = since
 
-        # Get rate limiter for this exchange (if available)
+        # Get rate limiter for this exchange (if available). Retry + backoff + rate-limit
+        # acquisition are all encapsulated inside ``_retryable_fetch`` so this loop stays
+        # focused on pagination.
         _rl = self._get_rate_limiter(ccxt_ex)
+        _ex_id = getattr(ccxt_ex, "id", "ccxt")
 
         for _ in range(max_pages):
-            if _rl:
-                await _rl.acquire("ccxt_rest")
-            batch = await method(since=current_since, limit=limit, **method_kwargs)
+            _since = current_since  # capture for the closure below
+
+            async def _do_page() -> list:
+                batch = await method(since=_since, limit=limit, **method_kwargs)
+                # Best-effort: keep our modeled budget in sync with what the exchange
+                # actually reports — see ``_sync_rate_limiter_from_response_headers``.
+                _sync_rate_limiter_from_response_headers(ccxt_ex, _rl)
+                return batch
+
+            batch = await _retryable_fetch(
+                _do_page,
+                rate_limiter=_rl,
+                max_attempts=self._retry_max_attempts,
+                base_delay=self._retry_base_delay,
+                max_delay=self._retry_max_delay,
+                jitter=self._retry_jitter,
+                context=f"{_ex_id} {method_kwargs.get('symbol', '?')}",
+            )
             if not batch:
                 break
             for item in batch:
@@ -543,7 +716,24 @@ class CcxtStorage(IStorage):
     ) -> dict[str, list]:
         """
         Concurrent OHLCV fetch for multiple instruments with bounded concurrency.
-        Returns ``{qubx_sym: raw_candles}``.
+
+        Per-symbol results go through ``_async_paginated_fetch`` which already
+        retries transient errors with backoff. If retries are exhausted, behavior
+        depends on ``self._strict_fetch``:
+
+        * ``strict_fetch=True`` (default) — logs ERROR per symbol and raises
+          :class:`CcxtFetchExhausted` listing all failures. This prevents
+          downstream indicators from computing on zero bars (see #264).
+        * ``strict_fetch=False`` — logs WARNING per symbol and returns ``[]``
+          for that symbol. Kept for backwards compatibility and use cases
+          where partial data is acceptable.
+
+        Returns:
+            ``{qubx_sym: raw_candles}`` on full or partial success.
+
+        Raises:
+            CcxtFetchExhausted: when any symbol exhausts retries and
+                ``strict_fetch`` is True.
         """
         sem = asyncio.Semaphore(5)  # max 5 concurrent fetches
 
@@ -553,14 +743,26 @@ class CcxtStorage(IStorage):
 
         coros = [_fetch_with_sem(ccxt_sym, exc_tf, since, until) for ccxt_sym, _ in instruments_info]
         results = await asyncio.gather(*coros, return_exceptions=True)
+
         out: dict[str, list] = {}
-        for i, result in enumerate(results):
-            _, qubx_sym = instruments_info[i]
-            if isinstance(result, Exception):
-                logger.warning(f"[CCXT] Failed to fetch OHLCV for {qubx_sym}: {result}")
+        failures: dict[str, BaseException] = {}
+        for (_, qubx_sym), result in zip(instruments_info, results):
+            if isinstance(result, BaseException):
+                failures[qubx_sym] = result
                 out[qubx_sym] = []
             else:
                 out[qubx_sym] = cast(list, result)
+
+        if failures:
+            _ex_id = getattr(ccxt_ex, "id", "ccxt")
+            for qubx_sym, exc in failures.items():
+                logger.error(
+                    f"[CCXT] {_ex_id}: OHLCV fetch for {qubx_sym} exhausted retries — "
+                    f"{type(exc).__name__}: {exc}"
+                )
+            if self._strict_fetch:
+                raise CcxtFetchExhausted(failures, total_requested=len(instruments_info))
+
         return out
 
     def _ccxt_sym_to_qubx(self, ccxt_symbol: str) -> str:

@@ -271,20 +271,55 @@ class ExchangeManager:
         logger.info(f"Rate limiter attached to {self._exchange_name}")
 
     def _apply_rate_limiter_to_exchange(self, exchange: cxp.Exchange) -> None:
-        """Disable CCXT's built-in rate limiter and install our throttle override."""
+        """Install our throttle and response-header-sync hooks on *exchange*.
+
+        Two hooks are installed per exchange:
+
+        1. **Throttle (pre-request)** — replaces CCXT's built-in throttle so every
+           REST call blocks on our token bucket first. ``acquire`` forwards the
+           CCXT-provided cost to the limiter as ``weight_override``.
+
+        2. **Response hook (post-request)** — wraps CCXT's ``on_rest_response`` to
+           invoke the exchange-specific header parser (OKX ``x-ratelimit-*``,
+           Binance ``X-MBX-USED-WEIGHT-1M``, etc.). The parser calls
+           ``rate_limiter.sync_from_exchange`` so our modeled budget tracks the
+           exchange's reported usage. Unlike ``CcxtStorage``'s best-effort sync,
+           this path runs atomically inside CCXT's fetch pipeline — no
+           concurrent-fetch race on ``last_response_headers``.
+
+        Both hooks are reapplied automatically after exchange recreation via
+        ``register_recreation_callback`` in :meth:`attach_rate_limiter`.
+        """
         rate_limiter = getattr(self, "_rate_limiter", None)
         if rate_limiter is None:
             return
 
-        # Keep enableRateLimit=True so CCXT calls self.throttle(cost) in fetch2()
-        # We override the throttle method to use our rate limiter instead of CCXT's built-in
+        # 1) Throttle override — pre-request acquisition.
         exchange.enableRateLimit = True
+
         async def _rate_limit_throttle(cost=None):
             if cost is None:
                 cost = 1.0
             await rate_limiter.acquire("ccxt_rest", weight_override=float(cost))
 
         exchange.throttle = _rate_limit_throttle
+
+        # 2) Response hook — post-response state sync.
+        from qubx.connectors.ccxt.rate_limits import get_header_parser
+
+        parser = get_header_parser(getattr(exchange, "id", ""))
+        if parser is not None:
+            _orig_on_rest = exchange.on_rest_response
+
+            def _header_sync_hook(code, reason, url, method, headers, body, req_headers, req_body):
+                try:
+                    if headers:
+                        parser(headers, rate_limiter)
+                except Exception as e:
+                    logger.debug(f"[{self._exchange_name}] header sync failed (non-fatal): {e}")
+                return _orig_on_rest(code, reason, url, method, headers, body, req_headers, req_body)
+
+            exchange.on_rest_response = _header_sync_hook
 
     @property
     def rate_limiter(self):
