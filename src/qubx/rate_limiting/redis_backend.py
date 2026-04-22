@@ -6,7 +6,9 @@ Multiple bots sharing an exchange account or egress IP coordinate
 through shared Redis keys.
 """
 
+import asyncio
 import time
+from weakref import WeakKeyDictionary
 
 from qubx import logger
 
@@ -91,27 +93,50 @@ class RedisBackend(IRateLimitBackend):
     Uses atomic Lua scripts so multiple bots can safely share rate limit
     pools without races. Keys auto-expire after 10 minutes of inactivity.
 
-    The Redis client is created lazily on first async use to ensure it
-    binds to the correct event loop.
-
     Args:
         redis_url: Redis connection URL (e.g., "redis://redis.platform.svc:6379/0")
     """
 
     def __init__(self, redis_url: str):
-        import redis.asyncio as aioredis
+        # - fail fast on misconfiguration, but don't create the client here:
+        #   the async Redis client (with single_connection_client=True) holds an
+        #   internal asyncio.Lock that binds to whichever event loop first awaits
+        #   it. The same backend is shared between the simulation warmup loop and
+        #   the live ccxt.pro AsyncThreadLoop, so we cache one client per loop.
+        import redis.asyncio as _aioredis  # noqa: F401
 
         self._redis_url = redis_url
-        self._redis = aioredis.from_url(redis_url, decode_responses=True, single_connection_client=True)
-        self._acquire_script = self._redis.register_script(_LUA_ACQUIRE)
-        self._get_remaining_script = self._redis.register_script(_LUA_GET_REMAINING)
-        self._set_remaining_script = self._redis.register_script(_LUA_SET_REMAINING)
+        self._loop_clients: WeakKeyDictionary[asyncio.AbstractEventLoop, tuple] = WeakKeyDictionary()
         logger.info(f"Redis rate limit backend configured: {redis_url}")
 
+    def _scripts_for_current_loop(self):
+        """
+        Return (acquire, get_remaining, set_remaining) Lua scripts bound to the
+        Redis client for the currently-running event loop, creating the client
+        lazily on first use per loop.
+        """
+        import redis.asyncio as aioredis
+
+        loop = asyncio.get_running_loop()
+        entry = self._loop_clients.get(loop)
+        if entry is None:
+            client = aioredis.from_url(
+                self._redis_url, decode_responses=True, single_connection_client=True
+            )
+            scripts = (
+                client.register_script(_LUA_ACQUIRE),
+                client.register_script(_LUA_GET_REMAINING),
+                client.register_script(_LUA_SET_REMAINING),
+            )
+            self._loop_clients[loop] = (client, scripts)
+            return scripts
+        return entry[1]
+
     async def acquire(self, key: str, weight: float, capacity: float, refill_rate: float) -> float:
+        acquire_script, _, _ = self._scripts_for_current_loop()
         now = time.time()
         while True:
-            wait_ms = await self._acquire_script(
+            wait_ms = await acquire_script(
                 keys=[key],
                 args=[weight, capacity, refill_rate, now],
             )
@@ -120,12 +145,13 @@ class RedisBackend(IRateLimitBackend):
                 return 0.0
             # Need to wait — sleep and retry
             wait_s = wait_ms / 1000.0
-            await __import__("asyncio").sleep(wait_s)
+            await asyncio.sleep(wait_s)
             now = time.time()
 
     async def get_remaining(self, key: str, capacity: float = 0, refill_rate: float = 0) -> float | None:
+        _, get_remaining_script, _ = self._scripts_for_current_loop()
         now = time.time()
-        result = await self._get_remaining_script(
+        result = await get_remaining_script(
             keys=[key],
             args=[capacity, refill_rate, now],
         )
@@ -135,11 +161,26 @@ class RedisBackend(IRateLimitBackend):
         return result / 1000.0  # convert millitokens back
 
     async def set_remaining(self, key: str, remaining: float) -> None:
+        _, _, set_remaining_script = self._scripts_for_current_loop()
         now = time.time()
-        await self._set_remaining_script(
+        await set_remaining_script(
             keys=[key],
             args=[remaining, now],
         )
 
     async def close(self) -> None:
-        await self._redis.close()
+        """
+        Close the Redis client for the currently-running loop, if one was
+        created for it. Clients for other loops are left to be closed when
+        those loops are finalized (their entries drop from the WeakKeyDictionary).
+        """
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        entry = self._loop_clients.pop(loop, None)
+        if entry is not None:
+            try:
+                await entry[0].close()
+            except Exception:
+                pass
