@@ -251,7 +251,7 @@ def running_view(arr, window, axis=-1):
     """
     shape = list(arr.shape)
     shape[axis] -= window - 1
-    return np.lib.index_tricks.as_strided(arr, shape + [window], arr.strides + (arr.strides[axis],))
+    return np.lib.stride_tricks.as_strided(arr, shape + [window], arr.strides + (arr.strides[axis],))
 
 
 def detrend(y, order):
