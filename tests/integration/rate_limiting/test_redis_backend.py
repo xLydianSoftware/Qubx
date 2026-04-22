@@ -16,6 +16,7 @@ import pytest
 from qubx.rate_limiting.redis_backend import RedisBackend
 
 
+@pytest.mark.integration
 class TestRedisBackendCrossLoop:
     def test_reused_after_first_loop_closed(self, redis_service, clear_rate_limit_keys):
         """
