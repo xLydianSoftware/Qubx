@@ -6,6 +6,12 @@ Pins two related fixes:
 2. BinanceQV.un_watch_bids_asks delegation — upstream removed get_message_hash
    in 4.5.20, which broke the previous override; it now delegates to
    watch_multi_ticker_helper(isUnsubscribe=True).
+
+Everything here runs fully offline. `load_markets()` is bypassed because
+GitHub-hosted CI runners are blocked by Binance (HTTP 451 from
+fapi.binance.com/fapi/v1/exchangeInfo); instead we preseed two minimal
+USDⓈ-M market entries via `set_markets()` — the only thing the watch_*
+paths need from market data is `lowercaseId`/`symbol`/contract flags.
 """
 
 import asyncio
@@ -16,22 +22,66 @@ from qubx.connectors.ccxt.exchanges.binance.exchange import BinanceQVUSDM
 
 
 def run(coro):
-    return asyncio.get_event_loop().run_until_complete(coro) if False else asyncio.run(coro)
+    return asyncio.run(coro)
+
+
+def _usdm_market(base: str, amount_precision: float, price_precision: float) -> dict:
+    """Minimal USDⓈ-M swap market dict that satisfies ccxt's downstream lookups."""
+    return {
+        "id": f"{base}USDT",
+        "lowercaseId": f"{base.lower()}usdt",
+        "symbol": f"{base}/USDT:USDT",
+        "base": base,
+        "quote": "USDT",
+        "settle": "USDT",
+        "baseId": base,
+        "quoteId": "USDT",
+        "settleId": "USDT",
+        "type": "swap",
+        "spot": False,
+        "margin": False,
+        "swap": True,
+        "future": False,
+        "option": False,
+        "contract": True,
+        "linear": True,
+        "inverse": False,
+        "subType": "linear",
+        "active": True,
+        "taker": 0.0004,
+        "maker": 0.0002,
+        "contractSize": 1.0,
+        "expiry": None,
+        "expiryDatetime": None,
+        "strike": None,
+        "optionType": None,
+        "precision": {"amount": amount_precision, "price": price_precision},
+        "limits": {
+            "amount": {"min": amount_precision, "max": None},
+            "price": {"min": None, "max": None},
+            "cost": {"min": None, "max": None},
+            "leverage": {"min": 1, "max": 125},
+        },
+        "info": {},
+        "created": None,
+        "marginModes": {"cross": True, "isolated": True},
+    }
+
+
+@pytest.fixture
+def offline_binance_usdm():
+    """BinanceQVUSDM with preseeded markets — no network calls."""
+    ex = BinanceQVUSDM({"options": {"defaultType": "future"}})
+    ex.set_markets([
+        _usdm_market("BTC", 0.001, 0.1),
+        _usdm_market("ETH", 0.001, 0.01),
+    ])
+    yield ex
+    run(ex.close())
 
 
 class TestBinanceUsdmWsUrlSplit:
     """Verify every Qubx-used futures subscription routes through the category-split URLs."""
-
-    @pytest.fixture
-    def exchange(self):
-        ex = BinanceQVUSDM({"options": {"defaultType": "future"}})
-
-        async def _load():
-            await ex.load_markets()
-
-        run(_load())
-        yield ex
-        run(ex.close())
 
     @staticmethod
     def _capture_ws_url(exchange, subscribe_coro_factory):
@@ -54,51 +104,52 @@ class TestBinanceUsdmWsUrlSplit:
         assert captured, "exchange.client(url) was never called"
         return captured[-1]
 
-    def test_book_ticker_routes_to_public_ws(self, exchange):
-        url = self._capture_ws_url(exchange, lambda: exchange.watch_bids_asks(["BTC/USDT:USDT"]))
+    def test_book_ticker_routes_to_public_ws(self, offline_binance_usdm):
+        ex = offline_binance_usdm
+        url = self._capture_ws_url(ex, lambda: ex.watch_bids_asks(["BTC/USDT:USDT"]))
         assert url.startswith("wss://fstream.binance.com/public/ws/"), url
 
-    def test_depth_routes_to_public_ws(self, exchange):
-        url = self._capture_ws_url(exchange, lambda: exchange.watch_order_book("BTC/USDT:USDT"))
+    def test_depth_routes_to_public_ws(self, offline_binance_usdm):
+        ex = offline_binance_usdm
+        url = self._capture_ws_url(ex, lambda: ex.watch_order_book("BTC/USDT:USDT"))
         assert url.startswith("wss://fstream.binance.com/public/ws/"), url
 
-    def test_agg_trade_routes_to_market_ws(self, exchange):
-        url = self._capture_ws_url(exchange, lambda: exchange.watch_trades("BTC/USDT:USDT"))
+    def test_agg_trade_routes_to_market_ws(self, offline_binance_usdm):
+        ex = offline_binance_usdm
+        url = self._capture_ws_url(ex, lambda: ex.watch_trades("BTC/USDT:USDT"))
         assert url.startswith("wss://fstream.binance.com/market/ws/"), url
 
-    def test_kline_routes_to_market_ws(self, exchange):
-        url = self._capture_ws_url(exchange, lambda: exchange.watch_ohlcv("BTC/USDT:USDT", "1m"))
+    def test_kline_routes_to_market_ws(self, offline_binance_usdm):
+        ex = offline_binance_usdm
+        url = self._capture_ws_url(ex, lambda: ex.watch_ohlcv("BTC/USDT:USDT", "1m"))
         assert url.startswith("wss://fstream.binance.com/market/ws/"), url
 
-    def test_ticker_routes_to_market_ws(self, exchange):
-        url = self._capture_ws_url(exchange, lambda: exchange.watch_ticker("BTC/USDT:USDT"))
+    def test_ticker_routes_to_market_ws(self, offline_binance_usdm):
+        ex = offline_binance_usdm
+        url = self._capture_ws_url(ex, lambda: ex.watch_ticker("BTC/USDT:USDT"))
         assert url.startswith("wss://fstream.binance.com/market/ws/"), url
 
-    def test_mark_price_routes_to_market_ws(self, exchange):
-        url = self._capture_ws_url(exchange, lambda: exchange.watch_mark_prices(["BTC/USDT:USDT"]))
+    def test_mark_price_routes_to_market_ws(self, offline_binance_usdm):
+        ex = offline_binance_usdm
+        url = self._capture_ws_url(ex, lambda: ex.watch_mark_prices(["BTC/USDT:USDT"]))
         assert url.startswith("wss://fstream.binance.com/market/ws/"), url
 
-    def test_private_ws_url_uses_split_path(self, exchange):
-        url = exchange.get_private_ws_url("future", "DUMMY_LISTEN_KEY")
+    def test_private_ws_url_uses_split_path(self, offline_binance_usdm):
+        url = offline_binance_usdm.get_private_ws_url("future", "DUMMY_LISTEN_KEY")
         assert url == "wss://fstream.binance.com/private/ws?listenKey=DUMMY_LISTEN_KEY"
 
-    def test_spot_and_delivery_hosts_are_unchanged(self, exchange):
+    def test_spot_and_delivery_hosts_are_unchanged(self, offline_binance_usdm):
         # Binance's migration only affects USDⓈ-M. Spot and Coin-M stay legacy.
-        assert exchange.get_ws_url("spot", "public") == "wss://stream.binance.com:9443/ws"
-        assert exchange.get_ws_url("delivery", "public") == "wss://dstream.binance.com/ws"
+        ex = offline_binance_usdm
+        assert ex.get_ws_url("spot", "public") == "wss://stream.binance.com:9443/ws"
+        assert ex.get_ws_url("delivery", "public") == "wss://dstream.binance.com/ws"
 
 
 class TestBinanceUnWatchBidsAsks:
     """Verify BinanceQV.un_watch_bids_asks delegates correctly to upstream's helper."""
 
-    @pytest.fixture
-    def exchange(self):
-        ex = BinanceQVUSDM({"options": {"defaultType": "future"}})
-        run(ex.load_markets())
-        yield ex
-        run(ex.close())
-
-    def test_un_watch_bids_asks_produces_correct_unsubscribe_request(self, exchange):
+    def test_un_watch_bids_asks_produces_correct_unsubscribe_request(self, offline_binance_usdm):
+        exchange = offline_binance_usdm
         captured = {}
 
         async def fake_watch_multiple(url, messageHashes, request, subscribeHashes, subscription):
@@ -140,10 +191,11 @@ class TestBinanceUnWatchBidsAsks:
             "unsubscribe::bidask:bookTicker@ETH/USDT:USDT",
         ]
 
-    def test_un_watch_bids_asks_does_not_call_removed_get_message_hash(self, exchange):
+    def test_un_watch_bids_asks_does_not_call_removed_get_message_hash(self, offline_binance_usdm):
         # Regression guard: get_message_hash was removed in ccxt 4.5.20 and the
         # previous override called it, raising AttributeError. Delegation path
         # must not rely on it.
+        exchange = offline_binance_usdm
         assert not hasattr(exchange, "get_message_hash")
 
         async def fake_watch_multiple(*args, **kwargs):
