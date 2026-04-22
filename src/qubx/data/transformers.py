@@ -310,7 +310,7 @@ class TypedRecords(IDataTransformer):
                 return FundingPayment(
                     time=int(row["time"]),
                     funding_rate=float(row["funding_rate"]),
-                    funding_interval_hours=int(row["funding_interval_hours"]),
+                    funding_interval_hours=round(float(row["funding_interval_hours"])),
                 )
 
             case DataType.OPEN_INTEREST:

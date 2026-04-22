@@ -222,7 +222,10 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             except Exception as e:
                 logger.warning(f"Failed to fetch balance data before polling started: {e}")
 
-        # sum of balances + market value of all positions on non spot/margin
+        if self._exchange_total_capital is not None:
+            return self._exchange_total_capital
+
+        # fallback: sum of balances + market value of all positions on non spot/margin
         _currency_to_value = {c: self._get_currency_value(b.total, c) for c, b in self._balances.items()}
         _positions_value = sum([p.market_value_funds for p in self._positions.values() if p.instrument.is_futures()])
         return sum(_currency_to_value.values()) + _positions_value
@@ -316,9 +319,32 @@ class CcxtAccountProcessor(BasicAccountProcessor):
             await self._subscribe_instruments(list(self._required_instruments))
             self._latest_instruments.update(self._required_instruments)
 
+    def _extract_portfolio_value(self, balances_raw: dict) -> float | None:
+        """Extract exchange-reported portfolio value (equity) from raw balance response.
+
+        Override in exchange-specific processors for non-standard responses.
+        Base implementation handles Binance futures (totalMarginBalance).
+
+        Returns:
+            Total equity as float, or None to fall back to computed value.
+        """
+        info = balances_raw.get("info", {})
+        val = info.get("totalMarginBalance")
+        if val is not None:
+            try:
+                return float(val)
+            except (ValueError, TypeError):
+                pass
+        return None
+
     async def _update_balance(self) -> None:
         """Fetch and update balances from exchange"""
         balances_raw = await self.exchange_manager.exchange.fetch_balance()
+
+        equity = self._extract_portfolio_value(balances_raw)
+        if equity is not None:
+            self._exchange_total_capital = equity
+
         balances = ccxt_convert_balance(balances_raw, self.exchange)
         current_balances = self.get_balances()
 

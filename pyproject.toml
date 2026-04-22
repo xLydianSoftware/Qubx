@@ -81,7 +81,7 @@ qubx = "qubx.cli.commands:main"
 # ============================================================
 [project.optional-dependencies]
 # Exchange connectors (ccxt-based)
-connectors = ["ccxt>=4.2.68,<5"]
+connectors = ["ccxt>=4.5.46,<5"]
 # Binance-specific (historical data utilities)
 binance = ["python-binance>=1.0.19,<2"]
 # Bitfinex-specific (custom API client)

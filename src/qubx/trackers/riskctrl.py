@@ -794,9 +794,11 @@ class AtrRiskTracker(GenericRiskControllerDecorator):
     def calculate_risks(self, ctx: IStrategyContext, quote: Quote | None, signal: Signal) -> Signal | None:
         volatility = self._get_volatility(ctx, signal.instrument)
 
-        if len(volatility) < 2 or ((last_volatility := volatility[1]) is None or not np.isfinite(last_volatility)):
+        last_volatility = volatility[1] if len(volatility) >= 2 else None
+        if last_volatility is None or not np.isfinite(last_volatility) or last_volatility <= 0:
             logger.debug(
-                f"[<y>{self._full_name}</y>(<g>{signal.instrument}</g>)] :: not enough ATR data, skipping risk calculation"
+                f"[<y>{self._full_name}</y>(<g>{signal.instrument}</g>)] :: "
+                f"ATR unusable (value={last_volatility!r}), skipping risk calculation"
             )
             return None
 

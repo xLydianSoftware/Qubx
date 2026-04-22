@@ -106,8 +106,9 @@ class WarmupConfig(StrictBaseModel):
 
 class LoggingConfig(StrictBaseModel):
     logger: str
-    position_interval: str
-    portfolio_interval: str
+    position_interval: str | None = None
+    portfolio_interval: str | None = None
+    position_log_on_change: bool = False
     args: dict = Field(default_factory=dict)
     heartbeat_interval: str | None = None
 

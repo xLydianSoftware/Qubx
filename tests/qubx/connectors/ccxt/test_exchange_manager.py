@@ -368,3 +368,143 @@ class TestExchangeManagerIntegration:
 
         # Verify exception handler was set up
         mock_exchange.asyncio_loop.set_exception_handler.assert_called()
+
+
+# ─── rate-limiter wiring tests (xLydianSoftware/Qubx#264) ─────────────────────
+
+
+def _make_bare_mock_exchange(id: str = "okx") -> Mock:
+    """A Mock that mimics enough of a CCXT exchange for ``attach_rate_limiter`` to run."""
+    mock = Mock()
+    mock.id = id
+    mock.name = id
+    mock.asyncio_loop = Mock()
+    # Must be explicit attributes, not auto-generated Mock children, so we can
+    # detect whether attach_rate_limiter replaced them.
+    mock.throttle = Mock(name="throttle_original")
+    mock.on_rest_response = Mock(name="on_rest_response_original")
+    return mock
+
+
+def _make_manager(exchange) -> ExchangeManager:
+    return ExchangeManager(
+        exchange_name=exchange.id,
+        factory_params={"exchange": exchange.id},
+        initial_exchange=exchange,
+        health_monitor=DummyHealthMonitor(),
+        time_provider=LiveTimeProvider(),
+    )
+
+
+class TestExchangeManagerRateLimiterWiring:
+    def test_attach_rate_limiter_overrides_throttle(self):
+        mock_exchange = _make_bare_mock_exchange("okx")
+        original_throttle = mock_exchange.throttle
+        manager = _make_manager(mock_exchange)
+
+        rate_limiter = Mock()
+        manager.attach_rate_limiter(rate_limiter)
+
+        assert mock_exchange.throttle is not original_throttle
+        assert mock_exchange.enableRateLimit is True
+
+    def test_attach_rate_limiter_installs_header_sync_for_known_exchange(self):
+        """For OKX (known exchange), on_rest_response is wrapped."""
+        mock_exchange = _make_bare_mock_exchange("okx")
+        original_on_rest = mock_exchange.on_rest_response
+        manager = _make_manager(mock_exchange)
+
+        rate_limiter = Mock()
+        manager.attach_rate_limiter(rate_limiter)
+
+        assert mock_exchange.on_rest_response is not original_on_rest
+
+    def test_header_sync_hook_calls_parser_and_preserves_original(self):
+        """When the hook fires, parser is called with the headers AND the original
+        ``on_rest_response`` is still invoked so CCXT's own logic runs."""
+        mock_exchange = _make_bare_mock_exchange("okx")
+        original_on_rest = mock_exchange.on_rest_response
+        original_on_rest.return_value = "orig-return-value"
+        manager = _make_manager(mock_exchange)
+
+        rate_limiter = Mock()
+        manager.attach_rate_limiter(rate_limiter)
+
+        # Call the installed hook with a representative OKX response
+        headers = {"x-ratelimit-remaining": "15"}
+        result = mock_exchange.on_rest_response(
+            200, "OK", "https://okx", "GET", headers, "{}", {}, None,
+        )
+
+        # Original still called and its return value preserved
+        original_on_rest.assert_called_once_with(
+            200, "OK", "https://okx", "GET", headers, "{}", {}, None,
+        )
+        assert result == "orig-return-value"
+
+        # Parser should have called sync_from_exchange with the parsed remaining
+        rate_limiter.sync_from_exchange.assert_called_once()
+        _args, kwargs = rate_limiter.sync_from_exchange.call_args
+        assert kwargs.get("remaining") == 15.0
+
+    def test_header_sync_hook_tolerates_parser_failure(self):
+        """A buggy parser must not break the response pipeline."""
+        mock_exchange = _make_bare_mock_exchange("okx")
+        original_on_rest = mock_exchange.on_rest_response
+        original_on_rest.return_value = None
+        manager = _make_manager(mock_exchange)
+
+        rate_limiter = Mock()
+
+        with patch(
+            "qubx.connectors.ccxt.rate_limits.parse_okx_headers",
+            side_effect=RuntimeError("simulated parser bug"),
+        ):
+            manager.attach_rate_limiter(rate_limiter)
+            # Should not raise despite the broken parser
+            mock_exchange.on_rest_response(
+                200, "OK", "u", "GET", {"x-ratelimit-remaining": "10"}, "{}", {}, None,
+            )
+
+        # Original still called even when parser raised
+        original_on_rest.assert_called_once()
+
+    def test_unknown_exchange_skips_header_sync(self):
+        """For an exchange with no registered parser, on_rest_response stays untouched."""
+        mock_exchange = _make_bare_mock_exchange("exchange-without-a-parser")
+        original_on_rest = mock_exchange.on_rest_response
+        manager = _make_manager(mock_exchange)
+
+        rate_limiter = Mock()
+        manager.attach_rate_limiter(rate_limiter)
+
+        # throttle is still overridden even for unknown exchanges
+        assert mock_exchange.enableRateLimit is True
+        # but on_rest_response is not wrapped
+        assert mock_exchange.on_rest_response is original_on_rest
+
+    def test_wiring_reapplies_after_recreation(self):
+        """Both throttle and on_rest_response are reapplied on exchange recreation."""
+        first_exchange = _make_bare_mock_exchange("okx")
+        manager = _make_manager(first_exchange)
+
+        rate_limiter = Mock()
+        manager.attach_rate_limiter(rate_limiter)
+        first_wrapped_on_rest = first_exchange.on_rest_response
+        first_wrapped_throttle = first_exchange.throttle
+
+        # Simulate recreation: swap in a new exchange then fire registered callbacks
+        second_exchange = _make_bare_mock_exchange("okx")
+        original_on_rest_second = second_exchange.on_rest_response
+        original_throttle_second = second_exchange.throttle
+        manager._exchange = second_exchange
+        for cb in manager._recreation_callbacks:
+            cb()
+
+        # First exchange's hooks unchanged
+        assert first_exchange.on_rest_response is first_wrapped_on_rest
+        assert first_exchange.throttle is first_wrapped_throttle
+        # Second exchange got its own wrappers (both replaced)
+        assert second_exchange.enableRateLimit is True
+        assert second_exchange.on_rest_response is not original_on_rest_second
+        assert second_exchange.throttle is not original_throttle_second

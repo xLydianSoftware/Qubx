@@ -113,6 +113,14 @@ class FixedRiskSizer(IPositionSizer):
                     if (_entry := self.get_signal_entry_price(ctx, signal)) is None:
                         continue
 
+                    _stop_distance = abs(signal.stop / _entry - 1)
+                    if _stop_distance <= 0 or not np.isfinite(_stop_distance):
+                        logger.warning(
+                            f" >>> {self.__class__.__name__}: degenerate stop/entry for "
+                            f"{signal.instrument.symbol} (entry={_entry}, stop={signal.stop}) - skipping"
+                        )
+                        continue
+
                     # - hey, we can't trade using negative balance ;)
                     _cap = max(ctx.get_total_capital() if self.reinvest_profit else ctx.get_capital(), 0)
                     _scale = abs(signal.signal) if self.scale_by_signal else 1
@@ -122,7 +130,7 @@ class FixedRiskSizer(IPositionSizer):
                     _notional_per_contract = _entry * signal.instrument.quantity_multiplier
                     target_position_size = (
                         _direction
-                        *min((_cap * self.max_cap_in_risk) / abs(signal.stop / _entry - 1), self.max_allowed_position_quoted) / _notional_per_contract
+                        *min((_cap * self.max_cap_in_risk) / _stop_distance, self.max_allowed_position_quoted) / _notional_per_contract
                         / (len(ctx.instruments) if self.divide_by_symbols else 1)
                         * _scale
                     )
@@ -237,6 +245,14 @@ class FixedRiskSizerWithConstantCapital(IPositionSizer):
                     if (_entry := self.get_signal_entry_price(ctx, signal)) is None:
                         continue
 
+                    _stop_distance = abs(signal.stop / _entry - 1)
+                    if _stop_distance <= 0 or not np.isfinite(_stop_distance):
+                        logger.warning(
+                            f" >>> {self.__class__.__name__}: degenerate stop/entry for {signal.instrument.symbol} "
+                            f"(entry={_entry}, stop={signal.stop}) - skipping"
+                        )
+                        continue
+
                     # - just use same fixed capital
                     _cap = self.capital / (len(ctx.instruments) if self.divide_by_symbols else 1)
 
@@ -245,7 +261,7 @@ class FixedRiskSizerWithConstantCapital(IPositionSizer):
                     _notional_per_contract = _entry * signal.instrument.quantity_multiplier
                     target_position_size = (
                         _direction * min(
-                            (_cap * self.max_cap_in_risk) / abs(signal.stop / _entry - 1),
+                            (_cap * self.max_cap_in_risk) / _stop_distance,
                             self.max_allowed_position_quoted
                         ) / _notional_per_contract
                     )

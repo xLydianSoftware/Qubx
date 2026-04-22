@@ -18,7 +18,34 @@ class OkxAccountProcessor(CcxtAccountProcessor):
     so we must subscribe to both channels separately:
     - orders channel: for order status updates (watch_orders)
     - trades channel: for trade/fill updates (watch_my_trades)
+
+    Balance streaming: uses watch_balance WS to get real-time totalEq updates
+    instead of relying solely on 30s polling.
     """
+
+    def start(self):
+        super().start()
+        if self._is_running and not self.exchange_manager.exchange.isSandboxModeEnabled:
+            self._polling_tasks["balance_ws"] = self._loop.submit(self._watch_balance_stream())
+
+    async def _watch_balance_stream(self):
+        """Stream balance updates via WS to get real-time totalEq."""
+
+        async def _watch():
+            balances_raw = await self.exchange_manager.exchange.watch_balance()
+            equity = self._extract_portfolio_value(balances_raw)
+            if equity is not None:
+                self._exchange_total_capital = equity
+            margin_ratio = self._extract_margin_ratio(balances_raw)
+            if margin_ratio is not None:
+                self._exchange_margin_ratio = margin_ratio
+
+        await self._listen_to_stream(
+            subscriber=_watch,
+            exchange=self.exchange_manager.exchange,
+            channel=self.channel,
+            name="okx_balance_ws",
+        )
 
     async def _subscribe_executions(self, name: str, channel: CtrlChannel):
         logger.info("<yellow>[OKX]</yellow> Subscribing to executions (orders + trades)")
@@ -57,14 +84,53 @@ class OkxAccountProcessor(CcxtAccountProcessor):
             ),
         )
 
+    def _get_account_data(self, balances_raw: dict) -> dict:
+        """Get the OKX account data dict from info.data[0]."""
+        return balances_raw.get("info", {}).get("data", [{}])[0]
+
+    def _extract_margin_ratio(self, balances_raw: dict) -> float | None:
+        """Extract OKX margin ratio from the base currency detail entry.
+
+        The account-level mgnRatio is empty; the real value is per-currency in details.
+        We use the base currency's mgnRatio as the account margin ratio.
+        """
+        details = self._get_account_data(balances_raw).get("details", [])
+        for detail in details:
+            if detail.get("ccy", "").upper() == self.base_currency.upper():
+                val = detail.get("mgnRatio")
+                if val is not None and val != "":
+                    try:
+                        return float(val)
+                    except (ValueError, TypeError):
+                        pass
+        return None
+
+    def _extract_portfolio_value(self, balances_raw: dict) -> float | None:
+        """Extract OKX total equity from info.data[0].totalEq."""
+        total_eq = self._get_account_data(balances_raw).get("totalEq")
+        if total_eq is not None and total_eq != "":
+            try:
+                return float(total_eq)
+            except (ValueError, TypeError):
+                pass
+        return None
+
     async def _update_balance(self) -> None:
-        """OKX balance override: use cashBal instead of eq (equity) to avoid double-counting unrealized PnL.
+        """OKX balance override: use cashBal for per-currency balances.
 
         CCXT maps OKX's `eq` (equity = cashBal + unrealizedPnL) to balance `total`.
-        Since get_total_capital() adds position market values (= unrealized PnL) on top,
-        using `eq` would double-count unrealized PnL. We use `cashBal` instead.
+        We use `cashBal` for individual currency balances, and extract `totalEq`
+        as the authoritative portfolio value via _extract_portfolio_value().
         """
         balances_raw = await self.exchange_manager.exchange.fetch_balance()
+
+        equity = self._extract_portfolio_value(balances_raw)
+        if equity is not None:
+            self._exchange_total_capital = equity
+
+        margin_ratio = self._extract_margin_ratio(balances_raw)
+        if margin_ratio is not None:
+            self._exchange_margin_ratio = margin_ratio
 
         # Extract cashBal from raw OKX response instead of CCXT-parsed eq
         balances: list[AssetBalance] = []
