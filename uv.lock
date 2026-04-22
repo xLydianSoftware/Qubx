@@ -272,7 +272,7 @@ wheels = [
 
 [[package]]
 name = "ccxt"
-version = "4.5.34"
+version = "4.5.50"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiodns" },
@@ -285,9 +285,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "yarl" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/d0/97/8c3fd0c4f88af310617632408a3f9a2c6db5e90e6172f474a3c6368bf9ce/ccxt-4.5.34.tar.gz", hash = "sha256:c32886b28f3f1ead121b43665734333ecf084758888bed0dfc98a020e578b08e", size = 5943098, upload-time = "2026-01-20T10:59:55.391Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/e3/59/5d8d8822b65b097e7a17e2a0b8e0db34722b540c5229d2f8bc4e673b8cff/ccxt-4.5.50.tar.gz", hash = "sha256:db3214a2a73bc83699ad91001509797d555233544e0388863220151ff1f7547e", size = 6093796, upload-time = "2026-04-20T14:20:35.827Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/d8/eb/7f6f0b252c701db93787ead15f8368138dde740cb1cd75b88ab9ca9027a4/ccxt-4.5.34-py2.py3-none-any.whl", hash = "sha256:fe0b02d77900eb2ae59a432257ae8c7705bf9df7adc77bc735b815d02688d1ba", size = 6441962, upload-time = "2026-01-20T10:59:52.812Z" },
+    { url = "https://files.pythonhosted.org/packages/b1/1a/033fad8e59bdc0ad28f5fe157b85b5ad9e5b9069cb0b169335a1ae76ee90/ccxt-4.5.50-py2.py3-none-any.whl", hash = "sha256:7f88d4f18ca68fbe9869ea5dbccdc66a53db3896ca376030c4cd12b0d3bdc324", size = 6590510, upload-time = "2026-04-20T14:20:32.087Z" },
 ]
 
 [[package]]
@@ -3769,7 +3769,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.10.11,<3.11" },
-    { name = "ccxt", marker = "extra == 'connectors'", specifier = ">=4.2.68,<5" },
+    { name = "ccxt", marker = "extra == 'connectors'", specifier = ">=4.5.46,<5" },
     { name = "click", specifier = ">=8.1.7,<9" },
     { name = "croniter", specifier = ">=2.0.5,<3" },
     { name = "dash", marker = "extra == 'viz'", specifier = ">=2.18.2,<3" },
