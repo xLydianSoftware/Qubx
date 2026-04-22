@@ -105,7 +105,11 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
         streamHash = channelName
         if symbolsDefined:
             streamHash = channelName + "::" + ",".join(symbols)
-        url = self.urls["api"]["ws"][rawMarketType] + "/" + self.stream(rawMarketType, streamHash)
+        url = (
+            self.get_ws_url(rawMarketType, self.get_future_ws_category(channelName))
+            + "/"
+            + self.stream(rawMarketType, streamHash)
+        )
         requestId = self.request_id(url)
         request: dict = {
             "method": "UNSUBSCRIBE",
