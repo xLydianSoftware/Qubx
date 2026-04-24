@@ -6,12 +6,25 @@ for formatting trading data before it is exported to external systems.
 """
 
 import json
+import math
 from abc import ABC, abstractmethod
 from typing import Any
 
+from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer
 from qubx.utils.time import to_timestamp
+
+
+def _sanitize_numeric(value: float, field_name: str, instrument: Instrument) -> float:
+    """Replace NaN/Inf with 0.0 and log an error so corrupt positions are visible in Loki."""
+    if not math.isfinite(value):
+        logger.error(
+            f"[ExportFormatter] non-finite {field_name}={value} for {instrument.exchange}:{instrument.symbol}, "
+            f"substituting 0.0 — investigate upstream account/position state"
+        )
+        return 0.0
+    return value
 
 
 class IExportFormatter(ABC):
@@ -152,11 +165,15 @@ class DefaultFormatter(IExportFormatter):
         Returns:
             A dictionary containing the formatted leverage change data
         """
+        target_quantity = _sanitize_numeric(
+            account.get_position(instrument).quantity, "target_quantity", instrument
+        )
+        target_leverage = _sanitize_numeric(account.get_leverage(instrument), "target_leverage", instrument)
         return {
             "timestamp": self._format_timestamp(time),
             "symbol": instrument.symbol,
             "exchange": instrument.exchange,
             "price": price,
-            "target_quantity": account.get_position(instrument).quantity,
-            "target_leverage": round(account.get_leverage(instrument), 4),
+            "target_quantity": target_quantity,
+            "target_leverage": round(target_leverage, 4),
         }
