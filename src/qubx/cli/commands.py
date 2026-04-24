@@ -1060,6 +1060,25 @@ def s3_rm_cmd(path: str, recursive: bool, yes: bool):
     s3_rm(path, recursive=recursive)
 
 
+@s3.command("parquet-stats")
+@click.argument("path", type=str)
+@click.option("--per-column", is_flag=True, help="Show per-column chunk sizes for row group 0.")
+def s3_parquet_stats_cmd(path: str, per_column: bool):
+    """
+    Print parquet file-level summary and row-group size distribution.
+
+    Accepts both S3 paths (account:bucket/key) and local paths. Reads only
+    the footer, so the full file is NOT downloaded.
+
+    Examples:\n
+      qubx s3 parquet-stats r2:dvault-features/.../part-2026-03.parquet\n
+      qubx s3 parquet-stats ./local.parquet --per-column
+    """
+    from .s3 import s3_parquet_stats
+
+    s3_parquet_stats(path, per_column=per_column)
+
+
 @s3.command("cp")
 @click.argument("src", type=str)
 @click.argument("dst", type=str)
