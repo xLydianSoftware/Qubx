@@ -1845,18 +1845,26 @@ cdef class BundledSeries(TimeSeries):
         # When either vtwap or ohlcv updates, bundle gathers values and triggers spread
     """
 
-    def __init__(self, str name, timeframe, dict fields, max_series_length=INFINITY):
+    def __init__(self, str name, timeframe, dict fields, align_timeframe=None, max_series_length=INFINITY):
         """
         Args:
             name: Name of this bundled series
             timeframe: Timeframe string (e.g., "1m", "1h")
             fields: Dict mapping field names to TimeSeries
                     e.g., {"vwap": vtwap_ts, "close": close_ts}
+            align_timeframe: Optional timeframe string used to bin-align source
+                timestamps before joining (floor_t64(t, align_timeframe)).
+                Defaults to `timeframe` when None. Use this when source series
+                have timestamps offset within the same logical bar (e.g. OHLC
+                at bar-open x:00:00 vs vendor data shifted to bar-close x:14:55
+                for a 15-minute timeframe) — both floor to the same bin.
             max_series_length: Maximum number of values to store
         """
         super().__init__(name, timeframe, max_series_length)
         self._fields = fields
         self._field_names = list(fields.keys())
+        # - alignment bin: explicit align_timeframe if provided, else self.timeframe (already ns after super().__init__)
+        self._align_timeframe = recognize_timeframe(align_timeframe) if align_timeframe is not None else self.timeframe
 
         # Attach to each source series' calculation chain
         for field_name, series in fields.items():
@@ -1883,22 +1891,39 @@ cdef class BundledSeries(TimeSeries):
         return series
 
     def _initial_data_recalculate_bundled(self):
-        """Align all sources by timestamp for initial calculation."""
-        # Collect all source data as pandas Series
+        """
+        Align all sources by timestamp for initial calculation.
+
+        Each source's timestamps are floored to self._align_timeframe first, then
+        outer-joined and forward-filled so mixed-cadence sources (e.g. 15m OHLC +
+        1h OI) and offset-stamped sources (e.g. open-stamped OHLC x:00:00 +
+        close-stamped vendor x:14:55 within the same 15m bin) all land in the
+        same row. Rows where any field is still NaN after ffill are dropped —
+        this handles warm-up bars where the slow-cadence source hasn't ticked yet.
+        """
         cdef list dfs = []
         cdef str name
         cdef TimeSeries series
+        cdef long long tf_ns = self._align_timeframe
 
         for name, series in self._fields.items():
             s = series.to_series()
             if len(s) > 0:
+                # - floor each timestamp to the align bin, keep last value within each bin
+                floored = pd.DatetimeIndex(
+                    [pd.Timestamp(floor_t64(<long long> t.value, tf_ns)) for t in s.index]
+                )
+                s = s.copy()
+                s.index = floored
+                s = s[~s.index.duplicated(keep='last')]
                 dfs.append(s.rename(name))
 
         if not dfs:
             return
 
-        # Align by timestamp (inner join - only times present in all sources)
-        aligned = pd.concat(dfs, axis=1).dropna()
+        # - outer-join on floored timestamps, ffill to carry slow-cadence sources forward,
+        # - then drop leading rows where any field is still NaN (warm-up)
+        aligned = pd.concat(dfs, axis=1).sort_index().ffill().dropna()
 
         # Process each aligned row
         for t in aligned.index:

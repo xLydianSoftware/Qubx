@@ -187,8 +187,9 @@ cdef class BundledSeries(TimeSeries):
     """
     Virtual series that bundles fields from multiple source TimeSeries.
     """
-    cdef dict _fields          # field_name -> TimeSeries
-    cdef list _field_names     # ordered list of field names
+    cdef dict _fields              # field_name -> TimeSeries
+    cdef list _field_names         # ordered list of field names
+    cdef long long _align_timeframe  # alignment bin (ns) for cross-source timestamp flooring
 
     cdef double _lookup_value(BundledSeries self, TimeSeries series, long long time)
     cdef TimeSeries _find_root(BundledSeries self, TimeSeries series)
