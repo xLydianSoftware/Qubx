@@ -1454,12 +1454,16 @@ def _bundle_source_overrides(
                     subprocess.run(["git", "clone", git_url, checkout_dir], check=True, capture_output=True, text=True)
                     subprocess.run(["git", "checkout", commit_sha], cwd=checkout_dir, check=True, capture_output=True, text=True)
 
-            logger.info(f"  Bundling {pkg_name}=={pkg_ver} from {checkout_dir} ...")
+            # Honor [tool.uv.sources] `subdirectory` for monorepo git sources
+            subdir = source.get("subdirectory")
+            build_cwd = os.path.join(checkout_dir, subdir) if subdir else checkout_dir
+
+            logger.info(f"  Bundling {pkg_name}=={pkg_ver} from {build_cwd} ...")
             os.makedirs(wheels_dir, exist_ok=True)
             try:
                 result = subprocess.run(
                     ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
-                    cwd=checkout_dir,
+                    cwd=build_cwd,
                     check=True,
                     capture_output=True,
                     text=True,
