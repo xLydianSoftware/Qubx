@@ -4,10 +4,13 @@ Composite Metric Emitter.
 This module provides a composite implementation of IMetricEmitter that delegates to multiple emitters.
 """
 
+import datetime
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 from qubx import logger
-from qubx.core.basics import Deal, Instrument, Signal, dt_64
+from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 
@@ -70,7 +73,13 @@ class CompositeMetricEmitter(BaseMetricEmitter):
             except Exception as e:
                 logger.error(f"Error emitting strategy stats to {emitter.__class__.__name__}: {e}")
 
-    def emit_signals(self, time: dt_64, signals: list["Signal"], account: "IAccountViewer") -> None:
+    def emit_signals(
+        self,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        signals: list[Signal],
+        account: IAccountViewer,
+        target_positions: list[TargetPosition] | None = None,
+    ) -> None:
         """
         Emit signals to all configured emitters.
 
@@ -78,14 +87,21 @@ class CompositeMetricEmitter(BaseMetricEmitter):
             time: Timestamp when the signals were generated
             signals: List of signals to emit
             account: Account viewer to get account information
+            target_positions: List of target positions (optional)
         """
         for emitter in self._emitters:
             try:
-                emitter.emit_signals(time, signals, account)
+                emitter.emit_signals(time, signals, account, target_positions)
             except Exception as e:
                 logger.error(f"Error emitting signals to {emitter.__class__.__name__}: {e}")
 
-    def emit_deals(self, time: dt_64, instrument: Instrument, deals: list[Deal], account: "IAccountViewer") -> None:
+    def emit_deals(
+        self,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: IAccountViewer,
+    ) -> None:
         """
         Emit deals to all configured emitters.
 
