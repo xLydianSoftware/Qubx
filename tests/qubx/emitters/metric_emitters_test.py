@@ -317,28 +317,38 @@ class TestCompositeMetricEmitter:
 
     def test_notify(self, composite, emitters):
         """Test that notify delegates to all emitters."""
-        timestamp = pd.Timestamp("2023-01-01").to_numpy()
-        composite.notify(timestamp)
+        context = MagicMock(spec=IStrategyContext)
+        composite.notify(context)
         for emitter in emitters:
-            emitter.notify.assert_called_once_with(timestamp)
+            emitter.notify.assert_called_once_with(context)
 
     def test_notify_with_exception(self, composite, emitters):
         """Test that notify handles exceptions from emitters."""
         emitters[0].notify.side_effect = Exception("Test exception")
-        timestamp = pd.Timestamp("2023-01-01").to_numpy()
-        composite.notify(timestamp)
+        context = MagicMock(spec=IStrategyContext)
+        composite.notify(context)
         emitters[0].notify.assert_called_once()
         emitters[1].notify.assert_called_once()
 
     def test_emit_signals(self, composite, emitters, mock_signals, mock_account):
-        """Test that emit_signals calls all child emitters."""
+        """Test that emit_signals calls all child emitters with target_positions."""
         time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
 
         composite.emit_signals(time, mock_signals, mock_account)
 
-        # Check that all emitters were called
+        # Composite forwards target_positions=None when not supplied
         for emitter in emitters:
-            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account)
+            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account, None)
+
+    def test_emit_signals_with_target_positions(self, composite, emitters, mock_signals, mock_account):
+        """Test that emit_signals forwards target_positions to child emitters."""
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+        target_positions = [MagicMock(), MagicMock()]
+
+        composite.emit_signals(time, mock_signals, mock_account, target_positions)
+
+        for emitter in emitters:
+            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account, target_positions)
 
     def test_emit_signals_with_exception(self, composite, emitters, mock_signals, mock_account):
         """Test that emit_signals handles exceptions from child emitters."""
@@ -352,7 +362,70 @@ class TestCompositeMetricEmitter:
 
         # Check that all emitters were still called
         for emitter in emitters:
-            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account)
+            emitter.emit_signals.assert_called_once_with(time, mock_signals, mock_account, None)
+
+    def test_emit_deals_delegates(self, composite, emitters, mock_account):
+        """Test that emit_deals delegates to all child emitters."""
+        from qubx.core.basics import Deal
+
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+        instrument = MagicMock()
+        deals = [
+            Deal(
+                id="d1",
+                order_id="o1",
+                time=time,
+                amount=1.0,
+                price=100.0,
+                aggressive=True,
+            )
+        ]
+
+        composite.emit_deals(time, instrument, deals, mock_account)
+
+        for emitter in emitters:
+            emitter.emit_deals.assert_called_once_with(time, instrument, deals, mock_account)
+
+    def test_emit_deals_with_exception(self, composite, emitters, mock_account):
+        """Test that emit_deals continues delegation when a child raises."""
+        from qubx.core.basics import Deal
+
+        time = dt_64(pd.Timestamp("2023-01-01 12:00:00"))
+        instrument = MagicMock()
+        deals = [
+            Deal(
+                id="d1",
+                order_id="o1",
+                time=time,
+                amount=1.0,
+                price=100.0,
+                aggressive=True,
+            )
+        ]
+        emitters[0].emit_deals.side_effect = Exception("boom")
+
+        composite.emit_deals(time, instrument, deals, mock_account)
+
+        for emitter in emitters:
+            emitter.emit_deals.assert_called_once_with(time, instrument, deals, mock_account)
+
+    def test_stop_delegates(self, composite, emitters):
+        """Test that stop is delegated and tolerates child exceptions."""
+        emitters[0].stop.side_effect = Exception("boom")
+
+        composite.stop()
+
+        for emitter in emitters:
+            emitter.stop.assert_called_once_with()
+
+    def test_set_context_delegates(self, composite, emitters):
+        """Test that set_context is delegated to all children."""
+        ctx = MagicMock(spec=IStrategyContext)
+
+        composite.set_context(ctx)
+
+        for emitter in emitters:
+            emitter.set_context.assert_called_once_with(ctx)
 
 
 class TestPrometheusMetricEmitter:
@@ -1010,3 +1083,76 @@ class TestInMemoryMetricEmitter:
 
         # But they should be different objects when copy=True
         assert df_copy is not df_view
+
+
+class TestEmitterInterfaceCompliance:
+    """
+    Verify every IMetricEmitter implementation accepts the interface signatures.
+
+    Catches regressions where an impl drifts from the contract (e.g. missing
+    target_positions in emit_signals) and would TypeError when called via
+    CompositeMetricEmitter.
+    """
+
+    @staticmethod
+    def _impls():
+        import inspect as _inspect
+
+        from qubx.emitters.csv import CSVMetricEmitter
+        from qubx.emitters.prometheus import PrometheusMetricEmitter
+        from qubx.emitters.questdb import QuestDBMetricEmitter
+
+        return [
+            BaseMetricEmitter,
+            CompositeMetricEmitter,
+            InMemoryMetricEmitter,
+            CSVMetricEmitter,
+            PrometheusMetricEmitter,
+            QuestDBMetricEmitter,
+        ], _inspect
+
+    def _accepts(self, sig, *args, **kwargs):
+        try:
+            sig.bind(*args, **kwargs)
+            return True
+        except TypeError:
+            return False
+
+    def test_emit_signals_signature(self):
+        impls, inspect = self._impls()
+        time = dt_64(pd.Timestamp("2023-01-01"))
+        signals: list = []
+        account = MagicMock(spec=IAccountViewer)
+        targets: list = []
+        for impl in impls:
+            sig = inspect.signature(impl.emit_signals)
+            assert self._accepts(sig, MagicMock(), time, signals, account), (
+                f"{impl.__name__}.emit_signals must accept (time, signals, account)"
+            )
+            assert self._accepts(sig, MagicMock(), time, signals, account, targets), (
+                f"{impl.__name__}.emit_signals must accept target_positions"
+            )
+            assert self._accepts(sig, MagicMock(), time, signals, account, target_positions=targets), (
+                f"{impl.__name__}.emit_signals must accept target_positions kwarg"
+            )
+
+    def test_emit_deals_signature(self):
+        impls, inspect = self._impls()
+        time = dt_64(pd.Timestamp("2023-01-01"))
+        instrument = MagicMock()
+        deals: list = []
+        account = MagicMock(spec=IAccountViewer)
+        for impl in impls:
+            sig = inspect.signature(impl.emit_deals)
+            assert self._accepts(sig, MagicMock(), time, instrument, deals, account), (
+                f"{impl.__name__}.emit_deals must accept (time, instrument, deals, account)"
+            )
+
+    def test_required_methods_present(self):
+        impls, _ = self._impls()
+        required = ["emit", "emit_strategy_stats", "notify", "set_context", "emit_signals", "emit_deals", "stop"]
+        for impl in impls:
+            for method_name in required:
+                assert callable(getattr(impl, method_name, None)), (
+                    f"{impl.__name__} is missing IMetricEmitter method: {method_name}"
+                )

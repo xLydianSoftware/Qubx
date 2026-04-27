@@ -4,12 +4,15 @@ CSV Metric Emitter.
 This module provides an implementation of IMetricEmitter that exports metrics to a CSV file.
 """
 
+import datetime
 import os
 from pathlib import Path
 from typing import Any
 
+import pandas as pd
+
 from qubx import logger
-from qubx.core.basics import Signal, dt_64
+from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.ntp import time_now
@@ -84,7 +87,13 @@ class CSVMetricEmitter(BaseMetricEmitter):
         except Exception as e:
             logger.error(f"[CSVMetricEmitter] Failed to emit metric {name}: {e}")
 
-    def emit_signals(self, time: dt_64, signals: list[Signal], account: IAccountViewer) -> None:
+    def emit_signals(
+        self,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        signals: list[Signal],
+        account: IAccountViewer,
+        target_positions: list[TargetPosition] | None = None,
+    ) -> None:
         """
         Emit signals to CSV file.
 
@@ -92,9 +101,15 @@ class CSVMetricEmitter(BaseMetricEmitter):
             time: Timestamp when the signals were generated
             signals: List of signals to emit
             account: Account viewer to get account information
+            target_positions: Optional list of target positions generated from the signals
         """
         if not signals:
             return
+
+        target_positions_map: dict[Instrument, TargetPosition] = {}
+        if target_positions:
+            for target in target_positions:
+                target_positions_map[target.instrument] = target
 
         try:
             # Create a signals-specific CSV file
@@ -104,7 +119,8 @@ class CSVMetricEmitter(BaseMetricEmitter):
             if not signals_file_path.exists():
                 with open(signals_file_path, "w") as f:
                     f.write(
-                        "timestamp,symbol,exchange,signal,price,stop,take,reference_price,group,comment,is_service\n"
+                        "timestamp,symbol,exchange,signal,price,stop,take,reference_price,"
+                        "target_position_size,group,comment,is_service\n"
                     )
 
             # Write each signal to the CSV file
@@ -114,13 +130,58 @@ class CSVMetricEmitter(BaseMetricEmitter):
                 stop = signal.stop if signal.stop is not None else ""
                 take = signal.take if signal.take is not None else ""
                 ref_price = signal.reference_price if signal.reference_price is not None else ""
+                target = target_positions_map.get(signal.instrument)
+                target_size = target.target_position_size if target is not None else ""
 
                 with open(signals_file_path, "a") as f:
                     f.write(
                         f"{signal_time},{signal.instrument.symbol},{signal.instrument.exchange},"
-                        f"{signal.signal},{price},{stop},{take},{ref_price},"
+                        f"{signal.signal},{price},{stop},{take},{ref_price},{target_size},"
                         f"{signal.group},{signal.comment},{signal.is_service}\n"
                     )
 
         except Exception as e:
             logger.error(f"[CSVMetricEmitter] Failed to emit signals: {e}")
+
+    def emit_deals(
+        self,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: IAccountViewer,
+    ) -> None:
+        """
+        Emit deals to CSV file.
+
+        Args:
+            time: Timestamp when the deals were generated
+            instrument: Instrument the deals belong to
+            deals: List of deals to emit
+            account: Account viewer to get account information
+        """
+        if not deals:
+            return
+
+        try:
+            deals_file_path = self._file_path.parent / f"deals_{self._file_path.stem}.csv"
+
+            if not deals_file_path.exists():
+                with open(deals_file_path, "w") as f:
+                    f.write(
+                        "timestamp,symbol,exchange,amount,price,aggressive,"
+                        "fee_amount,fee_currency,deal_id,order_id\n"
+                    )
+
+            with open(deals_file_path, "a") as f:
+                for deal in deals:
+                    deal_time = str(deal.time) if hasattr(deal.time, "__str__") else str(time)
+                    fee_amount = deal.fee_amount if deal.fee_amount is not None else ""
+                    fee_currency = deal.fee_currency if deal.fee_currency is not None else ""
+                    f.write(
+                        f"{deal_time},{instrument.symbol},{instrument.exchange},"
+                        f"{deal.amount},{deal.price},{deal.aggressive},"
+                        f"{fee_amount},{fee_currency},{deal.id},{deal.order_id}\n"
+                    )
+
+        except Exception as e:
+            logger.error(f"[CSVMetricEmitter] Failed to emit deals: {e}")

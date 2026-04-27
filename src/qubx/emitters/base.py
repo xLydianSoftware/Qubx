@@ -4,10 +4,13 @@ Base Metric Emitter.
 This module provides a base implementation of IMetricEmitter that can be extended by other emitters.
 """
 
+import datetime
 from typing import Any, Dict, List, Optional, Set
 
+import pandas as pd
+
 from qubx import logger
-from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
+from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext
 from qubx.utils.time import to_timedelta
 
@@ -199,10 +202,10 @@ class BaseMetricEmitter(IMetricEmitter):
 
     def emit_signals(
         self,
-        time: dt_64,
-        signals: list["Signal"],
-        account: "IAccountViewer",
-        target_positions: list["TargetPosition"] | None = None,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        signals: list[Signal],
+        account: IAccountViewer,
+        target_positions: list[TargetPosition] | None = None,
     ) -> None:
         """
         Emit signals to the monitoring system.
@@ -215,6 +218,27 @@ class BaseMetricEmitter(IMetricEmitter):
             signals: List of signals to emit
             account: Account viewer to get account information like total capital, leverage, etc.
             target_positions: Optional list of target positions generated from the signals
+        """
+        pass
+
+    def emit_deals(
+        self,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: IAccountViewer,
+    ) -> None:
+        """
+        Emit deals to the monitoring system.
+
+        Base implementation does nothing - subclasses should override this method
+        to implement specific deal emission logic.
+
+        Args:
+            time: Timestamp when the deals were generated
+            instrument: Instrument the deals belong to
+            deals: List of deals to emit
+            account: Account viewer to get account information like total capital, leverage, etc.
         """
         pass
 
