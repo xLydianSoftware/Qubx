@@ -266,7 +266,14 @@ class BundledSeries(TimeSeries):
     _fields: dict[str, TimeSeries]
     _field_names: list[str]
 
-    def __init__(self, name: str, timeframe, fields: dict[str, TimeSeries], max_series_length: int | float = ...) -> None: ...
+    def __init__(
+        self,
+        name: str,
+        timeframe,
+        fields: dict[str, TimeSeries],
+        align_timeframe: str | None = ...,
+        max_series_length: int | float = ...,
+    ) -> None: ...
     def update(self, time: int, value: Any, new_item_started: bool) -> Any: ...
     def to_series(self, length: int | None = None) -> pd.DataFrame: ...
 
