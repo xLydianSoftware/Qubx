@@ -12,6 +12,7 @@ This module includes:
     - Strategy lifecycle notifiers
 """
 
+import datetime
 import inspect
 import traceback
 from dataclasses import dataclass
@@ -2790,7 +2791,7 @@ class IMetricEmitter:
 
     def emit_signals(
         self,
-        time: dt_64,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
         signals: list[Signal],
         account: "IAccountViewer",
         target_positions: list["TargetPosition"] | None = None,
@@ -2810,7 +2811,7 @@ class IMetricEmitter:
 
     def emit_deals(
         self,
-        time: dt_64,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
         instrument: Instrument,
         deals: list[Deal],
         account: "IAccountViewer",

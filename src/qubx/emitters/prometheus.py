@@ -4,12 +4,14 @@ Prometheus Metric Emitter.
 This module provides an implementation of IMetricEmitter that exports metrics to Prometheus.
 """
 
+import datetime
 from typing import Any, Dict, List, Literal, Optional
 
+import pandas as pd
 from prometheus_client import REGISTRY, Counter, Gauge, Summary, push_to_gateway
 
 from qubx import logger
-from qubx.core.basics import Instrument, Signal, dt_64
+from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 
@@ -223,7 +225,13 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             except Exception as e:
                 logger.error(f"[PrometheusMetricEmitter] Failed to push metrics to gateway: {e}")
 
-    def emit_signals(self, time: dt_64, signals: list[Signal], account: IAccountViewer) -> None:
+    def emit_signals(
+        self,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        signals: list[Signal],
+        account: IAccountViewer,
+        target_positions: list[TargetPosition] | None = None,
+    ) -> None:
         """
         Emit signals as Prometheus metrics.
 
@@ -231,9 +239,15 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             time: Timestamp when the signals were generated
             signals: List of signals to emit
             account: Account viewer to get account information
+            target_positions: Optional list of target positions generated from the signals
         """
         if not signals:
             return
+
+        target_positions_map: dict[Instrument, TargetPosition] = {}
+        if target_positions:
+            for target in target_positions:
+                target_positions_map[target.instrument] = target
 
         try:
             for signal in signals:
@@ -266,6 +280,11 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
                     ref_price_gauge = self._get_or_create_gauge("signal_reference_price", labels)
                     ref_price_gauge.labels(**labels).set(signal.reference_price)
 
+                target = target_positions_map.get(signal.instrument)
+                if target is not None:
+                    target_gauge = self._get_or_create_gauge("signal_target_position_size", labels)
+                    target_gauge.labels(**labels).set(target.target_position_size)
+
             # Push to gateway if configured
             if self._pushgateway_url:
                 try:
@@ -277,6 +296,50 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
 
         except Exception as e:
             logger.error(f"[PrometheusMetricEmitter] Failed to emit signals: {e}")
+
+    def emit_deals(
+        self,
+        time: dt_64 | pd.Timestamp | datetime.datetime,
+        instrument: Instrument,
+        deals: list[Deal],
+        account: IAccountViewer,
+    ) -> None:
+        """
+        Emit deals as Prometheus metrics.
+
+        Args:
+            time: Timestamp when the deals were generated
+            instrument: Instrument the deals belong to
+            deals: List of deals to emit
+            account: Account viewer to get account information
+        """
+        if not deals:
+            return
+
+        try:
+            labels = {
+                "symbol": instrument.symbol,
+                "exchange": instrument.exchange,
+            }
+            count_counter = self._get_or_create_counter("deal_count", labels)
+            amount_gauge = self._get_or_create_gauge("deal_amount", labels)
+            price_gauge = self._get_or_create_gauge("deal_price", labels)
+
+            for deal in deals:
+                count_counter.labels(**labels).inc()
+                amount_gauge.labels(**labels).set(deal.amount)
+                price_gauge.labels(**labels).set(deal.price)
+
+            if self._pushgateway_url:
+                try:
+                    push_to_gateway(
+                        self._pushgateway_url, job=f"{self._namespace}_{self._strategy_name}", registry=self._registry
+                    )
+                except Exception as e:
+                    logger.error(f"[PrometheusMetricEmitter] Failed to push deal metrics to gateway: {e}")
+
+        except Exception as e:
+            logger.error(f"[PrometheusMetricEmitter] Failed to emit deals: {e}")
 
     def stop(self) -> None:
         """Perform a final push to the gateway if configured."""
