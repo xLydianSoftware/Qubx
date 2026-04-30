@@ -126,15 +126,50 @@ cdef class Indexed:
 
     def lookup_idx(self, value, str method) -> int:
         """
-        Find value's index in series using specified method (ffill: previous index, bfill: next index)
+        Find value's index in series using specified method.
+
+        - ffill: previous index — equivalent to np.searchsorted(side='right') - 1.
+                 Returns -1 if value is below all stored items.
+        - bfill: next index — equivalent to np.searchsorted(side='left').
+                 Returns -1 if value is above all stored items.
+
+        Implementation note: this is a pure-Cython binary search over the Python
+        list `self.values`. It replaces a previous `np.searchsorted` call which
+        spent the bulk of its time in `np.asarray(list)` conversion (O(n) per
+        call) — `_wrapit` was the dominant hotspot in profiles. Element
+        comparisons here go through Python rich comparison, which is fast for
+        the int/float scalars actually stored. Behavior matches the original
+        for sorted ascending input (the only contract the rest of the codebase
+        relies on).
         """
+        cdef int n = len(self.values)
+        cdef int lo, hi, mid
         cdef int i0
+
         if method == 'ffill':
-            i0 = int(np.searchsorted(self.values, value, side='right'))
+            # - rightmost insertion point, then -1
+            lo = 0
+            hi = n
+            while lo < hi:
+                mid = (lo + hi) >> 1
+                if self.values[mid] <= value:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            i0 = lo
             return max(-1, i0 - 1)
         elif method == 'bfill':
-            i0 = int(np.searchsorted(self.values, value, side='left'))
-            return -1 if i0 >= len(self.values) else i0
+            # - leftmost insertion point
+            lo = 0
+            hi = n
+            while lo < hi:
+                mid = (lo + hi) >> 1
+                if self.values[mid] < value:
+                    lo = mid + 1
+                else:
+                    hi = mid
+            i0 = lo
+            return -1 if i0 >= n else i0
         else:
             raise ValueError(f"Unsupported method {method}")
 
