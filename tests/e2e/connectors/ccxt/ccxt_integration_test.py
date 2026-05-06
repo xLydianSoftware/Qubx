@@ -383,9 +383,6 @@ class TestCcxtDataProvider:
         Without the patch, this test fails at ccxt >= 4.5.52 because
         ``OhlcDataHandler.prepare_subscription`` raises ``NotSupported`` when
         the binanceusdm ``has[]`` flags are ``None`` (see ccxt PR #28493).
-
-        Requires real binance API access — Qubx CI is blocked by Binance
-        HTTP 451, so this runs locally only.
         """
         exchange = "BINANCE.UM"
         await self._test_exchange_reading(exchange, ["BTCUSDT", "ETHUSDT"])
