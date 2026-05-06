@@ -759,6 +759,10 @@ class Position:
     maint_margin: float = 0.0
     _maint_margin_external: bool = False  # If True, maint_margin is managed by exchange (skip recalculation)
 
+    # ADL queue position from the exchange (None if not reported).
+    # Lower values = more likely to be auto-deleveraged.
+    adl_level: int | None = None
+
     # funding payment tracking
     cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
     funding_payments: list[FundingPayment]  # history of funding payments
@@ -808,6 +812,7 @@ class Position:
         self.last_update_conversion_rate = np.nan
         self.maint_margin = 0.0
         self._maint_margin_external = False
+        self.adl_level = None
         self.cumulative_funding = 0.0
         self.funding_payments = []
         self.last_funding_time = np.datetime64("NaT")  # type: ignore
