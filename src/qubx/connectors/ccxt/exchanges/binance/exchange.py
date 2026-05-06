@@ -366,15 +366,32 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
     def describe(self):
         """
         Overriding watchTrades to use aggTrade instead of trade.
+
+        Also restores watch[*] capability flags clobbered by ccxt 4.5.52's
+        REST-on-pro describe merge in pro/binanceusdm.py (see ccxt PR #28493).
+        The merge runs ``deep_extend(pro.describe(), rest.describe())`` and
+        the REST class explicitly sets every ``watch*`` flag to ``None``,
+        which overwrites pro's ``True`` values. The methods themselves still
+        work; only ``has[]`` was broken. Subclasses (BinancePortfolioMargin,
+        BINANCE_UM_MM) inherit this fix via ``super().describe()``.
+        Remove the ``has`` block below once we bump our minimum ccxt past
+        the regression.
         """
         return self.deep_extend(
             super().describe(),
             {
+                "has": {
+                    "watchOHLCV": True,                # handlers/ohlc.py:61
+                    "watchOHLCVForSymbols": True,      # handlers/ohlc.py:60
+                    "watchOrderBookForSymbols": True,  # handlers/orderbook.py:101
+                    "watchTradesForSymbols": True,     # handlers/trade.py:76
+                    "watchBidsAsks": True,             # handlers/quote.py:46
+                },
                 "options": {
                     "watchTrades": {
                         "name": "aggTrade",
-                    }
-                }
+                    },
+                },
             },
         )
 
