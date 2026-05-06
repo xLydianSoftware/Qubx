@@ -372,6 +372,18 @@ class TestCcxtDataProvider:
     @pytest.mark.e2e
     @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_binance_um_reader(self):
+        """Smoke test: paper-mode binance UM OHLC subscription end-to-end.
+
+        Acts as the e2e regression test for the BinanceQVUSDM ``has[]``
+        patch (see ``tests/qubx/connectors/ccxt/test_binance_has_restore.py``).
+        Boots a paper-mode strategy via ``run_strategy()`` with the BINANCE.UM
+        connector, subscribes to OHLC 1m for [BTCUSDT, ETHUSDT], and asserts
+        data flows.
+
+        Without the patch, this test fails at ccxt >= 4.5.52 because
+        ``OhlcDataHandler.prepare_subscription`` raises ``NotSupported`` when
+        the binanceusdm ``has[]`` flags are ``None`` (see ccxt PR #28493).
+        """
         exchange = "BINANCE.UM"
         await self._test_exchange_reading(exchange, ["BTCUSDT", "ETHUSDT"])
 
