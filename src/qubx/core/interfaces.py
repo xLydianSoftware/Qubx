@@ -387,6 +387,20 @@ class IAccountViewer:
         """
         ...
 
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        """ADL queue index for a position, or None if not reported by the exchange.
+
+        Lower values = higher risk of auto-deleveraging. Hyperliquid reports this
+        per-position via ``webData2``; CCXT and Lighter return None.
+
+        Args:
+            instrument: The instrument to check
+
+        Returns:
+            int | None: ADL queue index (typically 0-3), or None if unknown.
+        """
+        return self.get_position(instrument).adl_level
+
     def get_reserved(self, instrument: Instrument) -> float:
         """[Deprecated] Get reserved margin for a specific instrument.
 
