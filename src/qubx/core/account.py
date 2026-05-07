@@ -179,6 +179,14 @@ class BasicAccountProcessor(IAccountProcessor):
         # sum of margin required for all positions
         return sum([p.maint_margin for p in self._positions.values()])
 
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        # sum of initial margin reserved across all positions
+        return sum(p.initial_margin for p in self._positions.values())
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        # sum of maintenance margin required across all positions
+        return sum(p.maint_margin for p in self._positions.values())
+
     def get_available_margin(self, exchange: str | None = None) -> float:
         # total capital - total required margin
         return self.get_total_capital(exchange) - self.get_total_required_margin(exchange)
@@ -767,6 +775,18 @@ class CompositeAccountProcessor(IAccountProcessor):
         for exch_name, processor in self._account_processors.items():
             total_required_margin += processor.get_total_required_margin(exch_name)
         return total_required_margin
+
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_total_initial_margin(exchange)
+        return sum(p.get_total_initial_margin(name) for name, p in self._account_processors.items())
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_total_maint_margin(exchange)
+        return sum(p.get_total_maint_margin(name) for name, p in self._account_processors.items())
 
     def get_available_margin(self, exchange: str | None = None) -> float:
         if exchange is not None:

@@ -365,6 +365,30 @@ class IAccountViewer:
         """
         ...
 
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        """Get total INITIAL margin used across all open positions.
+
+        Initial margin is the margin reserved when a position is opened
+        (depends on the per-instrument leverage tier and margin mode).
+        Useful for "can I open more?" sizing decisions.
+
+        Returns:
+            float: Total initial margin
+        """
+        ...
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        """Get total MAINTENANCE margin required across all open positions.
+
+        Maintenance margin is the threshold below which positions get
+        liquidated (typically lower than initial margin).  Useful for
+        liquidation-distance / risk dashboards.
+
+        Returns:
+            float: Total maintenance margin
+        """
+        ...
+
     def get_available_margin(self, exchange: str | None = None) -> float:
         """Get available margin for new positions.
 
