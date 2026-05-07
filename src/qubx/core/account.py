@@ -198,6 +198,16 @@ class BasicAccountProcessor(IAccountProcessor):
         cache = getattr(self, "_margin_mode_cache", None)
         return cache.get(instrument) if cache else None
 
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support set_instrument_leverage"
+        )
+
+    def set_margin_mode(self, instrument: Instrument, mode) -> bool:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support set_margin_mode"
+        )
+
     def get_total_required_margin(self, exchange: str | None = None) -> float:
         # sum of margin required for all positions
         return sum([p.maint_margin for p in self._positions.values()])
@@ -768,6 +778,14 @@ class CompositeAccountProcessor(IAccountProcessor):
     def get_margin_mode(self, instrument: Instrument):
         exch = self._get_exchange(instrument=instrument)
         return self._account_processors[exch].get_margin_mode(instrument)
+
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].set_instrument_leverage(instrument, leverage)
+
+    def set_margin_mode(self, instrument: Instrument, mode) -> bool:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].set_margin_mode(instrument, mode)
 
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
         exchanges = [exchange] if exchange is not None else self._exchange_list

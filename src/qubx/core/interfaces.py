@@ -1470,6 +1470,46 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        """Change the per-instrument leverage setting on the exchange.
+
+        Conceptually an account configuration change, not a trade — lives on
+        the account processor, not the broker (no order routing involved).
+
+        Args:
+            instrument: The instrument to configure.
+            leverage: New leverage as a float (HPL accepts 1.5, etc.).  Must
+                be ``<= get_max_instrument_leverage(instrument)``.
+
+        Returns:
+            bool: True if the setting was accepted by the exchange.
+
+        Raises:
+            NotImplementedError: when the connector does not support changing
+                leverage at runtime.  Capability flag tells callers whether
+                to bother calling.
+        """
+        ...
+
+    def set_margin_mode(
+        self, instrument: Instrument, mode: Literal["cross", "isolated"]
+    ) -> bool:
+        """Change the per-instrument margin mode on the exchange.
+
+        Args:
+            instrument: The instrument to configure.
+            mode: ``"cross"`` (account-wide collateral) or ``"isolated"``
+                (margin scoped to this position).
+
+        Returns:
+            bool: True if the setting was accepted by the exchange.
+
+        Raises:
+            NotImplementedError: when the connector does not support changing
+                margin mode at runtime.
+        """
+        ...
+
     def update_balance(self, currency: str, total: float, locked: float, exchange: str | None = None):
         """Update balance for a specific currency.
 
