@@ -756,6 +756,8 @@ class Position:
     last_update_conversion_rate: float = np.nan  # last update conversion rate
 
     # margin requirements
+    initial_margin: float = 0.0
+    _initial_margin_external: bool = False  # If True, initial_margin is managed by exchange (skip recalculation)
     maint_margin: float = 0.0
     _maint_margin_external: bool = False  # If True, maint_margin is managed by exchange (skip recalculation)
 
@@ -810,6 +812,8 @@ class Position:
         self.last_update_time = np.nan  # type: ignore
         self.last_update_price = np.nan
         self.last_update_conversion_rate = np.nan
+        self.initial_margin = 0.0
+        self._initial_margin_external = False
         self.maint_margin = 0.0
         self._maint_margin_external = False
         self.adl_level = None
@@ -831,6 +835,8 @@ class Position:
         self.last_update_time = pos.last_update_time
         self.last_update_price = pos.last_update_price
         self.last_update_conversion_rate = pos.last_update_conversion_rate
+        self.initial_margin = pos.initial_margin
+        self._initial_margin_external = pos._initial_margin_external
         self.maint_margin = pos.maint_margin
         self._maint_margin_external = pos._maint_margin_external
         self.cumulative_funding = pos.cumulative_funding
@@ -956,6 +962,7 @@ class Position:
             self.market_value_funds = self.market_value / conversion_rate
 
             # - update margin requirements
+            self._update_initial_margin()
             self._update_maint_margin()
 
         return self.pnl
@@ -1077,6 +1084,21 @@ class Position:
         self.maint_margin = value
         self._maint_margin_external = True
 
+    def set_external_initial_margin(self, value: float) -> None:
+        """
+        Set initial margin from external source (exchange API).
+
+        When set externally, the margin value won't be recalculated on price updates.
+        Live exchanges report the actual margin reserved for the position
+        (which depends on the per-instrument leverage tier and margin mode);
+        we trust that value over any framework computation.
+
+        Args:
+            value: Initial margin value from exchange
+        """
+        self.initial_margin = value
+        self._initial_margin_external = True
+
     def _update_maint_margin(self) -> None:
         # Skip recalculation if margin is managed externally (live trading with exchange-provided values)
         if self._maint_margin_external:
@@ -1089,6 +1111,23 @@ class Position:
             self.maint_margin = maint_margin * abs(self.quantity) * self._qty_multiplier * self.last_update_price
         else:
             self.maint_margin = 0.0
+
+    def _update_initial_margin(self) -> None:
+        # Skip recalculation if margin is managed externally (live trading with exchange-provided values)
+        if self._initial_margin_external:
+            return
+
+        # Only apply initial margin for leveraged instruments (futures/swaps).
+        # Use the per-asset initial_margin fraction from instrument metadata when
+        # populated; otherwise leave at 0.0 (the framework can't infer a sensible
+        # default without the per-instrument leverage setting, which lives on
+        # the account processor).
+        if self.instrument.is_futures() and self.instrument.initial_margin > 0:
+            self.initial_margin = (
+                self.instrument.initial_margin * abs(self.quantity) * self._qty_multiplier * self.last_update_price
+            )
+        else:
+            self.initial_margin = 0.0
 
 
 class CtrlChannel:
