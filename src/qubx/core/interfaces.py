@@ -354,6 +354,65 @@ class IAccountViewer:
         ...
 
     ########################################################
+    # Per-instrument exchange-side settings
+    #
+    # ``get_leverage`` (above) returns the *observed* leverage = notional/equity.
+    # The methods below expose the venue's per-(account, instrument) settings:
+    # the configured leverage tier, the venue's hard caps, and margin mode.
+    # Connectors that don't expose these return None (or float('inf') for the
+    # notional cap when the venue has none).
+    ########################################################
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """Current per-instrument leverage setting on the exchange.
+
+        Distinct from ``get_leverage`` which returns observed leverage
+        (notional / equity).  This is the venue's configuration that
+        determines initial-margin requirement and max position notional.
+
+        Returns:
+            float | None: Current leverage setting, or None if unknown / not
+            populated yet by the venue snapshot.
+        """
+        ...
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """Venue's hard cap on the per-instrument leverage setting.
+
+        Returns:
+            float | None: Maximum leverage allowed by the venue for this
+            instrument, or None if unknown.
+        """
+        ...
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        """Venue's hard cap on a single position's notional at the CURRENT
+        ``instrument_leverage`` setting.
+
+        On tiered venues (Binance, Bybit) this CHANGES when you change leverage
+        — higher leverage typically means lower notional cap.
+
+        Note: the effective max position is
+        ``min(get_max_instrument_notional(instrument), equity * instrument_leverage)``.
+        Strategies compute this themselves; the framework only exposes the
+        venue's tier cap.
+
+        Returns:
+            float: Notional cap; ``float('inf')`` when the venue has no
+            per-asset cap independent of equity (e.g. HPL).
+        """
+        ...
+
+    def get_margin_mode(
+        self, instrument: Instrument
+    ) -> Literal["cross", "isolated"] | None:
+        """Per-instrument margin mode currently configured on the exchange.
+
+        Returns:
+            "cross" | "isolated" | None: None if unknown / not populated yet.
+        """
+        ...
+
+    ########################################################
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################

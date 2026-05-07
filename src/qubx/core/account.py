@@ -175,6 +175,29 @@ class BasicAccountProcessor(IAccountProcessor):
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
+    ########################################################
+    # Per-instrument exchange-side settings
+    #
+    # Default impls read from optional caches (None / inf if not populated).
+    # Live exchange processors populate these caches during REST snapshot
+    # and on WS state updates.
+    ########################################################
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        cache = getattr(self, "_instrument_leverage_cache", None)
+        return cache.get(instrument) if cache else None
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        cache = getattr(self, "_max_instrument_leverage_cache", None)
+        return cache.get(instrument) if cache else None
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        cache = getattr(self, "_max_instrument_notional_cache", None)
+        return cache.get(instrument, float("inf")) if cache else float("inf")
+
+    def get_margin_mode(self, instrument: Instrument):
+        cache = getattr(self, "_margin_mode_cache", None)
+        return cache.get(instrument) if cache else None
+
     def get_total_required_margin(self, exchange: str | None = None) -> float:
         # sum of margin required for all positions
         return sum([p.maint_margin for p in self._positions.values()])
@@ -729,6 +752,22 @@ class CompositeAccountProcessor(IAccountProcessor):
     def get_leverage(self, instrument: Instrument) -> float:
         exch = self._get_exchange(instrument=instrument)
         return self._account_processors[exch].get_leverage(instrument)
+
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].get_instrument_leverage(instrument)
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].get_max_instrument_leverage(instrument)
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].get_max_instrument_notional(instrument)
+
+    def get_margin_mode(self, instrument: Instrument):
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].get_margin_mode(instrument)
 
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
         exchanges = [exchange] if exchange is not None else self._exchange_list
