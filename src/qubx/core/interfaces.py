@@ -355,19 +355,101 @@ class IAccountViewer:
         ...
 
     ########################################################
+    # Per-instrument exchange-side settings
+    #
+    # ``get_leverage`` (above) returns the *observed* leverage = notional/equity.
+    # The methods below expose the venue's per-(account, instrument) settings:
+    # the configured leverage tier, the venue's hard caps, and margin mode.
+    # Connectors that don't expose these return None (or float('inf') for the
+    # notional cap when the venue has none).
+    ########################################################
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """Current per-instrument leverage setting on the exchange.
+
+        Distinct from ``get_leverage`` which returns observed leverage
+        (notional / equity).  This is the venue's configuration that
+        determines initial-margin requirement and max position notional.
+
+        Returns:
+            float | None: Current leverage setting, or None if unknown / not
+            populated yet by the venue snapshot.
+        """
+        ...
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """Venue's hard cap on the per-instrument leverage setting.
+
+        Returns:
+            float | None: Maximum leverage allowed by the venue for this
+            instrument, or None if unknown.
+        """
+        ...
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        """Venue's hard cap on a single position's notional at the CURRENT
+        ``instrument_leverage`` setting.
+
+        On tiered venues (Binance, Bybit) this CHANGES when you change leverage
+        — higher leverage typically means lower notional cap.
+
+        Note: the effective max position is
+        ``min(get_max_instrument_notional(instrument), equity * instrument_leverage)``.
+        Strategies compute this themselves; the framework only exposes the
+        venue's tier cap.
+
+        Returns:
+            float: Notional cap; ``float('inf')`` when the venue has no
+            per-asset cap independent of equity (e.g. HPL).
+        """
+        ...
+
+    def get_margin_mode(
+        self, instrument: Instrument
+    ) -> Literal["cross", "isolated"] | None:
+        """Per-instrument margin mode currently configured on the exchange.
+
+        Returns:
+            "cross" | "isolated" | None: None if unknown / not populated yet.
+        """
+        ...
+
+    ########################################################
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
-    def get_total_required_margin(self, exchange: str | None = None) -> float:
-        """Get total margin required for all positions.
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        """Get total INITIAL margin used across all open positions.
+
+        Initial margin is the margin reserved when a position is opened
+        (depends on the per-instrument leverage tier and margin mode).
+        Useful for "can I open more?" sizing decisions.
 
         Returns:
-            float: Total required margin
+            float: Total initial margin
+        """
+        ...
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        """Get total MAINTENANCE margin required across all open positions.
+
+        Maintenance margin is the threshold below which positions get
+        liquidated (typically lower than initial margin).  Useful for
+        liquidation-distance / risk dashboards.
+
+        Returns:
+            float: Total maintenance margin
         """
         ...
 
     def get_available_margin(self, exchange: str | None = None) -> float:
         """Get available margin for new positions.
+
+        Available margin is ``total_capital - total_initial_margin``. For accurate
+        results, the connector must populate ``Position.initial_margin`` either
+        via ``set_external_initial_margin(...)`` from venue data (e.g. HPL
+        ``marginUsed``) or via ``instrument.initial_margin`` in the metadata.
+        Connectors that populate neither will see this method return the full
+        capital.
 
         Returns:
             float: Available margin
@@ -377,16 +459,30 @@ class IAccountViewer:
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         """Get current margin ratio.
 
-        Formula: (total capital + positions value) / total required margin
+        Formula: total capital / total maintenance margin
 
         Example:
-            If total capital is 1000, positions value is 2000, and total required margin is 3000,
-            the margin ratio would be (1000 + 2000) / 3000 = 1.0
+            If total capital is 3000 and total maintenance margin is 3000,
+            the margin ratio would be 3000 / 3000 = 1.0
 
         Returns:
             float: Current margin ratio
         """
         ...
+
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        """ADL queue index for a position, or None if not reported by the exchange.
+
+        Lower values = higher risk of auto-deleveraging. Hyperliquid reports this
+        per-position via ``webData2``; CCXT and Lighter return None.
+
+        Args:
+            instrument: The instrument to check
+
+        Returns:
+            int | None: ADL queue index (typically 0-3), or None if unknown.
+        """
+        return self.get_position(instrument).adl_level
 
     def get_reserved(self, instrument: Instrument) -> float:
         """[Deprecated] Get reserved margin for a specific instrument.
@@ -1371,6 +1467,46 @@ class IAccountProcessor(IAccountViewer):
 
         Args:
             manager: ISubscriptionManager instance to set
+        """
+        ...
+
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        """Change the per-instrument leverage setting on the exchange.
+
+        Conceptually an account configuration change, not a trade — lives on
+        the account processor, not the broker (no order routing involved).
+
+        Args:
+            instrument: The instrument to configure.
+            leverage: New leverage as a float (HPL accepts 1.5, etc.).  Must
+                be ``<= get_max_instrument_leverage(instrument)``.
+
+        Returns:
+            bool: True if the setting was accepted by the exchange.
+
+        Raises:
+            NotImplementedError: when the connector does not support changing
+                leverage at runtime.  Capability flag tells callers whether
+                to bother calling.
+        """
+        ...
+
+    def set_margin_mode(
+        self, instrument: Instrument, mode: Literal["cross", "isolated"]
+    ) -> bool:
+        """Change the per-instrument margin mode on the exchange.
+
+        Args:
+            instrument: The instrument to configure.
+            mode: ``"cross"`` (account-wide collateral) or ``"isolated"``
+                (margin scoped to this position).
+
+        Returns:
+            bool: True if the setting was accepted by the exchange.
+
+        Raises:
+            NotImplementedError: when the connector does not support changing
+                margin mode at runtime.
         """
         ...
 

@@ -11,7 +11,7 @@ from click.testing import CliRunner
 import qubx.pandaz.ta as pta
 from qubx.backtester.simulator import simulate
 from qubx.cli.misc import PyClassInfo, find_pyproject_root
-from qubx.cli.release import ReleaseInfo, StrategyInfo, create_released_pack
+from qubx.cli.release import ReleaseInfo, StrategyInfo, _bundle_source_overrides, create_released_pack
 from qubx.core.series import OHLCV
 from qubx.data import CsvStorage
 from qubx.utils.runner.configs import ExchangeConfig, LoggingConfig, StrategyConfig
@@ -257,3 +257,72 @@ class TestCreateReleasedPack:
         assert kwargs.get("message") == "Test release", "Message not passed correctly"
         assert kwargs.get("output_dir") == output_dir, "Output directory not passed correctly"
         assert kwargs.get("commit") is False, "Commit flag not passed correctly"
+
+
+class TestBundleSourceOverrides:
+    """Verify [tool.uv.sources] git source bundling — including monorepo `subdirectory`."""
+
+    def _make_pyproject(self, *, subdirectory: str | None = None) -> dict:
+        source: dict = {
+            "git": "https://github.com/example/monorepo.git",
+            "tag": "pkg/v0.2.0",
+        }
+        if subdirectory is not None:
+            source["subdirectory"] = subdirectory
+        return {"tool": {"uv": {"sources": {"sample-pkg": source}}}}
+
+    @patch("qubx.cli.release._find_uv_git_checkout")
+    @patch("subprocess.run")
+    def test_git_source_with_subdirectory_builds_from_subdir(
+        self, mock_run, mock_find_checkout, tmp_path
+    ):
+        """Git source with `subdirectory` must run `uv build` from <checkout>/<subdirectory>."""
+        checkout_root = tmp_path / "cache" / "deadbeef"
+        checkout_root.mkdir(parents=True)
+        mock_find_checkout.return_value = str(checkout_root)
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        _bundle_source_overrides(
+            pyproject_data=self._make_pyproject(subdirectory="qubx-xdata"),
+            pyproject_root=str(tmp_path),
+            release_dir=str(release_dir),
+            required_packages={"sample-pkg"},
+            lock_versions={"sample_pkg": "0.2.0"},
+            git_commits={"sample_pkg": "deadbeefcafebabe"},
+        )
+
+        assert mock_run.called, "uv build should be invoked for the git source"
+        kwargs = mock_run.call_args.kwargs
+        expected_cwd = str(checkout_root / "qubx-xdata")
+        assert kwargs["cwd"] == expected_cwd, (
+            f"Expected build cwd={expected_cwd!r}, got {kwargs['cwd']!r}"
+        )
+
+    @patch("qubx.cli.release._find_uv_git_checkout")
+    @patch("subprocess.run")
+    def test_git_source_without_subdirectory_builds_from_root(
+        self, mock_run, mock_find_checkout, tmp_path
+    ):
+        """Without `subdirectory`, `uv build` must run from the checkout root (unchanged)."""
+        checkout_root = tmp_path / "cache" / "deadbeef"
+        checkout_root.mkdir(parents=True)
+        mock_find_checkout.return_value = str(checkout_root)
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        _bundle_source_overrides(
+            pyproject_data=self._make_pyproject(subdirectory=None),
+            pyproject_root=str(tmp_path),
+            release_dir=str(release_dir),
+            required_packages={"sample-pkg"},
+            lock_versions={"sample_pkg": "0.2.0"},
+            git_commits={"sample_pkg": "deadbeefcafebabe"},
+        )
+
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["cwd"] == str(checkout_root)

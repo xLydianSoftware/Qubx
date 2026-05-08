@@ -109,6 +109,98 @@ def s3_cp(src: str, dst: str, recursive: bool = False) -> None:
         raise click.Abort()
 
 
+def s3_parquet_stats(path: str, per_column: bool = False) -> None:
+    """Print file-level summary + row-group size distribution for one parquet file.
+
+    Accepts either an S3 URI (``account:bucket/key``) or a local filesystem path.
+    Uses pyarrow for metadata parsing so no data pages are fetched.
+    """
+    import pyarrow.parquet as pq
+    from pyarrow.fs import LocalFileSystem
+
+    # Heuristic: an S3 URI has "account:..." where account is non-empty and
+    # contains no path separator. Fall back to local for anything else.
+    is_s3 = ":" in path and "/" not in path.split(":", 1)[0] and not path.startswith("/")
+    if is_s3:
+        try:
+            client, s3_path = S3Client.from_uri(path)
+        except ValueError as e:
+            raise click.BadParameter(str(e))
+        fs = client.fs
+        open_path = s3_path
+    else:
+        fs = LocalFileSystem()
+        open_path = path
+
+    try:
+        with fs.open_input_file(open_path) as f:
+            meta = pq.ParquetFile(f).metadata
+    except Exception as e:
+        click.echo(click.style(f"Error reading {path}: {e}", fg="red"), err=True)
+        raise click.Abort()
+
+    click.echo(click.style(f"File: {path}", fg="cyan", bold=True))
+    click.echo(f"  num_rows:       {meta.num_rows:,}")
+    click.echo(f"  num_row_groups: {meta.num_row_groups}")
+    click.echo(f"  num_columns:    {meta.num_columns}")
+    click.echo(f"  format_version: {meta.format_version}")
+    if meta.created_by:
+        click.echo(f"  created_by:     {meta.created_by}")
+
+    if meta.num_row_groups == 0:
+        return
+
+    # Parquet spec: RowGroup.total_byte_size is the SUM of uncompressed
+    # column sizes. The compressed on-disk size is the sum of
+    # ColumnChunk.total_compressed_size across columns.
+    rows: list[int] = []
+    per_rg_compressed: list[int] = []
+    per_rg_uncompressed: list[int] = []
+    compressions: set[str] = set()
+    for i in range(meta.num_row_groups):
+        rg = meta.row_group(i)
+        rows.append(rg.num_rows)
+        c_sz = 0
+        u_sz = 0
+        for c in range(rg.num_columns):
+            col = rg.column(c)
+            c_sz += col.total_compressed_size
+            u_sz += col.total_uncompressed_size
+            compressions.add(str(col.compression))
+        per_rg_compressed.append(c_sz)
+        per_rg_uncompressed.append(u_sz)
+
+    total_compressed = sum(per_rg_compressed)
+    total_uncompressed = sum(per_rg_uncompressed)
+    click.echo()
+    click.echo(click.style("Row groups:", fg="cyan", bold=True))
+    click.echo(f"  rows per rg:   min={min(rows):,}  max={max(rows):,}  avg={sum(rows)//len(rows):,}")
+    click.echo(
+        f"  cmp per rg:    min={_human_size(min(per_rg_compressed))}  "
+        f"max={_human_size(max(per_rg_compressed))}  avg={_human_size(sum(per_rg_compressed) // len(per_rg_compressed))}"
+    )
+    click.echo(f"  total:         compressed={_human_size(total_compressed)}  uncompressed={_human_size(total_uncompressed)}")
+    if total_uncompressed > 0:
+        ratio = 100 * total_compressed / total_uncompressed
+        click.echo(f"  compression:   {', '.join(sorted(compressions))}  ({ratio:.1f}% of uncompressed)")
+    else:
+        click.echo(f"  compression:   {', '.join(sorted(compressions))}")
+
+    if per_column:
+        click.echo()
+        click.echo(click.style("Columns (row group 0):", fg="cyan", bold=True))
+        rg0 = meta.row_group(0)
+        click.echo(f"  {'path':30s}  {'type':12s}  {'compressed':>11s}  {'uncompressed':>12s}   pct  compression")
+        for c in range(rg0.num_columns):
+            col = rg0.column(c)
+            pct = (100 * col.total_compressed_size / col.total_uncompressed_size) if col.total_uncompressed_size else 0.0
+            click.echo(
+                f"  {col.path_in_schema:30s}  {str(col.physical_type):12s}  "
+                f"{_human_size(col.total_compressed_size):>11s}  {_human_size(col.total_uncompressed_size):>12s}  "
+                f"{pct:5.1f}%  {col.compression}"
+            )
+
+
 def s3_accounts() -> None:
     s = get_settings()
     if not s.s3:

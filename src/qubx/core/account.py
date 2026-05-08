@@ -175,22 +175,66 @@ class BasicAccountProcessor(IAccountProcessor):
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
-    def get_total_required_margin(self, exchange: str | None = None) -> float:
-        # sum of margin required for all positions
-        return sum([p.maint_margin for p in self._positions.values()])
+    ########################################################
+    # Per-instrument exchange-side settings
+    #
+    # Soft-default no-ops on this base class. Live exchange processors
+    # (e.g. HyperliquidAccountProcessor) override these with venue-side
+    # data. Connectors without these concepts (sim, spot, plain CCXT)
+    # inherit None / float('inf') and need no override.
+    ########################################################
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        return float("inf")
+
+    def get_margin_mode(self, instrument: Instrument):
+        return None
+
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support set_instrument_leverage"
+        )
+
+    def set_margin_mode(self, instrument: Instrument, mode) -> bool:
+        raise NotImplementedError(
+            f"{type(self).__name__} does not support set_margin_mode"
+        )
+
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        # sum of initial margin reserved across all positions
+        return sum(p.initial_margin for p in self._positions.values())
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        # sum of maintenance margin required across all positions
+        return sum(p.maint_margin for p in self._positions.values())
 
     def get_available_margin(self, exchange: str | None = None) -> float:
-        # total capital - total required margin
-        return self.get_total_capital(exchange) - self.get_total_required_margin(exchange)
+        """Available margin headroom for opening new positions.
+
+        Computed as ``total_capital - total_initial_margin`` because initial
+        margin is what the venue reserves when a position is opened.  For
+        accurate results, the connector must populate ``Position.initial_margin``
+        either via ``set_external_initial_margin(...)`` from venue data (e.g.
+        HPL ``marginUsed``) or via ``instrument.initial_margin`` in the
+        metadata.  Connectors that populate neither will see this method return
+        the full capital.
+        """
+        # total capital - total initial margin (initial is what's reserved when opening)
+        return self.get_total_capital(exchange) - self.get_total_initial_margin(exchange)
 
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         if self._exchange_margin_ratio is not None:
             return self._exchange_margin_ratio
-        # fallback: total capital / total required margin
-        required_margin = self.get_total_required_margin(exchange)
-        if required_margin == 0:
+        # fallback: total capital / total maintenance margin
+        maint_margin = self.get_total_maint_margin(exchange)
+        if maint_margin == 0:
             return 100.0
-        return min(100.0, self.get_total_capital(exchange) / required_margin)
+        return min(100.0, self.get_total_capital(exchange) / maint_margin)
 
     ########################################################
     # Order and trade processing
@@ -722,6 +766,30 @@ class CompositeAccountProcessor(IAccountProcessor):
         exch = self._get_exchange(instrument=instrument)
         return self._account_processors[exch].get_leverage(instrument)
 
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].get_instrument_leverage(instrument)
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].get_max_instrument_leverage(instrument)
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].get_max_instrument_notional(instrument)
+
+    def get_margin_mode(self, instrument: Instrument):
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].get_margin_mode(instrument)
+
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].set_instrument_leverage(instrument, leverage)
+
+    def set_margin_mode(self, instrument: Instrument, mode) -> bool:
+        exch = self._get_exchange(instrument=instrument)
+        return self._account_processors[exch].set_margin_mode(instrument, mode)
+
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
         exchanges = [exchange] if exchange is not None else self._exchange_list
         return dict(
@@ -756,17 +824,17 @@ class CompositeAccountProcessor(IAccountProcessor):
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
-    def get_total_required_margin(self, exchange: str | None = None) -> float:
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
         if exchange is not None:
-            # Return required margin from specific exchange
             exch = self._get_exchange(exchange)
-            return self._account_processors[exch].get_total_required_margin(exchange)
+            return self._account_processors[exch].get_total_initial_margin(exchange)
+        return sum(p.get_total_initial_margin(name) for name, p in self._account_processors.items())
 
-        # Return aggregated required margin from all exchanges when no exchange is specified
-        total_required_margin = 0.0
-        for exch_name, processor in self._account_processors.items():
-            total_required_margin += processor.get_total_required_margin(exch_name)
-        return total_required_margin
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            exch = self._get_exchange(exchange)
+            return self._account_processors[exch].get_total_maint_margin(exchange)
+        return sum(p.get_total_maint_margin(name) for name, p in self._account_processors.items())
 
     def get_available_margin(self, exchange: str | None = None) -> float:
         if exchange is not None:
@@ -787,11 +855,11 @@ class CompositeAccountProcessor(IAccountProcessor):
             return self._account_processors[exch].get_margin_ratio(exchange)
 
         # Return aggregated margin ratio from all exchanges when no exchange is specified
-        # Calculated as: total_capital_all_exchanges / total_required_margin_all_exchanges
-        total_required_margin = self.get_total_required_margin()
-        if total_required_margin == 0:
+        # Calculated as: total_capital_all_exchanges / total_maint_margin_all_exchanges
+        total_maint_margin = self.get_total_maint_margin()
+        if total_maint_margin == 0:
             return 999.0
-        return self.get_total_capital() / total_required_margin
+        return self.get_total_capital() / total_maint_margin
 
     ########################################################
     # Order and trade processing
