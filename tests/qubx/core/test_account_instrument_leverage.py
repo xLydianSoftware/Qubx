@@ -8,11 +8,15 @@ the observed/computed leverage already on get_leverage:
 - get_max_instrument_leverage(...)      -> float | None     (venue cap)
 - get_max_instrument_notional(...)      -> float            (venue cap, inf if none)
 - get_margin_mode(instrument)           -> "cross"|"isolated"|None
+
+Note: the previous `_*_cache` injection tests (which exercised the
+removed `getattr(self, "_*_cache", None)` lookup on the base) were
+deleted alongside that implementation; the soft-default contract is
+covered in test_account_settings_defaults.py and live overrides are
+exercised by per-connector tests in the exchanges repo.
 """
 
 import math
-
-import pytest
 
 from qubx.core.basics import Instrument, MarketType
 
@@ -58,49 +62,3 @@ def test_default_impls_return_none_or_inf():
     assert acc.get_max_instrument_leverage(instr) is None
     assert acc.get_margin_mode(instr) is None
     assert math.isinf(acc.get_max_instrument_notional(instr))
-
-
-def test_get_margin_mode_returns_cross_or_isolated_when_set():
-    """Subclasses populate via internal cache; the default impl reads from
-    a ``_margin_mode_cache: dict[Instrument, str]`` if present."""
-    from qubx.core.account import BasicAccountProcessor
-
-    acc = BasicAccountProcessor.__new__(BasicAccountProcessor)
-    acc._exchange = "BINANCE.UM"
-    instr = _make_instrument()
-    acc._margin_mode_cache = {instr: "isolated"}
-
-    assert acc.get_margin_mode(instr) == "isolated"
-
-
-def test_get_instrument_leverage_returns_cached_float():
-    from qubx.core.account import BasicAccountProcessor
-
-    acc = BasicAccountProcessor.__new__(BasicAccountProcessor)
-    acc._exchange = "BINANCE.UM"
-    instr = _make_instrument()
-    acc._instrument_leverage_cache = {instr: 2.5}
-
-    assert acc.get_instrument_leverage(instr) == 2.5
-
-
-def test_get_max_instrument_leverage_returns_cached_float():
-    from qubx.core.account import BasicAccountProcessor
-
-    acc = BasicAccountProcessor.__new__(BasicAccountProcessor)
-    acc._exchange = "BINANCE.UM"
-    instr = _make_instrument()
-    acc._max_instrument_leverage_cache = {instr: 50.0}
-
-    assert acc.get_max_instrument_leverage(instr) == 50.0
-
-
-def test_get_max_instrument_notional_returns_cached_float():
-    from qubx.core.account import BasicAccountProcessor
-
-    acc = BasicAccountProcessor.__new__(BasicAccountProcessor)
-    acc._exchange = "BINANCE.UM"
-    instr = _make_instrument()
-    acc._max_instrument_notional_cache = {instr: 1_000_000.0}
-
-    assert acc.get_max_instrument_notional(instr) == 1_000_000.0

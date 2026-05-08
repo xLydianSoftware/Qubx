@@ -178,25 +178,22 @@ class BasicAccountProcessor(IAccountProcessor):
     ########################################################
     # Per-instrument exchange-side settings
     #
-    # Default impls read from optional caches (None / inf if not populated).
-    # Live exchange processors populate these caches during REST snapshot
-    # and on WS state updates.
+    # Soft-default no-ops on this base class. Live exchange processors
+    # (e.g. HyperliquidAccountProcessor) override these with venue-side
+    # data. Connectors without these concepts (sim, spot, plain CCXT)
+    # inherit None / float('inf') and need no override.
     ########################################################
     def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        cache = getattr(self, "_instrument_leverage_cache", None)
-        return cache.get(instrument) if cache else None
+        return None
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        cache = getattr(self, "_max_instrument_leverage_cache", None)
-        return cache.get(instrument) if cache else None
+        return None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
-        cache = getattr(self, "_max_instrument_notional_cache", None)
-        return cache.get(instrument, float("inf")) if cache else float("inf")
+        return float("inf")
 
     def get_margin_mode(self, instrument: Instrument):
-        cache = getattr(self, "_margin_mode_cache", None)
-        return cache.get(instrument) if cache else None
+        return None
 
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
         raise NotImplementedError(
