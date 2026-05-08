@@ -1,7 +1,7 @@
 """Tests for IAccountViewer.get_total_initial_margin / get_total_maint_margin.
 
-Mirrors the existing get_total_required_margin pattern (which sums maint
-margin across positions) but splits initial vs. maintenance for clarity:
+Mirrors the existing margin-totals pattern (summing per-position margin
+across positions) but splits initial vs. maintenance for clarity:
 - initial: "can I open more?"
 - maintenance: "how close am I to liquidation?"
 """

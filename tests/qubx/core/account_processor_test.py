@@ -257,7 +257,7 @@ class TestAccountProcessorStuff:
         # - check margin requirements
         # Since i1.maint_margin is 0, the default maintenance margin (5%) is used
         expected_margin = 50_000 * (i1.maint_margin or DEFAULT_MAINTENANCE_MARGIN)
-        assert account.get_total_required_margin() == pytest.approx(expected_margin)
+        assert account.get_total_maint_margin() == pytest.approx(expected_margin)
 
         # increase price 2x
         account.update_position_price(
@@ -313,7 +313,8 @@ class TestAccountProcessorStuff:
         assert leverage_adj == pytest.approx(ctx.get_net_leverage(), abs=0.01)
         assert leverage_adj == pytest.approx(ctx.get_gross_leverage(), abs=0.01)
         pos = ctx.get_position(instrument)
-        assert initial_capital - pos.maint_margin == pytest.approx(ctx.get_capital(), abs=1)
+        # get_capital() == get_available_margin() == total_capital - total_initial_margin
+        assert initial_capital - pos.initial_margin == pytest.approx(ctx.get_capital(), abs=1)
         assert initial_capital == pytest.approx(ctx.get_total_capital(), abs=1)
 
         # 3. Exit trade and check account

@@ -86,10 +86,6 @@ class MockAccountViewer(IAccountViewer):
         """Get the gross leverage of the account."""
         return 1.0
 
-    def get_total_required_margin(self, exchange: str | None = None):
-        """Get the total required margin."""
-        return 0.0
-
     def get_available_margin(self, exchange: str | None = None):
         """Get the available margin."""
         return 10000.0

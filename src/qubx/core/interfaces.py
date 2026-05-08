@@ -416,14 +416,6 @@ class IAccountViewer:
     # Margin information
     # Used for margin, swap, futures, options trading
     ########################################################
-    def get_total_required_margin(self, exchange: str | None = None) -> float:
-        """Get total margin required for all positions.
-
-        Returns:
-            float: Total required margin
-        """
-        ...
-
     def get_total_initial_margin(self, exchange: str | None = None) -> float:
         """Get total INITIAL margin used across all open positions.
 
@@ -451,6 +443,13 @@ class IAccountViewer:
     def get_available_margin(self, exchange: str | None = None) -> float:
         """Get available margin for new positions.
 
+        Available margin is ``total_capital - total_initial_margin``. For accurate
+        results, the connector must populate ``Position.initial_margin`` either
+        via ``set_external_initial_margin(...)`` from venue data (e.g. HPL
+        ``marginUsed``) or via ``instrument.initial_margin`` in the metadata.
+        Connectors that populate neither will see this method return the full
+        capital.
+
         Returns:
             float: Available margin
         """
@@ -459,11 +458,11 @@ class IAccountViewer:
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         """Get current margin ratio.
 
-        Formula: (total capital + positions value) / total required margin
+        Formula: total capital / total maintenance margin
 
         Example:
-            If total capital is 1000, positions value is 2000, and total required margin is 3000,
-            the margin ratio would be (1000 + 2000) / 3000 = 1.0
+            If total capital is 3000 and total maintenance margin is 3000,
+            the margin ratio would be 3000 / 3000 = 1.0
 
         Returns:
             float: Current margin ratio

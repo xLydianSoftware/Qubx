@@ -641,9 +641,6 @@ class StrategyContext(IStrategyContext):
         return self.account.get_gross_leverage(exchange)
 
     # margin information
-    def get_total_required_margin(self, exchange: str | None = None) -> float:
-        return self.account.get_total_required_margin(exchange)
-
     def get_available_margin(self, exchange: str | None = None) -> float:
         return self.account.get_available_margin(exchange)
 
