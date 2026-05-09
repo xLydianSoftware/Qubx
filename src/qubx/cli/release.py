@@ -711,10 +711,24 @@ def release_from_source(
             commited_files=[],
         )
 
+        # Resolve pyproject_root: if subdirectory is declared in config.release.source,
+        # the strategy lives inside a subpath of the clone (monorepo / uv workspace
+        # layout). Otherwise the strategy lives at the clone root (single-package layout).
+        source = stg_config.release.source
+        if source.subdirectory:
+            pyproject_root = os.path.join(str(clone_dir), source.subdirectory)
+            if not os.path.exists(os.path.join(pyproject_root, "pyproject.toml")):
+                raise FileNotFoundError(
+                    f"Configured release.source.subdirectory={source.subdirectory!r} "
+                    f"does not contain a pyproject.toml: {pyproject_root}"
+                )
+        else:
+            pyproject_root = str(clone_dir)
+
         create_released_pack(
             stg_info=stg_info,
             git_info=git_info,
-            pyproject_root=str(clone_dir),
+            pyproject_root=pyproject_root,
             output_dir=output_dir,
             config_file=cloned_config,
         )

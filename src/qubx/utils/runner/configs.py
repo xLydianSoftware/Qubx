@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from qubx.core.interfaces import IStrategy
 
@@ -237,6 +237,31 @@ class ReleaseSourceConfig(StrictBaseModel):
 
     ref: str
     """Git ref to build from — tag, branch, or commit SHA."""
+
+    subdirectory: str | None = None
+    """Optional subpath within the source repo where the strategy's package
+    lives. Required for monorepo sources where the workspace root has no
+    Python project (e.g., uv workspaces). When set, the release wheel build
+    runs from ``<clone>/<subdirectory>`` instead of the workspace root.
+
+    Example: ``subdirectory: "e2e-driver"`` for a strategy living in
+    ``xLydianSoftware/exchanges/e2e-driver/``.
+
+    Must be a relative path; absolute paths or paths that escape the clone
+    via ``..`` are rejected at parse time."""
+
+    @field_validator("subdirectory")
+    @classmethod
+    def _validate_subdirectory(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        if os.path.isabs(v):
+            raise ValueError(f"subdirectory must be a relative path, got {v!r}")
+        # Reject `..` segments to keep the build path inside the clone.
+        parts = os.path.normpath(v).split(os.sep)
+        if any(p == ".." for p in parts):
+            raise ValueError(f"subdirectory must not escape the clone via '..', got {v!r}")
+        return os.path.normpath(v)
 
 
 class ReleasePlatformConfig(StrictBaseModel):
