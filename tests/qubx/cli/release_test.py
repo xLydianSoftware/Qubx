@@ -17,6 +17,7 @@ from qubx.cli.release import (
     _bundle_source_overrides,
     _find_uv_workspace_root,
     _find_workspace_member_for_package,
+    _resolve_source_lockfile,
     create_released_pack,
 )
 from qubx.core.series import OHLCV
@@ -280,9 +281,7 @@ class TestBundleSourceOverrides:
 
     @patch("qubx.cli.release._find_uv_git_checkout")
     @patch("subprocess.run")
-    def test_git_source_with_subdirectory_builds_from_subdir(
-        self, mock_run, mock_find_checkout, tmp_path
-    ):
+    def test_git_source_with_subdirectory_builds_from_subdir(self, mock_run, mock_find_checkout, tmp_path):
         """Git source with `subdirectory` must run `uv build` from <checkout>/<subdirectory>."""
         checkout_root = tmp_path / "cache" / "deadbeef"
         checkout_root.mkdir(parents=True)
@@ -304,15 +303,11 @@ class TestBundleSourceOverrides:
         assert mock_run.called, "uv build should be invoked for the git source"
         kwargs = mock_run.call_args.kwargs
         expected_cwd = str(checkout_root / "qubx-xdata")
-        assert kwargs["cwd"] == expected_cwd, (
-            f"Expected build cwd={expected_cwd!r}, got {kwargs['cwd']!r}"
-        )
+        assert kwargs["cwd"] == expected_cwd, f"Expected build cwd={expected_cwd!r}, got {kwargs['cwd']!r}"
 
     @patch("qubx.cli.release._find_uv_git_checkout")
     @patch("subprocess.run")
-    def test_git_source_without_subdirectory_builds_from_root(
-        self, mock_run, mock_find_checkout, tmp_path
-    ):
+    def test_git_source_without_subdirectory_builds_from_root(self, mock_run, mock_find_checkout, tmp_path):
         """Without `subdirectory`, `uv build` must run from the checkout root (unchanged)."""
         checkout_root = tmp_path / "cache" / "deadbeef"
         checkout_root.mkdir(parents=True)
@@ -577,3 +572,74 @@ class TestBundleSourceOverridesWorkspace:
         # Found on PyPI → resolved from registry, not bundled.
         assert bundled == []
         assert not mock_run.called
+
+
+class TestResolveSourceLockfile:
+    """Tests for `_resolve_source_lockfile` workspace-aware lockfile resolution."""
+
+    def test_single_package_uses_member_local_lock(self, tmp_path: Path):
+        # Single-package project: uv.lock at pyproject_root, no workspace.
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "single-pkg"\nversion = "0.1.0"\n')
+        member_lock = tmp_path / "uv.lock"
+        member_lock.write_text("# placeholder\n")
+
+        result = _resolve_source_lockfile(str(tmp_path))
+        assert result == str(member_lock)
+
+    def test_workspace_member_uses_workspace_root_lock(self, tmp_path: Path):
+        # Workspace root has uv.lock; member dir does NOT.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "ws-root"\nversion = "0.0.0"\n\n[tool.uv.workspace]\nmembers = ["pkg-a"]\n'
+        )
+        ws_lock = tmp_path / "uv.lock"
+        ws_lock.write_text("# placeholder\n")
+
+        member_dir = tmp_path / "pkg-a"
+        member_dir.mkdir()
+        (member_dir / "pyproject.toml").write_text('[project]\nname = "pkg-a"\nversion = "0.1.0"\n')
+
+        result = _resolve_source_lockfile(str(member_dir))
+        # Should pick the workspace-root lock, not the missing member lock.
+        assert result == str(ws_lock)
+        assert not (member_dir / "uv.lock").exists()
+
+    def test_workspace_member_falls_through_to_generate_then_finds_workspace_lock(self, tmp_path: Path):
+        # Both locks missing initially. `uv lock` invocation is mocked to
+        # simulate uv writing the lock at the workspace root (typical
+        # behaviour for a workspace member).
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "ws-root"\nversion = "0.0.0"\n\n[tool.uv.workspace]\nmembers = ["pkg-a"]\n'
+        )
+
+        member_dir = tmp_path / "pkg-a"
+        member_dir.mkdir()
+        (member_dir / "pyproject.toml").write_text('[project]\nname = "pkg-a"\nversion = "0.1.0"\n')
+
+        ws_lock = tmp_path / "uv.lock"
+
+        def fake_generate(pyproject_root: str) -> None:
+            # Simulate `uv lock` running from the member: writes lock at the
+            # workspace root, not the member dir.
+            ws_lock.write_text("# placeholder\n")
+
+        with patch("qubx.cli.release._generate_lock_file", side_effect=fake_generate) as mock_gen:
+            result = _resolve_source_lockfile(str(member_dir))
+
+        assert mock_gen.called
+        # Resolution should still land on the workspace-root lock after generation.
+        assert result == str(ws_lock)
+        assert not (member_dir / "uv.lock").exists()
+
+    def test_single_package_missing_lock_generates_and_returns_member_lock(self, tmp_path: Path):
+        # No workspace. Initial lock missing → generate writes member-local lock.
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "single-pkg"\nversion = "0.1.0"\n')
+        member_lock = tmp_path / "uv.lock"
+
+        def fake_generate(pyproject_root: str) -> None:
+            member_lock.write_text("# placeholder\n")
+
+        with patch("qubx.cli.release._generate_lock_file", side_effect=fake_generate) as mock_gen:
+            result = _resolve_source_lockfile(str(tmp_path))
+
+        assert mock_gen.called
+        assert result == str(member_lock)
