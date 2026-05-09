@@ -780,7 +780,6 @@ def _find_source_root(pyproject_root: str, project_name: str) -> str | None:
     return None
 
 
-
 def _parse_uv_lock(uv_lock_path: str) -> dict[str, str]:
     """
     Parse uv.lock (TOML format) and return {normalized_name: version} dict.
@@ -1058,10 +1057,7 @@ def create_released_pack(
 
     # Parse uv.lock once as the single source of truth for versions.
     # If missing, generate it first.
-    uv_lock_path = os.path.join(pyproject_root, "uv.lock")
-    if not os.path.exists(uv_lock_path):
-        logger.info("uv.lock not found in source project, generating...")
-        _generate_lock_file(pyproject_root)
+    uv_lock_path = _resolve_source_lockfile(pyproject_root)
     lock_versions = _parse_uv_lock(uv_lock_path)
 
     # --- Step 1: Build strategy wheel (if custom code) ---
@@ -1339,6 +1335,52 @@ def _resolve_local_package_version(local_path: str, pkg_norm: str) -> str | None
     return None
 
 
+def _resolve_source_lockfile(pyproject_root: str) -> str:
+    """Locate the uv.lock for a source project, handling uv workspaces.
+
+    For a single-package project, uv.lock lives at the project root. For a
+    workspace member, uv only writes a single workspace-root lock — the member
+    directory has no uv.lock of its own. This helper picks the right one:
+
+    1. If `<pyproject_root>/uv.lock` exists, use it.
+    2. Otherwise, if `pyproject_root` is inside a uv workspace and the
+       workspace root has a uv.lock, use the workspace-root lock.
+    3. Otherwise, run `uv lock` from `pyproject_root` (which may write the lock
+       at the workspace root if `pyproject_root` is a member). Re-check both
+       locations and prefer whichever exists.
+
+    The returned path is what callers should hand to `_parse_uv_lock` /
+    `_parse_uv_lock_git_commits`. If neither location ends up populated, the
+    member-local path is returned so the caller can surface the missing-lock
+    warning via `_parse_uv_lock`.
+    """
+    member_lock = os.path.join(pyproject_root, "uv.lock")
+    if os.path.exists(member_lock):
+        return member_lock
+
+    workspace_root = _find_uv_workspace_root(pyproject_root)
+    if workspace_root and workspace_root != pyproject_root:
+        ws_lock = os.path.join(workspace_root, "uv.lock")
+        if os.path.exists(ws_lock):
+            logger.debug(f"Using workspace-root uv.lock at {ws_lock}")
+            return ws_lock
+
+    logger.info("uv.lock not found in source project, generating...")
+    _generate_lock_file(pyproject_root)
+
+    # `uv lock` for a workspace member writes the lock at the workspace root,
+    # not the member directory. Re-check both locations.
+    if os.path.exists(member_lock):
+        return member_lock
+    if workspace_root and workspace_root != pyproject_root:
+        ws_lock = os.path.join(workspace_root, "uv.lock")
+        if os.path.exists(ws_lock):
+            logger.debug(f"Using workspace-root uv.lock at {ws_lock}")
+            return ws_lock
+
+    return member_lock
+
+
 def _find_uv_workspace_root(start_dir: str) -> str | None:
     """Walk up from start_dir to find the nearest pyproject.toml with [tool.uv.workspace].
 
@@ -1536,7 +1578,9 @@ def _bundle_source_overrides(
                     shutil.rmtree(checkout_dir, ignore_errors=True)
                     os.makedirs(checkout_dir, exist_ok=True)
                     subprocess.run(["git", "clone", git_url, checkout_dir], check=True, capture_output=True, text=True)
-                    subprocess.run(["git", "checkout", commit_sha], cwd=checkout_dir, check=True, capture_output=True, text=True)
+                    subprocess.run(
+                        ["git", "checkout", commit_sha], cwd=checkout_dir, check=True, capture_output=True, text=True
+                    )
 
             # Honor [tool.uv.sources] `subdirectory` for monorepo git sources
             subdir = source.get("subdirectory")
