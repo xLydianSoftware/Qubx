@@ -14,7 +14,7 @@ from qubx.cli.misc import PyClassInfo, find_pyproject_root
 from qubx.cli.release import ReleaseInfo, StrategyInfo, _bundle_source_overrides, create_released_pack
 from qubx.core.series import OHLCV
 from qubx.data import CsvStorage
-from qubx.utils.runner.configs import ExchangeConfig, LoggingConfig, StrategyConfig
+from qubx.utils.runner.configs import ExchangeConfig, LoggingConfig, ReleaseSourceConfig, StrategyConfig
 
 # Add tests/strategies to the path
 sys.path.append(str(Path(__file__).parent.parent.parent.parent / "tests" / "strategies" / "macd_crossover" / "src"))
@@ -326,3 +326,68 @@ class TestBundleSourceOverrides:
 
         kwargs = mock_run.call_args.kwargs
         assert kwargs["cwd"] == str(checkout_root)
+
+
+class TestReleaseSourceConfigSubdirectory:
+    """Tests for the optional `subdirectory` field on ``ReleaseSourceConfig``.
+
+    The field lets monorepo / uv-workspace source repos point ``qubx release
+    --from-sources`` at the workspace member that owns the strategy's
+    pyproject.toml.
+    """
+
+    def test_subdirectory_optional_defaults_to_none(self):
+        """Existing single-package configs (no subdirectory) parse unchanged."""
+        cfg = ReleaseSourceConfig(repo="xLydianSoftware/foo", ref="main")
+        assert cfg.subdirectory is None
+
+    def test_subdirectory_accepts_relative_path(self):
+        """Relative subpath is preserved verbatim after normalisation."""
+        cfg = ReleaseSourceConfig(
+            repo="xLydianSoftware/exchanges",
+            ref="main",
+            subdirectory="e2e-driver",
+        )
+        assert cfg.subdirectory == "e2e-driver"
+
+    def test_subdirectory_accepts_nested_relative_path(self):
+        cfg = ReleaseSourceConfig(
+            repo="xLydianSoftware/exchanges",
+            ref="main",
+            subdirectory="packages/strategy",
+        )
+        # normpath uses os.sep; on POSIX this is "/", which is what we expect.
+        assert cfg.subdirectory == os.path.normpath("packages/strategy")
+
+    def test_subdirectory_normalises_trailing_slash(self):
+        """`e2e-driver/` should be stored as `e2e-driver` via normpath."""
+        cfg = ReleaseSourceConfig(
+            repo="xLydianSoftware/exchanges",
+            ref="main",
+            subdirectory="e2e-driver/",
+        )
+        assert cfg.subdirectory == "e2e-driver"
+
+    def test_subdirectory_rejects_absolute_path(self):
+        with pytest.raises(ValueError, match="relative"):
+            ReleaseSourceConfig(
+                repo="xLydianSoftware/exchanges",
+                ref="main",
+                subdirectory="/abs/path",
+            )
+
+    def test_subdirectory_rejects_dotdot_escape(self):
+        with pytest.raises(ValueError, match=r"\.\."):
+            ReleaseSourceConfig(
+                repo="xLydianSoftware/exchanges",
+                ref="main",
+                subdirectory="../escape",
+            )
+
+    def test_subdirectory_rejects_nested_dotdot_escape(self):
+        with pytest.raises(ValueError, match=r"\.\."):
+            ReleaseSourceConfig(
+                repo="xLydianSoftware/exchanges",
+                ref="main",
+                subdirectory="ok/../../escape",
+            )
