@@ -1339,6 +1339,76 @@ def _resolve_local_package_version(local_path: str, pkg_norm: str) -> str | None
     return None
 
 
+def _find_uv_workspace_root(start_dir: str) -> str | None:
+    """Walk up from start_dir to find the nearest pyproject.toml with [tool.uv.workspace].
+
+    Returns the directory path, or None if no workspace root is found within the
+    parent chain (stops at filesystem root).
+    """
+    import toml
+
+    cur = os.path.abspath(start_dir)
+    while True:
+        candidate = os.path.join(cur, "pyproject.toml")
+        if os.path.exists(candidate):
+            try:
+                with open(candidate) as f:
+                    data = toml.load(f)
+                if data.get("tool", {}).get("uv", {}).get("workspace"):
+                    return cur
+            except Exception:
+                pass
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return None
+        cur = parent
+
+
+def _find_workspace_member_for_package(workspace_root: str, pkg_name: str) -> str | None:
+    """Locate the workspace member directory whose pyproject's project.name matches pkg_name.
+
+    Comparison is PEP-503 normalised (lowercase, hyphens/underscores collapsed). Returns
+    the absolute member path, or None if no matching member is found.
+
+    Members may be listed as exact paths or glob patterns; we resolve each via
+    glob.glob (relative to the workspace root) and check pyproject.toml in each.
+    """
+    import glob
+
+    import toml
+
+    # Normalise the target package name (PEP 503)
+    target = pkg_name.lower().replace("_", "-")
+
+    workspace_pyproject = os.path.join(workspace_root, "pyproject.toml")
+    try:
+        with open(workspace_pyproject) as f:
+            data = toml.load(f)
+    except Exception:
+        return None
+
+    members = data.get("tool", {}).get("uv", {}).get("workspace", {}).get("members", [])
+    if not members:
+        return None
+
+    for member_pattern in members:
+        # Resolve glob (uv supports `packages/*` patterns)
+        for member_path in glob.glob(os.path.join(workspace_root, member_pattern)):
+            member_pyproject = os.path.join(member_path, "pyproject.toml")
+            if not os.path.isfile(member_pyproject):
+                continue
+            try:
+                with open(member_pyproject) as f:
+                    member_data = toml.load(f)
+                member_name = (member_data.get("project", {}) or {}).get("name", "")
+                if member_name.lower().replace("_", "-") == target:
+                    return os.path.abspath(member_path)
+            except Exception:
+                continue
+
+    return None
+
+
 def _bundle_source_overrides(
     pyproject_data: dict,
     pyproject_root: str,
@@ -1496,6 +1566,53 @@ def _bundle_source_overrides(
             finally:
                 if cloned_locally and os.path.isdir(checkout_dir):
                     shutil.rmtree(checkout_dir, ignore_errors=True)
+
+        elif source.get("workspace") is True:
+            if not pkg_ver:
+                logger.warning(f"  {pkg_name} not found in uv.lock, skipping bundle")
+                continue
+
+            workspace_root = _find_uv_workspace_root(pyproject_root)
+            if workspace_root is None:
+                logger.warning(
+                    f"  {pkg_name}: declared as `workspace = true` but no workspace root "
+                    f"found above {pyproject_root}, skipping bundle"
+                )
+                continue
+
+            member_path = _find_workspace_member_for_package(workspace_root, pkg_name)
+            if member_path is None:
+                logger.warning(
+                    f"  {pkg_name}: declared as `workspace = true` but no workspace member "
+                    f"in {workspace_root} matches the package name, skipping bundle"
+                )
+                continue
+
+            if _version_exists_on_pypi(pkg_name, pkg_ver):
+                logger.info(f"  {pkg_name}=={pkg_ver} found on public PyPI, will resolve from registry")
+                continue
+
+            logger.info(f"  Bundling {pkg_name}=={pkg_ver} from workspace member {member_path} ...")
+            os.makedirs(wheels_dir, exist_ok=True)
+            try:
+                result = subprocess.run(
+                    ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
+                    cwd=member_path,
+                    check=True,
+                    capture_output=True,
+                    text=True,
+                )
+                logger.debug(f"uv build stdout: {result.stdout}")
+                for whl in os.listdir(wheels_dir):
+                    if whl.lower().startswith(pkg_norm) and "none-any" not in whl:
+                        logger.warning(
+                            f"  {whl} is platform-specific. "
+                            "Ensure the container architecture matches the build machine."
+                        )
+                bundled.append(pkg_name.lower())
+                logger.info(f"  Bundled {pkg_name}")
+            except subprocess.CalledProcessError as e:
+                logger.opt(colors=False).warning(f"  Failed to build wheel for {pkg_name}: {e.stderr or e}")
 
     return bundled
 

@@ -11,7 +11,14 @@ from click.testing import CliRunner
 import qubx.pandaz.ta as pta
 from qubx.backtester.simulator import simulate
 from qubx.cli.misc import PyClassInfo, find_pyproject_root
-from qubx.cli.release import ReleaseInfo, StrategyInfo, _bundle_source_overrides, create_released_pack
+from qubx.cli.release import (
+    ReleaseInfo,
+    StrategyInfo,
+    _bundle_source_overrides,
+    _find_uv_workspace_root,
+    _find_workspace_member_for_package,
+    create_released_pack,
+)
 from qubx.core.series import OHLCV
 from qubx.data import CsvStorage
 from qubx.utils.runner.configs import ExchangeConfig, LoggingConfig, ReleaseSourceConfig, StrategyConfig
@@ -391,3 +398,182 @@ class TestReleaseSourceConfigSubdirectory:
                 ref="main",
                 subdirectory="ok/../../escape",
             )
+
+
+class TestWorkspaceHelpers:
+    """Tests for `_find_uv_workspace_root` and `_find_workspace_member_for_package`."""
+
+    @staticmethod
+    def _write_workspace_root(tmp_path: Path, members: list[str]) -> None:
+        members_repr = ", ".join(f'"{m}"' for m in members)
+        (tmp_path / "pyproject.toml").write_text(
+            f'[project]\nname = "ws-root"\nversion = "0.0.0"\n\n[tool.uv.workspace]\nmembers = [{members_repr}]\n'
+        )
+
+    @staticmethod
+    def _write_member(member_dir: Path, project_name: str) -> None:
+        member_dir.mkdir(parents=True, exist_ok=True)
+        (member_dir / "pyproject.toml").write_text(f'[project]\nname = "{project_name}"\nversion = "0.1.0"\n')
+
+    def test_find_uv_workspace_root_walks_up_from_member(self, tmp_path: Path):
+        self._write_workspace_root(tmp_path, ["pkg-a"])
+        member = tmp_path / "pkg-a"
+        self._write_member(member, "pkg-a")
+
+        # Walk up from the member directory
+        result = _find_uv_workspace_root(str(member))
+        assert result == str(tmp_path.resolve())
+
+    def test_find_uv_workspace_root_walks_up_from_nested_subdir(self, tmp_path: Path):
+        self._write_workspace_root(tmp_path, ["pkg-a"])
+        member = tmp_path / "pkg-a"
+        self._write_member(member, "pkg-a")
+        nested = member / "src" / "pkg_a"
+        nested.mkdir(parents=True)
+
+        result = _find_uv_workspace_root(str(nested))
+        assert result == str(tmp_path.resolve())
+
+    def test_find_uv_workspace_root_returns_none_when_no_workspace(self, tmp_path: Path):
+        # A bare pyproject.toml without [tool.uv.workspace] should not match.
+        (tmp_path / "pyproject.toml").write_text('[project]\nname = "standalone"\nversion = "0.1.0"\n')
+        sub = tmp_path / "src"
+        sub.mkdir()
+        result = _find_uv_workspace_root(str(sub))
+        assert result is None
+
+    def test_find_workspace_member_resolves_by_exact_name(self, tmp_path: Path):
+        self._write_workspace_root(tmp_path, ["pkg-a"])
+        member = tmp_path / "pkg-a"
+        self._write_member(member, "pkg-a")
+
+        result = _find_workspace_member_for_package(str(tmp_path), "pkg-a")
+        assert result == str(member.resolve())
+
+    def test_find_workspace_member_handles_underscore_normalisation(self, tmp_path: Path):
+        self._write_workspace_root(tmp_path, ["pkg-a"])
+        member = tmp_path / "pkg-a"
+        self._write_member(member, "pkg-a")
+
+        # Search with underscored name should still resolve
+        result = _find_workspace_member_for_package(str(tmp_path), "pkg_a")
+        assert result == str(member.resolve())
+
+    def test_find_workspace_member_returns_none_for_unknown_package(self, tmp_path: Path):
+        self._write_workspace_root(tmp_path, ["pkg-a"])
+        self._write_member(tmp_path / "pkg-a", "pkg-a")
+
+        result = _find_workspace_member_for_package(str(tmp_path), "missing-pkg")
+        assert result is None
+
+    def test_find_workspace_member_handles_glob_patterns(self, tmp_path: Path):
+        self._write_workspace_root(tmp_path, ["pkgs/*"])
+        member = tmp_path / "pkgs" / "sub"
+        self._write_member(member, "sub")
+
+        result = _find_workspace_member_for_package(str(tmp_path), "sub")
+        assert result == str(member.resolve())
+
+    def test_find_workspace_member_returns_none_when_no_members_listed(self, tmp_path: Path):
+        # workspace section but empty members list
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "ws-root"\nversion = "0.0.0"\n\n[tool.uv.workspace]\nmembers = []\n'
+        )
+        result = _find_workspace_member_for_package(str(tmp_path), "anything")
+        assert result is None
+
+
+class TestBundleSourceOverridesWorkspace:
+    """Verify [tool.uv.sources] `workspace = true` bundling."""
+
+    @patch("qubx.cli.release._version_exists_on_pypi", return_value=False)
+    @patch("subprocess.run")
+    def test_workspace_source_builds_from_member_dir(self, mock_run, _mock_pypi, tmp_path: Path):
+        # Set up a workspace with a member that owns the package being bundled.
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "ws-root"\nversion = "0.0.0"\n\n[tool.uv.workspace]\nmembers = ["pkg-a", "consumer"]\n'
+        )
+
+        member_dir = tmp_path / "pkg-a"
+        member_dir.mkdir()
+        (member_dir / "pyproject.toml").write_text('[project]\nname = "pkg-a"\nversion = "0.2.0"\n')
+
+        # Consumer is the strategy's own pyproject (the pyproject_root passed to
+        # _bundle_source_overrides). It declares pkg-a as a workspace source.
+        consumer_dir = tmp_path / "consumer"
+        consumer_dir.mkdir()
+        (consumer_dir / "pyproject.toml").write_text('[project]\nname = "consumer"\nversion = "0.1.0"\n')
+
+        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        bundled = _bundle_source_overrides(
+            pyproject_data={"tool": {"uv": {"sources": {"pkg-a": {"workspace": True}}}}},
+            pyproject_root=str(consumer_dir),
+            release_dir=str(release_dir),
+            required_packages={"pkg-a"},
+            lock_versions={"pkg_a": "0.2.0"},
+            git_commits={},
+        )
+
+        assert bundled == ["pkg-a"]
+        assert mock_run.called
+        kwargs = mock_run.call_args.kwargs
+        assert kwargs["cwd"] == str(member_dir.resolve())
+        # uv build invoked with wheel + out-dir
+        args = mock_run.call_args.args[0]
+        assert args[:4] == ["uv", "build", "--wheel", "."]
+
+    @patch("qubx.cli.release._version_exists_on_pypi", return_value=False)
+    @patch("subprocess.run")
+    def test_workspace_source_skips_when_no_workspace_root(self, mock_run, _mock_pypi, tmp_path: Path):
+        # A consumer with no surrounding workspace root.
+        consumer_dir = tmp_path / "consumer"
+        consumer_dir.mkdir()
+        (consumer_dir / "pyproject.toml").write_text('[project]\nname = "consumer"\nversion = "0.1.0"\n')
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        bundled = _bundle_source_overrides(
+            pyproject_data={"tool": {"uv": {"sources": {"pkg-a": {"workspace": True}}}}},
+            pyproject_root=str(consumer_dir),
+            release_dir=str(release_dir),
+            required_packages={"pkg-a"},
+            lock_versions={"pkg_a": "0.2.0"},
+            git_commits={},
+        )
+
+        assert bundled == []
+        assert not mock_run.called
+
+    @patch("qubx.cli.release._version_exists_on_pypi", return_value=True)
+    @patch("subprocess.run")
+    def test_workspace_source_skips_when_version_on_public_pypi(self, mock_run, _mock_pypi, tmp_path: Path):
+        (tmp_path / "pyproject.toml").write_text(
+            '[project]\nname = "ws-root"\nversion = "0.0.0"\n\n[tool.uv.workspace]\nmembers = ["pkg-a", "consumer"]\n'
+        )
+        member_dir = tmp_path / "pkg-a"
+        member_dir.mkdir()
+        (member_dir / "pyproject.toml").write_text('[project]\nname = "pkg-a"\nversion = "0.2.0"\n')
+        consumer_dir = tmp_path / "consumer"
+        consumer_dir.mkdir()
+        (consumer_dir / "pyproject.toml").write_text('[project]\nname = "consumer"\nversion = "0.1.0"\n')
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        bundled = _bundle_source_overrides(
+            pyproject_data={"tool": {"uv": {"sources": {"pkg-a": {"workspace": True}}}}},
+            pyproject_root=str(consumer_dir),
+            release_dir=str(release_dir),
+            required_packages={"pkg-a"},
+            lock_versions={"pkg_a": "0.2.0"},
+            git_commits={},
+        )
+
+        # Found on PyPI → resolved from registry, not bundled.
+        assert bundled == []
+        assert not mock_run.called
