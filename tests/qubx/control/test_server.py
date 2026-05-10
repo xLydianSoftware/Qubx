@@ -1,9 +1,10 @@
+import math
 from unittest.mock import MagicMock
 
 import pytest
 from fastapi.testclient import TestClient
 
-from qubx.control.server import ControlServer
+from qubx.control.server import ControlServer, _json_safe
 
 
 def _make_mock_ctx():
@@ -158,3 +159,61 @@ class TestExecEndpoint:
             assert "type" in param
             assert "description" in param
             assert "required" in param
+
+
+class TestJsonSafe:
+    """``_json_safe`` strips NaN/±Inf at the response boundary."""
+
+    def test_finite_floats_pass_through(self):
+        assert _json_safe(1.5) == 1.5
+        assert _json_safe(0.0) == 0.0
+        assert _json_safe(-1e9) == -1e9
+
+    def test_nan_becomes_none(self):
+        assert _json_safe(float("nan")) is None
+
+    def test_inf_becomes_none(self):
+        assert _json_safe(float("inf")) is None
+        assert _json_safe(float("-inf")) is None
+
+    def test_walks_nested_dicts(self):
+        out = _json_safe({"price": float("nan"), "qty": 0.5, "nested": {"pnl": float("inf")}})
+        assert out == {"price": None, "qty": 0.5, "nested": {"pnl": None}}
+
+    def test_walks_lists_and_tuples(self):
+        assert _json_safe([1.0, float("nan"), 3.0]) == [1.0, None, 3.0]
+        # Tuples normalize to lists for JSON purposes (which matches Starlette's encoder).
+        assert _json_safe((float("nan"),)) == [None]
+
+    def test_non_float_values_untouched(self):
+        assert _json_safe("hello") == "hello"
+        assert _json_safe(42) == 42
+        assert _json_safe(None) is None
+        assert _json_safe(True) is True
+
+
+class TestNanSafeWireFormat:
+    """End-to-end: a NaN in any action's return is serialized as null."""
+
+    def test_get_positions_with_nan_market_price_returns_null(self, server_with_ctx):
+        # Simulate the universe-add-then-remove residual: position kept in the
+        # account map but no Quote/Trade has updated last_update_price yet.
+        client, ctx = server_with_ctx
+        instr = MagicMock()
+        instr.__str__ = lambda self: "SOLUSDT"
+        pos = MagicMock()
+        pos.quantity = 0.0
+        pos.position_avg_price = 0.0
+        pos.last_update_price = math.nan
+        pos.unrealized_pnl.return_value = math.nan
+        pos.r_pnl = 0.0
+        pos.market_value_funds = math.nan
+        ctx.get_positions.return_value = {instr: pos}
+
+        resp = client.post("/actions/get_positions", json={"params": {}})
+        # Without _json_safe this 500s on Starlette's allow_nan=False JSON dump.
+        assert resp.status_code == 200
+        sol = resp.json()["data"]["positions"]["SOLUSDT"]
+        assert sol["market_price"] is None
+        assert sol["unrealized_pnl"] is None
+        assert sol["market_value"] is None
