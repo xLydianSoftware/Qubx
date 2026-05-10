@@ -1,5 +1,4 @@
-from datetime import timedelta
-from typing import Any, Callable, Dict, Iterable, List, Literal, Optional, Set, Union
+from typing import Any, Callable, Literal
 
 import numpy as np
 import pandas as pd
@@ -137,7 +136,7 @@ def process_duplicated_indexes(data: pd.DataFrame | pd.Series, ns=1) -> pd.DataF
     :return: return dataframe with all no duplicated rows (each duplicate has own unique index)
     """
     values = data.index.duplicated(keep="first").astype(float)
-    values[values == 0] = np.NaN
+    values[values == 0] = np.nan
 
     missings = np.isnan(values)
     cumsum = np.cumsum(~missings)
@@ -179,7 +178,7 @@ def scols(*xs, keys=None, names=None, keep="all") -> pd.DataFrame:
     return r
 
 
-def srows(*xs, keep="all", sort=True) -> Union[pd.DataFrame, pd.Series]:
+def srows(*xs, keep="all", sort=True) -> pd.DataFrame | pd.Series:
     """
     Concat dataframes/series from xs into single dataframe by axis 0
     :param sort: if true it sorts resulting dataframe by index (default)
@@ -203,7 +202,7 @@ def srows(*xs, keep="all", sort=True) -> Union[pd.DataFrame, pd.Series]:
     return r
 
 
-def retain_columns_and_join(data: Dict[str, pd.DataFrame], columns: str | List[str]) -> pd.DataFrame:
+def retain_columns_and_join(data: dict[str, pd.DataFrame], columns: str | list[str]) -> pd.DataFrame:
     """
     Retains given columns from every value of data dictionary and concatenate them into single data frame
 
@@ -294,7 +293,7 @@ def dict_to_frame(x: dict, index_type=None, orient="index", columns=None, column
     return y
 
 
-def select_column_and_join(data: Dict[str, pd.DataFrame], column: str) -> pd.DataFrame:
+def select_column_and_join(data: dict[str, pd.DataFrame], column: str) -> pd.DataFrame:
     """
     Select given column from every value of data dictionary and concatenate them into single data frame
 
@@ -356,7 +355,7 @@ def bands_signals(
     score: pd.DataFrame,
     entry,
     exit,
-    stop: Optional[float] = np.inf,
+    stop: float | None = np.inf,
     entry_method="cross-out",  # 'cross-in', 'revert-to-band'
     position_sizes_fn=lambda time, score, prices, side: np.zeros(len(p)),
 ) -> pd.DataFrame:
@@ -394,7 +393,7 @@ def bands_signals(
 
     entry = abs(_as_series(entry, score.index, "entry"))
     exit = _as_series(exit, score.index, "exit")
-    stop = abs(_as_series(stop, score.index, "stop"))
+    stop = abs(_as_series(stop, score.index, "stop"))  # type: ignore
 
     mx = scols(prices, scols(score.rename("score"), entry, exit, stop), keys=["price", "service"]).dropna()
     px: pd.DataFrame = mx["price"]
@@ -431,7 +430,7 @@ def bands_signals(
 
 
 def ohlc_resample(
-    df: pd.DataFrame | pd.Series | Dict[str, pd.DataFrame],
+    df: pd.DataFrame | pd.Series | dict[str, pd.DataFrame],
     new_freq: str = "1h",
     vmpt: bool = False,
     resample_tz=None,
@@ -514,7 +513,7 @@ def ohlc_resample(
             )
 
             # Convert timezone to back if it changed
-            return result if not resample_tz else result.tz_convert(_source_tz)
+            return result if not resample_tz else result.tz_convert(_source_tz)  # type: ignore
 
         raise ValueError("Can't recognize structure of input data !")
 
@@ -541,7 +540,7 @@ def shift_series(
     hours=0,
     minutes=0,
     seconds=0,
-) -> Union[pd.Series, pd.DataFrame]:
+) -> pd.Series | pd.DataFrame:
     """
     Shift timeseries into future.
 
@@ -549,7 +548,7 @@ def shift_series(
     """
     n_sigs = sigs.copy()
     f0 = pd.Timedelta(forward if forward is not None else 0)
-    n_sigs.index = n_sigs.index + f0 + pd.DateOffset(days=days, hours=hours, minutes=minutes, seconds=seconds)
+    n_sigs.index = n_sigs.index + f0 + pd.DateOffset(days=days, hours=hours, minutes=minutes, seconds=seconds)  # type: ignore
     return n_sigs
 
 
@@ -594,7 +593,7 @@ class OhlcDict(dict):
     """
 
     _orig: dict[str, pd.DataFrame | pd.Series | OHLCV]
-    _fields: Set[str]
+    _fields: set[str]
 
     def __init__(self, orig: dict[str, pd.DataFrame | pd.Series | OHLCV]):
         self._orig = orig
