@@ -137,7 +137,7 @@ def process_duplicated_indexes(data: pd.DataFrame | pd.Series, ns=1) -> pd.DataF
     :return: return dataframe with all no duplicated rows (each duplicate has own unique index)
     """
     values = data.index.duplicated(keep="first").astype(float)
-    values[values == 0] = np.NaN
+    values[values == 0] = np.nan
 
     missings = np.isnan(values)
     cumsum = np.cumsum(~missings)
