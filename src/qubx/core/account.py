@@ -67,6 +67,10 @@ class BasicAccountProcessor(IAccountProcessor):
         self._balances = {}
         self._exchange_total_capital: float | None = None
         self._exchange_margin_ratio: float | None = None
+        # Idempotency key per booked funding event: (instrument, bucket_start_ns).
+        # Collapses duplicates when funding arrives from multiple sources (e.g.
+        # venue WS user-events push and a synthetic market-data stream).
+        self._applied_funding_buckets: set[tuple[Instrument, int]] = set()
         # Initialize with base currency balance
         self._balances[self.base_currency] = AssetBalance(
             exchange=self.exchange, currency=self.base_currency, free=initial_capital, locked=0.0, total=initial_capital
@@ -472,6 +476,11 @@ class BasicAccountProcessor(IAccountProcessor):
     def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
         """Process funding payment for an instrument.
 
+        Idempotent at the (instrument, funding-interval bucket) granularity:
+        a second call for the same bucket is a no-op. This lets two independent
+        sources (e.g. venue user-events WS and a synthetic market-data stream)
+        co-exist without double-booking funding against the account.
+
         Args:
             instrument: Instrument the funding payment applies to
             funding_payment: Funding payment event to process
@@ -479,6 +488,12 @@ class BasicAccountProcessor(IAccountProcessor):
         pos = self._positions.get(instrument)
 
         if pos is None or not instrument.is_futures():
+            return
+
+        bucket_ns = funding_payment.funding_interval_hours * 3600 * 1_000_000_000
+        bucket_start = (int(funding_payment.time) // bucket_ns) * bucket_ns
+        bucket_key = (instrument, bucket_start)
+        if bucket_key in self._applied_funding_buckets:
             return
 
         # Get current market price for funding calculation
@@ -493,6 +508,21 @@ class BasicAccountProcessor(IAccountProcessor):
         # For futures contracts, funding affects the settlement currency balance
         self._ensure_balance(instrument.settle)
         self._balances[instrument.settle] += funding_amount
+
+        self._applied_funding_buckets.add(bucket_key)
+        self._trim_funding_buckets()
+
+    def _trim_funding_buckets(self, max_age_days: int = 7, threshold: int = 1024) -> None:
+        """Bound `_applied_funding_buckets` so long-running bots don't grow it unboundedly.
+
+        Triggers only after the set exceeds `threshold` entries; then drops any
+        bucket older than `max_age_days` relative to the most recent bucket seen.
+        """
+        if len(self._applied_funding_buckets) < threshold:
+            return
+        max_ns = max(b for _, b in self._applied_funding_buckets)
+        cutoff_ns = max_ns - max_age_days * 86400 * 1_000_000_000
+        self._applied_funding_buckets = {k for k in self._applied_funding_buckets if k[1] >= cutoff_ns}
 
         # logger.debug(
         #     f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: "
