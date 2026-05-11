@@ -4,6 +4,7 @@ src/qubx/_version.py
 experiments/logs/
 tests/**/logs/
 logs/
+.worktrees/
 experiments/configs/.env*
 .vscode/numbered-bookmarks.json
 debug/

@@ -19,6 +19,7 @@ from qubx.core.basics import (
     ZERO_COSTS,
     AssetBalance,
     DataType,
+    FundingPayment,
     Instrument,
     Position,
     RestoredState,
@@ -463,3 +464,134 @@ class TestMergeRestoredAccounting:
         assert pos.commissions == 123.45
         assert pos.r_pnl == 5000.0
         assert pos.cumulative_funding == -100.0
+
+
+class TestProcessFundingPaymentDedup:
+    """Funding payment idempotency.
+
+    Live setups can receive the same funding event from two independent sources
+    (e.g. venue WS userEvents *and* a synthetic xdata funding_payment stream).
+    `process_funding_payment` must collapse duplicates to a single booking per
+    (instrument, funding interval bucket) so balances and cumulative_funding
+    don't double-count.
+    """
+
+    def _make_account_with_long_position(
+        self, instrument: Instrument, qty: float = 1.0, price: float = 50_000.0, capital: float = 100_000.0
+    ) -> BasicAccountProcessor:
+        account = BasicAccountProcessor(
+            account_id="test",
+            time_provider=DummyTimeProvider(),
+            base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
+            exchange="BINANCE.UM",
+            tcc=ZERO_COSTS,
+            initial_capital=capital,
+        )
+        pos = Position(instrument=instrument, quantity=qty, pos_average_price=price, r_pnl=0.0)
+        pos.position_avg_price_funds = price  # used as mark fallback in process_funding_payment
+        account._positions[instrument] = pos
+        return account
+
+    def test_duplicate_same_bucket_applied_once(self):
+        """Two events landing in the same funding bucket book funding only once."""
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        account = self._make_account_with_long_position(btc)
+        settle_currency = btc.settle  # USDT
+
+        # First event: hourly bucket aligned at 12:00:00.
+        fp1 = FundingPayment(
+            time=np.datetime64("2026-05-11T12:00:00", "ns").astype(np.int64),
+            funding_rate=0.0001,
+            funding_interval_hours=1,
+        )
+        # Second event: same bucket, sub-second offset (mimics venue push vs synthetic boundary skew).
+        fp1_dup = FundingPayment(
+            time=np.datetime64("2026-05-11T12:00:03.500000000", "ns").astype(np.int64),
+            funding_rate=0.0001,
+            funding_interval_hours=1,
+        )
+
+        account.process_funding_payment(btc, fp1)
+        account.process_funding_payment(btc, fp1_dup)
+
+        # qty * mark_price * rate = 1 * 50_000 * 0.0001 = 5; long pays -> -5.
+        assert account.get_balance(settle_currency).total == pytest.approx(100_000.0 - 5.0)
+        pos = account.get_position(btc)
+        assert pos.cumulative_funding == pytest.approx(-5.0)
+        assert len(pos.funding_payments) == 1
+
+    def test_different_buckets_both_applied(self):
+        """Events in different funding buckets both book independently."""
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        account = self._make_account_with_long_position(btc)
+        settle_currency = btc.settle
+
+        fp_12 = FundingPayment(
+            time=np.datetime64("2026-05-11T12:00:00", "ns").astype(np.int64),
+            funding_rate=0.0001,
+            funding_interval_hours=1,
+        )
+        fp_13 = FundingPayment(
+            time=np.datetime64("2026-05-11T13:00:00", "ns").astype(np.int64),
+            funding_rate=0.0001,
+            funding_interval_hours=1,
+        )
+
+        account.process_funding_payment(btc, fp_12)
+        account.process_funding_payment(btc, fp_13)
+
+        assert account.get_balance(settle_currency).total == pytest.approx(100_000.0 - 10.0)
+        assert account.get_position(btc).cumulative_funding == pytest.approx(-10.0)
+        assert len(account.get_position(btc).funding_payments) == 2
+
+    def test_dedup_is_per_instrument(self):
+        """Same bucket but different instruments must each book."""
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        eth = lookup.find_symbol("BINANCE.UM", "ETHUSDT")
+        assert btc is not None and eth is not None
+        account = BasicAccountProcessor(
+            account_id="test",
+            time_provider=DummyTimeProvider(),
+            base_currency="USDT",
+            health_monitor=DummyHealthMonitor(),
+            exchange="BINANCE.UM",
+            tcc=ZERO_COSTS,
+            initial_capital=100_000.0,
+        )
+        btc_pos = Position(instrument=btc, quantity=1.0, pos_average_price=50_000.0, r_pnl=0.0)
+        btc_pos.position_avg_price_funds = 50_000.0
+        eth_pos = Position(instrument=eth, quantity=10.0, pos_average_price=3_000.0, r_pnl=0.0)
+        eth_pos.position_avg_price_funds = 3_000.0
+        account._positions[btc] = btc_pos
+        account._positions[eth] = eth_pos
+
+        t = np.datetime64("2026-05-11T12:00:00", "ns").astype(np.int64)
+        account.process_funding_payment(btc, FundingPayment(time=t, funding_rate=0.0001, funding_interval_hours=1))
+        account.process_funding_payment(eth, FundingPayment(time=t, funding_rate=0.0001, funding_interval_hours=1))
+
+        # BTC: 1 * 50_000 * 0.0001 = 5; ETH: 10 * 3_000 * 0.0001 = 3. Total = -8.
+        assert account.get_balance("USDT").total == pytest.approx(100_000.0 - 8.0)
+        assert account.get_position(btc).cumulative_funding == pytest.approx(-5.0)
+        assert account.get_position(eth).cumulative_funding == pytest.approx(-3.0)
+
+    def test_bucket_set_is_bounded(self):
+        """Bucket cache stays bounded for long-running bots."""
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        account = self._make_account_with_long_position(btc)
+
+        # Feed many hourly funding events spanning several months. Threshold (1024)
+        # triggers a prune that retains only the most recent 7 days = 168 buckets.
+        base = np.datetime64("2026-01-01T00:00:00", "ns").astype(np.int64)
+        hour_ns = 3600 * 1_000_000_000
+        for i in range(2000):
+            account.process_funding_payment(
+                btc,
+                FundingPayment(time=base + i * hour_ns, funding_rate=0.0001, funding_interval_hours=1),
+            )
+
+        # Post-prune size should be << total bookings; tolerate up to threshold+window.
+        assert len(account._applied_funding_buckets) <= 1024
