@@ -37,7 +37,9 @@ from qubx.ta.indicators import (
     tema,
     vwma,
     wma,
+    zscore,
 )
+from tests.qubx.ta import check_indicator_intrabar  # noqa: F401
 
 
 def pandas_vwma(df: pd.DataFrame, period: int, price_source: str = "close") -> pd.Series:
@@ -1133,26 +1135,7 @@ class TestIndicators:
         """
         Test VWMA on streaming data
         """
-        r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
-        ohlc = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
-
-        # - create streaming OHLCV
-        ohlc_stream = OHLCV("test", "1h")
-        v_stream = vwma(ohlc_stream, 20)
-
-        # - feed data bar by bar
-        ohlc_pd = ohlc.pd()
-        for idx in ohlc_pd.index:
-            bar = ohlc_pd.loc[idx]
-            ohlc_stream.update_by_bar(
-                int(idx.value), bar["open"], bar["high"], bar["low"], bar["close"], bar.get("volume", 0)
-            )
-
-        # - calculate pandas reference on streamed data
-        e_stream = pandas_vwma(ohlc_stream.pd(), 20)
-        diff_stream = abs(v_stream.pd() - e_stream).dropna()
-
-        assert diff_stream.sum() < 1e-6, f"Streaming VWMA differs from pandas: sum diff = {diff_stream.sum()}"
+        check_indicator_intrabar(lambda xs: vwma(xs, 20), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
 
     def test_adx(self):
         """
@@ -1443,3 +1426,105 @@ class TestIndicators:
 
         diff_stab = (v_multi.pd() - v_stream.pd()).dropna().abs()
         assert diff_stab.max() < 1e-6, f"McGinley bar-update stability failed: max diff = {diff_stab.max()}"
+
+    def test_mcginley_streaming(self):
+        check_indicator_intrabar(lambda xs: mcginley(xs.close, 30), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_hma_streaming(self):
+        check_indicator_intrabar(lambda xs: hma(xs.close, 30), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_wma_streaming(self):
+        check_indicator_intrabar(lambda xs: wma(xs.close, 30), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_fdi_streaming(self):
+        check_indicator_intrabar(lambda xs: fdi(xs.close, 30), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_stochastic_streaming(self):
+        check_indicator_intrabar(lambda xs: stochastic(xs, 30, 12, "sma"), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_adx_streaming(self):
+        check_indicator_intrabar(lambda xs: adx(xs, 30), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_super_trend_streaming(self):
+        check_indicator_intrabar(
+            lambda xs: super_trend(xs, length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma"),  # type: ignore
+            4 * 15 * 1000,
+            "15Min",
+            "1h",
+        )
+
+    def test_macd_streaming(self):
+        check_indicator_intrabar(lambda xs: macd(xs.close, 12, 26, 9, "sma", "sma"), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_rsi_streaming(self):
+        check_indicator_intrabar(lambda xs: rsi(xs.close, 12), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_std_streaming(self):
+        check_indicator_intrabar(lambda xs: std(xs.close, 12), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_pct_change_streaming(self):
+        check_indicator_intrabar(lambda xs: pct_change(xs.close, 1), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_pivots_streaming(self):
+        check_indicator_intrabar(lambda xs: pivots(xs, before=2, after=2).tops, 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+        check_indicator_intrabar(lambda xs: pivots(xs, before=2, after=2).bottoms, 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_swings_streaming(self):
+        check_indicator_intrabar(lambda xs: swings(xs, psar, iaf=0.1, maxaf=1).tops, 4 * 15 * 500, "15Min", "1h")  # type: ignore
+        check_indicator_intrabar(lambda xs: swings(xs, psar, iaf=0.1, maxaf=1).bottoms, 4 * 15 * 500, "15Min", "1h")  # type: ignore
+
+    def test_bollinger_bands_streaming(self):
+        check_indicator_intrabar(
+            lambda xs: bollinger_bands(xs.close, period=20, nstd=2, smoother="sma"),  # type: ignore
+            4 * 15 * 1000,
+            "15Min",
+            "1h",
+        )
+
+    def test_atr_streaming(self):
+        check_indicator_intrabar(lambda xs: atr(xs, 14, "sma", percentage=False), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_psar_streaming(self):
+        check_indicator_intrabar(lambda xs: psar(xs), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_pewma_outliers_detector_streaming(self):
+        check_indicator_intrabar(
+            lambda xs: pewma_outliers_detector(xs.close, 0.90, 0.2),  # type: ignore
+            4 * 15 * 1000,
+            "15Min",
+            "1h",
+        )
+
+    def test_pewma_detector_streaming(self):
+        check_indicator_intrabar(
+            lambda xs: pewma(xs.close, 0.90, 0.2),  # type: ignore
+            4 * 15 * 1000,
+            "15Min",
+            "1h",
+        )
+
+    def test_rma_streaming(self):
+        check_indicator_intrabar(lambda xs: rma(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 10)  # type: ignore
+        check_indicator_intrabar(lambda xs: rma((xs.high + xs.low) / 2, 14), 4 * 15 * 1000, "15Min", "1h", 10)  # type: ignore
+
+    def test_sma_streaming(self):
+        check_indicator_intrabar(lambda xs: sma(xs.close, 14), 4 * 15 * 1000, "15Min", "1h")  # type: ignore
+
+    def test_ema_streaming(self):
+        check_indicator_intrabar(lambda xs: sma(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 1)  # type: ignore
+
+    def test_kama_streaming(self):
+        check_indicator_intrabar(lambda xs: kama(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 1)  # type: ignore
+
+    def test_tema_streaming(self):
+        check_indicator_intrabar(lambda xs: tema(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 1)  # type: ignore
+
+    def test_dema_streaming(self):
+        check_indicator_intrabar(lambda xs: dema(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 1)  # type: ignore
+
+    def test_highest_lowest_streaming(self):
+        check_indicator_intrabar(lambda xs: highest(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 10)  # type: ignore
+        check_indicator_intrabar(lambda xs: lowest(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 10)  # type: ignore
+
+    def test_zscore_streaming(self):
+        check_indicator_intrabar(lambda xs: zscore(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 10)  # type: ignore

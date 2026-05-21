@@ -476,7 +476,91 @@ cdef short is_new = new_item_started
 
 ## Testing Strategy
 
-### Test Structure
+> **PRODUCTION GATE — NON-NEGOTIABLE**
+>
+> A new streaming indicator **cannot go to production** without a passing `test_<name>_streaming`
+> test using `check_indicator_intrabar`. No exceptions. No "I'll add it later."
+>
+> This is the single most important test for any streaming indicator. It is the primary guard
+> against live-vs-backtest silent divergence — the class of bug that corrupts live trading
+> without raising any error. If `check_indicator_intrabar` passes, the indicator is safe
+> for intrabar use. If it doesn't exist, the indicator is **not reviewed, not merged, not deployed**.
+
+### Intrabar Streaming Test — `check_indicator_intrabar` microframework
+
+Every indicator in `tests/qubx/ta/indicators_test.py` has a corresponding `test_*_streaming`
+method that uses `check_indicator_intrabar` — a one-liner harness that proves batch and
+streaming produce identical values as 1Min bars are fed into a 15Min (or any larger) OHLCV:
+
+```python
+from tests.qubx.ta import check_indicator_intrabar
+```
+
+**How it works**:
+1. Generates `n_bars` synthetic 1Min bars
+2. **Batch path**: aggregates all bars into the working timeframe at once, attaches indicator
+3. **Streaming path**: starts with empty series, attaches indicator, feeds 1Min bars one by one
+4. Asserts `max(|batch - streaming|) < tolerance` at every confirmed bar close
+
+This is the primary guard against `_store`/`_restore` bugs, `_initial_data_recalculate`
+divergence, and manual series (`ser0` / `_close`) not being updated in streaming mode.
+
+**Usage — TimeSeries indicator** (takes `xs.close`):
+```python
+def test_macd_streaming(self):
+    check_indicator_intrabar(lambda xs: macd(xs.close, 12, 26, 9, "sma", "sma"), 4 * 15 * 1000, "15Min", "1h")
+
+def test_rsi_streaming(self):
+    check_indicator_intrabar(lambda xs: rsi(xs.close, 12), 4 * 15 * 1000, "15Min", "1h")
+```
+
+**Usage — OHLCV indicator** (takes `xs` directly):
+```python
+def test_adx_streaming(self):
+    check_indicator_intrabar(lambda xs: adx(xs, 30), 4 * 15 * 1000, "15Min", "1h")
+
+def test_super_trend_streaming(self):
+    check_indicator_intrabar(
+        lambda xs: super_trend(xs, length=22, mult=3.0, src="hl2", wicks=True, atr_smoother="sma"),
+        4 * 15 * 1000,
+        "15Min",
+        "1h",
+    )
+```
+
+**Usage — sub-series output** (indicator exposes `.tops`, `.upper`, etc.):
+```python
+def test_pivots_streaming(self):
+    check_indicator_intrabar(lambda xs: pivots(xs, before=2, after=2).tops, 4 * 15 * 1000, "15Min", "1h")
+
+def test_bollinger_bands_streaming(self):
+    check_indicator_intrabar(
+        lambda xs: bollinger_bands(xs.close, period=20, nstd=2, smoother="sma"),
+        4 * 15 * 1000,
+        "15Min",
+        "1h",
+    )
+```
+
+**Usage — with `initial_data`** (test warm-start: indicator attached after some bars already present):
+```python
+def test_rma_streaming(self):
+    check_indicator_intrabar(lambda xs: rma(xs.close, 14), 4 * 15 * 1000, "15Min", "1h", 10)
+```
+
+**Parameters**:
+- `n_bars`: total 1Min bars to generate — `4 * 15 * 1000` = 60 000 → ~1000 1h bars
+- `small_timeframe` / `working_timeframe`: raw feed TF / indicator TF (default `"1Min"` / `"15Min"`)
+- `initial_data`: 1Min bars to pre-load before attaching indicator (default `0`)
+- `tolerance`: max allowed `|batch - streaming|` (default `1e-4`)
+
+> **Rule**: every new Cython indicator must have a `test_<name>_streaming` method using
+> `check_indicator_intrabar`. No streaming test = no production. It catches the majority
+> of streaming bugs in a single line and is the minimum bar for any indicator merge.
+
+---
+
+### Pandas Parity Test Structure
 
 ```python
 def test_macd(self):
@@ -608,65 +692,6 @@ cdef class MyIndicator(IndicatorOHLC):
 - **Store on new bar**: `if new_item_started: self._store()`
 - **Restore on update**: `else: self._restore()`
 - This ensures each update to a bar starts from the same initial state
-
-#### Test Pattern
-
-```python
-def test_my_indicator(self):
-    # - STEP 1: load 1h data
-    r = StorageRegistry.get("csv::tests/data/storages/csv")["BINANCE.UM", "SWAP"]
-    c1h = r.read("BTCUSDT", "ohlc(1h)", "2023-06-01", "2023-08-01").to_ohlc()
-
-    # - STEP 2: test on same timeframe (1h → 1h)
-    ind_1h = my_indicator(c1h, length=22)
-    ind_1h_pd = pta.my_indicator(c1h.pd(), length=22)
-    diff_1h = abs(ind_1h.pd() - ind_1h_pd["trend"]).dropna()
-    assert diff_1h.sum() < 1e-6
-
-    # - STEP 3: test streaming (bar-by-bar)
-    ohlc_stream = OHLCV("test", "1h")
-    ind_stream = my_indicator(ohlc_stream, length=22)
-
-    c1h_pd = c1h.pd()
-    for idx in c1h_pd.index:
-        bar = c1h_pd.loc[idx]
-        ohlc_stream.update_by_bar(
-            int(idx.value),
-            bar["open"],
-            bar["high"],
-            bar["low"],
-            bar["close"],
-            bar.get("volume", 0)
-        )
-
-    ind_stream_pd = pta.my_indicator(ohlc_stream.pd(), length=22)
-    diff_stream = abs(ind_stream.pd() - ind_stream_pd["trend"]).dropna()
-    assert diff_stream.sum() < 1e-6
-
-    # - STEP 4: test cross-timeframe (1h → 4h)
-    # - this is the CRITICAL test for store/restore pattern
-    ohlc_4h_stream = OHLCV("test_4h", "4h")
-    ind_4h_stream = my_indicator(ohlc_4h_stream, length=22)
-
-    # - feed 1h data to build 4h bars
-    for idx in c1h_pd.index:
-        bar = c1h_pd.loc[idx]
-        ohlc_4h_stream.update_by_bar(
-            int(idx.value),
-            bar["open"],
-            bar["high"],
-            bar["low"],
-            bar["close"],
-            bar.get("volume", 0)
-        )
-
-    # - calculate on final 4h bars
-    ind_4h_pd = pta.my_indicator(ohlc_4h_stream.pd(), length=22)
-
-    # - compare results
-    diff_4h_trend = abs(ind_4h_stream.pd() - ind_4h_pd["trend"]).dropna()
-    assert diff_4h_trend.sum() < 1e-6, f"4h streaming differs: {diff_4h_trend.sum()}"
-```
 
 #### When Store/Restore is Required
 
@@ -2134,7 +2159,7 @@ When implementing a new indicator, use this checklist:
 - [ ] Build: `just build`
 - [ ] Run test: `poetry run pytest tests/qubx/ta/indicators_test.py::TestIndicators::test_name -v`
 - [ ] Debug if needed (add print statements, compare intermediate values)
-- [ ] Add cross-timeframe test (1h → 4h) if indicator has state
+- [ ] Add mandatory streaming test: `test_<name>_streaming` using `check_indicator_intrabar` (non-negotiable — no test = no production)
 - [ ] Verify all tests pass: `poetry run pytest tests/qubx/ta/indicators_test.py -v`
 - [ ] Remove debug code
 - [ ] Final build: `just build`
