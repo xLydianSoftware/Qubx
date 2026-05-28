@@ -8,6 +8,7 @@ from qubx.core.basics import (
     Instrument,
     MarketType,
     Order,
+    OrderOrigin,
     Position,
     TargetPosition,
 )
@@ -167,7 +168,9 @@ class DebugStratageyCtx(IStrategyContext):
         print(" >>> ", side, instrument, amount)
 
         order = Order(
-            id=f"test_{self._o_id}",
+            client_order_id="test1",
+            venue_order_id=f"test_{self._o_id}",
+            origin=OrderOrigin.FRAMEWORK,
             type="MARKET",
             instrument=instrument,
             time=np.datetime64(0, "ns"),
@@ -176,7 +179,6 @@ class DebugStratageyCtx(IStrategyContext):
             side=side,
             status="CLOSED",
             time_in_force="gtc",
-            client_id="test1",
         )
 
         self._o_id += 1

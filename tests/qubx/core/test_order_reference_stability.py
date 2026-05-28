@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from qubx.core.account import BasicAccountProcessor
-from qubx.core.basics import Instrument, MarketType, Order
+from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin
 from qubx.health.dummy import DummyHealthMonitor
 
 
@@ -47,7 +47,9 @@ def test_order_reference_preserved_on_update(account_processor, btc_instrument):
     """Test that external references to Order objects remain valid after updates."""
     # Create initial order
     initial_order = Order(
-        id="order_123",
+        client_order_id="client_123",
+        venue_order_id="order_123",
+        origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=btc_instrument,
         time=np.datetime64(1000000000, "ns"),
@@ -56,7 +58,6 @@ def test_order_reference_preserved_on_update(account_processor, btc_instrument):
         side="BUY",
         status="NEW",
         time_in_force="GTC",
-        client_id="client_123",
     )
 
     # Process initial order
@@ -73,7 +74,9 @@ def test_order_reference_preserved_on_update(account_processor, btc_instrument):
 
     # Create order update with status change
     order_update = Order(
-        id="order_123",
+        client_order_id="client_123",
+        venue_order_id="order_123",
+        origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=btc_instrument,
         time=np.datetime64(1000000000, "ns"),
@@ -82,7 +85,6 @@ def test_order_reference_preserved_on_update(account_processor, btc_instrument):
         side="BUY",
         status="OPEN",  # Changed status
         time_in_force="GTC",
-        client_id="client_123",
     )
 
     # Process update
@@ -101,7 +103,9 @@ def test_order_reference_preserved_on_partial_update(account_processor, btc_inst
     """Test that partial updates (missing fields) preserve existing values."""
     # Create initial order with full details
     initial_order = Order(
-        id="order_456",
+        client_order_id="client_456",
+        venue_order_id="order_456",
+        origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=btc_instrument,
         time=np.datetime64(1000000000, "ns"),
@@ -110,7 +114,6 @@ def test_order_reference_preserved_on_partial_update(account_processor, btc_inst
         side="SELL",
         status="NEW",
         time_in_force="GTC",
-        client_id="client_456",
         cost=102000.0,
         options={"reduce_only": False, "post_only": True},
     )
@@ -125,7 +128,9 @@ def test_order_reference_preserved_on_partial_update(account_processor, btc_inst
 
     # Create minimal update (only status change, other fields missing/zero)
     minimal_update = Order(
-        id="order_456",
+        client_order_id=None,  # Will be ignored
+        venue_order_id="order_456",
+        origin=OrderOrigin.FRAMEWORK,
         type="UNKNOWN",  # Will be ignored
         instrument=btc_instrument,
         time=np.datetime64(0, "ns"),  # Will be ignored
@@ -134,7 +139,6 @@ def test_order_reference_preserved_on_partial_update(account_processor, btc_inst
         side="UNKNOWN",  # Will be ignored
         status="OPEN",  # Only this should update
         time_in_force="",  # Will be ignored
-        client_id=None,  # Will be ignored
     )
 
     # Process minimal update

@@ -14,7 +14,7 @@ import pytest
 
 from qubx.backtester.broker import SimulatedBroker
 from qubx.connectors.ccxt.broker import CcxtBroker
-from qubx.core.basics import MarketType, Order, OrderRequest, dt_64
+from qubx.core.basics import MarketType, Order, OrderOrigin, OrderRequest, dt_64
 from qubx.core.exceptions import BadRequest, OrderNotFound
 from qubx.core.mixins.trading import TradingManager
 from qubx.health.dummy import DummyHealthMonitor
@@ -71,7 +71,9 @@ def mock_instrument():
 def mock_limit_order(mock_instrument):
     """Create a mock limit order for testing."""
     return Order(
-        id="test_order_123",
+        client_order_id="qubx_BTCUSDT_12345",
+        venue_order_id="test_order_123",
+        origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=mock_instrument,
         time=dt_64("2024-01-01T10:00:00"),
@@ -80,7 +82,6 @@ def mock_limit_order(mock_instrument):
         side="BUY",
         status="OPEN",
         time_in_force="gtc",
-        client_id="qubx_BTCUSDT_12345",
     )
 
 
@@ -102,7 +103,9 @@ class TestCcxtBrokerUpdateOrder:
         mock_loop = Mock()
         future_result = Mock()
         updated_order = Order(
-            id="test_order_123",
+            client_order_id="qubx_BTCUSDT_12345",
+            venue_order_id="test_order_123",
+            origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
@@ -111,7 +114,6 @@ class TestCcxtBrokerUpdateOrder:
             side="BUY",
             status="OPEN",
             time_in_force="gtc",
-            client_id="qubx_BTCUSDT_12345",
         )
         future_result.result.return_value = (updated_order, None)
         mock_loop.submit.return_value = future_result
@@ -151,7 +153,9 @@ class TestCcxtBrokerUpdateOrder:
         broker = _create_ccxt_broker(mock_exchange_manager, mock_account)
 
         new_order = Order(
-            id="new_order_456",
+            client_order_id="qubx_BTCUSDT_12345",
+            venue_order_id="new_order_456",
+            origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
@@ -160,7 +164,6 @@ class TestCcxtBrokerUpdateOrder:
             side="BUY",
             status="OPEN",
             time_in_force="gtc",
-            client_id="qubx_BTCUSDT_12345",
         )
 
         # Mock the cancel and send methods
@@ -193,7 +196,9 @@ class TestCcxtBrokerUpdateOrder:
         """Test that updating orders with non-updatable status raises BadRequest."""
         # Test FILLED order (should be rejected)
         filled_order = Order(
-            id="filled_order_123",
+            client_order_id="qubx_BTCUSDT_12345",
+            venue_order_id="filled_order_123",
+            origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
@@ -202,7 +207,6 @@ class TestCcxtBrokerUpdateOrder:
             side="BUY",
             status="FILLED",  # Cannot update filled orders
             time_in_force="gtc",
-            client_id="qubx_BTCUSDT_12345",
         )
 
         mock_exchange_manager = Mock()
@@ -217,7 +221,9 @@ class TestCcxtBrokerUpdateOrder:
 
         # Test CANCELED order (should also be rejected)
         canceled_order = Order(
-            id="canceled_order_456",
+            client_order_id=None,
+            venue_order_id="canceled_order_456",
+            origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
@@ -235,7 +241,9 @@ class TestCcxtBrokerUpdateOrder:
 
         # Test CLOSED order (should also be rejected)
         closed_order = Order(
-            id="closed_order_789",
+            client_order_id=None,
+            venue_order_id="closed_order_789",
+            origin=OrderOrigin.FRAMEWORK,
             type="MARKET",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
@@ -254,7 +262,9 @@ class TestCcxtBrokerUpdateOrder:
     def test_update_order_market_order_allowed_if_pending(self, mock_instrument):
         """Test that even MARKET orders can be updated if they're still in updatable status."""
         pending_market_order = Order(
-            id="pending_market_order_789",
+            client_order_id=None,
+            venue_order_id="pending_market_order_789",
+            origin=OrderOrigin.FRAMEWORK,
             type="MARKET",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
@@ -353,7 +363,9 @@ class TestSimulatedBrokerUpdateOrder:
         mock_account.get_orders.return_value = {"test_order_123": mock_limit_order}
 
         new_order = Order(
-            id="new_order_789",
+            client_order_id="qubx_BTCUSDT_12345",
+            venue_order_id="new_order_789",
+            origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
@@ -362,7 +374,6 @@ class TestSimulatedBrokerUpdateOrder:
             side="BUY",
             status="OPEN",
             time_in_force="gtc",
-            client_id="qubx_BTCUSDT_12345",
         )
 
         broker = SimulatedBroker(Mock(), mock_account, Mock())

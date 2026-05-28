@@ -12,6 +12,7 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Order,
+    OrderOrigin,
     OrderRequest,
     Position,
     RestoredState,
@@ -329,7 +330,9 @@ class BasicAccountProcessor(IAccountProcessor):
         # Create synthetic Order with PENDING status using client_id as id
         # This allows get_orders() to return pending orders
         pending_order = Order(
-            id=request.client_id,
+            client_order_id=request.client_id,
+            venue_order_id=None,
+            origin=OrderOrigin.FRAMEWORK,
             type=request.order_type,
             instrument=request.instrument,
             time=self.time_provider.time(),
@@ -338,7 +341,6 @@ class BasicAccountProcessor(IAccountProcessor):
             side=request.side,
             status="PENDING",
             time_in_force=request.time_in_force,
-            client_id=request.client_id,
             options=request.options or {},
         )
         self._active_orders[request.client_id] = pending_order

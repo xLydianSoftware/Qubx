@@ -647,7 +647,7 @@ class MarketEvent:
 
 @dataclass
 class Deal:
-    id: str  # trade id
+    trade_id: str  # trade id
     order_id: str  # order's id
     time: dt_64  # time of trade
     amount: float  # signed traded amount: positive for buy and negative for selling
@@ -655,6 +655,10 @@ class Deal:
     aggressive: bool
     fee_amount: float | None = None
     fee_currency: str | None = None
+
+    @property
+    def id(self) -> str:
+        return self.trade_id
 
 
 OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
@@ -719,18 +723,61 @@ class OrderRequest:
 
 @dataclass
 class Order:
-    id: str
+    client_order_id: str
+    venue_order_id: str | None
+    origin: OrderOrigin
     type: OrderType
     instrument: Instrument
-    time: dt_64
+    time: dt_64                       # submission timestamp; the design calls this
+                                      # submitted_at. Grace-window reconcile measures
+                                      # order age from this field (Order.time).
     quantity: float
     price: float
     side: OrderSide
     status: OrderStatus
     time_in_force: str
-    client_id: str | None = None
+    filled_quantity: float = 0.0
+    avg_fill_price: float | None = None
+    accepted_at: dt_64 | None = None
+    rejected_reason: str | None = None
+    last_updated_at: dt_64 | None = None
+    retry_count: int = 0
+    pre_pending_status: OrderStatus | None = None
+    seen_trade_ids: set[str] = field(default_factory=set)
+    reduce_only: bool = False
+    post_only: bool = False
     cost: float = 0.0
     options: dict[str, Any] = field(default_factory=dict)
+
+    # --- Legacy read/write aliases (removed in PR 10 cleanup) ----------
+    # Old code (BasicAccountProcessor, brokers, trading mixin) reads AND
+    # writes `order.id` and `order.client_id`. These read/write properties
+    # let that code keep working UNCHANGED during coexistence — only Order
+    # *construction* sites migrate to the new kwargs (you cannot pass a
+    # property as a constructor argument). canonical field is client_order_id.
+    @property
+    def id(self) -> str:
+        return self.venue_order_id if self.venue_order_id is not None else self.client_order_id
+
+    @id.setter
+    def id(self, value: str) -> None:
+        self.venue_order_id = value
+
+    @property
+    def client_id(self) -> str | None:
+        return self.client_order_id
+
+    @client_id.setter
+    def client_id(self, value: str) -> None:
+        self.client_order_id = value
+
+    def require_venue_id(self) -> str:
+        if self.venue_order_id is None:
+            raise ValueError(
+                f"Order {self.client_order_id} has no venue_order_id "
+                f"(status={self.status})"
+            )
+        return self.venue_order_id
 
     def __str__(self) -> str:
         return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price > 0 else ''} ({self.time_in_force}) [{self.status}]"
@@ -760,6 +807,9 @@ class AssetBalance:
         self.total -= amount
         self.free -= amount
         return self
+
+
+Balance = AssetBalance   # canonical name used by events/AccountState; alias of AssetBalance
 
 
 DEFAULT_MAINTENANCE_MARGIN = 0.05

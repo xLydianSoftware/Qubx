@@ -17,6 +17,7 @@ from qubx.core.basics import (
     Liquidation,
     OpenInterest,
     Order,
+    OrderOrigin,
     Position,
     dt_64,
 )
@@ -78,8 +79,17 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
 
     tif = raw.get("timeInForce")
 
+    client_order_id = raw["clientOrderId"]
+    origin = (
+        OrderOrigin.FRAMEWORK
+        if client_order_id is not None and client_order_id.startswith("qubx_")
+        else OrderOrigin.EXTERNAL
+    )
+
     return Order(
-        id=raw["id"],
+        client_order_id=client_order_id,
+        venue_order_id=raw["id"],
+        origin=origin,
         type=_type,
         instrument=instrument,
         time=recognize_time(raw["timestamp"]),
@@ -88,7 +98,6 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         side=side,
         status=status,
         time_in_force=tif,
-        client_id=raw["clientOrderId"],
         cost=float(raw["cost"] or 0),  # cost can be None
         options=options,
     )
@@ -101,7 +110,7 @@ def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
         fee_amount = float(raw["fee"]["cost"])
         fee_currency = raw["fee"]["currency"]
     return Deal(
-        id=raw["id"],
+        trade_id=raw["id"],
         order_id=raw["order"],
         time=to_timestamp(raw["timestamp"], unit="ms"),
         amount=float(raw["amount"]) * (-1 if raw["side"] == "sell" else +1),

@@ -14,6 +14,7 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Order,
+    OrderOrigin,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -220,16 +221,17 @@ class OrdersManagementEngine:
 
         timestamp = self.time_service.time()
         order = Order(
-            self._generate_order_id(),
-            order_type,
-            self.instrument,
-            timestamp,
-            amount,
-            price if price is not None else 0,
-            order_side,
-            "NEW",
-            time_in_force,
-            client_id,
+            client_order_id=client_id,
+            venue_order_id=self._generate_order_id(),
+            origin=OrderOrigin.FRAMEWORK,
+            type=order_type,
+            instrument=self.instrument,
+            time=timestamp,
+            quantity=amount,
+            price=price if price is not None else 0,
+            side=order_side,
+            status="NEW",
+            time_in_force=time_in_force,
             options=options,
         )
 
@@ -363,7 +365,7 @@ class OrdersManagementEngine:
             timestamp,
             order,
             Deal(
-                id=self._generate_trade_id(),
+                trade_id=self._generate_trade_id(),
                 order_id=order.id,
                 time=timestamp,
                 amount=order.quantity if order.side == "BUY" else -order.quantity,

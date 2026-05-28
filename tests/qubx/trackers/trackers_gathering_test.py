@@ -13,6 +13,7 @@ from qubx.core.basics import (
     Deal,
     Instrument,
     Order,
+    OrderOrigin,
     Position,
     Signal,
     TargetPosition,
@@ -123,8 +124,8 @@ class DebugStratageyCtx(IStrategyContext):
         if amount > 0: self._n_orders_buy += 1
         if amount < 0: self._n_orders_sell += 1
         return Order(
-            "test", "MARKET", instrument,
-            np.datetime64(0, "ns"), amount, price if price is not None else 0, "BUY" if amount > 0 else "SELL", "CLOSED", "gtc", "test1")
+            client_order_id="test1", venue_order_id="test", origin=OrderOrigin.FRAMEWORK, type="MARKET", instrument=instrument,
+            time=np.datetime64(0, "ns"), quantity=amount, price=price if price is not None else 0, side="BUY" if amount > 0 else "SELL", status="CLOSED", time_in_force="gtc")
         # fmt: on
 
 
