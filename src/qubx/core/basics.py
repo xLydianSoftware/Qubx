@@ -1251,23 +1251,29 @@ class CtrlChannel:
         if not self.control.is_set():
             return
         try:
-            self._queue.put_nowait(data)
+            self._queue.put_nowait(data)   # fast path: lock-free, Queue is internally synchronized
         except Full:
-            try:
-                dropped = self._queue.get_nowait()
-                self._record_drop(dropped)
-            except Empty:
-                pass
-            try:
-                self._queue.put_nowait(data)
-            except Full:
-                self._record_drop(data)
+            # Overflow is a non-atomic compound op (get → record → put) and there
+            # are many concurrent producers, so serialize it under self.lock —
+            # otherwise concurrent drops lose counter increments and the
+            # drop-and-retry can evict two items when only one drop was intended.
+            with self.lock:
+                try:
+                    dropped = self._queue.get_nowait()
+                    self._record_drop(dropped)
+                except Empty:
+                    pass
+                try:
+                    self._queue.put_nowait(data)
+                except Full:
+                    self._record_drop(data)
 
     def _record_drop(self, item) -> None:
-        # Label drops by event class so operators can tell a dropped
-        # OrderFilledEvent (market-risk; warn) from a dropped QuoteEvent
-        # (tolerable; next event supersedes). The metric layer reads
-        # dropped_by_type to emit channel_overflow_drops{event=...}.
+        # Label drops by event class. Once typed events flow (PR 5+) the metric
+        # layer reads dropped_by_type to emit channel_overflow_drops{event=...}
+        # so operators tell a dropped OrderFilledEvent (market-risk; warn) from a
+        # dropped QuoteEvent (tolerable). Until then producers send tuples, so the
+        # only key observed is "tuple". Called only while holding self.lock.
         self.dropped_count += 1
         key = type(item).__name__
         self.dropped_by_type[key] = self.dropped_by_type.get(key, 0) + 1
