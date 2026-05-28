@@ -1,7 +1,7 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum, StrEnum
 from functools import cache
 from queue import Empty, Queue
 from threading import Event, Lock
@@ -659,7 +659,32 @@ class Deal:
 
 OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
 OrderSide = Literal["BUY", "SELL"]
-OrderStatus = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
+OrderStatusLegacy = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
+
+
+class OrderStatus(str, Enum):
+    INITIALIZED = "initialized"
+    SUBMITTED = "submitted"
+    ACCEPTED = "accepted"
+    PARTIALLY_FILLED = "partially_filled"
+    PENDING_CANCEL = "pending_cancel"
+    PENDING_UPDATE = "pending_update"
+    FILLED = "filled"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+    def is_terminal(self) -> bool:
+        return self in (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED)
+
+    def is_pending(self) -> bool:
+        return self in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
+
+
+class OrderOrigin(str, Enum):
+    FRAMEWORK = "framework"
+    RECOVERED = "recovered"
+    EXTERNAL = "external"
 
 
 @dataclass
