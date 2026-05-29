@@ -16,7 +16,7 @@ import datetime
 import inspect
 import traceback
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, runtime_checkable
+from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -44,12 +44,10 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.errors import BaseErrorEvent
+from qubx.core.events import ReconcileDiff
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.data.storage import IReader, IStorage
-
-if TYPE_CHECKING:
-    from qubx.core.events import ReconcileDiff
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -2855,7 +2853,7 @@ class IStrategy(metaclass=Mixable):
 
     def on_funding_payment(self, ctx: IStrategyContext, payment: FundingPayment) -> None: ...
 
-    def on_reconcile_complete(self, ctx: IStrategyContext, exchange: str, diff: "ReconcileDiff") -> None: ...
+    def on_reconcile_complete(self, ctx: IStrategyContext, exchange: str, diff: ReconcileDiff) -> None: ...
 
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """
