@@ -23,6 +23,8 @@ def _ms_to_cron(interval_ms: int) -> str:
     Single source of truth for the cron-position convention so other
     modules never hand-write 6-field cron strings.
     """
+    if interval_ms <= 0:
+        raise ValueError(f"interval must be positive; got {interval_ms}ms")
     if interval_ms % 1000 != 0:
         raise ValueError(
             f"pm.schedule resolution is 1s; {interval_ms}ms not representable"
@@ -34,5 +36,5 @@ def _ms_to_cron(interval_ms: int) -> str:
         return f"*/{s // 60} * * * *"
     raise ValueError(
         f"interval {s}s not expressible as cron; "
-        f"use a sub-minute or whole-minute value"
+        f"use a value under 1 hour (sub-minute or whole-minute)"
     )

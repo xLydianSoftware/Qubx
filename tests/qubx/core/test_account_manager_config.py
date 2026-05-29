@@ -26,3 +26,10 @@ def test_ms_to_cron_rejects_unrepresentable():
         _ms_to_cron(1_500)
     with pytest.raises(ValueError):
         _ms_to_cron(90_000)
+
+
+def test_ms_to_cron_rejects_non_positive():
+    with pytest.raises(ValueError):
+        _ms_to_cron(0)
+    with pytest.raises(ValueError):
+        _ms_to_cron(-1_000)
