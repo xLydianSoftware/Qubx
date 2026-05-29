@@ -114,6 +114,25 @@ def test_instrument_leverage():
     assert abs(am.get_leverage(inst) - 5.0) < 1e-6
 
 
+def test_leverage_finite_for_unmarked_position():
+    # Regression for I3: an unmarked position has notional_value == NaN, which
+    # would poison every leverage aggregate. All three must return finite 0.0.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument("BTCUSDT")
+    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=10_000.0))
+    # position never marked -> last_update_price is NaN
+    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    assert np.isnan(pos.last_update_price)
+    state._set_position(inst, pos)
+    assert am.get_leverage(inst) == 0.0
+    assert am.get_net_leverage("binance") == 0.0
+    assert am.get_gross_leverage("binance") == 0.0
+    assert not np.isnan(am.get_leverage(inst))
+    assert not np.isnan(am.get_net_leverage("binance"))
+    assert not np.isnan(am.get_gross_leverage("binance"))
+
+
 def test_leverage_zero_when_no_capital():
     am = _am()
     inst = _instrument("BTCUSDT")

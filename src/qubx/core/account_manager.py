@@ -74,6 +74,8 @@ class AccountManager:
         self._cfg = cfg or AccountManagerConfig()
         self._states = {ex: AccountState(exchange=ex) for ex in connectors}
         self._liveness_unready_since: dict[str, np.datetime64] = {}
+        # TODO(account-mgmt): this set grows unbounded over long sessions; bound it
+        # (evict old buckets) in a later PR.
         self._applied_funding_buckets: dict[str, set] = {}
         self._ctx = None  # set via set_context once StrategyContext is built
         if self._cfg.inflight_check_interval_ms > 0:
@@ -386,19 +388,23 @@ class AccountManager:
                     self._update_from_snapshot(state, existing, snap_order, snapshot.as_of)
                     diff.orders_updated.append(existing)
 
+        # Positions and balances: the snapshot is the venue's authoritative full
+        # truth for size/amount, and stale snapshots are already rejected wholesale
+        # by the _last_snapshot_as_of ratchet above — so an accepted snapshot always
+        # overwrites. No per-record freshness here (unlike orders, where it guards a
+        # fresh fill): Position/Balance carry no reliable last-update timestamp yet.
+        # TODO(account-mgmt): once WS PositionUpdate/BalanceUpdate events are wired
+        # (PR 6/7), add per-record freshness backed by a real timestamp so a snapshot
+        # older than a recent WS update can't clobber it.
         if snapshot.positions is not None:
             for snap_pos in snapshot.positions:
-                existing = state.get_position(snap_pos.instrument)
-                if existing is None or snapshot.as_of > getattr(existing, "last_updated_at", np.datetime64(0)):
-                    state._set_position(snap_pos.instrument, snap_pos)
-                    diff.positions_updated.append(snap_pos)
+                state._set_position(snap_pos.instrument, snap_pos)
+                diff.positions_updated.append(snap_pos)
 
         if snapshot.balances is not None:
             for snap_bal in snapshot.balances:
-                existing = state.get_balance(snap_bal.currency)
-                if existing is None or snapshot.as_of > getattr(existing, "last_updated_at", np.datetime64(0)):
-                    state._update_balance(snap_bal.currency, snap_bal)
-                    diff.balances_updated.append(snap_bal)
+                state._update_balance(snap_bal.currency, snap_bal)
+                diff.balances_updated.append(snap_bal)
 
         try:
             self._strategy.on_reconcile_complete(self._ctx, snapshot.exchange, diff)
@@ -407,17 +413,18 @@ class AccountManager:
         return None
 
     def _materialize_from_snapshot(self, state, snap_order, as_of):
+        # cid prefix classifies origin: our prefix → a recovered framework order;
+        # anything else → external. Keep an already-synthesized ext: cid as-is,
+        # otherwise synthesize one from the venue id.
         if snap_order.client_order_id.startswith("qubx-"):
             origin = OrderOrigin.RECOVERED
+            cid = snap_order.client_order_id
         elif snap_order.client_order_id.startswith("ext:"):
             origin = OrderOrigin.EXTERNAL
+            cid = snap_order.client_order_id
         else:
             origin = OrderOrigin.EXTERNAL
-        cid = (
-            snap_order.client_order_id
-            if origin != OrderOrigin.EXTERNAL or snap_order.client_order_id.startswith("ext:")
-            else f"ext:{snap_order.venue_order_id}"
-        )
+            cid = f"ext:{snap_order.venue_order_id}"
         state._add_order(
             Order(
                 client_order_id=cid,
@@ -530,7 +537,6 @@ class AccountManager:
             pos = Position(instrument=instrument)
             state._set_position(instrument, pos)
         pos.update_position_by_deal(deal, conversion_rate=1.0)
-        pos.last_updated_at = self._time.now()
         return pos
 
     def on_market_quote(self, instrument, quote) -> None:
@@ -554,16 +560,23 @@ class AccountManager:
         seen = self._applied_funding_buckets.setdefault(state.exchange, set())
         if bucket in seen:
             return None
-        seen.add(bucket)
         pos = state.get_position(instrument)
         if pos is None:
-            return payment
-        # FundingPayment carries only the rate/interval; the signed cash amount is
-        # derived from the position size and the last mark price by the Position.
-        amount = pos.apply_funding_payment(payment, pos.last_update_price)
+            return None
+        # Funding cash is computed on the mark price; FundingPayment carries no
+        # amount. If the position has no mark yet (NaN), we cannot value the
+        # payment — skip WITHOUT consuming the bucket so a re-delivered event can
+        # apply once a mark exists (rather than poisoning balance/PnL with NaN).
+        mark = pos.last_update_price
+        if np.isnan(mark):
+            logger.warning(f"[{state.exchange}] funding for {instrument} skipped: no mark price yet")
+            return None
+        seen.add(bucket)
+        amount = pos.apply_funding_payment(payment, mark)  # updates cumulative_funding/pnl
         bal = state.get_balance(instrument.settle)
         if bal is not None:
             bal.total += amount
+            bal.free += amount  # keep free consistent with total (free == total - locked)
             state._update_balance(instrument.settle, bal)
         return payment
 
@@ -598,6 +611,12 @@ class AccountManager:
             return "USDT"
         return max(state.balances.values(), key=lambda b: b.total).currency
 
+    def _notional(self, pos) -> float:
+        # notional_value is NaN for an unmarked position; treat as 0 so a single
+        # unmarked position can't poison aggregate leverage (consumed by emitters,
+        # loggers, sizers). A real position gets a mark on its first quote.
+        return float(np.nan_to_num(pos.notional_value))
+
     def get_leverage(self, instrument) -> float:
         state = self._states.get(instrument.exchange)
         if state is None:
@@ -606,17 +625,17 @@ class AccountManager:
         if pos is None:
             return 0.0
         total = self._total_capital_for(state)
-        return abs(pos.notional_value) / total if total > 0 else 0.0
+        return abs(self._notional(pos)) / total if total > 0 else 0.0
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
         states = [self._states[exchange]] if exchange else list(self._states.values())
-        net = sum(p.notional_value for s in states for p in s.positions.values())
+        net = sum(self._notional(p) for s in states for p in s.positions.values())
         total = sum(self._total_capital_for(s) for s in states)
         return abs(net) / total if total > 0 else 0.0
 
     def get_gross_leverage(self, exchange: str | None = None) -> float:
         states = [self._states[exchange]] if exchange else list(self._states.values())
-        gross = sum(abs(p.notional_value) for s in states for p in s.positions.values())
+        gross = sum(abs(self._notional(p)) for s in states for p in s.positions.values())
         total = sum(self._total_capital_for(s) for s in states)
         return gross / total if total > 0 else 0.0
 

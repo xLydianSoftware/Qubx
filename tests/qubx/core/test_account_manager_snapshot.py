@@ -206,6 +206,28 @@ def test_balance_updated_from_snapshot():
     assert state.get_balance("USDT").total == 1000.0
 
 
+def test_snapshot_overwrites_existing_position_and_balance():
+    # Regression for C1: getattr(existing, "last_updated_at", np.datetime64(0))
+    # crashed under numpy 2.x. A snapshot carrying the same instrument/currency
+    # with new values must overwrite a pre-existing position+balance with NO
+    # exception (no per-record freshness; the whole-snapshot ratchet gates it).
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state._set_position(inst, Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0))
+    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+
+    snap_pos = Position(instrument=inst, quantity=3.0, pos_average_price=49_000.0)
+    snap_bal = Balance(exchange="binance", currency="USDT", free=400.0, locked=100.0, total=500.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos], balances=[snap_bal]))
+
+    assert state.get_position(inst) is snap_pos
+    assert state.get_position(inst).quantity == 3.0
+    assert state.get_balance("USDT") is snap_bal
+    assert state.get_balance("USDT").total == 500.0
+
+
 def test_reconcile_diff_emitted():
     am = _am()
     state = am._states["binance"]
