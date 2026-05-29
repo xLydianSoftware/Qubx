@@ -3,7 +3,7 @@ from collections import deque
 import numpy as np
 
 from qubx import logger
-from qubx.core.account_manager_config import AccountManagerConfig
+from qubx.core.account_manager_config import AccountManagerConfig, _ms_to_cron
 from qubx.core.account_state import AccountState
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
 from qubx.core.events import (
@@ -75,7 +75,12 @@ class AccountManager:
         self._liveness_unready_since: dict[str, np.datetime64] = {}
         self._applied_funding_buckets: dict[str, set] = {}
         self._ctx = None  # set via set_context once StrategyContext is built
-        # Tick registration deferred to PR 4.
+        if self._cfg.inflight_check_interval_ms > 0:
+            pm.schedule(_ms_to_cron(self._cfg.inflight_check_interval_ms), self._on_inflight_tick)
+        if self._cfg.snapshot_check_interval_ms > 0:
+            pm.schedule(_ms_to_cron(self._cfg.snapshot_check_interval_ms), self._on_snapshot_tick)
+        if self._cfg.liveness_check_interval_ms > 0:
+            pm.schedule(_ms_to_cron(self._cfg.liveness_check_interval_ms), self._on_liveness_tick)
 
     def set_context(self, ctx) -> None:
         """Wire the IStrategyContext after construction.
@@ -443,3 +448,69 @@ class AccountManager:
             for cid in list(state._pending_evict_index):
                 if (now - state._pending_evict_index[cid]) >= grace:
                     state._evict_to_history(cid)
+
+    def _on_inflight_tick(self, ctx) -> None:
+        now = self._time.now()
+        threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
+        for exchange, state in self._states.items():
+            for cid in list(state._inflight_index):
+                order = state.active_orders.get(cid)
+                if order is None or order.status not in (
+                    OrderStatus.SUBMITTED,
+                    OrderStatus.PENDING_CANCEL,
+                    OrderStatus.PENDING_UPDATE,
+                ):
+                    state._inflight_index.discard(cid)
+                    continue
+                last = order.last_updated_at or order.time
+                if (now - last) < threshold:
+                    continue
+                if order.retry_count >= self._cfg.inflight_check_retries:
+                    self._resolve_exhausted_inflight(state, exchange, order)
+                else:
+                    self._connectors[exchange].request_order_status(
+                        client_order_id=cid,
+                        venue_order_id=order.venue_order_id,
+                    )
+                    order.retry_count += 1
+                    order.last_updated_at = now
+        self._sweep_terminal_evictions()
+
+    def _resolve_exhausted_inflight(self, state, exchange, order):
+        reason = f"reconcile: no venue ack after {order.retry_count} retries"
+        if order.status == OrderStatus.SUBMITTED:
+            order.rejected_reason = reason
+            state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.now())
+            return
+        target = order.pre_pending_status or OrderStatus.ACCEPTED
+        order.pre_pending_status = None
+        was = order.status
+        state._transition_order(order.client_order_id, target, self._time.now())
+        if was == OrderStatus.PENDING_CANCEL:
+            self._strategy.on_order_cancel_rejected(self._ctx, order, reason)
+        else:
+            self._strategy.on_order_update_rejected(self._ctx, order, reason)
+
+    def _on_snapshot_tick(self, ctx) -> None:
+        now = self._time.now()
+        interval = np.timedelta64(self._cfg.snapshot_check_interval_ms, "ms")
+        for exchange, state in self._states.items():
+            last = state._last_snapshot_as_of
+            if last is None or (now - last) > interval:
+                self._connectors[exchange].request_snapshot()
+
+    def _on_liveness_tick(self, ctx) -> None:
+        now = self._time.now()
+        threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
+        for exchange, connector in self._connectors.items():
+            if connector.is_ws_ready():
+                self._liveness_unready_since.pop(exchange, None)
+                continue
+            since = self._liveness_unready_since.setdefault(exchange, now)
+            if (now - since) >= threshold:
+                logger.warning(f"[{exchange}] WS unready past threshold; reconnecting")
+                try:
+                    connector.force_ws_reconnect_sync()
+                except Exception:
+                    logger.exception(f"force_ws_reconnect_sync failed for {exchange}")
+                self._liveness_unready_since.pop(exchange, None)
