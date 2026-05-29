@@ -105,7 +105,7 @@ class AccountManager:
             raise InvalidOrderTransition(cid, order.status, new_status)
         if new_status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE):
             order.pre_pending_status = order.status
-        state._transition_order(cid, new_status, self._time.now())
+        state._transition_order(cid, new_status, self._time.time())
 
     def get_state(self, exchange: str) -> AccountState:
         return self._states[exchange]
@@ -202,7 +202,7 @@ class AccountManager:
             origin=OrderOrigin.EXTERNAL,
             type="LIMIT",
             instrument=event.instrument,
-            time=self._time.now(),
+            time=self._time.time(),
             quantity=0.0,
             price=0.0,
             side="BUY",
@@ -229,9 +229,9 @@ class AccountManager:
         if order.status == OrderStatus.PENDING_CANCEL:
             return order
         if order.status == OrderStatus.PENDING_UPDATE:
-            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.now())
+            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.time())
         if OrderStatus.ACCEPTED in _LEGAL_TRANSITIONS.get(order.status, set()):
-            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.now())
+            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.time())
         return order
 
     # Terminal-order guard (shared by the lifecycle handlers below).
@@ -254,7 +254,7 @@ class AccountManager:
         if event.venue_order_id and order.venue_order_id is None:
             state._set_venue_id(order.client_order_id, event.venue_order_id)
         is_new_trade = event.fill.trade_id not in order.seen_trade_ids
-        state._apply_fill(order.client_order_id, event.fill, self._time.now())
+        state._apply_fill(order.client_order_id, event.fill, self._time.time())
         if is_new_trade and order.instrument is not None:
             self._apply_deal_to_position(state, order.instrument, event.fill)
         if order.status.is_pending():
@@ -272,7 +272,7 @@ class AccountManager:
                 )
             return state.get_order(order.client_order_id)
         if OrderStatus.PARTIALLY_FILLED in _LEGAL_TRANSITIONS.get(order.status, set()):
-            return state._transition_order(order.client_order_id, OrderStatus.PARTIALLY_FILLED, self._time.now())
+            return state._transition_order(order.client_order_id, OrderStatus.PARTIALLY_FILLED, self._time.time())
         return order
 
     def _handle_fill(self, state, event: OrderFilledEvent):
@@ -283,24 +283,24 @@ class AccountManager:
         if event.venue_order_id and order.venue_order_id is None:
             state._set_venue_id(order.client_order_id, event.venue_order_id)
         is_new_trade = event.fill.trade_id not in order.seen_trade_ids
-        state._apply_fill(order.client_order_id, event.fill, self._time.now())
+        state._apply_fill(order.client_order_id, event.fill, self._time.time())
         if is_new_trade and order.instrument is not None:
             self._apply_deal_to_position(state, order.instrument, event.fill)
-        return state._transition_order(order.client_order_id, OrderStatus.FILLED, self._time.now())
+        return state._transition_order(order.client_order_id, OrderStatus.FILLED, self._time.time())
 
     def _handle_canceled(self, state, event):
         order = self._resolve_or_materialize(state, event)
         if self._is_late_terminal(order):
             logger.debug(f"late cancel on terminal {order.client_order_id}; ignoring")
             return order
-        return state._transition_order(order.client_order_id, OrderStatus.CANCELED, self._time.now())
+        return state._transition_order(order.client_order_id, OrderStatus.CANCELED, self._time.time())
 
     def _handle_expired(self, state, event):
         order = self._resolve_or_materialize(state, event)
         if self._is_late_terminal(order):
             logger.debug(f"late expire on terminal {order.client_order_id}; ignoring")
             return order
-        return state._transition_order(order.client_order_id, OrderStatus.EXPIRED, self._time.now())
+        return state._transition_order(order.client_order_id, OrderStatus.EXPIRED, self._time.time())
 
     def _handle_rejected(self, state, event: OrderRejectedEvent):
         order = state.active_orders.get(event.client_order_id)
@@ -311,7 +311,7 @@ class AccountManager:
             logger.debug(f"late reject on terminal {order.client_order_id}; ignoring")
             return order
         order.rejected_reason = event.reason
-        return state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.now())
+        return state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.time())
 
     def _handle_updated(self, state, event: OrderUpdatedEvent):
         order = self._resolve_or_materialize(state, event)
@@ -326,9 +326,9 @@ class AccountManager:
             order.price = event.new_price
         if event.new_quantity is not None:
             order.quantity = event.new_quantity
-        order.last_updated_at = self._time.now()
+        order.last_updated_at = self._time.time()
         if order.status == OrderStatus.PENDING_UPDATE:
-            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.now())
+            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.time())
         return order
 
     def _handle_cancel_rejected(self, state, event):
@@ -348,7 +348,7 @@ class AccountManager:
     def _revert_from_pending(self, state, order):
         target = order.pre_pending_status or OrderStatus.ACCEPTED
         order.pre_pending_status = None
-        return state._transition_order(order.client_order_id, target, self._time.now())
+        return state._transition_order(order.client_order_id, target, self._time.time())
 
     def _handle_snapshot(self, state, event: AccountSnapshotEvent):
         snapshot = event.snapshot
@@ -373,7 +373,7 @@ class AccountManager:
                 cached.rejected_reason = "reconcile: missing from snapshot"
                 cached.pre_pending_status = None
                 try:
-                    state._transition_order(cid, terminal, self._time.now())
+                    state._transition_order(cid, terminal, self._time.time())
                     diff.orders_newly_terminal.append(cached)
                 except InvalidOrderTransition:
                     logger.warning(f"reconcile: cannot terminate {cid} from {cached.status}")
@@ -454,7 +454,7 @@ class AccountManager:
 
     def _sweep_terminal_evictions(self) -> None:
         grace = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
-        now = self._time.now()
+        now = self._time.time()
         for state in self._states.values():
             if state._terminal_history.maxlen != self._cfg.terminal_order_history_size:
                 state._terminal_history = deque(
@@ -466,7 +466,7 @@ class AccountManager:
                     state._evict_to_history(cid)
 
     def _on_inflight_tick(self, ctx) -> None:
-        now = self._time.now()
+        now = self._time.time()
         threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
         for exchange, state in self._states.items():
             for cid in list(state._inflight_index):
@@ -496,19 +496,19 @@ class AccountManager:
         reason = f"reconcile: no venue ack after {order.retry_count} retries"
         if order.status == OrderStatus.SUBMITTED:
             order.rejected_reason = reason
-            state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.now())
+            state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.time())
             return
         target = order.pre_pending_status or OrderStatus.ACCEPTED
         order.pre_pending_status = None
         was = order.status
-        state._transition_order(order.client_order_id, target, self._time.now())
+        state._transition_order(order.client_order_id, target, self._time.time())
         if was == OrderStatus.PENDING_CANCEL:
             self._strategy.on_order_cancel_rejected(self._ctx, order, reason)
         else:
             self._strategy.on_order_update_rejected(self._ctx, order, reason)
 
     def _on_snapshot_tick(self, ctx) -> None:
-        now = self._time.now()
+        now = self._time.time()
         interval = np.timedelta64(self._cfg.snapshot_check_interval_ms, "ms")
         for exchange, state in self._states.items():
             last = state._last_snapshot_as_of
@@ -516,7 +516,7 @@ class AccountManager:
                 self._connectors[exchange].request_snapshot()
 
     def _on_liveness_tick(self, ctx) -> None:
-        now = self._time.now()
+        now = self._time.time()
         threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
         for exchange, connector in self._connectors.items():
             if connector.is_ws_ready():
@@ -548,7 +548,7 @@ class AccountManager:
             return
         # Position.update_market_price expects (timestamp, price, conversion_rate);
         # mark-to-market uses the quote mid.
-        pos.update_market_price(self._time.now(), quote.mid_price(), 1.0)
+        pos.update_market_price(self._time.time(), quote.mid_price(), 1.0)
 
     def _handle_funding_payment(self, state, event: FundingPaymentEvent):
         payment = event.payment

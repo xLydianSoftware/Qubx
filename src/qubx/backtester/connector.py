@@ -122,7 +122,7 @@ class SimulatedConnector:
                         instrument=order.instrument,
                         client_order_id=order.client_id,
                         venue_order_id=order.id,
-                        accepted_at=self._time.now(),
+                        accepted_at=self._time.time(),
                     )
                 )
                 return
@@ -138,7 +138,7 @@ class SimulatedConnector:
         open_orders = list(self._exchange.get_open_orders().values())
         snapshot = AccountSnapshot(
             exchange=self.exchange_name,
-            as_of=self._time.now(),
+            as_of=self._time.time(),
             open_orders=open_orders,
         )
         self.send(AccountSnapshotEvent(instrument=None, snapshot=snapshot))

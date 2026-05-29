@@ -21,7 +21,7 @@ class _T:
     def __init__(self, t="2026-05-28T00:00:00"):
         self.t = np.datetime64(t)
 
-    def now(self):
+    def time(self):
         return self.t
 
 
@@ -129,7 +129,7 @@ def test_funding_payment_applied_once_per_bucket():
     inst = _instrument()
     # open a long position and mark it so funding has a mark price
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(am._time.now(), 50_000.0, 1.0)
+    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     state._set_position(inst, pos)
     state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
@@ -150,7 +150,7 @@ def test_funding_payment_duplicate_skipped():
     state = am._states["binance"]
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(am._time.now(), 50_000.0, 1.0)
+    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     state._set_position(inst, pos)
     state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
@@ -208,7 +208,7 @@ def test_funding_on_unmarked_position_skipped_without_consuming_bucket():
     assert pos.cumulative_funding == 0.0
 
     # now mark the position and re-deliver the SAME bucket -> it applies this time
-    pos.update_market_price(am._time.now(), 50_000.0, 1.0)
+    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
     expected = -(1.0 * 50_000.0 * 0.0001)
     assert abs(pos.cumulative_funding - expected) < 1e-9
@@ -222,7 +222,7 @@ def test_funding_payment_moves_free_and_total_together():
     state = am._states["binance"]
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(am._time.now(), 50_000.0, 1.0)
+    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     state._set_position(inst, pos)
     state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=900.0, locked=100.0))
 
@@ -244,7 +244,7 @@ def test_funding_payment_different_bucket_applies_again():
     state = am._states["binance"]
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(am._time.now(), 50_000.0, 1.0)
+    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     state._set_position(inst, pos)
     state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 

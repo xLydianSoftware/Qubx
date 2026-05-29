@@ -21,8 +21,7 @@ from qubx.core.utils import recognize_time
 
 
 class _TimeService(ITimeProvider):
-    """Time provider exposing both `time()` (consumed by the OME/exchange) and
-    `now()` (consumed by SimulatedConnector for accepted_at/as_of stamps)."""
+    """Time provider exposing `time()` consumed by both the OME/exchange and SimulatedConnector."""
 
     _time: np.datetime64 = np.datetime64(0, "ns")
 
@@ -31,9 +30,6 @@ class _TimeService(ITimeProvider):
         return quote
 
     def time(self) -> np.datetime64:
-        return self._time
-
-    def now(self) -> np.datetime64:
         return self._time
 
 

@@ -21,7 +21,7 @@ class _T:
     def __init__(self, t="2026-05-28T00:00:00"):
         self.t = np.datetime64(t)
 
-    def now(self):
+    def time(self):
         return self.t
 
     def adv(self, ms):

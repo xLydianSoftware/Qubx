@@ -12,7 +12,7 @@ class _T:
     def __init__(self):
         self.t = np.datetime64("2026-05-28T00:00:00")
 
-    def now(self):
+    def time(self):
         return self.t
 
     def adv(self, ms):
@@ -193,7 +193,7 @@ def test_snapshot_tick_skips_when_fresh():
     conn = MagicMock()
     am = _am({"binance": conn})
     am._cfg.snapshot_check_interval_ms = 30_000
-    am._states["binance"]._last_snapshot_as_of = am._time.now()
+    am._states["binance"]._last_snapshot_as_of = am._time.time()
     am._on_snapshot_tick(None)
     conn.request_snapshot.assert_not_called()
 

@@ -9,7 +9,7 @@ from qubx.core.exceptions import InvalidOrderTransition
 
 
 class _T:
-    def now(self):
+    def time(self):
         return np.datetime64("2026-05-28T00:00:00")
 
 
