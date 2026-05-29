@@ -1,5 +1,7 @@
 import dataclasses
 
+import pytest
+
 from qubx.core import events
 
 
@@ -12,22 +14,11 @@ def _all_message_classes():
     return classes
 
 
-# Implemented as a single test that iterates internally rather than a
-# @pytest.mark.parametrize decorator because qubx pins pytest-lazy-fixture,
-# which has an incompatibility with pytest 8.x that breaks parametrized test
-# collection (see tests/qubx/connectors/ccxt/test_binance_has_restore.py).
-def test_event_classes_are_frozen_and_slots():
-    failures: list[str] = []
-    for cls in _all_message_classes():
-        if not dataclasses.is_dataclass(cls):
-            failures.append(f"  {cls.__name__} is not a dataclass")
-            continue
-        if not cls.__dataclass_params__.frozen:
-            failures.append(f"  {cls.__name__} is not frozen")
-        if "__slots__" not in cls.__dict__:
-            failures.append(f"  {cls.__name__} has no __slots__")
-
-    assert not failures, "ChannelMessage subclasses must be frozen+slots dataclasses:\n" + "\n".join(failures)
+@pytest.mark.parametrize("cls", _all_message_classes(), ids=lambda c: c.__name__)
+def test_event_class_is_frozen_and_slots(cls):
+    assert dataclasses.is_dataclass(cls)
+    assert cls.__dataclass_params__.frozen
+    assert "__slots__" in cls.__dict__
 
 
 def test_account_and_market_data_split():
