@@ -16,6 +16,7 @@ from qubx.core.events import (
     OrderUpdateRejectedEvent,
 )
 from qubx.core.exceptions import OrderNotFound
+from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 
 
 class SimulatedConnector:
@@ -36,6 +37,7 @@ class SimulatedConnector:
         channel: CtrlChannel,
         exchange: ISimulatedExchange,
         time_provider: ITimeProvider,
+        # Accepted for IConnector construction parity with live connectors; simulation has no event loop.
         loop: asyncio.AbstractEventLoop | None = None,
     ):
         self.channel = channel
@@ -143,13 +145,16 @@ class SimulatedConnector:
         )
         self.send(AccountSnapshotEvent(instrument=None, snapshot=snapshot))
 
-    def process_market_data(self, instrument: Instrument, data) -> None:
+    def process_market_data(self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray) -> None:
         for report in self._exchange.process_market_data(instrument, data):
             self._emit_from_report(report)
 
     def _emit_from_report(self, report: SimulatedExecutionReport) -> None:
         order = report.order
         status = order.status
+        # Raw UPPERCASE status strings from the OME (not the lowercase OrderStatus enum used elsewhere
+        # in core). The OME emits "OPEN", "CLOSED", and "CANCELED" in practice; "NEW" and "FILLED"
+        # are accepted defensively for forward-compatibility with other exchange adapters.
         if status in ("OPEN", "NEW"):
             self.send(
                 OrderAcceptedEvent(
@@ -180,6 +185,9 @@ class SimulatedConnector:
                     )
                 )
             else:
+                # The current OME fills atomically (always CLOSED on fill), so this branch is
+                # presently unreachable. It is forward-compatibility scaffolding for exchanges
+                # that emit partial fills with a resting remainder.
                 self.send(
                     OrderPartiallyFilledEvent(
                         instrument=report.instrument,

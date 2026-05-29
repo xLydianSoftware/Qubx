@@ -15,6 +15,7 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
 )
+from qubx.core.exceptions import QueueTimeout
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
@@ -42,7 +43,7 @@ def _drain(channel: CtrlChannel) -> list:
     while True:
         try:
             events.append(channel.receive(timeout=0.05))
-        except Exception:
+        except QueueTimeout:
             break
     return events
 
@@ -74,7 +75,6 @@ def test_submit_limit_emits_accepted_event():
     report.instrument = MagicMock()
     exchange.place_order.return_value = report
     time = MagicMock()
-    time.now.return_value = np.datetime64("2026-05-28")
     conn = SimulatedConnector(channel=channel, exchange=exchange, time_provider=time)
     request = OrderRequest(
         client_id="qubx-1",
