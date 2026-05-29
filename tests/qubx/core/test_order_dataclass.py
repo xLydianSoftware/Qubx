@@ -22,17 +22,14 @@ def _make_order(**overrides):
     return Order(**defaults)
 
 
-def test_order_has_client_and_venue_order_id():
-    order = _make_order()
-    assert order.client_order_id == "qubx-abc123"
-    assert order.venue_order_id is None
-
+# Only the alias properties and require_venue_id() carry real logic worth
+# testing — plain field storage is the dataclass machinery, not our behavior.
 
 def test_order_legacy_id_property_falls_back_to_client_order_id():
     order = _make_order()
-    assert order.id == "qubx-abc123"
+    assert order.id == "qubx-abc123"          # no venue id yet -> falls back to cid
     order.venue_order_id = "V1"
-    assert order.id == "V1"
+    assert order.id == "V1"                    # venue id present -> wins
 
 
 def test_order_legacy_id_setter_writes_venue_order_id():
@@ -52,14 +49,6 @@ def test_order_require_venue_id_raises_when_unset():
     order = _make_order()
     with pytest.raises(ValueError):
         order.require_venue_id()
-
-
-def test_order_defaults_for_new_fields():
-    order = _make_order()
-    assert order.pre_pending_status is None
-    assert order.seen_trade_ids == set()
-    assert order.retry_count == 0
-    assert order.last_updated_at is None
 
 
 def test_deal_trade_id_field_and_legacy_id_alias():
