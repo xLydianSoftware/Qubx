@@ -16,7 +16,7 @@ import datetime
 import inspect
 import traceback
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -47,6 +47,9 @@ from qubx.core.errors import BaseErrorEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.data.storage import IReader, IStorage
+
+if TYPE_CHECKING:
+    from qubx.core.events import ReconcileDiff
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -2819,6 +2822,40 @@ class IStrategy(metaclass=Mixable):
             deals: The deals.
         """
         return None
+
+    def on_order_accepted(self, ctx: IStrategyContext, order: Order) -> None: ...
+
+    def on_order_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
+
+    def on_order_partially_filled(self, ctx: IStrategyContext, order: Order, fill: Deal) -> None: ...
+
+    def on_order_filled(self, ctx: IStrategyContext, order: Order, fill: Deal) -> None: ...
+
+    def on_order_canceled(self, ctx: IStrategyContext, order: Order) -> None: ...
+
+    def on_order_expired(self, ctx: IStrategyContext, order: Order) -> None: ...
+
+    def on_order_updated(self, ctx: IStrategyContext, order: Order) -> None: ...
+
+    def on_order_cancel_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None:
+        logger.warning(
+            f"[{order.client_order_id}] cancel rejected by venue: {reason}; "
+            f"order is STILL ALIVE at the venue"
+        )
+
+    def on_order_update_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None:
+        logger.warning(
+            f"[{order.client_order_id}] update rejected by venue: {reason}; "
+            f"order is STILL ALIVE with prior parameters"
+        )
+
+    def on_position_update(self, ctx: IStrategyContext, position: Position) -> None: ...
+
+    def on_balance_update(self, ctx: IStrategyContext, balance: Balance) -> None: ...
+
+    def on_funding_payment(self, ctx: IStrategyContext, payment: FundingPayment) -> None: ...
+
+    def on_reconcile_complete(self, ctx: IStrategyContext, exchange: str, diff: "ReconcileDiff") -> None: ...
 
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """
