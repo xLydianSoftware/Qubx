@@ -656,6 +656,7 @@ class Deal:
     fee_amount: float | None = None
     fee_currency: str | None = None
 
+    # TODO(account-mgmt): remove this legacy id alias once old read sites are gone.
     @property
     def id(self) -> str:
         return self.trade_id
@@ -663,7 +664,6 @@ class Deal:
 
 OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
 OrderSide = Literal["BUY", "SELL"]
-OrderStatusLegacy = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
 
 
 class OrderStatus(str, Enum):
@@ -728,9 +728,8 @@ class Order:
     origin: OrderOrigin
     type: OrderType
     instrument: Instrument
-    time: dt_64                       # submission timestamp; the design calls this
-                                      # submitted_at. Grace-window reconcile measures
-                                      # order age from this field (Order.time).
+    time: dt_64                       # submission timestamp; grace-window reconcile
+                                      # measures order age from this field
     quantity: float
     price: float
     side: OrderSide
@@ -749,12 +748,13 @@ class Order:
     cost: float = 0.0
     options: dict[str, Any] = field(default_factory=dict)
 
-    # --- Legacy read/write aliases (removed in PR 10 cleanup) ----------
-    # Old code (BasicAccountProcessor, brokers, trading mixin) reads AND
-    # writes `order.id` and `order.client_id`. These read/write properties
-    # let that code keep working UNCHANGED during coexistence — only Order
-    # *construction* sites migrate to the new kwargs (you cannot pass a
-    # property as a constructor argument). canonical field is client_order_id.
+    # TODO(account-mgmt): remove these legacy id/client_id aliases once the old
+    # IBroker/IAccountProcessor/broker paths that read+write them are deleted.
+    # Old code (BasicAccountProcessor, brokers, trading mixin) reads AND writes
+    # `order.id` and `order.client_id`. These read/write properties let that code
+    # keep working UNCHANGED during coexistence — only Order *construction* sites
+    # migrate to the new kwargs (you cannot pass a property as a constructor
+    # argument). Canonical field is client_order_id.
     @property
     def id(self) -> str:
         return self.venue_order_id if self.venue_order_id is not None else self.client_order_id
@@ -1266,11 +1266,12 @@ class CtrlChannel:
                     self._record_drop(data)
 
     def _record_drop(self, item) -> None:
-        # Label drops by event class. Once typed events flow (PR 5+) the metric
-        # layer reads dropped_by_type to emit channel_overflow_drops{event=...}
-        # so operators tell a dropped OrderFilledEvent (market-risk; warn) from a
-        # dropped QuoteEvent (tolerable). Until then producers send tuples, so the
-        # only key observed is "tuple". Called only while holding self.lock.
+        # Label drops by event class so the metric layer reads dropped_by_type to
+        # emit channel_overflow_drops{event=...}, letting operators tell a dropped
+        # OrderFilledEvent (market-risk; warn) from a dropped QuoteEvent
+        # (tolerable). Called only while holding self.lock.
+        # TODO(account-mgmt): once connectors emit typed events instead of tuples,
+        # the only observed key today ("tuple") becomes per-event-class.
         self.dropped_count += 1
         key = type(item).__name__
         self.dropped_by_type[key] = self.dropped_by_type.get(key, 0) + 1

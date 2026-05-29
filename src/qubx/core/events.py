@@ -16,6 +16,10 @@ from qubx.core.basics import (
 )
 
 
+# kw_only=True is REQUIRED, not stylistic: the base carries a defaulted field
+# (is_historical) and subclasses add required fields, so positional ordering
+# would raise "non-default argument follows default argument" at class
+# definition. kw_only sidesteps the ordering entirely.
 @dataclass(frozen=True, slots=True, kw_only=True)
 class ChannelMessage:
     instrument: Instrument | None
@@ -24,12 +28,17 @@ class ChannelMessage:
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AccountMessage(ChannelMessage):
-    """Anything that mutates AccountState. AM.apply() accepts only these."""
+    """Marker base class (no fields of its own) for anything that mutates
+    AccountState. AM.apply() is typed to accept only these, and ProcessingManager
+    routes by isinstance(event, AccountMessage) — market data can't be misrouted
+    into the state machine."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class MarketDataMessage(ChannelMessage):
-    """Hot path — never reaches AM."""
+    """Marker base class (no fields of its own) for the hot path: ProcessingManager
+    dispatches these straight to strategy callbacks via isinstance-based dispatch;
+    they never reach AM."""
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
