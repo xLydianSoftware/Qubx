@@ -5,10 +5,11 @@ import numpy as np
 from qubx import logger
 from qubx.core.account_manager_config import AccountManagerConfig, _ms_to_cron
 from qubx.core.account_state import AccountState
-from qubx.core.basics import Order, OrderOrigin, OrderStatus
+from qubx.core.basics import Order, OrderOrigin, OrderStatus, Position
 from qubx.core.events import (
     AccountMessage,
     AccountSnapshotEvent,
+    FundingPaymentEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
@@ -159,6 +160,8 @@ class AccountManager:
                 return self._handle_update_rejected(state, event)
             case AccountSnapshotEvent():
                 return self._handle_snapshot(state, event)
+            case FundingPaymentEvent():
+                return self._handle_funding_payment(state, event)
             case _:
                 logger.warning(f"unhandled AccountMessage: {type(event)}")
                 return None
@@ -248,7 +251,10 @@ class AccountManager:
             return order
         if event.venue_order_id and order.venue_order_id is None:
             state._set_venue_id(order.client_order_id, event.venue_order_id)
+        is_new_trade = event.fill.trade_id not in order.seen_trade_ids
         state._apply_fill(order.client_order_id, event.fill, self._time.now())
+        if is_new_trade and order.instrument is not None:
+            self._apply_deal_to_position(state, order.instrument, event.fill)
         if order.status.is_pending():
             # filled_quantity mirrors real, irreversible fills (and the position),
             # so it is NEVER reduced. A fill that races a pending modify can push it
@@ -274,7 +280,10 @@ class AccountManager:
             return order
         if event.venue_order_id and order.venue_order_id is None:
             state._set_venue_id(order.client_order_id, event.venue_order_id)
+        is_new_trade = event.fill.trade_id not in order.seen_trade_ids
         state._apply_fill(order.client_order_id, event.fill, self._time.now())
+        if is_new_trade and order.instrument is not None:
+            self._apply_deal_to_position(state, order.instrument, event.fill)
         return state._transition_order(order.client_order_id, OrderStatus.FILLED, self._time.now())
 
     def _handle_canceled(self, state, event):
@@ -514,3 +523,114 @@ class AccountManager:
                 except Exception:
                     logger.exception(f"force_ws_reconnect_sync failed for {exchange}")
                 self._liveness_unready_since.pop(exchange, None)
+
+    def _apply_deal_to_position(self, state, instrument, deal):
+        pos = state.get_position(instrument)
+        if pos is None:
+            pos = Position(instrument=instrument)
+            state._set_position(instrument, pos)
+        pos.update_position_by_deal(deal, conversion_rate=1.0)
+        pos.last_updated_at = self._time.now()
+        return pos
+
+    def on_market_quote(self, instrument, quote) -> None:
+        state = self._states.get(instrument.exchange)
+        if state is None:
+            return
+        pos = state.get_position(instrument)
+        if pos is None:
+            return
+        # Position.update_market_price expects (timestamp, price, conversion_rate);
+        # mark-to-market uses the quote mid.
+        pos.update_market_price(self._time.now(), quote.mid_price(), 1.0)
+
+    def _handle_funding_payment(self, state, event: FundingPaymentEvent):
+        payment = event.payment
+        instrument = event.instrument
+        if instrument is None:
+            return None
+        interval_ns = payment.funding_interval_hours * 3_600_000_000_000
+        bucket = (instrument, int(payment.time) // interval_ns)
+        seen = self._applied_funding_buckets.setdefault(state.exchange, set())
+        if bucket in seen:
+            return None
+        seen.add(bucket)
+        pos = state.get_position(instrument)
+        if pos is None:
+            return payment
+        # FundingPayment carries only the rate/interval; the signed cash amount is
+        # derived from the position size and the last mark price by the Position.
+        amount = pos.apply_funding_payment(payment, pos.last_update_price)
+        bal = state.get_balance(instrument.settle)
+        if bal is not None:
+            bal.total += amount
+            state._update_balance(instrument.settle, bal)
+        return payment
+
+    def get_total_capital(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            return self._total_capital_for(self._states[exchange])
+        return sum(self._total_capital_for(s) for s in self._states.values())
+
+    def get_capital(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            return self._free_capital_for(self._states[exchange])
+        return sum(self._free_capital_for(s) for s in self._states.values())
+
+    def _total_capital_for(self, state) -> float:
+        base = self._base_currency_for(state)
+        bal = state.get_balance(base)
+        if bal is None:
+            return 0.0
+        total = bal.total
+        for pos in state.positions.values():
+            if pos.instrument.is_futures():
+                total += pos.unrealized_pnl()
+        return total
+
+    def _free_capital_for(self, state) -> float:
+        base = self._base_currency_for(state)
+        bal = state.get_balance(base)
+        return bal.free if bal else 0.0
+
+    def _base_currency_for(self, state) -> str:
+        if not state.balances:
+            return "USDT"
+        return max(state.balances.values(), key=lambda b: b.total).currency
+
+    def get_leverage(self, instrument) -> float:
+        state = self._states.get(instrument.exchange)
+        if state is None:
+            return 0.0
+        pos = state.get_position(instrument)
+        if pos is None:
+            return 0.0
+        total = self._total_capital_for(state)
+        return abs(pos.notional_value) / total if total > 0 else 0.0
+
+    def get_net_leverage(self, exchange: str | None = None) -> float:
+        states = [self._states[exchange]] if exchange else list(self._states.values())
+        net = sum(p.notional_value for s in states for p in s.positions.values())
+        total = sum(self._total_capital_for(s) for s in states)
+        return abs(net) / total if total > 0 else 0.0
+
+    def get_gross_leverage(self, exchange: str | None = None) -> float:
+        states = [self._states[exchange]] if exchange else list(self._states.values())
+        gross = sum(abs(p.notional_value) for s in states for p in s.positions.values())
+        total = sum(self._total_capital_for(s) for s in states)
+        return gross / total if total > 0 else 0.0
+
+
+class SimulationAccountManager(AccountManager):
+    """Backtest variant — no asyncio, no WS, no periodic ticks."""
+
+    def __init__(self, *, connectors, strategy, time, cfg: AccountManagerConfig | None = None):
+        self._pm = None
+        self._connectors = connectors
+        self._strategy = strategy
+        self._time = time
+        self._cfg = cfg or AccountManagerConfig()
+        self._states = {ex: AccountState(exchange=ex) for ex in connectors}
+        self._liveness_unready_since = {}
+        self._applied_funding_buckets = {}
+        self._ctx = None

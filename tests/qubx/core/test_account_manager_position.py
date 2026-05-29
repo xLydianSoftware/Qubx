@@ -1,0 +1,201 @@
+import numpy as np
+
+from qubx.core.account_manager import AccountManager
+from qubx.core.account_manager_config import AccountManagerConfig
+from qubx.core.account_state import AccountState
+from qubx.core.basics import (
+    Balance,
+    Deal,
+    FundingPayment,
+    Instrument,
+    MarketType,
+    Order,
+    OrderOrigin,
+    OrderStatus,
+    Position,
+)
+from qubx.core.events import FundingPaymentEvent
+
+
+class _T:
+    def __init__(self, t="2026-05-28T00:00:00"):
+        self.t = np.datetime64(t)
+
+    def now(self):
+        return self.t
+
+
+def _instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SWAP,
+        exchange=exchange,
+        base=symbol.replace("USDT", ""),
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol=symbol,
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+        contract_size=1.0,
+    )
+
+
+def _am(exchange="binance"):
+    am = AccountManager.__new__(AccountManager)
+    am._states = {exchange: AccountState(exchange=exchange)}
+    am._connectors = {}
+    am._cfg = AccountManagerConfig()
+    am._time = _T()
+    am._strategy = None
+    am._liveness_unready_since = {}
+    am._applied_funding_buckets = {}
+    am._ctx = object()
+    return am
+
+
+def _add_order(state, inst, cid="cid-1", status=OrderStatus.ACCEPTED, qty=1.0):
+    state._add_order(
+        Order(
+            client_order_id=cid,
+            venue_order_id="V1",
+            origin=OrderOrigin.FRAMEWORK,
+            type="LIMIT",
+            instrument=inst,
+            time=np.datetime64("2026-05-28T00:00:00"),
+            quantity=qty,
+            price=50_000.0,
+            side="BUY",
+            status=status,
+            time_in_force="gtc",
+        )
+    )
+
+
+def _fill(trade_id="t1", amount=0.5, price=50_000.0):
+    return Deal(
+        trade_id=trade_id,
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:00:00"),
+        amount=amount,
+        price=price,
+        aggressive=True,
+    )
+
+
+def test_partial_fill_updates_position_quantity_and_avg():
+    from qubx.core.events import OrderPartiallyFilledEvent
+
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    _add_order(state, inst)
+    am.apply(
+        OrderPartiallyFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=0.5, price=50_000.0)
+        )
+    )
+    pos = state.get_position(inst)
+    assert pos is not None
+    assert pos.quantity == 0.5
+    assert pos.position_avg_price == 50_000.0
+
+
+def test_two_fills_average_into_position():
+    from qubx.core.events import OrderFilledEvent, OrderPartiallyFilledEvent
+
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    _add_order(state, inst, qty=1.0)
+    am.apply(
+        OrderPartiallyFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.5, price=50_000.0)
+        )
+    )
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t2", amount=0.5, price=51_000.0)
+        )
+    )
+    pos = state.get_position(inst)
+    assert pos.quantity == 1.0
+    assert abs(pos.position_avg_price - 50_500.0) < 1e-6
+
+
+def test_funding_payment_applied_once_per_bucket():
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    # open a long position and mark it so funding has a mark price
+    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(am._time.now(), 50_000.0, 1.0)
+    state._set_position(inst, pos)
+    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+
+    payment = FundingPayment(
+        time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
+        funding_rate=0.0001,
+        funding_interval_hours=8,
+    )
+    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
+    # long pays positive funding: cumulative_funding negative
+    expected = -(1.0 * 50_000.0 * 0.0001)
+    assert abs(pos.cumulative_funding - expected) < 1e-9
+    assert abs(state.get_balance("USDT").total - (1000.0 + expected)) < 1e-9
+
+
+def test_funding_payment_duplicate_skipped():
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(am._time.now(), 50_000.0, 1.0)
+    state._set_position(inst, pos)
+    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+
+    payment = FundingPayment(
+        time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
+        funding_rate=0.0001,
+        funding_interval_hours=8,
+    )
+    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
+    funding_after_first = pos.cumulative_funding
+    balance_after_first = state.get_balance("USDT").total
+    # a second payment in the same bucket (same time/interval) is a no-op
+    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
+    assert pos.cumulative_funding == funding_after_first
+    assert state.get_balance("USDT").total == balance_after_first
+
+
+def test_simulation_account_manager_constructs_without_pm():
+    from qubx.core.account_manager import SimulationAccountManager
+
+    sam = SimulationAccountManager(connectors={"binance": object()}, strategy=None, time=_T())
+    assert sam._pm is None
+    assert "binance" in sam._states
+    # position math is inherited and works in the sim variant
+    inst = _instrument()
+    state = sam._states["binance"]
+    deal = _fill(amount=1.0, price=50_000.0)
+    sam._apply_deal_to_position(state, inst, deal)
+    assert state.get_position(inst).quantity == 1.0
+
+
+def test_funding_payment_different_bucket_applies_again():
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(am._time.now(), 50_000.0, 1.0)
+    state._set_position(inst, pos)
+    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+
+    base_ns = np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64)
+    p1 = FundingPayment(time=base_ns, funding_rate=0.0001, funding_interval_hours=8)
+    next_bucket_ns = base_ns + 8 * 3_600_000_000_000
+    p2 = FundingPayment(time=next_bucket_ns, funding_rate=0.0001, funding_interval_hours=8)
+    am.apply(FundingPaymentEvent(instrument=inst, payment=p1))
+    first = pos.cumulative_funding
+    am.apply(FundingPaymentEvent(instrument=inst, payment=p2))
+    assert pos.cumulative_funding != first

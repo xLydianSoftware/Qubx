@@ -2,7 +2,7 @@ import numpy as np
 
 from qubx.core.account_manager import AccountManager
 from qubx.core.account_state import AccountState
-from qubx.core.basics import Deal, Order, OrderOrigin, OrderStatus
+from qubx.core.basics import Deal, Instrument, MarketType, Order, OrderOrigin, OrderStatus
 from qubx.core.events import (
     OrderAcceptedEvent,
     OrderCanceledEvent,
@@ -21,9 +21,20 @@ class _T:
         return np.datetime64("2026-05-28T00:00:00")
 
 
-class _Inst:
-    exchange = "binance"
-    symbol = "BTCUSDT"
+def _Inst() -> Instrument:
+    return Instrument(
+        symbol="BTCUSDT",
+        market_type=MarketType.SWAP,
+        exchange="binance",
+        base="BTC",
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol="BTCUSDT",
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+        contract_size=1.0,
+    )
 
 
 def _am():
