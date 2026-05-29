@@ -1,8 +1,22 @@
 import numpy as np
 
+from qubx import logger
 from qubx.core.account_manager_config import AccountManagerConfig
 from qubx.core.account_state import AccountState
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
+from qubx.core.events import (
+    AccountMessage,
+    AccountSnapshotEvent,
+    OrderAcceptedEvent,
+    OrderCanceledEvent,
+    OrderCancelRejectedEvent,
+    OrderExpiredEvent,
+    OrderFilledEvent,
+    OrderPartiallyFilledEvent,
+    OrderRejectedEvent,
+    OrderUpdatedEvent,
+    OrderUpdateRejectedEvent,
+)
 from qubx.core.exceptions import InvalidOrderTransition
 
 _LEGAL_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
@@ -111,3 +125,165 @@ class AccountManager:
             if (b := state.get_balance(currency)) is not None:
                 return b
         return None
+
+    def apply(self, event: AccountMessage):
+        state = self._get_state_for_event(event)
+        if state is None:
+            return None
+        match event:
+            case OrderPartiallyFilledEvent():
+                return self._handle_partial_fill(state, event)
+            case OrderFilledEvent():
+                return self._handle_fill(state, event)
+            case OrderAcceptedEvent():
+                return self._handle_accepted(state, event)
+            case OrderCanceledEvent():
+                return self._handle_canceled(state, event)
+            case OrderExpiredEvent():
+                return self._handle_expired(state, event)
+            case OrderUpdatedEvent():
+                return self._handle_updated(state, event)
+            case OrderRejectedEvent():
+                return self._handle_rejected(state, event)
+            case OrderCancelRejectedEvent():
+                return self._handle_cancel_rejected(state, event)
+            case OrderUpdateRejectedEvent():
+                return self._handle_update_rejected(state, event)
+            case _:
+                logger.warning(f"unhandled AccountMessage: {type(event)}")
+                return None
+
+    def _get_state_for_event(self, event):
+        if isinstance(event, AccountSnapshotEvent):
+            return self._states.get(event.snapshot.exchange)
+        if event.instrument is not None:
+            return self._states.get(event.instrument.exchange)
+        return None
+
+    def _resolve_or_materialize(self, state, event):
+        cid = getattr(event, "client_order_id", None)
+        venue_id = getattr(event, "venue_order_id", None)
+        if cid is not None and cid in state.active_orders:
+            return state.active_orders[cid]
+        if venue_id is not None and venue_id in state._venue_id_index:
+            return state.active_orders[state._venue_id_index[venue_id]]
+        if cid is not None:
+            for hist in state._terminal_history:
+                if hist.client_order_id == cid:
+                    return hist
+        return self._materialize_external(state, event)
+
+    def _materialize_external(self, state, event):
+        venue_id = getattr(event, "venue_order_id", None) or "unknown"
+        cid = f"ext:{venue_id}"
+        order = Order(
+            client_order_id=cid,
+            venue_order_id=venue_id,
+            origin=OrderOrigin.EXTERNAL,
+            type="LIMIT",
+            instrument=event.instrument,
+            time=self._time.now(),
+            quantity=0.0,
+            price=0.0,
+            side="BUY",
+            status=OrderStatus.ACCEPTED,
+            time_in_force="gtc",
+        )
+        state._add_order(order)
+        return order
+
+    def _handle_accepted(self, state, event: OrderAcceptedEvent):
+        order = self._resolve_or_materialize(state, event)
+        order.accepted_at = event.accepted_at
+        # A terminal order resolved via _terminal_history is no longer in
+        # active_orders, so it has no venue-id index entry to (re)write — the
+        # late OrderAccepted is a benign side-effect, not a re-materialization.
+        if order.status.is_terminal():
+            if order.client_order_id in state.active_orders:
+                state._set_venue_id(order.client_order_id, event.venue_order_id)
+            return order
+        state._set_venue_id(order.client_order_id, event.venue_order_id)
+        if order.status == OrderStatus.PENDING_CANCEL:
+            return order
+        if order.status == OrderStatus.PENDING_UPDATE:
+            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.now())
+        if OrderStatus.ACCEPTED in _LEGAL_TRANSITIONS.get(order.status, set()):
+            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.now())
+        return order
+
+    def _handle_partial_fill(self, state, event: OrderPartiallyFilledEvent):
+        order = self._resolve_or_materialize(state, event)
+        if event.venue_order_id and order.venue_order_id is None:
+            state._set_venue_id(order.client_order_id, event.venue_order_id)
+        state._apply_fill(order.client_order_id, event.fill, self._time.now())
+        if order.status.is_pending():
+            # While PENDING_UPDATE a fill may race in for the pre-modify (larger)
+            # quantity. Clamp and warn — overshoot signals a real ordering race
+            # the strategy should know about.
+            if order.status == OrderStatus.PENDING_UPDATE and order.filled_quantity > order.quantity:
+                logger.warning(
+                    f"[{order.client_order_id}] fill races pre-modify quantity; "
+                    f"clamping filled_quantity {order.filled_quantity} -> {order.quantity}"
+                )
+                order.filled_quantity = order.quantity
+            return state.get_order(order.client_order_id)
+        if OrderStatus.PARTIALLY_FILLED in _LEGAL_TRANSITIONS.get(order.status, set()):
+            return state._transition_order(order.client_order_id, OrderStatus.PARTIALLY_FILLED, self._time.now())
+        return order
+
+    def _handle_fill(self, state, event: OrderFilledEvent):
+        order = self._resolve_or_materialize(state, event)
+        if event.venue_order_id and order.venue_order_id is None:
+            state._set_venue_id(order.client_order_id, event.venue_order_id)
+        state._apply_fill(order.client_order_id, event.fill, self._time.now())
+        return state._transition_order(order.client_order_id, OrderStatus.FILLED, self._time.now())
+
+    def _handle_canceled(self, state, event):
+        order = self._resolve_or_materialize(state, event)
+        return state._transition_order(order.client_order_id, OrderStatus.CANCELED, self._time.now())
+
+    def _handle_expired(self, state, event):
+        order = self._resolve_or_materialize(state, event)
+        return state._transition_order(order.client_order_id, OrderStatus.EXPIRED, self._time.now())
+
+    def _handle_rejected(self, state, event: OrderRejectedEvent):
+        order = state.active_orders.get(event.client_order_id)
+        if order is None:
+            logger.warning(f"reject for unknown order {event.client_order_id}")
+            return None
+        order.rejected_reason = event.reason
+        return state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.now())
+
+    def _handle_updated(self, state, event: OrderUpdatedEvent):
+        order = self._resolve_or_materialize(state, event)
+        if order.venue_order_id != event.venue_order_id:
+            if order.venue_order_id is not None:
+                state._venue_id_index.pop(order.venue_order_id, None)
+            state._set_venue_id(order.client_order_id, event.venue_order_id)
+        if event.new_price is not None:
+            order.price = event.new_price
+        if event.new_quantity is not None:
+            order.quantity = event.new_quantity
+        order.last_updated_at = self._time.now()
+        if order.status == OrderStatus.PENDING_UPDATE:
+            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.now())
+        return order
+
+    def _handle_cancel_rejected(self, state, event):
+        order = state.active_orders.get(event.client_order_id)
+        if order is None or order.status != OrderStatus.PENDING_CANCEL:
+            logger.warning(f"cancel-rejected for unexpected state: {order}")
+            return None
+        return self._revert_from_pending(state, order)
+
+    def _handle_update_rejected(self, state, event):
+        order = state.active_orders.get(event.client_order_id)
+        if order is None or order.status != OrderStatus.PENDING_UPDATE:
+            logger.warning(f"update-rejected for unexpected state: {order}")
+            return None
+        return self._revert_from_pending(state, order)
+
+    def _revert_from_pending(self, state, order):
+        target = order.pre_pending_status or OrderStatus.ACCEPTED
+        order.pre_pending_status = None
+        return state._transition_order(order.client_order_id, target, self._time.now())
