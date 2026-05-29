@@ -174,7 +174,12 @@ class AccountManager:
         return self._materialize_external(state, event)
 
     def _materialize_external(self, state, event):
-        venue_id = getattr(event, "venue_order_id", None) or "unknown"
+        venue_id = getattr(event, "venue_order_id", None)
+        if venue_id is None:
+            # No venue id → no stable identity; all such orders would collide on
+            # ext:unknown. Real venue events always carry one, so warn loudly.
+            venue_id = "unknown"
+            logger.warning(f"materializing EXTERNAL order with no venue_order_id: {event}")
         cid = f"ext:{venue_id}"
         order = Order(
             client_order_id=cid,
@@ -194,15 +199,18 @@ class AccountManager:
 
     def _handle_accepted(self, state, event: OrderAcceptedEvent):
         order = self._resolve_or_materialize(state, event)
-        order.accepted_at = event.accepted_at
-        # A terminal order resolved via _terminal_history is no longer in
-        # active_orders, so it has no venue-id index entry to (re)write — the
-        # late OrderAccepted is a benign side-effect, not a re-materialization.
         if order.status.is_terminal():
+            # Late accept on an already-terminal order (design "OrderFilled before
+            # OrderAccepted"): benign side-effect, no transition, no phantom. Set
+            # the venue id ONLY if the order is still in active_orders — an evicted
+            # order's venue-id index was already dropped, so _set_venue_id would
+            # KeyError on active_orders[cid].
             if order.client_order_id in state.active_orders:
                 state._set_venue_id(order.client_order_id, event.venue_order_id)
+                order.accepted_at = event.accepted_at
             return order
         state._set_venue_id(order.client_order_id, event.venue_order_id)
+        order.accepted_at = event.accepted_at
         if order.status == OrderStatus.PENDING_CANCEL:
             return order
         if order.status == OrderStatus.PENDING_UPDATE:
@@ -211,8 +219,23 @@ class AccountManager:
             return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.now())
         return order
 
+    # Terminal-order guard (shared by the lifecycle handlers below).
+    # A late event for an order that is already terminal — possibly still in
+    # active_orders during the grace window, possibly already evicted to
+    # _terminal_history — must be a benign no-op: NO status change (a terminal
+    # state has no legal outgoing edge) and NO active_orders[cid] mutation (which
+    # would KeyError for an evicted order). This generalizes the OrderAccepted
+    # grace rule (design "OrderFilled before OrderAccepted" / terminal retention)
+    # to every lifecycle event, and is what keeps a late OrderCanceled from
+    # silently flipping a FILLED order to CANCELED.
+    def _is_late_terminal(self, order) -> bool:
+        return order.status.is_terminal()
+
     def _handle_partial_fill(self, state, event: OrderPartiallyFilledEvent):
         order = self._resolve_or_materialize(state, event)
+        if self._is_late_terminal(order):
+            logger.debug(f"late partial-fill on terminal {order.client_order_id}; ignoring")
+            return order
         if event.venue_order_id and order.venue_order_id is None:
             state._set_venue_id(order.client_order_id, event.venue_order_id)
         state._apply_fill(order.client_order_id, event.fill, self._time.now())
@@ -233,6 +256,9 @@ class AccountManager:
 
     def _handle_fill(self, state, event: OrderFilledEvent):
         order = self._resolve_or_materialize(state, event)
+        if self._is_late_terminal(order):
+            logger.debug(f"late fill on terminal {order.client_order_id}; ignoring")
+            return order
         if event.venue_order_id and order.venue_order_id is None:
             state._set_venue_id(order.client_order_id, event.venue_order_id)
         state._apply_fill(order.client_order_id, event.fill, self._time.now())
@@ -240,10 +266,16 @@ class AccountManager:
 
     def _handle_canceled(self, state, event):
         order = self._resolve_or_materialize(state, event)
+        if self._is_late_terminal(order):
+            logger.debug(f"late cancel on terminal {order.client_order_id}; ignoring")
+            return order
         return state._transition_order(order.client_order_id, OrderStatus.CANCELED, self._time.now())
 
     def _handle_expired(self, state, event):
         order = self._resolve_or_materialize(state, event)
+        if self._is_late_terminal(order):
+            logger.debug(f"late expire on terminal {order.client_order_id}; ignoring")
+            return order
         return state._transition_order(order.client_order_id, OrderStatus.EXPIRED, self._time.now())
 
     def _handle_rejected(self, state, event: OrderRejectedEvent):
@@ -251,11 +283,17 @@ class AccountManager:
         if order is None:
             logger.warning(f"reject for unknown order {event.client_order_id}")
             return None
+        if order.status.is_terminal():
+            logger.debug(f"late reject on terminal {order.client_order_id}; ignoring")
+            return order
         order.rejected_reason = event.reason
         return state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.now())
 
     def _handle_updated(self, state, event: OrderUpdatedEvent):
         order = self._resolve_or_materialize(state, event)
+        if self._is_late_terminal(order):
+            logger.debug(f"late update on terminal {order.client_order_id}; ignoring")
+            return order
         if order.venue_order_id != event.venue_order_id:
             if order.venue_order_id is not None:
                 state._venue_id_index.pop(order.venue_order_id, None)

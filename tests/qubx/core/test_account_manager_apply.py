@@ -394,3 +394,75 @@ def test_resolve_via_venue_id_index():
     o = am._states["binance"].get_order("cid-1")
     assert o.filled_quantity == 0.4
     assert "ext:V1" not in am._states["binance"].active_orders
+
+
+def test_late_cancel_on_filled_order_is_noop():
+    # C1: a late OrderCanceled on an already-FILLED order (still in active_orders
+    # during the grace window) must NOT flip FILLED -> CANCELED.
+    am = _am()
+    inst = _Inst()
+    _add_order(am._states["binance"], status=OrderStatus.ACCEPTED, instrument=inst)
+    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.0)))
+    assert am._states["binance"].get_order("cid-1").status is OrderStatus.FILLED
+    # late cancel: benign no-op, no exception, status unchanged
+    am.apply(OrderCanceledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    assert am._states["binance"].get_order("cid-1").status is OrderStatus.FILLED
+
+
+def test_late_fill_on_filled_order_is_noop():
+    # A second OrderFilled (new trade_id) on an already-FILLED order is ignored:
+    # status stays FILLED and filled_quantity is unchanged.
+    am = _am()
+    inst = _Inst()
+    _add_order(am._states["binance"], status=OrderStatus.ACCEPTED, instrument=inst)
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=1.0)
+        )
+    )
+    o = am._states["binance"].get_order("cid-1")
+    assert o.status is OrderStatus.FILLED
+    assert o.filled_quantity == 1.0
+    # late fill with a brand-new trade_id: ignored, no double-count
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t2", amount=0.5)
+        )
+    )
+    o = am._states["binance"].get_order("cid-1")
+    assert o.status is OrderStatus.FILLED
+    assert o.filled_quantity == 1.0
+
+
+def test_late_fill_on_evicted_order_does_not_raise():
+    # C2: once an order is evicted to _terminal_history it is no longer in
+    # active_orders, so any mutator doing active_orders[cid] would KeyError.
+    # Late fill/cancel/update events resolving to it via cid must be benign
+    # no-ops with no phantom EXTERNAL order in active_orders.
+    am = _am()
+    inst = _Inst()
+    _add_order(am._states["binance"], status=OrderStatus.ACCEPTED, instrument=inst)
+    am._states["binance"]._set_venue_id("cid-1", "V1")
+    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.0)))
+    am._states["binance"]._evict_to_history("cid-1")
+    assert "cid-1" not in am._states["binance"].active_orders
+
+    # each of these resolves to the evicted order via the terminal-history fallback
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t-late", amount=0.5)
+        )
+    )
+    am.apply(OrderCanceledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    am.apply(
+        OrderUpdatedEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", new_price=49_000.0, new_quantity=2.0
+        )
+    )
+
+    state = am._states["binance"]
+    assert "cid-1" not in state.active_orders
+    assert "ext:V1" not in state.active_orders
+    assert "ext:cid-1" not in state.active_orders
+    # the evicted order remains FILLED and untouched
+    assert state.get_order("cid-1").status is OrderStatus.FILLED
