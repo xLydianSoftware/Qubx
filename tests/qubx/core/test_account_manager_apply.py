@@ -203,7 +203,7 @@ def test_partial_fill_during_pending_cancel_applies_without_transition():
     assert o.filled_quantity == 0.3
 
 
-def test_partial_fill_during_pending_update_clamps_and_warns():
+def test_pending_update_overfill_keeps_filled_intact_and_warns():
     from qubx import logger
 
     am = _am()
@@ -216,7 +216,7 @@ def test_partial_fill_during_pending_update_clamps_and_warns():
     try:
         am.apply(
             OrderPartiallyFilledEvent(
-                instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.5)
+                instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=1.5)
             )
         )
     finally:
@@ -224,8 +224,8 @@ def test_partial_fill_during_pending_update_clamps_and_warns():
 
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.PENDING_UPDATE
-    assert o.filled_quantity == 1.0  # clamped to quantity
-    assert any("clamping filled_quantity" in m for m in messages)
+    assert o.filled_quantity == 1.5  # left intact — NOT clamped to quantity
+    assert any("leaving filled intact" in m for m in messages)
 
 
 def test_canceled_transitions_to_canceled():

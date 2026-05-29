@@ -240,15 +240,18 @@ class AccountManager:
             state._set_venue_id(order.client_order_id, event.venue_order_id)
         state._apply_fill(order.client_order_id, event.fill, self._time.now())
         if order.status.is_pending():
-            # While PENDING_UPDATE a fill may race in for the pre-modify (larger)
-            # quantity. Clamp and warn — overshoot signals a real ordering race
-            # the strategy should know about.
-            if order.status == OrderStatus.PENDING_UPDATE and order.filled_quantity > order.quantity:
+            # filled_quantity mirrors real, irreversible fills (and the position),
+            # so it is NEVER reduced. A fill that races a pending modify can push it
+            # past the new (smaller) target — surface that as a warning only; the
+            # venue resolves the race (OrderUpdated, or OrderUpdateRejected because
+            # it can't shrink an order below what's already filled).
+            if (order.status == OrderStatus.PENDING_UPDATE
+                    and order.filled_quantity > order.quantity):
                 logger.warning(
-                    f"[{order.client_order_id}] fill races pre-modify quantity; "
-                    f"clamping filled_quantity {order.filled_quantity} -> {order.quantity}"
+                    f"[{order.client_order_id}] fill during pending-update pushed "
+                    f"filled_quantity ({order.filled_quantity}) past target "
+                    f"({order.quantity}); leaving filled intact, awaiting venue verdict"
                 )
-                order.filled_quantity = order.quantity
             return state.get_order(order.client_order_id)
         if OrderStatus.PARTIALLY_FILLED in _LEGAL_TRANSITIONS.get(order.status, set()):
             return state._transition_order(order.client_order_id, OrderStatus.PARTIALLY_FILLED, self._time.now())
