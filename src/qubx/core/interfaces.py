@@ -23,7 +23,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     CtrlChannel,
     Deal,
     FundingPayment,
@@ -215,15 +215,15 @@ class IAccountViewer:
     ########################################################
     # Balance and position information
     ########################################################
-    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[Balance]:
         """Get all currency balances.
 
         Returns:
-            list[AssetBalance]: List of AssetBalance objects (each knows its exchange and currency)
+            list[Balance]: List of Balance objects (each knows its exchange and currency)
         """
         ...
 
-    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+    def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
         """Get a specific currency balance.
 
         Args:
@@ -231,7 +231,7 @@ class IAccountViewer:
             exchange: The exchange to get the balance for
 
         Returns:
-            AssetBalance: The AssetBalance object
+            Balance: The Balance object
         """
         ...
 

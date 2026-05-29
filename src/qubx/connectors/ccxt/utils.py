@@ -10,7 +10,7 @@ from ccxt import BadSymbol
 
 from qubx import logger
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     Deal,
     FundingRate,
     Instrument,
@@ -339,7 +339,7 @@ def ccxt_convert_funding_rate(info: dict[str, Any]) -> FundingRate:
     )
 
 
-def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[AssetBalance]:
+def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[Balance]:
     balances = []
     for currency, data in d["total"].items():
         if not data:
@@ -347,7 +347,7 @@ def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[AssetBalance]
         total = float(d["total"].get(currency, 0) or 0)
         locked = float(d["used"].get(currency, 0) or 0)
         balances.append(
-            AssetBalance(exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total)
+            Balance(exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total)
         )
     return balances
 

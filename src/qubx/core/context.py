@@ -13,7 +13,7 @@ from qubx.control.executor import CommandEvent
 from qubx.control.types import ActionResult
 from qubx.core.account import CompositeAccountProcessor
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     CtrlChannel,
     DataType,
     Instrument,
@@ -605,10 +605,10 @@ class StrategyContext(IStrategyContext):
         return self.account.get_base_currency(exchange)
 
     # balance and position information
-    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[Balance]:
         return self.account.get_balances(exchange)
 
-    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+    def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
         return self.account.get_balance(currency, exchange)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:

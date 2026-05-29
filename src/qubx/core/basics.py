@@ -784,7 +784,7 @@ class Order:
 
 
 @dataclass
-class AssetBalance:
+class Balance:
     exchange: str
     currency: str
     free: float = 0.0
@@ -798,18 +798,15 @@ class AssetBalance:
         self.locked += lock_amount
         self.free = self.total - self.locked
 
-    def __add__(self, amount: float) -> "AssetBalance":
+    def __add__(self, amount: float) -> "Balance":
         self.total += amount
         self.free += amount
         return self
 
-    def __sub__(self, amount: float) -> "AssetBalance":
+    def __sub__(self, amount: float) -> "Balance":
         self.total -= amount
         self.free -= amount
         return self
-
-
-Balance = AssetBalance   # canonical name used by events/AccountState; alias of AssetBalance
 
 
 DEFAULT_MAINTENANCE_MARGIN = 0.05
@@ -1492,7 +1489,7 @@ class RestoredState:
     """
 
     time: np.datetime64
-    balances: list[AssetBalance]
+    balances: list[Balance]
     instrument_to_signal_positions: dict[Instrument, list[Signal]]
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]

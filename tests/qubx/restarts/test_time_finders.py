@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     Instrument,
     MarketType,
     Position,
@@ -110,7 +110,7 @@ def state_with_nonzero_positions(sample_time, sample_instrument, sample_signal):
 
     return RestoredState(
         time=sample_time,
-        balances=[AssetBalance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
+        balances=[Balance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
         instrument_to_target_positions={sample_instrument: target_positions},
         instrument_to_signal_positions={},
         positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
@@ -146,7 +146,7 @@ def state_with_zero_positions(sample_time, sample_instrument, sample_signal):
 
     return RestoredState(
         time=sample_time,
-        balances=[AssetBalance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
+        balances=[Balance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
         instrument_to_signal_positions={},
         instrument_to_target_positions={sample_instrument: target_positions},
         positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
@@ -210,7 +210,7 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
 
     return RestoredState(
         time=sample_time,
-        balances=[AssetBalance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
+        balances=[Balance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
         instrument_to_signal_positions={},
         instrument_to_target_positions={
             sample_instrument: btc_target_positions,

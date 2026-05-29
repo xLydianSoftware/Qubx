@@ -17,7 +17,7 @@ from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
     DEFAULT_MAINTENANCE_MARGIN,
     ZERO_COSTS,
-    AssetBalance,
+    Balance,
     DataType,
     FundingPayment,
     Instrument,
@@ -35,7 +35,7 @@ from qubx.pandaz.utils import *  # noqa: F403
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 
-def balances_to_dict(balances: list[AssetBalance]) -> dict[str, AssetBalance]:
+def balances_to_dict(balances: list[Balance]) -> dict[str, Balance]:
     """Helper to convert list of balances to dict for easier testing."""
     return {b.currency: b for b in balances}
 

@@ -7,7 +7,7 @@ from qubx.connectors.ccxt.utils import (
     ccxt_extract_deals_from_exec,
     ccxt_find_instrument,
 )
-from qubx.core.basics import AssetBalance, CtrlChannel, Instrument
+from qubx.core.basics import Balance, CtrlChannel, Instrument
 
 
 class OkxAccountProcessor(CcxtAccountProcessor):
@@ -133,7 +133,7 @@ class OkxAccountProcessor(CcxtAccountProcessor):
             self._exchange_margin_ratio = margin_ratio
 
         # Extract cashBal from raw OKX response instead of CCXT-parsed eq
-        balances: list[AssetBalance] = []
+        balances: list[Balance] = []
         raw_details = balances_raw.get("info", {}).get("data", [{}])[0].get("details", [])
         for detail in raw_details:
             cash_bal = float(detail.get("cashBal", 0) or 0)
@@ -142,7 +142,7 @@ class OkxAccountProcessor(CcxtAccountProcessor):
             frozen_bal = float(detail.get("frozenBal", 0) or 0)
             currency = detail["ccy"]
             balances.append(
-                AssetBalance(
+                Balance(
                     exchange=self.exchange,
                     currency=currency,
                     free=cash_bal - frozen_bal,

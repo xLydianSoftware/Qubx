@@ -5,11 +5,11 @@ import pytest
 
 from qubx.backtester.transfers import SimulationTransferManager
 from qubx.core.account import BasicAccountProcessor, CompositeAccountProcessor
-from qubx.core.basics import AssetBalance, ITimeProvider, TransactionCostsCalculator
+from qubx.core.basics import Balance, ITimeProvider, TransactionCostsCalculator
 from qubx.health.dummy import DummyHealthMonitor
 
 
-def balances_to_dict(balances: list[AssetBalance]) -> dict[str, AssetBalance]:
+def balances_to_dict(balances: list[Balance]) -> dict[str, Balance]:
     """Helper to convert list of balances to dict for easier testing."""
     return {b.currency: b for b in balances}
 
@@ -244,14 +244,14 @@ class TestSimulationTransferManager:
     def test_multiple_currencies(self, composite_account, transfer_manager):
         """Test transfers with multiple currencies."""
         # Add BTC balances
-        composite_account.get_account_processor("BINANCE")._balances["BTC"] = AssetBalance(
+        composite_account.get_account_processor("BINANCE")._balances["BTC"] = Balance(
             exchange="BINANCE",
             currency="BTC",
             free=5.0,
             locked=0.0,
             total=5.0
         )
-        composite_account.get_account_processor("HYPERLIQUID")._balances["BTC"] = AssetBalance(
+        composite_account.get_account_processor("HYPERLIQUID")._balances["BTC"] = Balance(
             exchange="HYPERLIQUID",
             currency="BTC",
             free=2.0,

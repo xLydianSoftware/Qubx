@@ -9,7 +9,7 @@ import pytest
 import yaml
 
 from qubx import QubxLogConfig, logger
-from qubx.core.basics import AssetBalance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
+from qubx.core.basics import Balance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
 from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
 from qubx.core.lookups import lookup
@@ -226,7 +226,7 @@ class TestRunStrategyYaml:
         # Create restored state
         restored_state = RestoredState(
             time=np.datetime64("now"),
-            balances=[AssetBalance(exchange="BINANCE.UM", currency="USDT", free=100000.0, locked=0.0, total=100000.0)],
+            balances=[Balance(exchange="BINANCE.UM", currency="USDT", free=100000.0, locked=0.0, total=100000.0)],
             instrument_to_target_positions={},
             instrument_to_signal_positions={},
             positions={btc_instrument: btc_position, eth_instrument: eth_position},

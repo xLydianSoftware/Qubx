@@ -6,7 +6,7 @@ import numpy as np
 from qubx import logger
 from qubx.core.basics import (
     ZERO_COSTS,
-    AssetBalance,
+    Balance,
     Deal,
     FundingPayment,
     Instrument,
@@ -33,7 +33,7 @@ class BasicAccountProcessor(IAccountProcessor):
     exchange: str
 
     _tcc: TransactionCostsCalculator
-    _balances: dict[str, AssetBalance]
+    _balances: dict[str, Balance]
     _health_monitor: IHealthMonitor
     _canceled_orders: set[str]
     _active_orders: dict[str, Order]
@@ -73,7 +73,7 @@ class BasicAccountProcessor(IAccountProcessor):
         # venue WS user-events push and a synthetic market-data stream).
         self._applied_funding_buckets: set[tuple[Instrument, int]] = set()
         # Initialize with base currency balance
-        self._balances[self.base_currency] = AssetBalance(
+        self._balances[self.base_currency] = Balance(
             exchange=self.exchange, currency=self.base_currency, free=initial_capital, locked=0.0, total=initial_capital
         )
         # Merge restored accounting data (commissions, r_pnl, cumulative_funding)
@@ -82,10 +82,10 @@ class BasicAccountProcessor(IAccountProcessor):
     def get_base_currency(self, exchange: str | None = None) -> str:
         return self.base_currency
 
-    def _ensure_balance(self, currency: str) -> AssetBalance:
+    def _ensure_balance(self, currency: str) -> Balance:
         """Ensure a balance exists for the given currency, create if needed."""
         if currency not in self._balances:
-            self._balances[currency] = AssetBalance(
+            self._balances[currency] = Balance(
                 exchange=self.exchange, currency=currency, free=0.0, locked=0.0, total=0.0
             )
         return self._balances[currency]
@@ -104,10 +104,10 @@ class BasicAccountProcessor(IAccountProcessor):
         _positions_value = sum([p.market_value_funds for p in self._positions.values()])
         return _cash_amount + _positions_value
 
-    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[Balance]:
         return list(self._balances.values())
 
-    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+    def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
         self._ensure_balance(currency)
         return self._balances[currency]
 
@@ -248,7 +248,7 @@ class BasicAccountProcessor(IAccountProcessor):
     def update_balance(self, currency: str, total: float, locked: float, exchange: str | None = None):
         # create new asset balance if doesn't exist, otherwise update existing
         if currency not in self._balances:
-            self._balances[currency] = AssetBalance(
+            self._balances[currency] = Balance(
                 exchange=self.exchange, currency=currency, free=total - locked, locked=locked, total=total
             )
         else:
@@ -725,7 +725,7 @@ class CompositeAccountProcessor(IAccountProcessor):
             total_capital += processor.get_total_capital(exch_name)
         return total_capital
 
-    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[Balance]:
         if exchange is not None:
             # Return balances from specific exchange as list
             exch = self._get_exchange(exchange)
@@ -737,7 +737,7 @@ class CompositeAccountProcessor(IAccountProcessor):
             all_balances.extend(processor.get_balances(exch_name))
         return all_balances
 
-    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+    def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
         exch = self._get_exchange(exchange) if exchange is not None else self._exchange_list[0]
         return self._account_processors[exch].get_balance(currency, exch)
 
