@@ -1,3 +1,5 @@
+from collections import deque
+
 import numpy as np
 
 from qubx import logger
@@ -16,6 +18,7 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
+    ReconcileDiff,
 )
 from qubx.core.exceptions import InvalidOrderTransition
 
@@ -149,6 +152,8 @@ class AccountManager:
                 return self._handle_cancel_rejected(state, event)
             case OrderUpdateRejectedEvent():
                 return self._handle_update_rejected(state, event)
+            case AccountSnapshotEvent():
+                return self._handle_snapshot(state, event)
             case _:
                 logger.warning(f"unhandled AccountMessage: {type(event)}")
                 return None
@@ -328,3 +333,113 @@ class AccountManager:
         target = order.pre_pending_status or OrderStatus.ACCEPTED
         order.pre_pending_status = None
         return state._transition_order(order.client_order_id, target, self._time.now())
+
+    def _handle_snapshot(self, state, event: AccountSnapshotEvent):
+        snapshot = event.snapshot
+        if state._last_snapshot_as_of is not None and snapshot.as_of <= state._last_snapshot_as_of:
+            return None
+        state._last_snapshot_as_of = snapshot.as_of
+
+        grace = np.timedelta64(self._cfg.snapshot_check_threshold_ms, "ms")
+        diff = ReconcileDiff(exchange=snapshot.exchange, as_of=snapshot.as_of)
+
+        if snapshot.open_orders is not None:
+            snap_by_vid = {o.venue_order_id: o for o in snapshot.open_orders if o.venue_order_id}
+            for cid, cached in list(state.active_orders.items()):
+                if cached.status.is_terminal():
+                    continue
+                vid = cached.venue_order_id
+                if vid is not None and vid in snap_by_vid:
+                    continue
+                if (snapshot.as_of - cached.time) < grace:
+                    continue
+                terminal = OrderStatus.REJECTED if cached.status == OrderStatus.SUBMITTED else OrderStatus.CANCELED
+                cached.rejected_reason = "reconcile: missing from snapshot"
+                cached.pre_pending_status = None
+                try:
+                    state._transition_order(cid, terminal, self._time.now())
+                    diff.orders_newly_terminal.append(cached)
+                except InvalidOrderTransition:
+                    logger.warning(f"reconcile: cannot terminate {cid} from {cached.status}")
+            for snap_order in snapshot.open_orders:
+                existing = (
+                    state.get_order_by_venue_id(snap_order.venue_order_id) if snap_order.venue_order_id else None
+                )
+                if existing is None:
+                    self._materialize_from_snapshot(state, snap_order, snapshot.as_of)
+                    diff.orders_materialized.append(snap_order)
+                elif existing.last_updated_at is None or snapshot.as_of > existing.last_updated_at:
+                    self._update_from_snapshot(state, existing, snap_order, snapshot.as_of)
+                    diff.orders_updated.append(existing)
+
+        if snapshot.positions is not None:
+            for snap_pos in snapshot.positions:
+                existing = state.get_position(snap_pos.instrument)
+                if existing is None or snapshot.as_of > getattr(existing, "last_updated_at", np.datetime64(0)):
+                    state._set_position(snap_pos.instrument, snap_pos)
+                    diff.positions_updated.append(snap_pos)
+
+        if snapshot.balances is not None:
+            for snap_bal in snapshot.balances:
+                existing = state.get_balance(snap_bal.currency)
+                if existing is None or snapshot.as_of > getattr(existing, "last_updated_at", np.datetime64(0)):
+                    state._update_balance(snap_bal.currency, snap_bal)
+                    diff.balances_updated.append(snap_bal)
+
+        try:
+            self._strategy.on_reconcile_complete(self._ctx, snapshot.exchange, diff)
+        except Exception:
+            logger.exception("on_reconcile_complete raised")
+        return None
+
+    def _materialize_from_snapshot(self, state, snap_order, as_of):
+        if snap_order.client_order_id.startswith("qubx-"):
+            origin = OrderOrigin.RECOVERED
+        elif snap_order.client_order_id.startswith("ext:"):
+            origin = OrderOrigin.EXTERNAL
+        else:
+            origin = OrderOrigin.EXTERNAL
+        cid = (
+            snap_order.client_order_id
+            if origin != OrderOrigin.EXTERNAL or snap_order.client_order_id.startswith("ext:")
+            else f"ext:{snap_order.venue_order_id}"
+        )
+        state._add_order(
+            Order(
+                client_order_id=cid,
+                venue_order_id=snap_order.venue_order_id,
+                origin=origin,
+                type=snap_order.type,
+                instrument=snap_order.instrument,
+                time=snap_order.time,
+                quantity=snap_order.quantity,
+                price=snap_order.price,
+                side=snap_order.side,
+                status=snap_order.status,
+                time_in_force=snap_order.time_in_force,
+                filled_quantity=snap_order.filled_quantity,
+                avg_fill_price=snap_order.avg_fill_price,
+                last_updated_at=as_of,
+            )
+        )
+
+    def _update_from_snapshot(self, state, existing, snap_order, as_of):
+        existing.status = snap_order.status
+        existing.filled_quantity = snap_order.filled_quantity
+        existing.avg_fill_price = snap_order.avg_fill_price
+        existing.price = snap_order.price
+        existing.quantity = snap_order.quantity
+        existing.last_updated_at = as_of
+
+    def _sweep_terminal_evictions(self) -> None:
+        grace = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
+        now = self._time.now()
+        for state in self._states.values():
+            if state._terminal_history.maxlen != self._cfg.terminal_order_history_size:
+                state._terminal_history = deque(
+                    state._terminal_history,
+                    maxlen=self._cfg.terminal_order_history_size,
+                )
+            for cid in list(state._pending_evict_index):
+                if (now - state._pending_evict_index[cid]) >= grace:
+                    state._evict_to_history(cid)
