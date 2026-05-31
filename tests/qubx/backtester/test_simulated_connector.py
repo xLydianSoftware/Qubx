@@ -5,7 +5,14 @@ import pytest
 
 from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.simulated_exchange import get_simulated_exchange
-from qubx.core.basics import ZERO_COSTS, CtrlChannel, ITimeProvider, OrderRequest
+from qubx.core.basics import (
+    OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
+    OPTION_FILL_AT_SIGNAL_PRICE,
+    ZERO_COSTS,
+    CtrlChannel,
+    ITimeProvider,
+    OrderRequest,
+)
 from qubx.core.connector import IConnector
 from qubx.core.events import (
     AccountSnapshotEvent,
@@ -260,3 +267,95 @@ def test_identity_and_lifecycle_stubs(setup):
     assert conn.set_instrument_leverage(instr, 5.0) is True
     assert conn.set_margin_mode(instr, "cross") is True
     assert conn.exchange_name == "BINANCE.UM"
+
+
+def test_submit_stop_order_options_forwarded_to_ome(setup):
+    # A STOP_MARKET sell placed below current bid would normally raise "would trigger
+    # immediately". With avoid_stop_order_price_validation=True the OME skips that check
+    # and registers the order. This proves submit_order forwards request.options.
+    conn, channel, exchange, instr, time = setup
+    # market is 32000/32001; place a sell stop BELOW bid (would trigger without the flag)
+    stop_price = 31500.0
+    request = OrderRequest(
+        client_id="qubx-stop-1",
+        instrument=instr,
+        quantity=0.1,
+        price=stop_price,
+        side="SELL",
+        order_type="STOP_MARKET",
+        time_in_force="gtc",
+        options={
+            OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION: True,
+            OPTION_FILL_AT_SIGNAL_PRICE: True,
+        },
+    )
+    conn.submit_order(request)
+    events = _drain(channel)
+    # The OME accepted the stop order (OPEN) — no rejection.
+    assert any(isinstance(e, OrderAcceptedEvent) for e in events), events
+
+    # Confirm the OME order carries the forwarded options.
+    open_orders = exchange.get_open_orders()
+    assert len(open_orders) == 1
+    order = next(iter(open_orders.values()))
+    assert order.options.get(OPTION_FILL_AT_SIGNAL_PRICE) is True
+    assert order.options.get(OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION) is True
+
+
+def test_stop_order_fills_at_signal_price_not_bbo(setup):
+    # Verify that fill_at_signal_price=True causes the fill to happen at the stop
+    # price rather than the bar-close BBO when the market crosses the stop level.
+    conn, channel, exchange, instr, time = setup
+    # market is 32000/32001; place a resting sell stop well above current ask so it
+    # rests in the book, then drive a bar that crosses it.
+    stop_price = 32500.0
+    request = OrderRequest(
+        client_id="qubx-stop-2",
+        instrument=instr,
+        quantity=0.1,
+        price=stop_price,
+        side="BUY",
+        order_type="STOP_MARKET",
+        time_in_force="gtc",
+        options={OPTION_FILL_AT_SIGNAL_PRICE: True},
+    )
+    conn.submit_order(request)
+    _drain(channel)  # consume the accept
+
+    # Drive the market up past the stop level; BBO ask is 33001 — well above stop.
+    conn.process_market_data(instr, time.feed(Q("2020-01-01 10:01", 33000.0, 33001.0)))
+    events = _drain(channel)
+
+    fills = [e for e in events if isinstance(e, OrderFilledEvent)]
+    assert len(fills) == 1, f"expected 1 fill event, got {events}"
+    # With fill_at_signal_price the fill must be at the stop price, not the BBO ask.
+    assert fills[0].fill.price == stop_price, f"expected fill at {stop_price}, got {fills[0].fill.price}"
+
+
+def test_update_order_preserves_options(setup):
+    # update_order cancel+recreates; the recreated order must carry the original options.
+    conn, channel, exchange, instr, time = setup
+    stop_price = 32500.0
+    request = OrderRequest(
+        client_id="qubx-stop-3",
+        instrument=instr,
+        quantity=0.1,
+        price=stop_price,
+        side="BUY",
+        order_type="STOP_MARKET",
+        time_in_force="gtc",
+        options={OPTION_FILL_AT_SIGNAL_PRICE: True},
+    )
+    conn.submit_order(request)
+    accepted = _drain(channel)[0]
+
+    new_stop_price = 32600.0
+    conn.update_order(venue_order_id=accepted.venue_order_id, price=new_stop_price)
+    _drain(channel)  # consume the updated event
+
+    open_orders = exchange.get_open_orders()
+    assert len(open_orders) == 1
+    order = next(iter(open_orders.values()))
+    assert order.price == new_stop_price
+    # The recreated order must still carry the original fill_at_signal_price flag.
+    assert order.options.get(OPTION_FILL_AT_SIGNAL_PRICE) is True

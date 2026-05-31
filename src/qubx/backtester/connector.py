@@ -57,6 +57,7 @@ class SimulatedConnector:
             price=request.price,
             client_id=request.client_id,
             time_in_force=request.time_in_force,
+            **(request.options or {}),
         )
         self._emit_from_report(report)
 
@@ -104,6 +105,7 @@ class SimulatedConnector:
             price=price if price is not None else old_order.price,
             client_id=old_order.client_id,
             time_in_force=old_order.time_in_force,
+            **(old_order.options or {}),
         )
         self.send(
             OrderUpdatedEvent(
