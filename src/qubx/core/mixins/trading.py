@@ -1,8 +1,19 @@
 from typing import Any, cast
 
 from qubx import logger
-from qubx.core.basics import Instrument, MarketType, Order, OrderRequest, OrderSide, OrderType
-from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
+from qubx.core.account_manager import AccountManager
+from qubx.core.basics import (
+    Instrument,
+    MarketType,
+    Order,
+    OrderOrigin,
+    OrderRequest,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+)
+from qubx.core.connector import IConnector
+from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound
 from qubx.core.interfaces import (
     IAccountProcessor,
     IBroker,
@@ -76,6 +87,12 @@ class TradingManager(ITradingManager):
     _client_id_store: ClientIdStore
     _exchange_to_broker: dict[str, IBroker]
 
+    # New IConnector + AccountManager path (additive, dormant until the backtester
+    # activation PR wires connectors into the context). Defaults keep the existing
+    # broker/account construction in context.py unchanged.
+    _connectors: dict[str, IConnector]
+    _account_manager: AccountManager | None
+
     def __init__(
         self,
         context: IStrategyContext,
@@ -83,6 +100,8 @@ class TradingManager(ITradingManager):
         account: IAccountProcessor,
         health_monitor: IHealthMonitor,
         strategy_name: str,
+        connectors: dict[str, IConnector] | None = None,
+        account_manager: AccountManager | None = None,
     ) -> None:
         self._context = context
         self._brokers = brokers
@@ -91,6 +110,8 @@ class TradingManager(ITradingManager):
         self._strategy_name = strategy_name
         self._client_id_store = ClientIdStore()
         self._exchange_to_broker = {broker.exchange(): broker for broker in brokers}
+        self._connectors = connectors or {}
+        self._account_manager = account_manager
 
     def trade(
         self,
@@ -101,6 +122,9 @@ class TradingManager(ITradingManager):
         client_id: str | None = None,
         **options,
     ) -> Order | None:
+        if self._has_connector(instrument.exchange) and self._account_manager is not None:
+            return self._trade_via_connector(instrument, amount, price, time_in_force, client_id, **options)
+
         size_adj = self._adjust_size(instrument, amount)
         side = self._get_side(amount)
         type = self._get_order_type(instrument, price, options)
@@ -138,6 +162,101 @@ class TradingManager(ITradingManager):
             self._account.process_order_request(request)
 
         return order
+
+    def _trade_via_connector(
+        self,
+        instrument: Instrument,
+        amount: float,
+        price: float | None,
+        time_in_force: str,
+        client_id: str | None,
+        **options,
+    ) -> Order:
+        size_adj = self._adjust_size(instrument, amount)
+        side = self._get_side(amount)
+        type_ = self._get_order_type(instrument, price, options)
+        price = self._adjust_price(instrument, price, amount)
+        base_cid = client_id or self._client_id_store.generate_id(self._context, instrument.symbol)
+        connector = self._get_connector(instrument.exchange)
+        cid = connector.make_client_id(base_cid)
+
+        order = Order(
+            client_order_id=cid,
+            venue_order_id=None,
+            origin=OrderOrigin.FRAMEWORK,
+            type=cast(OrderType, type_.upper()),
+            instrument=instrument,
+            time=self._context.time(),
+            quantity=size_adj,
+            price=price or 0.0,
+            side=side,
+            status=OrderStatus.SUBMITTED,
+            time_in_force=time_in_force,
+            reduce_only=options.get("reduce_only", False),
+            post_only=options.get("post_only", False),
+            options=options,
+        )
+
+        if self._health_monitor:
+            self._health_monitor.record_order_submit_request(
+                exchange=instrument.exchange,
+                client_id=cid,
+                event_time=self._context.time(),
+            )
+
+        request = OrderRequest(
+            client_id=cid,
+            instrument=instrument,
+            quantity=size_adj,
+            price=price,
+            order_type=cast(OrderType, type_.upper()),
+            side=side,
+            time_in_force=time_in_force,
+            options=options,
+        )
+
+        # A synchronous raise from submit_order means no add_order call, so the
+        # AccountManager cache never holds an order the venue rejected outright.
+        connector.submit_order(request)
+        assert self._account_manager is not None
+        self._account_manager.add_order(connector.exchange_name, order)
+        return order
+
+    def cancel(self, order_or_cid) -> None:
+        assert self._account_manager is not None
+        cid = order_or_cid.client_order_id if hasattr(order_or_cid, "client_order_id") else order_or_cid
+        order = self._account_manager.get_order(cid)
+        if order is None:
+            raise OrderNotFound(cid)
+        # Idempotent: cancelling an already-settled or in-flight-cancel order is a no-op.
+        if order.status.is_terminal() or order.status is OrderStatus.PENDING_CANCEL:
+            return
+        exchange = order.instrument.exchange
+        self._account_manager.transition_order(exchange, cid, OrderStatus.PENDING_CANCEL)
+        self._get_connector(exchange).cancel_order(
+            client_order_id=order.client_order_id,
+            venue_order_id=order.venue_order_id,
+        )
+
+    def update(self, order_or_cid, *, price: float | None = None, quantity: float | None = None) -> None:
+        assert self._account_manager is not None
+        cid = order_or_cid.client_order_id if hasattr(order_or_cid, "client_order_id") else order_or_cid
+        order = self._account_manager.get_order(cid)
+        if order is None:
+            raise OrderNotFound(cid)
+        # Unlike cancel, updating a settled order is meaningful misuse, not a no-op.
+        if order.status.is_terminal():
+            raise OrderAlreadyTerminal(cid, order.status)
+        if order.status is OrderStatus.PENDING_UPDATE:
+            return
+        exchange = order.instrument.exchange
+        self._account_manager.transition_order(exchange, cid, OrderStatus.PENDING_UPDATE)
+        self._get_connector(exchange).update_order(
+            client_order_id=order.client_order_id,
+            venue_order_id=order.venue_order_id,
+            price=price,
+            quantity=quantity,
+        )
 
     def trade_async(
         self,
@@ -604,3 +723,15 @@ class TradingManager(ITradingManager):
         if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_broker:
             return self._exchange_to_broker[EXCHANGE_MAPPINGS[exchange]]
         raise ValueError(f"Broker for exchange {exchange} not found")
+
+    def _has_connector(self, exchange: str) -> bool:
+        return exchange in self._connectors or (
+            exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._connectors
+        )
+
+    def _get_connector(self, exchange: str) -> IConnector:
+        if exchange in self._connectors:
+            return self._connectors[exchange]
+        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._connectors:
+            return self._connectors[EXCHANGE_MAPPINGS[exchange]]
+        raise ValueError(f"Connector for exchange {exchange} not found")
