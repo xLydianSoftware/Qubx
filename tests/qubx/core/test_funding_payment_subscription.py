@@ -177,11 +177,13 @@ class TestFundingPaymentSubscription:
     # -----------------------------------------------------------------------
 
     def test_processing_manager_handle_funding_payment(self, mock_instrument, sample_funding_payment):
-        """ProcessingManager._handle_funding_payment builds correct MarketEvent."""
+        """ProcessingManager._handle_funding_payment books funding via AM and builds the MarketEvent."""
+        from qubx.core.events import FundingPaymentEvent
+
         processor = Mock()
         processor._time_provider = Mock()
         processor._time_provider.time.return_value = pd.Timestamp("2025-01-08 00:00:00").asm8
-        processor._account = Mock()
+        processor._account_manager = Mock()
 
         # - mock the mangled private helper that determines trigger status
         processor._ProcessingManager__update_base_data = Mock(return_value=True)
@@ -197,8 +199,12 @@ class TestFundingPaymentSubscription:
         assert result.data == sample_funding_payment
         assert result.is_trigger is True
 
-        # - account must receive the funding payment before the market event is built
-        processor._account.process_funding_payment.assert_called_once_with(mock_instrument, sample_funding_payment)
+        # - the account state machine books the funding payment via a typed event
+        processor._account_manager.apply.assert_called_once()
+        applied = processor._account_manager.apply.call_args[0][0]
+        assert isinstance(applied, FundingPaymentEvent)
+        assert applied.instrument == mock_instrument
+        assert applied.payment == sample_funding_payment
 
         # - base-data update must be called with the right args
         processor._ProcessingManager__update_base_data.assert_called_once_with(

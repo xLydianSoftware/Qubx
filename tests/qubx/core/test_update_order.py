@@ -3,21 +3,27 @@ Tests for update_order functionality across the trading stack.
 
 This module tests the update_order implementation in:
 - CcxtBroker (with mocked CCXT exchange)
-- TradingManager
-- StrategyContext delegation
-- SimulatedBroker
+- TradingManager (IConnector + AccountManager path)
+- SimulatedConnector (cancel+recreate with a stable client_order_id)
 """
 
 from unittest.mock import Mock, patch
 
+import numpy as np
 import pytest
 
-from qubx.backtester.broker import SimulatedBroker
+from qubx.backtester.connector import SimulatedConnector
 from qubx.connectors.ccxt.broker import CcxtBroker
-from qubx.core.basics import MarketType, Order, OrderOrigin, OrderRequest, dt_64
-from qubx.core.exceptions import BadRequest, OrderNotFound
+from qubx.core.basics import CtrlChannel, MarketType, Order, OrderOrigin, OrderRequest, OrderStatus, dt_64
+from qubx.core.events import OrderUpdatedEvent
+from qubx.core.exceptions import BadRequest, OrderAlreadyTerminal, OrderNotFound
 from qubx.core.mixins.trading import TradingManager
 from qubx.health.dummy import DummyHealthMonitor
+
+
+class _FixedTime:
+    def time(self):
+        return np.datetime64("2026-05-28T00:00:00", "ns")
 
 
 def _create_mock_account_manager():
@@ -311,88 +317,149 @@ class TestCcxtBrokerUpdateOrder:
 
 
 class TestTradingManagerUpdateOrder:
-    """Test TradingManager update_order functionality."""
+    """TradingManager.update_order on the IConnector + AccountManager path."""
 
-    def test_update_order_delegates_to_broker(self, mock_limit_order, mock_instrument):
-        """Test TradingManager delegates update_order to the appropriate broker."""
-        import numpy as np
+    def _setup(self, order):
+        connector = Mock()
+        connector.exchange_name = "BINANCE.UM"
+
         from qubx.core.basics import Position
 
-        mock_broker = Mock()
-        updated_order = mock_limit_order
-        updated_order.price = 51000.0
-        updated_order.quantity = 2.0
-        mock_broker.update_order.return_value = updated_order
-        mock_broker.exchange.return_value = "BINANCE.UM"
+        account_manager = Mock()
+        account_manager.find_order_by_id.return_value = order
+        account_manager.find_order_by_client_id.return_value = order
+        account_manager.get_position = lambda instrument: Position(instrument=instrument)
 
-        mock_account = Mock()
-        mock_account.get_orders.return_value = {"test_order_123": mock_limit_order}
-        mock_account.find_order_by_id.return_value = mock_limit_order
-
-        # Mock get_position to return proper Position object
-        def get_position_mock(instrument):
-            return Position(instrument=instrument)
-        mock_account.get_position = Mock(side_effect=get_position_mock)
-
-        # Create mock context with quote method
         mock_context = Mock()
+        mock_context.time.return_value = np.datetime64("2026-05-28", "ns")
         mock_quote = Mock()
         mock_quote.mid_price = Mock(return_value=50000.0)
         mock_context.quote = Mock(return_value=mock_quote)
 
-        trading_manager = TradingManager(
-            context=mock_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy",
-            health_monitor=DummyHealthMonitor()
+        tm = TradingManager(
+            context=mock_context,
+            connectors={"BINANCE.UM": connector},
+            account_manager=account_manager,
+            strategy_name="test_strategy",
+            health_monitor=DummyHealthMonitor(),
         )
-        trading_manager._exchange_to_broker = {"BINANCE.UM": mock_broker}
+        return tm, account_manager, connector
 
-        result = trading_manager.update_order(order_id="test_order_123", price=51000.0, amount=2.0, exchange="BINANCE.UM")
-
-        # Verify delegation
-        mock_broker.update_order.assert_called_once_with(order_id="test_order_123", client_order_id=None, price=51000.0, amount=2.0)
-        mock_account.process_order.assert_called_once_with(updated_order)
-        assert result == updated_order
-
-
-class TestSimulatedBrokerUpdateOrder:
-    """Test SimulatedBroker update_order functionality."""
-
-    def test_update_order_cancel_and_recreate(self, mock_instrument, mock_limit_order):
-        """Test SimulatedBroker uses cancel+recreate strategy."""
-        mock_account = Mock()
-        mock_account.get_orders.return_value = {"test_order_123": mock_limit_order}
-
-        new_order = Order(
+    def test_update_order_transitions_then_routes_to_connector(self, mock_instrument):
+        """update_order marks the order PENDING_UPDATE in AM, then forwards to the connector."""
+        order = Order(
             client_order_id="qubx_BTCUSDT_12345",
-            venue_order_id="new_order_789",
+            venue_order_id="test_order_123",
             origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=mock_instrument,
             time=dt_64("2024-01-01T10:00:00"),
-            quantity=2.0,  # Updated
-            price=51000.0,  # Updated
+            quantity=1.5,
+            price=50000.0,
             side="BUY",
-            status="OPEN",
+            status=OrderStatus.ACCEPTED,
             time_in_force="gtc",
         )
+        tm, account_manager, connector = self._setup(order)
 
-        broker = SimulatedBroker(Mock(), mock_account, Mock())
-        broker.cancel_order = Mock()
-        broker.send_order = Mock(return_value=new_order)
+        tm.update_order(order_id="test_order_123", price=51000.0, amount=2.0, exchange="BINANCE.UM")
 
-        result = broker.update_order(order_id="test_order_123", price=51000.0, amount=2.0)
+        account_manager.transition_order.assert_called_once_with(
+            "BINANCE.UM", order.client_order_id, OrderStatus.PENDING_UPDATE
+        )
+        connector.update_order.assert_called_once_with(
+            client_order_id=order.client_order_id,
+            venue_order_id=order.venue_order_id,
+            price=51000.0,
+            quantity=2.0,
+        )
 
-        # Verify cancel+recreate strategy
-        broker.cancel_order.assert_called_once_with(order_id="test_order_123")
-        broker.send_order.assert_called_once()
-        assert result == new_order
+    def test_update_order_terminal_raises(self, mock_instrument):
+        """Updating a settled order is meaningful misuse → OrderAlreadyTerminal."""
+        filled = Order(
+            client_order_id="qubx_BTCUSDT_filled",
+            venue_order_id="V1",
+            origin=OrderOrigin.FRAMEWORK,
+            type="LIMIT",
+            instrument=mock_instrument,
+            time=dt_64("2024-01-01T10:00:00"),
+            quantity=1.0,
+            price=50000.0,
+            side="BUY",
+            status=OrderStatus.FILLED,
+            time_in_force="gtc",
+        )
+        tm, account_manager, connector = self._setup(filled)
 
-    def test_update_order_not_found_backtester(self):
-        """Test SimulatedBroker raises OrderNotFound when order doesn't exist."""
-        mock_account = Mock()
-        mock_account.get_orders.return_value = {}  # No orders found
+        with pytest.raises(OrderAlreadyTerminal):
+            tm.update_order(client_order_id="qubx_BTCUSDT_filled", price=51000.0, amount=2.0)
+        connector.update_order.assert_not_called()
 
-        broker = SimulatedBroker(Mock(), mock_account, Mock())
 
-        with pytest.raises(OrderNotFound):
-            broker.update_order(order_id="nonexistent_order", price=50000.0, amount=1.0)
+def _ome_with_resting_order(channel: CtrlChannel, cid: str) -> SimulatedConnector:
+    """Submit a resting limit BUY through the OME so an order exists to update."""
+    from qubx.backtester.simulated_exchange import get_simulated_exchange
+    from qubx.core.lookups import lookup
+    from qubx.core.series import Quote
+
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert instrument is not None
+    from qubx.core.basics import ZERO_COSTS
+
+    exchange = get_simulated_exchange("BINANCE.UM", _FixedTime(), ZERO_COSTS)
+    conn = SimulatedConnector(channel=channel, exchange=exchange, time_provider=_FixedTime())
+    # prime the book (process_market_data is a generator — must be drained), then rest a
+    # BUY limit far below the market so it stays OPEN.
+    for _ in exchange.process_market_data(instrument, Quote(np.datetime64("now", "ns"), 50_000.0, 50_010.0, 0.0, 0.0)):
+        pass
+    conn.submit_order(
+        OrderRequest(
+            instrument=instrument,
+            quantity=1.0,
+            price=40_000.0,
+            order_type="LIMIT",
+            side="BUY",
+            client_id=cid,
+        )
+    )
+    return conn, instrument
+
+
+class TestSimulatedConnectorUpdateOrder:
+    """SimulatedConnector.update_order: cancel+recreate keeping a stable client_order_id."""
+
+    def test_update_order_emits_single_updated_event_with_stable_cid(self):
+        channel = CtrlChannel("sim")
+        channel.start()
+        conn, _ = _ome_with_resting_order(channel, cid="qubx-1")
+
+        # drain the OrderAcceptedEvent emitted by the initial submit
+        accepted = channel.receive(timeout=1)
+        assert accepted.client_order_id == "qubx-1"
+
+        conn.update_order(
+            client_order_id="qubx-1", venue_order_id=accepted.venue_order_id, price=41_000.0, quantity=2.0
+        )
+
+        msg = channel.receive(timeout=1)
+        assert isinstance(msg, OrderUpdatedEvent)
+        assert msg.client_order_id == "qubx-1"  # cid stable across cancel+recreate
+        assert msg.new_price == 41_000.0
+        assert msg.new_quantity == 2.0
+
+    def test_update_order_not_found_emits_rejected(self):
+        from qubx.core.events import OrderUpdateRejectedEvent
+
+        channel = CtrlChannel("sim")
+        channel.start()
+        from qubx.backtester.simulated_exchange import get_simulated_exchange
+        from qubx.core.basics import ZERO_COSTS
+
+        exchange = get_simulated_exchange("BINANCE.UM", _FixedTime(), ZERO_COSTS)
+        conn = SimulatedConnector(channel=channel, exchange=exchange, time_provider=_FixedTime())
+
+        conn.update_order(client_order_id="nonexistent", price=50000.0, quantity=1.0)
+
+        msg = channel.receive(timeout=1)
+        assert isinstance(msg, OrderUpdateRejectedEvent)
+        assert msg.client_order_id == "nonexistent"

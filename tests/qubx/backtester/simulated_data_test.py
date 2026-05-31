@@ -582,14 +582,14 @@ class TestSimulatedDataProvider:
     ) -> SimulatedDataProvider:
         """
         Create SimulatedDataProvider with real data_source and time_provider,
-        mock the rest (channel, scheduler, account) — not needed for get_ohlc().
+        mock the rest (channel, simulated exchange) — not needed for get_ohlc().
         """
         time_provider = SimulatedTimeProvider(np.datetime64(sim_time, "ns"))
         return SimulatedDataProvider(
             exchange_id=exchange_id,
             channel=MagicMock(),
             time_provider=time_provider,
-            account=MagicMock(),
+            exchange=MagicMock(),
             data_source=data_iter,
         )
 

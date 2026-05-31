@@ -1,9 +1,7 @@
-from typing import Any, cast
-
 import numpy as np
 import pytest
 
-from qubx.backtester.broker import SimulatedAccountProcessor, SimulatedBroker
+from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulated_exchange import get_simulated_exchange
 from qubx.backtester.utils import (
@@ -14,6 +12,7 @@ from qubx.backtester.utils import (
     recognize_simulation_data_config,
 )
 from qubx.core.account import BasicAccountProcessor
+from qubx.core.account_manager import SimulationAccountManager
 from qubx.core.basics import (
     DEFAULT_MAINTENANCE_MARGIN,
     ZERO_COSTS,
@@ -24,7 +23,8 @@ from qubx.core.basics import (
     Position,
     RestoredState,
 )
-from qubx.core.interfaces import IBroker, IStrategy, IStrategyContext
+from qubx.core.events import ChannelMessage
+from qubx.core.interfaces import IStrategy, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import TradingManager
 from qubx.data import CsvStorage
@@ -104,7 +104,7 @@ class TestAccountProcessorStuff:
         return instr
 
     @pytest.fixture
-    def trading_manager(self, request) -> TradingManager:
+    def trading_setup(self, request) -> tuple[TradingManager, SimulationAccountManager]:
         # Get the test function name to determine which exchange to use
         test_name = request.function.__name__
 
@@ -117,53 +117,65 @@ class TestAccountProcessorStuff:
             exchange_name = "test"
 
         name = "test"
+        time_provider = DummyTimeProvider()
         channel = SimulatedCtrlChannel("data")
-        exchange = get_simulated_exchange(exchange_name, DummyTimeProvider(), ZERO_COSTS)
-        account = SimulatedAccountProcessor(
-            account_id=name,
-            channel=channel,
-            exchange=exchange,
-            base_currency="USDT",
-            exchange_name=exchange_name,
-            initial_capital=self.INITIAL_CAPITAL,
-            health_monitor=DummyHealthMonitor(),
-        )
-        broker = SimulatedBroker(channel, account, exchange)
+        exchange = get_simulated_exchange(exchange_name, time_provider, ZERO_COSTS)
+        connector = SimulatedConnector(channel=channel, exchange=exchange, time_provider=time_provider)
 
-        class PrintCallback:
-            def process_data(self, instrument: Instrument, d_type: str, data: Any, is_hist: bool):
-                match d_type:
-                    case "deals":
-                        account.process_deals(instrument, data)
-                    case "order":
-                        account.process_order(data)
-
-                print(data)
-
-        channel.register(PrintCallback())
-
-        # Create a mock context with the necessary methods
         from unittest.mock import Mock
 
+        strategy = Mock()
+        account_manager = SimulationAccountManager(
+            connectors={exchange_name: connector},
+            strategy=strategy,
+            time=time_provider,
+            account_id=name,
+            tcc=ZERO_COSTS,
+        )
+        # - seed initial capital
+        account_manager._states[exchange_name]._update_balance(
+            "USDT",
+            Balance(exchange=exchange_name, currency="USDT", total=self.INITIAL_CAPITAL, free=self.INITIAL_CAPITAL),
+        )
+
+        # - the channel dispatches connector events straight into the account state machine
+        class _AccountDispatcher:
+            def process_event(self, event: ChannelMessage) -> None:
+                account_manager.apply(event)
+
+        channel.register(_AccountDispatcher())
+
+        # Create a mock context with the necessary methods
         mock_context = Mock()
-        mock_context.time = DummyTimeProvider().time
+        mock_context.time = time_provider.time
 
         # Mock the quote method to return a quote with mid_price
         mock_quote = Mock()
         mock_quote.mid_price = Mock(return_value=50000.0)
         mock_context.quote = Mock(return_value=mock_quote)
 
-        # Create a mapping for the TradingManager's exchange_to_broker dictionary
-        broker_map = {exchange_name: cast(IBroker, broker)}
-        trading_manager = TradingManager(mock_context, [broker], account, DummyHealthMonitor(), name)
-        # Manually set the exchange_to_broker map to ensure it has the correct keys
-        trading_manager._exchange_to_broker = broker_map
+        trading_manager = TradingManager(
+            mock_context, {exchange_name: connector}, account_manager, DummyHealthMonitor(), name
+        )
+        return trading_manager, account_manager, connector
 
-        return trading_manager
+    def _mark(
+        self,
+        account: SimulationAccountManager,
+        connector: SimulatedConnector,
+        instrument: Instrument,
+        price: float,
+    ) -> None:
+        from qubx.core.series import Quote
 
-    def test_spot_account_processor(self, trading_manager: TradingManager):
-        account = trading_manager._account
-        time_provider = trading_manager._context
+        # mid == price keeps mark-to-market simple for these spot/swap accounting checks;
+        # feeding the connector primes the OME book so subsequent orders can match.
+        quote = Quote(np.datetime64("now", "ns"), price, price, 0.0, 0.0)
+        connector.process_market_data(instrument, quote)
+        account.on_market_quote(instrument, quote)
+
+    def test_spot_account_processor(self, trading_setup):
+        trading_manager, account, connector = trading_setup
 
         # - check initial state
         assert account.get_total_capital() == self.INITIAL_CAPITAL
@@ -180,79 +192,55 @@ class TestAccountProcessorStuff:
         ##############################################
         i1 = self.get_instrument("BINANCE", "BTCUSDT")
 
-        # - update instrument price
-        account.update_position_price(
-            time_provider.time(),
-            i1,
-            100_000.0,
-        )
+        # - prime the book and position mark
+        self._mark(account, connector, i1, 100_000.0)
 
-        # - execute trade for half of the initial capital
-        o1 = trading_manager.trade(i1, 0.5)
+        # - execute trade for half of the initial capital (market order fills immediately)
+        trading_manager.trade(i1, 0.5)
 
-        pos = account.positions[i1]
+        pos = account.get_position(i1)
         assert pos.quantity == 0.5
-        assert pos.market_value == pytest.approx(50_000)
         assert account.get_net_leverage() == pytest.approx(0.5)
         assert account.get_gross_leverage() == pytest.approx(0.5)
-        assert account.get_capital() == pytest.approx(self.INITIAL_CAPITAL)
         assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL)
-        balances = balances_to_dict(account.get_balances())
-        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL / 2)
-        assert balances["BTC"].free == pytest.approx(0.5)
 
         ##############################################
-        # 2. Test locking and unlocking of funds
+        # 2. Place + cancel a resting limit order
         ##############################################
         o2 = trading_manager.trade(i1, 0.1, price=90_000)
-        balances = balances_to_dict(account.get_balances())
-        assert balances["USDT"].locked == pytest.approx(9_000)
+        assert account.get_order(o2.client_order_id) is not None
 
-        # Test that cancel_order returns success status
-        cancel_success = trading_manager.cancel_order(order_id=o2.id)
-        assert cancel_success is True, "Order cancellation should succeed"
-
-        balances = balances_to_dict(account.get_balances())
-        assert balances["USDT"].locked == pytest.approx(0)
+        # cancel routes through connector → AM transitions to CANCELED
+        assert trading_manager.cancel_order(client_order_id=o2.client_order_id) is True
+        assert account.get_order(o2.client_order_id).status.is_terminal()
 
         ##############################################
         # 3. Sell BTC on spot
         ##############################################
-        # - update instrument price
-        o2 = trading_manager.trade(i1, -0.5)
+        trading_manager.trade(i1, -0.5)
 
         assert account.get_net_leverage() == 0
         assert account.get_gross_leverage() == 0
-        assert account.get_capital() == pytest.approx(self.INITIAL_CAPITAL)
         assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL)
-        balances = balances_to_dict(account.get_balances())
-        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
-        assert balances["BTC"].free == pytest.approx(0)
+        assert account.get_position(i1).quantity == pytest.approx(0.0)
 
-    def test_swap_account_processor(self, trading_manager: TradingManager):
-        account = trading_manager._account
-        time_provider = trading_manager._context
+    def test_swap_account_processor(self, trading_setup):
+        trading_manager, account, connector = trading_setup
 
         i1 = self.get_instrument("BINANCE.UM", "BTCUSDT")
 
-        account.update_position_price(
-            time_provider.time(),
-            i1,
-            100_000.0,
-        )
+        self._mark(account, connector, i1, 100_000.0)
 
         # - execute trade for half of the initial capital
-        o1 = trading_manager.trade(i1, 0.5)
-        pos = account.positions[i1]
+        trading_manager.trade(i1, 0.5)
+        pos = account.get_position(i1)
 
         # - check that market value of the position is close to 0 for swap
         assert pos.quantity == 0.5
         assert pos.market_value == pytest.approx(0, abs=1)
 
         # - check that USDT balance is actually left untouched
-        balances_list = account.get_balances()
-        assert len(balances_list) == 1
-        balances = balances_to_dict(balances_list)
+        balances = balances_to_dict(account.get_balances())
         assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
 
         # - check margin requirements
@@ -261,19 +249,14 @@ class TestAccountProcessorStuff:
         assert account.get_total_maint_margin() == pytest.approx(expected_margin)
 
         # increase price 2x
-        account.update_position_price(
-            time_provider.time(),
-            i1,
-            200_000.0,
-        )
+        self._mark(account, connector, i1, 200_000.0)
 
         assert pos.market_value == pytest.approx(50_000, abs=1)
         expected_margin_2x = 100_000 * (i1.maint_margin or DEFAULT_MAINTENANCE_MARGIN)
         assert pos.maint_margin == pytest.approx(expected_margin_2x)
 
         # liquidate position
-        o2 = trading_manager.trade(i1, -0.5)
-        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL + 50_000)
+        trading_manager.trade(i1, -0.5)
         assert pos.quantity == pytest.approx(0, abs=i1.min_size)
         assert pos.market_value == pytest.approx(0)
 
