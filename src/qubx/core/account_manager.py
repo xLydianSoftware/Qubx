@@ -255,6 +255,22 @@ class AccountManager:
             return self._states.get(event.snapshot.exchange)
         if event.instrument is not None:
             return self._states.get(event.instrument.exchange)
+        # instrument is None — try to route by order identifiers so that reject
+        # events emitted without an instrument (e.g. SimulatedConnector on
+        # update-of-missing-order) still reach the correct handler.
+        cid = getattr(event, "client_order_id", None)
+        if cid is not None:
+            for state in self._states.values():
+                if state.get_order(cid) is not None:
+                    return state
+        venue_id = getattr(event, "venue_order_id", None)
+        if venue_id is not None:
+            for state in self._states.values():
+                if state.get_order_by_venue_id(venue_id) is not None:
+                    return state
+        if len(self._states) == 1:
+            return next(iter(self._states.values()))
+        logger.debug(f"cannot route {type(event).__name__} with no instrument/identifiers — dropped")
         return None
 
     def _resolve_or_materialize(self, state, event):
@@ -626,13 +642,16 @@ class AccountManager:
         return pos
 
     def _apply_deal_to_balances(self, state, instrument, deal, realized_pnl: float, fee: float) -> None:
-        """Propagate a fill's cash impact to balances (mirrors old process_deals).
+        """Propagate a fill's cash impact to balances.
 
-        Futures/swap: realized PnL settles to the settle-currency balance and the
-        fee is debited from it. Spot: the quote currency is debited by the trade
-        cost (notional + fee) and the base asset is credited by the filled amount.
+        Futures/swap: credits realized PnL and debits the fee to the
+        settle-currency balance. Spot: debits the quote currency by the trade
+        cost (notional + fee) and credits the base asset by the filled amount.
         """
         if instrument.is_futures():
+            # TODO(account-mgmt): fee is folded into settle here (correct when
+            # settle == portfolio base currency); revisit for instruments whose
+            # settle currency differs from the portfolio base currency.
             self._adjust_balance(state, instrument.settle, realized_pnl - fee)
         else:
             self._adjust_balance(state, instrument.quote, -(deal.amount * deal.price + fee))
@@ -715,6 +734,11 @@ class AccountManager:
             if pos.instrument.is_futures():
                 total += pos.unrealized_pnl()
             else:
+                # TODO(account-mgmt): no-double-count for spot relies on
+                # _base_currency_for selecting the quote (max-total) balance so the
+                # base-asset cash is excluded from bal.total; make base-currency
+                # selection explicit if a base-asset balance could exceed the quote
+                # balance (e.g. ETH-heavy portfolio with no USDT).
                 total += float(np.nan_to_num(pos.market_value_funds))
         return total
 

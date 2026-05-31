@@ -477,3 +477,39 @@ def test_late_fill_on_evicted_order_does_not_raise():
     assert "ext:cid-1" not in state.active_orders
     # the evicted order remains FILLED and untouched
     assert state.get_order("cid-1").status is OrderStatus.FILLED
+
+
+def test_rejected_with_no_instrument_routes_via_client_order_id():
+    # SimulatedConnector emits OrderRejectedEvent with instrument=None when the
+    # order is not found in the OME. Verify the AM still routes the event and
+    # transitions the order to REJECTED (not short-circuits to None).
+    am = _am()
+    # Note: instrument=None here, so the order is seeded without one.
+    _add_order(am._states["binance"], cid="cid-no-inst", status=OrderStatus.SUBMITTED, instrument=None)
+    result = am.apply(
+        OrderRejectedEvent(instrument=None, client_order_id="cid-no-inst", reason="order not found in OME")
+    )
+    o = am._states["binance"].get_order("cid-no-inst")
+    assert o is not None, "order must be retrievable after reject"
+    assert o.status is OrderStatus.REJECTED
+    assert o.rejected_reason == "order not found in OME"
+    # apply() must return the real order, not None
+    assert result is not None
+    assert result.client_order_id == "cid-no-inst"
+
+
+def test_cancel_rejected_with_no_instrument_reverts_pending_cancel():
+    # OrderCancelRejectedEvent with instrument=None must still revert the order
+    # from PENDING_CANCEL back to its pre_pending_status via the state lookup.
+    am = _am()
+    _add_order(am._states["binance"], cid="cid-pc", status=OrderStatus.ACCEPTED, instrument=None)
+    am.transition_order("binance", "cid-pc", OrderStatus.PENDING_CANCEL)
+    result = am.apply(
+        OrderCancelRejectedEvent(instrument=None, client_order_id="cid-pc", reason="too late")
+    )
+    o = am._states["binance"].get_order("cid-pc")
+    assert o is not None
+    assert o.status is OrderStatus.ACCEPTED
+    assert o.pre_pending_status is None
+    assert result is not None
+    assert result.client_order_id == "cid-pc"
