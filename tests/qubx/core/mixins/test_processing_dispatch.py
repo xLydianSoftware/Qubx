@@ -29,12 +29,11 @@ def _pm():
     return pm
 
 
-def test_quote_event_calls_on_market_quote_then_strategy():
+def test_quote_event_marks_to_market_only():
     pm = _pm()
     pm.process_event(QuoteEvent(instrument=None, quote=MagicMock()))
     pm._account_manager.apply.assert_not_called()
     pm._account_manager.on_market_quote.assert_called_once()
-    pm._strategy.on_quote.assert_called_once()
 
 
 def test_filled_event_routes_through_am_then_strategy():

@@ -40,7 +40,6 @@ from qubx.core.events import (
     FundingPaymentEvent,
     MarketDataMessage,
     OrderAcceptedEvent,
-    OrderBookEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
     OrderExpiredEvent,
@@ -51,7 +50,6 @@ from qubx.core.events import (
     OrderUpdateRejectedEvent,
     PositionUpdateEvent,
     QuoteEvent,
-    TradeEvent,
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
@@ -402,14 +400,13 @@ class ProcessingManager(IProcessingManager):
         logger.warning(f"unknown event type: {type(event)}")
 
     def _dispatch_market_data(self, event: MarketDataMessage) -> None:
-        if isinstance(event, QuoteEvent):
-            if self._account_manager is not None:
-                self._account_manager.on_market_quote(event.instrument, event.quote)
-            self._safe_call(self._strategy.on_quote, event.instrument, event.quote)
-        elif isinstance(event, TradeEvent):
-            self._safe_call(self._strategy.on_trade, event.instrument, event.trade)
-        elif isinstance(event, OrderBookEvent):
-            self._safe_call(self._strategy.on_orderbook, event.instrument, event.orderbook)
+        # Market data through the typed path does ONLY AM mark-to-market. The
+        # strategy's market-data delivery stays on the existing on_market_data ->
+        # signals path; the redesign does not change market-data dispatch. IStrategy
+        # has no on_quote/on_trade/on_orderbook (only on_market_data(MarketEvent)),
+        # and re-routing here would bypass signal processing.
+        if isinstance(event, QuoteEvent) and self._account_manager is not None:
+            self._account_manager.on_market_quote(event.instrument, event.quote)
 
     def _dispatch_account(self, event: AccountMessage) -> None:
         assert self._account_manager is not None
