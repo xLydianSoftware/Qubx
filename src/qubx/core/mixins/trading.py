@@ -232,6 +232,7 @@ class TradingManager(ITradingManager):
         if order.status.is_terminal() or order.status is OrderStatus.PENDING_CANCEL:
             return
         exchange = order.instrument.exchange
+        # TODO(account-mgmt): exchange-key convention — add_order keys AM state by connector.exchange_name; transition_order looks up self._states[exchange] unmapped. Reconcile the key convention (EXCHANGE_MAPPINGS) when the activation PR wires connectors.
         self._account_manager.transition_order(exchange, cid, OrderStatus.PENDING_CANCEL)
         self._get_connector(exchange).cancel_order(
             client_order_id=order.client_order_id,
@@ -250,6 +251,7 @@ class TradingManager(ITradingManager):
         if order.status is OrderStatus.PENDING_UPDATE:
             return
         exchange = order.instrument.exchange
+        # TODO(account-mgmt): exchange-key convention — add_order keys AM state by connector.exchange_name; transition_order looks up self._states[exchange] unmapped. Reconcile the key convention (EXCHANGE_MAPPINGS) when the activation PR wires connectors.
         self._account_manager.transition_order(exchange, cid, OrderStatus.PENDING_UPDATE)
         self._get_connector(exchange).update_order(
             client_order_id=order.client_order_id,

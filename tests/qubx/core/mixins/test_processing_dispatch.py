@@ -4,8 +4,10 @@ import numpy as np
 
 from qubx.core.basics import Deal
 from qubx.core.events import (
+    BalanceUpdateEvent,
     OrderAcceptedEvent,
     OrderFilledEvent,
+    PositionUpdateEvent,
     QuoteEvent,
 )
 
@@ -74,3 +76,34 @@ def test_callback_exception_does_not_halt_dispatch():
         )
     )
     pm._metrics.inc.assert_called()
+
+
+def test_position_update_event_passes_payload_not_none():
+    """PositionUpdateEvent must deliver event.position to on_position_update, not None.
+
+    AM.apply has no case for PositionUpdateEvent (returns None). The fix passes
+    event.position directly so the strategy receives the real payload.
+    """
+    pm = _pm()
+    # AM.apply returns None — the dormant code path before the fix
+    pm._account_manager.apply.return_value = None
+
+    sentinel_position = MagicMock(name="sentinel_position")
+    evt = PositionUpdateEvent(instrument=MagicMock(), position=sentinel_position)
+
+    pm.process_event(evt)
+
+    pm._strategy.on_position_update.assert_called_once_with(pm._context, sentinel_position)
+
+
+def test_balance_update_event_passes_payload_not_none():
+    """BalanceUpdateEvent must deliver event.balance to on_balance_update, not None."""
+    pm = _pm()
+    pm._account_manager.apply.return_value = None
+
+    sentinel_balance = MagicMock(name="sentinel_balance")
+    evt = BalanceUpdateEvent(instrument=None, balance=sentinel_balance)
+
+    pm.process_event(evt)
+
+    pm._strategy.on_balance_update.assert_called_once_with(pm._context, sentinel_balance)

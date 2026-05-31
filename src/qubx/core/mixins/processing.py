@@ -456,9 +456,14 @@ class ProcessingManager(IProcessingManager):
             case OrderUpdateRejectedEvent():
                 self._safe_call(self._strategy.on_order_update_rejected, updated, event.reason)
             case PositionUpdateEvent():
-                self._safe_call(self._strategy.on_position_update, updated)
+                # Pass the event payload directly — AM.apply has no PositionUpdate/Balance
+                # case yet (returns None). TODO(account-mgmt): when live connectors emit
+                # these (CCXT/HPL/Lighter PRs), add AM.apply cases that update AccountState
+                # (_set_position/_update_balance) + route them in _get_state_for_event
+                # (PositionUpdate by position.instrument, BalanceUpdate by balance.exchange).
+                self._safe_call(self._strategy.on_position_update, event.position)
             case BalanceUpdateEvent():
-                self._safe_call(self._strategy.on_balance_update, updated)
+                self._safe_call(self._strategy.on_balance_update, event.balance)
             case FundingPaymentEvent():
                 self._safe_call(self._strategy.on_funding_payment, event.payment)
             case AccountSnapshotEvent():
@@ -476,6 +481,7 @@ class ProcessingManager(IProcessingManager):
             try:
                 quote = self._market_data.quote(instrument)
                 if quote is not None:
+                    # TODO(account-mgmt): AccountManager must satisfy the IAccountViewer surface (account_id/get_base_currency/get_positions/get_balances) before the exporter/emitter run live.
                     self._exporter.export_position_changes(
                         time=self._time_provider.time(),
                         instrument=instrument,
@@ -488,6 +494,7 @@ class ProcessingManager(IProcessingManager):
         self._universe_manager.on_alter_position(instrument)
         if getattr(self._context, "emitter", None) is not None:
             try:
+                # TODO(account-mgmt): AccountManager must satisfy the IAccountViewer surface (account_id/get_base_currency/get_positions/get_balances) before the exporter/emitter run live.
                 self._context.emitter.emit_deals(
                     time=self._time_provider.time(),
                     instrument=instrument,
