@@ -247,7 +247,9 @@ class SimulationRunner:
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        # - drive the OME so resting orders match against this tick (emits typed events)
+        # - drive the OME so resting orders match against this tick (emits typed events),
+        #   then deliver the tick to the strategy. The OME's BBO must reflect this tick
+        #   before the strategy places stop/limit orders against it.
         if not is_hist:
             self._feed_ome(instrument, data)
         cc.send((instrument, data_type, data, is_hist))
@@ -260,11 +262,14 @@ class SimulationRunner:
         # the simulated exchange derives a tradeable BBO from non-tick data.
         connector = self._connectors[instrument.exchange]
         if isinstance(data, (TradeArray, Quote, Trade, OrderBook)):
-            connector.process_market_data(instrument, data)
-            return
-        quote = self._sim_exchanges[instrument.exchange].emulate_quote_from_data(instrument, data.time, data)
-        if quote is not None:
-            connector.process_market_data(instrument, quote)
+            feed = data
+        else:
+            feed = self._sim_exchanges[instrument.exchange].emulate_quote_from_data(
+                instrument, self.time_provider.time(), data
+            )
+            if feed is None:
+                return
+        connector.process_market_data(instrument, feed)
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:

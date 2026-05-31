@@ -158,10 +158,18 @@ class TradingManager(ITradingManager):
             options=options,
         )
 
-        # A sync raise from submit_order (framework-side rejection) leaves the AM
-        # cache clean — add_order only runs once the connector accepted the request.
-        connector.submit_order(request)
+        # Register the order before submitting: a synchronous connector (the
+        # simulator) emits Accepted/Filled events inside submit_order, and the
+        # account state machine must already know the order to resolve them by cid
+        # instead of materializing a phantom EXTERNAL twin. A sync raise from
+        # submit_order is a framework-side rejection — mark the order REJECTED so the
+        # cache never keeps a phantom in-flight order.
         self._account_manager.add_order(connector.exchange_name, order)
+        try:
+            connector.submit_order(request)
+        except Exception:
+            self._account_manager.transition_order(connector.exchange_name, cid, OrderStatus.REJECTED)
+            raise
         return order
 
     def trade_async(

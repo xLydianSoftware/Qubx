@@ -141,6 +141,11 @@ class AccountManager:
             orders = self._states[exchange].get_orders()
         else:
             orders = {cid: o for s in self._states.values() for cid, o in s.get_orders().items()}
+        # Public "open orders" view: terminal orders are retained in active_orders
+        # during the grace window for late-event resolution, but callers reading
+        # get_orders() want only live orders (this is the IAccountViewer contract the
+        # old broker/account get_orders honoured by reading the venue's open orders).
+        orders = {cid: o for cid, o in orders.items() if not o.status.is_terminal()}
         if instrument is not None:
             orders = {cid: o for cid, o in orders.items() if o.instrument == instrument}
         if origin is not None:
@@ -622,11 +627,7 @@ class AccountManager:
             return
         pos = state.get_position(instrument)
         if pos is None:
-            # Materialize a flat position for any instrument that receives market data,
-            # so downstream consumers (ctx.positions[instrument], gatherers, trackers)
-            # always find a Position to mark — matching the old lazy-creation contract.
-            pos = Position(instrument=instrument)
-            state._set_position(instrument, pos)
+            return
         # Position.update_market_price expects (timestamp, price, conversion_rate);
         # mark-to-market uses the quote mid.
         pos.update_market_price(self._time.time(), quote.mid_price(), 1.0)
