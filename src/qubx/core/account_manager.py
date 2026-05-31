@@ -155,7 +155,16 @@ class AccountManager:
 
     def get_position(self, instrument):
         state = self._states.get(instrument.exchange)
-        return state.get_position(instrument) if state else None
+        if state is None:
+            return None
+        pos = state.get_position(instrument)
+        if pos is None:
+            # Consumers (gatherers, trackers, sizers, ctx.positions[instrument]) expect
+            # a Position object for any known instrument, not None. Materialize an empty
+            # one so a never-traded instrument reads as flat rather than KeyError-ing.
+            pos = Position(instrument=instrument)
+            state._set_position(instrument, pos)
+        return pos
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         if exchange is not None:
@@ -613,7 +622,11 @@ class AccountManager:
             return
         pos = state.get_position(instrument)
         if pos is None:
-            return
+            # Materialize a flat position for any instrument that receives market data,
+            # so downstream consumers (ctx.positions[instrument], gatherers, trackers)
+            # always find a Position to mark — matching the old lazy-creation contract.
+            pos = Position(instrument=instrument)
+            state._set_position(instrument, pos)
         # Position.update_market_price expects (timestamp, price, conversion_rate);
         # mark-to-market uses the quote mid.
         pos.update_market_price(self._time.time(), quote.mid_price(), 1.0)

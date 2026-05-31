@@ -5,10 +5,12 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from qubx import QubxLogConfig, logger
+from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import SimulatedDataIterator
-from qubx.core.account import CompositeAccountProcessor
-from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
+from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.account_manager_config import AccountManagerConfig
+from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
@@ -16,7 +18,6 @@ from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     CtrlChannel,
     IDataProvider,
-    IHealthMonitor,
     IMetricEmitter,
     IStrategy,
     IStrategyContext,
@@ -26,20 +27,18 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 from qubx.core.utils import time_delta_to_str
 from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.guards import TimeGuardedStorage
 from qubx.data.storage import IStorage
-from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
 from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import now_ns, to_timedelta
 
-from .account import SimulatedAccountProcessor
-from .broker import SimulatedBroker
 from .data import SimulatedDataProvider
-from .simulated_exchange import get_simulated_exchange
+from .simulated_exchange import ISimulatedExchange, get_simulated_exchange
 from .utils import (
     SetupTypes,
     SignalsProxy,
@@ -69,12 +68,15 @@ class SimulationRunner:
     logs_writer: InMemoryLogsWriter
     notifier: IStrategyNotifier | None
 
-    account: CompositeAccountProcessor
+    account_manager: SimulationAccountManager
     channel: CtrlChannel
     time_provider: SimulatedTimeProvider
     scheduler: SimulatedScheduler
     strategy_params: dict[str, Any]
     strategy_class: str
+
+    _connectors: dict[str, SimulatedConnector]
+    _sim_exchanges: dict[str, ISimulatedExchange]
 
     # adjusted times
     _stop: pd.Timestamp | None = None
@@ -203,9 +205,9 @@ class SimulationRunner:
     def _process_generated_signals(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
         t = np.datetime64(int(data.time), "ns")
-        _account = self.account.get_account_processor(instrument.exchange)
+        _exchange = self._sim_exchanges[instrument.exchange]
         _data_provider = self._get_data_provider(instrument.exchange)
-        assert isinstance(_account, SimulatedAccountProcessor)
+        _connector = self._connectors[instrument.exchange]
         assert isinstance(_data_provider, SimulatedDataProvider)
 
         if not is_hist:
@@ -217,10 +219,13 @@ class SimulationRunner:
                 cc.send((instrument, "event", {"order": sigs[0][1]}, False))
                 sigs.pop(0)
 
-            if q := _account._exchange.emulate_quote_from_data(instrument, t, data):
+            if q := _exchange.emulate_quote_from_data(instrument, t, data):
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
+        # - drive the OME so resting orders match against this tick (emits typed events)
+        if not is_hist:
+            self._feed_ome(instrument, data)
         cc.send((instrument, data_type, data, is_hist))
 
         return cc.control.is_set()
@@ -228,9 +233,8 @@ class SimulationRunner:
     def _process_strategy(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
         t = np.datetime64(int(data.time), "ns")
-        _account = self.account.get_account_processor(instrument.exchange)
+        _exchange = self._sim_exchanges[instrument.exchange]
         _data_provider = self._get_data_provider(instrument.exchange)
-        assert isinstance(_account, SimulatedAccountProcessor)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
         if not is_hist:
@@ -239,13 +243,28 @@ class SimulationRunner:
                 self.time_provider.set_time(_next_exp_time)
                 self.scheduler.check_and_run_tasks()
 
-            if q := _account._exchange.emulate_quote_from_data(instrument, t, data):
+            if q := _exchange.emulate_quote_from_data(instrument, t, data):
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
+        # - drive the OME so resting orders match against this tick (emits typed events)
+        if not is_hist:
+            self._feed_ome(instrument, data)
         cc.send((instrument, data_type, data, is_hist))
 
         return cc.control.is_set()
+
+    def _feed_ome(self, instrument: Instrument, data: Any) -> None:
+        # The OME matches on Quote/OrderBook/Trade/TradeArray only; OHLC bars (and
+        # other types) are translated to an emulated quote first, mirroring the way
+        # the simulated exchange derives a tradeable BBO from non-tick data.
+        connector = self._connectors[instrument.exchange]
+        if isinstance(data, (TradeArray, Quote, Trade, OrderBook)):
+            connector.process_market_data(instrument, data)
+            return
+        quote = self._sim_exchanges[instrument.exchange].emulate_quote_from_data(instrument, data.time, data)
+        if quote is not None:
+            connector.process_market_data(instrument, quote)
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:
@@ -369,14 +388,13 @@ class SimulationRunner:
         # - main databus communication channel
         #   for simulation it just calls registered callback fn instead of processing it for speedup
         self.channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
-        health_monitor = DummyHealthMonitor()
 
         # - simulate exchange's time based on market data
         self.time_provider = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
 
-        # - simulated account
-        self.account = self._construct_account_processor(
-            self.setup.exchanges, self.setup.commissions, self.time_provider, self.channel, health_monitor
+        # - simulated connectors (per exchange) wrapping the OME + central account manager
+        self.account_manager = self._construct_account_manager(
+            self.setup.exchanges, self.setup.commissions, self.time_provider, self.channel
         )
 
         # - scheduler for simulated events
@@ -451,22 +469,16 @@ class SimulationRunner:
         return {k: self._wrap_storage(s, prefetch_cfg) for k, s in storages.items()}
 
     def _create_backtest_context(self):
-        # - create simulated brokers and data providers objects: exchange -> broker | provider
+        # - create data providers objects: exchange -> provider (sharing the per-exchange OME)
         self._data_providers = []
-        _brokers = []
         for exchange in self.setup.exchanges:
-            _exchange_account = self.account.get_account_processor(exchange)
-            assert isinstance(_exchange_account, SimulatedAccountProcessor)
-
-            _broker = SimulatedBroker(self.channel, _exchange_account, _exchange_account._exchange)
             _dprovider = SimulatedDataProvider(
                 exchange_id=exchange,
                 channel=self.channel,
                 time_provider=self.time_provider,
-                account=_exchange_account,
+                exchange=self._sim_exchanges[exchange],
                 data_source=self._simulated_data_source,
             )
-            _brokers.append(_broker)
             self._data_providers.append(_dprovider)
 
         # - create mapping: exch -> IDataProvider
@@ -510,6 +522,11 @@ class SimulationRunner:
         if not isinstance(strat, IStrategy):
             raise SimulationConfigError(f"Strategy should be an instance of IStrategy, but got {strat} !")
 
+        # - the account manager is built before the strategy is resolved (signal setups
+        #   wrap the generator in a SignalsProxy); wire the resolved strategy now so its
+        #   AM-fired callbacks (e.g. on_reconcile_complete) target the real instance.
+        self.account_manager._strategy = strat
+
         # - it will store simulation results into memory
         self.logs_writer = InMemoryLogsWriter(self.account_id, self.setup.name, "0")
 
@@ -519,9 +536,9 @@ class SimulationRunner:
         # - create strategy context with setup
         self.ctx = StrategyContext(
             strategy=strat,
-            brokers=_brokers,
+            connectors=self._connectors,
             data_providers=self._data_providers,
-            account=self.account,
+            account_manager=self.account_manager,
             scheduler=self.scheduler,
             time_provider=self.time_provider,
             instruments=self.setup.instruments,
@@ -590,45 +607,59 @@ class SimulationRunner:
             _exchange_to_tcc[exchange] = lookup.find_fees(exchange.lower(), commissions.get(exchange))
         return _exchange_to_tcc
 
-    def _construct_account_processor(
+    def _construct_account_manager(
         self,
         exchanges: list[str],
         commissions: str | dict[str, str | None] | None,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
-        health_monitor: IHealthMonitor,
-    ) -> CompositeAccountProcessor:
+    ) -> SimulationAccountManager:
         _exchange_to_tcc = self._construct_tcc(exchanges, commissions)
         for tcc in _exchange_to_tcc.values():
             if tcc is None:
                 raise SimulationConfigError(
-                    f"Can't find transaction costs calculator for '{self.setup.exchanges}' for specification '{self.setup.commissions}' !"
+                    f"Can't find transaction costs calculator for '{self.setup.exchanges}' for specification "
+                    f"'{self.setup.commissions}' !"
                 )
 
-        _exchange_to_simulated_exchange = {}
-        for exchange in self.setup.exchanges:
-            # - create simulated exchange:
-            #   - we can use different emulations of real exchanges features in future here: for Binance, Bybit, InteractiveBrokers, etc.
-            #   - for now we use simple basic simulated exchange implementation
-            _exchange_to_simulated_exchange[exchange] = get_simulated_exchange(
+        # - create simulated exchanges (OME-backed): per exchange a connector wraps one.
+        #   Different exchange emulations (Binance/Bybit/IB/...) can plug in here later.
+        self._sim_exchanges = {
+            exchange: get_simulated_exchange(
                 exchange, time_provider, _exchange_to_tcc[exchange], self.setup.accurate_stop_orders_execution
             )
-
-        _account_processors = {}
-        for exchange in self.setup.exchanges:
-            assert isinstance(self.setup.capital, dict)
-            _initial_capital = self.setup.capital[exchange]
-            _account_processors[exchange] = SimulatedAccountProcessor(
-                account_id=self.account_id,
-                exchange=_exchange_to_simulated_exchange[exchange],
+            for exchange in self.setup.exchanges
+        }
+        self._connectors = {
+            exchange: SimulatedConnector(
                 channel=channel,
-                health_monitor=health_monitor,
-                base_currency=self.setup.base_currency,
-                exchange_name=exchange,
-                initial_capital=_initial_capital,
+                exchange=self._sim_exchanges[exchange],
+                time_provider=time_provider,
+            )
+            for exchange in self.setup.exchanges
+        }
+
+        am = SimulationAccountManager(
+            connectors=self._connectors,
+            strategy=self.setup.generator,
+            time=time_provider,
+            cfg=AccountManagerConfig(),
+            account_id=self.account_id,
+            tcc=_exchange_to_tcc[self.setup.exchanges[0]],
+        )
+
+        # - seed initial capital per exchange into the account state
+        assert isinstance(self.setup.capital, dict)
+        for exchange, capital in self.setup.capital.items():
+            am._states[exchange]._update_balance(
+                self.setup.base_currency,
+                Balance(
+                    exchange=exchange,
+                    currency=self.setup.base_currency,
+                    total=capital,
+                    free=capital,
+                    locked=0.0,
+                ),
             )
 
-        return CompositeAccountProcessor(
-            time_provider=time_provider,
-            account_processors=_account_processors,
-        )
+        return am
