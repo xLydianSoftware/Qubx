@@ -10,6 +10,7 @@ from qubx import logger
 
 if TYPE_CHECKING:
     from qubx.utils.throttler import InstrumentThrottler
+from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     DataType,
     Deal,
@@ -26,9 +27,33 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.connector import IConnector
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
-from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.events import (
+    AccountMessage,
+    AccountSnapshotEvent,
+    BalanceUpdateEvent,
+    ChannelMessage,
+    CustomEvent,
+    ErrorEvent,
+    FundingPaymentEvent,
+    MarketDataMessage,
+    OrderAcceptedEvent,
+    OrderBookEvent,
+    OrderCanceledEvent,
+    OrderCancelRejectedEvent,
+    OrderExpiredEvent,
+    OrderFilledEvent,
+    OrderPartiallyFilledEvent,
+    OrderRejectedEvent,
+    OrderUpdatedEvent,
+    OrderUpdateRejectedEvent,
+    PositionUpdateEvent,
+    QuoteEvent,
+    TradeEvent,
+)
+from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
 from qubx.core.interfaces import (
     IAccountProcessor,
@@ -76,6 +101,13 @@ class ProcessingManager(IProcessingManager):
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
 
+    # New IConnector + AccountManager dispatch path (additive, dormant until the
+    # backtester activation PR routes typed ChannelMessage events here). Defaults
+    # keep the existing context.py construction unchanged.
+    _connectors: dict[str, IConnector]
+    _account_manager: AccountManager | None
+    _metrics: Any | None
+
     _trigger_on_time_event: bool = False
     _fit_is_running: bool = False
     _warmup_finished_is_running: bool = False
@@ -117,6 +149,9 @@ class ProcessingManager(IProcessingManager):
         delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
         data_throttler: "InstrumentThrottler | None" = None,
+        connectors: dict[str, IConnector] | None = None,
+        account_manager: AccountManager | None = None,
+        metrics: Any | None = None,
     ):
         self._context = context
         self._strategy = strategy
@@ -134,6 +169,9 @@ class ProcessingManager(IProcessingManager):
         self._health_monitor = health_monitor
         self._delisting_detector = delisting_detector
         self._data_throttler = data_throttler
+        self._connectors = connectors or {}
+        self._account_manager = account_manager
+        self._metrics = metrics
         self._cache = market_data.get_market_data_cache()
 
         # Initialize stale data detector with default disabled state
@@ -341,6 +379,126 @@ class ProcessingManager(IProcessingManager):
             if self._context.emitter is not None:
                 self._context.emitter.notify(self._context)
         return should_stop
+
+    def process_event(self, event: ChannelMessage) -> None:
+        """New typed-event entry point (dual-path with the legacy process_data).
+
+        The channel-pull loop discriminates by isinstance(msg, ChannelMessage);
+        legacy tuple-emitting paths keep flowing through process_data. Wiring of
+        this entry into the runtime loop happens in the backtester activation PR.
+        """
+        if isinstance(event, MarketDataMessage):
+            self._dispatch_market_data(event)
+            return
+        if isinstance(event, AccountMessage):
+            self._dispatch_account(event)
+            return
+        if isinstance(event, ErrorEvent):
+            self._safe_call(self._strategy.on_error, event.error)
+            return
+        if isinstance(event, CustomEvent):
+            self._safe_call(self._strategy.on_event, event)
+            return
+        logger.warning(f"unknown event type: {type(event)}")
+
+    def _dispatch_market_data(self, event: MarketDataMessage) -> None:
+        if isinstance(event, QuoteEvent):
+            if self._account_manager is not None:
+                self._account_manager.on_market_quote(event.instrument, event.quote)
+            self._safe_call(self._strategy.on_quote, event.instrument, event.quote)
+        elif isinstance(event, TradeEvent):
+            self._safe_call(self._strategy.on_trade, event.instrument, event.trade)
+        elif isinstance(event, OrderBookEvent):
+            self._safe_call(self._strategy.on_orderbook, event.instrument, event.orderbook)
+
+    def _dispatch_account(self, event: AccountMessage) -> None:
+        assert self._account_manager is not None
+        try:
+            updated = self._account_manager.apply(event)
+        except InvalidOrderTransition as e:
+            logger.warning(f"invalid transition: {e}; skipping")
+            return
+        except Exception:
+            logger.exception(f"AM.apply raised on {type(event).__name__}")
+            self._inc_metric("account_manager_apply_errors", {"event": type(event).__name__})
+            return
+        self._safe_fire_account_callback(event, updated)
+
+    def _safe_call(self, fn, *args) -> None:
+        try:
+            fn(self._context, *args)
+        except Exception:
+            name = getattr(fn, "__name__", repr(fn))
+            logger.exception(f"strategy callback {name} raised")
+            self._inc_metric("strategy_callback_errors", {"callback": name})
+
+    def _inc_metric(self, name: str, labels: dict[str, str]) -> None:
+        if self._metrics is not None:
+            self._metrics.inc(name, labels=labels)
+
+    def _safe_fire_account_callback(self, event, updated) -> None:
+        match event:
+            case OrderPartiallyFilledEvent():
+                self._safe_call(self._strategy.on_order_partially_filled, updated, event.fill)
+                self._notify_downstream_fill(event.instrument, updated, event.fill)
+            case OrderFilledEvent():
+                self._safe_call(self._strategy.on_order_filled, updated, event.fill)
+                self._notify_downstream_fill(event.instrument, updated, event.fill)
+            case OrderAcceptedEvent():
+                self._safe_call(self._strategy.on_order_accepted, updated)
+            case OrderCanceledEvent():
+                self._safe_call(self._strategy.on_order_canceled, updated)
+            case OrderExpiredEvent():
+                self._safe_call(self._strategy.on_order_expired, updated)
+            case OrderUpdatedEvent():
+                self._safe_call(self._strategy.on_order_updated, updated)
+            case OrderRejectedEvent():
+                self._safe_call(self._strategy.on_order_rejected, updated, event.reason)
+            case OrderCancelRejectedEvent():
+                self._safe_call(self._strategy.on_order_cancel_rejected, updated, event.reason)
+            case OrderUpdateRejectedEvent():
+                self._safe_call(self._strategy.on_order_update_rejected, updated, event.reason)
+            case PositionUpdateEvent():
+                self._safe_call(self._strategy.on_position_update, updated)
+            case BalanceUpdateEvent():
+                self._safe_call(self._strategy.on_balance_update, updated)
+            case FundingPaymentEvent():
+                self._safe_call(self._strategy.on_funding_payment, event.payment)
+            case AccountSnapshotEvent():
+                pass
+            case _:
+                logger.warning(f"unhandled AccountMessage callback: {type(event)}")
+
+    def _notify_downstream_fill(self, instrument: Instrument, order: Order, fill: Deal) -> None:
+        try:
+            self._position_gathering.on_execution_report(self._context, instrument, fill)
+            self._get_tracker_for(instrument).on_execution_report(self._context, instrument, fill)
+        except Exception:
+            logger.exception("downstream fill consumer raised")
+        if self._exporter is not None:
+            try:
+                quote = self._market_data.quote(instrument)
+                if quote is not None:
+                    self._exporter.export_position_changes(
+                        time=self._time_provider.time(),
+                        instrument=instrument,
+                        price=quote.mid_price(),
+                        account=self._account_manager,
+                        metadata=None,
+                    )
+            except Exception:
+                logger.exception("exporter raised")
+        self._universe_manager.on_alter_position(instrument)
+        if getattr(self._context, "emitter", None) is not None:
+            try:
+                self._context.emitter.emit_deals(
+                    time=self._time_provider.time(),
+                    instrument=instrument,
+                    deals=[fill],
+                    account=self._account_manager,
+                )
+            except Exception:
+                logger.exception("emitter raised")
 
     def is_fitted(self) -> bool:
         return self._context._strategy_state.is_on_fit_called
