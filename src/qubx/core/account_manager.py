@@ -1,11 +1,20 @@
 from collections import deque
+from typing import Literal
 
 import numpy as np
 
 from qubx import logger
 from qubx.core.account_manager_config import AccountManagerConfig, _ms_to_cron
 from qubx.core.account_state import AccountState
-from qubx.core.basics import Order, OrderOrigin, OrderStatus, Position
+from qubx.core.basics import (
+    Balance,
+    Instrument,
+    Order,
+    OrderOrigin,
+    OrderStatus,
+    Position,
+    TransactionCostsCalculator,
+)
 from qubx.core.events import (
     AccountMessage,
     AccountSnapshotEvent,
@@ -66,12 +75,24 @@ _LEGAL_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
 
 
 class AccountManager:
-    def __init__(self, *, pm, connectors, strategy, time, cfg: AccountManagerConfig | None = None):
+    def __init__(
+        self,
+        *,
+        pm,
+        connectors,
+        strategy,
+        time,
+        cfg: AccountManagerConfig | None = None,
+        account_id: str = "AccountManager",
+        tcc: TransactionCostsCalculator | None = None,
+    ):
         self._pm = pm
         self._connectors = connectors
         self._strategy = strategy
         self._time = time
         self._cfg = cfg or AccountManagerConfig()
+        self.account_id = account_id
+        self._tcc = tcc
         self._states = {ex: AccountState(exchange=ex) for ex in connectors}
         self._liveness_unready_since: dict[str, np.datetime64] = {}
         # TODO(account-mgmt): this set grows unbounded over long sessions; bound it
@@ -110,13 +131,20 @@ class AccountManager:
     def get_state(self, exchange: str) -> AccountState:
         return self._states[exchange]
 
-    def get_orders(self, exchange: str | None = None, origin: OrderOrigin | None = None) -> dict[str, Order]:
+    def get_orders(
+        self,
+        instrument: Instrument | None = None,
+        exchange: str | None = None,
+        origin: OrderOrigin | None = None,
+    ) -> dict[str, Order]:
         if exchange is not None:
             orders = self._states[exchange].get_orders()
         else:
             orders = {cid: o for s in self._states.values() for cid, o in s.get_orders().items()}
+        if instrument is not None:
+            orders = {cid: o for cid, o in orders.items() if o.instrument == instrument}
         if origin is not None:
-            return {cid: o for cid, o in orders.items() if o.origin == origin}
+            orders = {cid: o for cid, o in orders.items() if o.origin == origin}
         return orders
 
     def get_order(self, client_order_id: str) -> Order | None:
@@ -129,6 +157,15 @@ class AccountManager:
         state = self._states.get(instrument.exchange)
         return state.get_position(instrument) if state else None
 
+    def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
+        if exchange is not None:
+            return self._states[exchange].get_positions()
+        return {ins: pos for s in self._states.values() for ins, pos in s.positions.items()}
+
+    @property
+    def positions(self) -> dict[Instrument, Position]:
+        return self.get_positions()
+
     def get_balance(self, currency: str, exchange: str | None = None):
         if exchange is not None:
             return self._states[exchange].get_balance(currency)
@@ -136,6 +173,37 @@ class AccountManager:
             if (b := state.get_balance(currency)) is not None:
                 return b
         return None
+
+    def get_balances(self, exchange: str | None = None) -> list[Balance]:
+        if exchange is not None:
+            return list(self._states[exchange].balances.values())
+        return [b for s in self._states.values() for b in s.balances.values()]
+
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        if self._tcc is None:
+            raise NotImplementedError("get_fees_calculator: no TransactionCostsCalculator provided to AccountManager")
+        return self._tcc
+
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        for state in self._states.values():
+            if (o := state.get_order_by_venue_id(order_id)) is not None:
+                return o
+        return None
+
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        return self.get_order(client_id)
+
+    def position_report(self, exchange: str | None = None) -> dict:
+        report = {}
+        for pos in self.get_positions(exchange).values():
+            report[pos.instrument.symbol] = {
+                "Qty": pos.quantity,
+                "Price": pos.position_avg_price_funds,
+                "PnL": pos.pnl,
+                "MktValue": pos.market_value_funds,
+                "Leverage": self.get_leverage(pos.instrument),
+            }
+        return report
 
     def apply(self, event: AccountMessage):
         state = self._get_state_for_event(event)
@@ -606,6 +674,10 @@ class AccountManager:
         bal = state.get_balance(base)
         return bal.free if bal else 0.0
 
+    def get_base_currency(self, exchange: str | None = None) -> str:
+        state = self._states[exchange] if exchange is not None else next(iter(self._states.values()), None)
+        return self._base_currency_for(state) if state is not None else "USDT"
+
     def _base_currency_for(self, state) -> str:
         if not state.balances:
             return "USDT"
@@ -639,16 +711,68 @@ class AccountManager:
         total = sum(self._total_capital_for(s) for s in states)
         return gross / total if total > 0 else 0.0
 
+    def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
+        return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
+
+    # Per-instrument exchange-side settings: the venue's configured leverage tier,
+    # hard caps and margin mode. These are not tracked by AccountManager (they live
+    # on the venue), so they default to the same neutral values the base
+    # IAccountProcessor uses for connectors without the concept.
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        return float("inf")
+
+    def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
+        return None
+
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        return sum(p.initial_margin for p in self.get_positions(exchange).values())
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        return sum(p.maint_margin for p in self.get_positions(exchange).values())
+
+    def get_available_margin(self, exchange: str | None = None) -> float:
+        return self.get_total_capital(exchange) - self.get_total_initial_margin(exchange)
+
+    def get_margin_ratio(self, exchange: str | None = None) -> float:
+        maint = self.get_total_maint_margin(exchange)
+        if maint == 0:
+            return 100.0
+        return min(100.0, self.get_total_capital(exchange) / maint)
+
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        pos = self.get_position(instrument)
+        return pos.adl_level if pos is not None else None
+
+    def get_reserved(self, instrument: Instrument) -> float:
+        return 0.0
+
 
 class SimulationAccountManager(AccountManager):
     """Backtest variant — no asyncio, no WS, no periodic ticks."""
 
-    def __init__(self, *, connectors, strategy, time, cfg: AccountManagerConfig | None = None):
+    def __init__(
+        self,
+        *,
+        connectors,
+        strategy,
+        time,
+        cfg: AccountManagerConfig | None = None,
+        account_id: str = "SimulationAccountManager",
+        tcc: TransactionCostsCalculator | None = None,
+    ):
         self._pm = None
         self._connectors = connectors
         self._strategy = strategy
         self._time = time
         self._cfg = cfg or AccountManagerConfig()
+        self.account_id = account_id
+        self._tcc = tcc
         self._states = {ex: AccountState(exchange=ex) for ex in connectors}
         self._liveness_unready_since = {}
         self._applied_funding_buckets = {}
