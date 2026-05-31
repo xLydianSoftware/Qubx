@@ -10,6 +10,7 @@ from qubx import logger
 
 if TYPE_CHECKING:
     from qubx.utils.throttler import InstrumentThrottler
+from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     DataType,
     Deal,
@@ -28,10 +29,30 @@ from qubx.core.basics import (
 )
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
-from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.events import (
+    AccountMessage,
+    AccountSnapshotEvent,
+    BalanceUpdateEvent,
+    ChannelMessage,
+    CustomEvent,
+    ErrorEvent,
+    FundingPaymentEvent,
+    MarketDataMessage,
+    OrderAcceptedEvent,
+    OrderCanceledEvent,
+    OrderCancelRejectedEvent,
+    OrderExpiredEvent,
+    OrderFilledEvent,
+    OrderPartiallyFilledEvent,
+    OrderRejectedEvent,
+    OrderUpdatedEvent,
+    OrderUpdateRejectedEvent,
+    PositionUpdateEvent,
+    QuoteEvent,
+)
+from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
 from qubx.core.interfaces import (
-    IAccountProcessor,
     IHealthMonitor,
     IMarketDataCache,
     IMarketManager,
@@ -51,6 +72,21 @@ from qubx.trackers.riskctrl import _InitializationStageTracker
 from qubx.utils.time import interval_to_cron
 
 
+class _CounterSink:
+    """Minimal best-effort counter sink for dispatch-failure metrics.
+
+    Errors during event dispatch must never themselves raise; this no-op default
+    just records the counts in-process so they can be inspected/overridden without
+    coupling the processing loop to any concrete metric backend.
+    """
+
+    def __init__(self) -> None:
+        self.counts: dict[str, int] = {}
+
+    def inc(self, name: str, labels: dict | None = None) -> None:
+        self.counts[name] = self.counts.get(name, 0) + 1
+
+
 class ProcessingManager(IProcessingManager):
     MAX_NUMBER_OF_STRATEGY_FAILURES: int = 10
     DATA_READY_TIMEOUT: td_64 = td_64(60, "s")
@@ -61,7 +97,8 @@ class ProcessingManager(IProcessingManager):
     _market_data: IMarketManager
     _subscription_manager: ISubscriptionManager
     _time_provider: ITimeProvider
-    _account: IAccountProcessor
+    _account_manager: AccountManager
+    _metrics: _CounterSink
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
     _cache: IMarketDataCache
@@ -107,7 +144,7 @@ class ProcessingManager(IProcessingManager):
         market_data: IMarketManager,
         subscription_manager: ISubscriptionManager,
         time_provider: ITimeProvider,
-        account: IAccountProcessor,
+        account_manager: AccountManager,
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
         universe_manager: IUniverseManager,
@@ -124,7 +161,8 @@ class ProcessingManager(IProcessingManager):
         self._market_data = market_data
         self._subscription_manager = subscription_manager
         self._time_provider = time_provider
-        self._account = account
+        self._account_manager = account_manager
+        self._metrics = _CounterSink()
         self._is_simulation = is_simulation
         self._position_gathering = position_gathering
         self._position_tracker = position_tracker
@@ -594,12 +632,12 @@ class ProcessingManager(IProcessingManager):
 
         # - export signals if exporter is specified
         if self._exporter is not None and signals:
-            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
+            self._exporter.export_signals(self._time_provider.time(), signals, self._account_manager)
 
         # - emit signals to metric emitters if available
         if self._context.emitter is not None and signals:
             self._context.emitter.emit_signals(
-                self._time_provider.time(), signals, self._account, _targets_from_trackers
+                self._time_provider.time(), signals, self._account_manager, _targets_from_trackers
             )
 
     def __invoke_on_fit(self) -> None:
@@ -659,7 +697,9 @@ class ProcessingManager(IProcessingManager):
 
             # - export target positions if exporter is available
             if self._exporter is not None:
-                self._exporter.export_target_positions(self._time_provider.time(), target_positions, self._account)
+                self._exporter.export_target_positions(
+                    self._time_provider.time(), target_positions, self._account_manager
+                )
 
         return filtered_target_positions
 
@@ -820,8 +860,8 @@ class ProcessingManager(IProcessingManager):
                     logger.info(f"Retrying pending signal for <g>{instrument}</g> - quote now available")
                     self._emitted_signals.append(pending_signal)
 
-                # - update position price
-                self._account.update_position_price(self._time_provider.time(), instrument, _update)
+            # - mark-to-market the position from any market-data type (quote/trade/orderbook/bar)
+            self._mark_to_market(instrument, _update)
 
             # - update tracker
             _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
@@ -836,10 +876,18 @@ class ProcessingManager(IProcessingManager):
             # - update position gatherer with market data
             self._position_gathering.update(self._context, instrument, _update)
 
-            # - if it's not base data, we need to process it as market data
-            self._account.process_market_data(self._time_provider.time(), instrument, _update)
-
         return is_base_data and not self._trigger_on_time_event
+
+    def _mark_to_market(self, instrument: Instrument, data: Timestamped) -> None:
+        # AM marks positions off the quote mid. Quotes mark directly; other market
+        # data types reuse the latest cached quote (kept fresh by self._cache.update
+        # above), which is what the simulated exchange emulates from trades/bars.
+        if isinstance(data, Quote):
+            self._account_manager.on_market_quote(instrument, data)
+            return
+        quote = self._market_data.quote(instrument)
+        if quote is not None:
+            self._account_manager.on_market_quote(instrument, quote)
 
     ###########################################################################
     # - Handlers for different types of incoming data
@@ -1130,8 +1178,8 @@ class ProcessingManager(IProcessingManager):
     def _handle_funding_payment(
         self, instrument: Instrument, event_type: str, funding_payment: FundingPayment
     ) -> MarketEvent:
-        # Apply funding payment to position
-        self._account.process_funding_payment(instrument, funding_payment)
+        # Book funding into the position/balance via the account state machine.
+        self._account_manager.apply(FundingPaymentEvent(instrument=instrument, payment=funding_payment))
 
         # Continue with existing event processing
         base_update = self.__update_base_data(instrument, event_type, funding_payment)
@@ -1141,65 +1189,129 @@ class ProcessingManager(IProcessingManager):
         self._strategy.on_error(self._context, error)
         self._position_gathering.on_error(self._context, error)
 
-    def _handle_order(self, instrument: Instrument, event_type: str, order: Order) -> Order:
-        with self._health_monitor("ctx.handle_order"):
-            self._account.process_order(order)
-            return order
+    # ----------------------------------------------------------------------
+    # - Typed-event dispatch (order/account lifecycle + market-data marking)
+    # ----------------------------------------------------------------------
 
-    def _handle_deals(self, instrument: Instrument | None, event_type: str, deals: list[Deal]) -> TriggerEvent | None:
-        with self._health_monitor("ctx.handle_deals"):
-            if instrument is None:
-                logger.debug(
-                    f"[<y>{self.__class__.__name__}</y>] :: Execution report for unknown instrument <r>{instrument}</r>"
-                )
-                return None
+    def process_event(self, event: ChannelMessage) -> None:
+        if isinstance(event, MarketDataMessage):
+            self._dispatch_market_data(event)
+            return
+        if isinstance(event, AccountMessage):
+            self._dispatch_account(event)
+            return
+        if isinstance(event, ErrorEvent):
+            self._safe_call(self._strategy.on_error, event.error)
+            return
+        if isinstance(event, CustomEvent):
+            self._safe_call(self._strategy.on_event, event)
+            return
+        logger.warning(f"unknown event type: {type(event)}")
 
-            # - process deals only for subscribed instruments
-            self._account.process_deals(instrument, deals)
-            self._logging.save_deals(instrument, deals)
+    def _dispatch_market_data(self, event: MarketDataMessage) -> None:
+        # Market data on the typed path does ONLY AM mark-to-market. The strategy's
+        # market-data delivery stays on the on_market_data -> signals path
+        # (process_data); IStrategy has no on_quote/on_trade/on_orderbook callback,
+        # so re-routing here would bypass the signal-processing machinery.
+        if isinstance(event, QuoteEvent) and event.instrument is not None:
+            self._account_manager.on_market_quote(event.instrument, event.quote)
 
-            # - Process all deals first
-            for d in deals:
-                # - notify position gatherer and tracker
-                self._position_gathering.on_execution_report(self._context, instrument, d)
-                self._get_tracker_for(instrument).on_execution_report(self._context, instrument, d)
+    def _dispatch_account(self, event: AccountMessage) -> None:
+        try:
+            updated = self._account_manager.apply(event)
+        except InvalidOrderTransition as e:
+            logger.warning(f"invalid transition: {e}; skipping")
+            return
+        except Exception:
+            logger.exception(f"AM.apply raised on {type(event).__name__}")
+            self._metrics.inc("account_manager_apply_errors", labels={"event": type(event).__name__})
+            return
+        self._safe_fire_account_callback(event, updated)
 
-                # logger.debug(
-                #     f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
-                # )
+    def _safe_call(self, fn: Callable, *args) -> None:
+        try:
+            fn(self._context, *args)
+        except Exception:
+            logger.exception(f"strategy callback {getattr(fn, '__name__', fn)} raised")
+            self._metrics.inc("strategy_callback_errors", labels={"callback": getattr(fn, "__name__", str(fn))})
 
-            if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
-                # - export position changes if exporter is available
+    def _safe_fire_account_callback(self, event: AccountMessage, updated: Any) -> None:
+        match event:
+            case OrderPartiallyFilledEvent():
+                self._safe_call(self._strategy.on_order_partially_filled, updated, event.fill)
+                self._notify_downstream_fill(event.instrument, updated, event.fill)
+            case OrderFilledEvent():
+                self._safe_call(self._strategy.on_order_filled, updated, event.fill)
+                self._notify_downstream_fill(event.instrument, updated, event.fill)
+            case OrderAcceptedEvent():
+                self._safe_call(self._strategy.on_order_accepted, updated)
+            case OrderCanceledEvent():
+                self._safe_call(self._strategy.on_order_canceled, updated)
+            case OrderExpiredEvent():
+                self._safe_call(self._strategy.on_order_expired, updated)
+            case OrderUpdatedEvent():
+                self._safe_call(self._strategy.on_order_updated, updated)
+            case OrderRejectedEvent():
+                self._safe_call(self._strategy.on_order_rejected, updated, event.reason)
+            case OrderCancelRejectedEvent():
+                self._safe_call(self._strategy.on_order_cancel_rejected, updated, event.reason)
+            case OrderUpdateRejectedEvent():
+                self._safe_call(self._strategy.on_order_update_rejected, updated, event.reason)
+            case PositionUpdateEvent():
+                self._safe_call(self._strategy.on_position_update, event.position)
+            case BalanceUpdateEvent():
+                self._safe_call(self._strategy.on_balance_update, event.balance)
+            case FundingPaymentEvent():
+                self._safe_call(self._strategy.on_funding_payment, event.payment)
+            case AccountSnapshotEvent():
+                pass
+            case _:
+                logger.warning(f"unhandled AccountMessage callback: {type(event)}")
+
+    def _notify_downstream_fill(self, instrument: Instrument | None, order: Order, fill: Deal) -> None:
+        if instrument is None:
+            logger.debug(f"[<y>{self.__class__.__name__}</y>] :: fill for unknown instrument; skipping downstream")
+            return
+
+        self._logging.save_deals(instrument, [fill])
+
+        try:
+            self._position_gathering.on_execution_report(self._context, instrument, fill)
+            self._get_tracker_for(instrument).on_execution_report(self._context, instrument, fill)
+        except Exception:
+            logger.exception("downstream fill consumer raised")
+
+        if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
+            try:
                 _active = self._active_targets.get(instrument)
                 self._exporter.export_position_changes(
                     time=self._time_provider.time(),
                     instrument=instrument,
                     price=q.mid_price(),
-                    account=self._account,
+                    account=self._account_manager,
                     metadata=_active.options if _active else None,
                 )
+            except Exception:
+                logger.exception("exporter raised")
 
-            # - notify universe manager about position change
-            self._universe_manager.on_alter_position(instrument)
+        # - notify universe manager about position change
+        self._universe_manager.on_alter_position(instrument)
 
-            # - emit deals to metric emitters if available
-            if self._context.emitter is not None and deals:
+        if self._context.emitter is not None:
+            try:
                 self._context.emitter.emit_deals(
                     time=self._time_provider.time(),
                     instrument=instrument,
-                    deals=deals,
-                    account=self._account,
+                    deals=[fill],
+                    account=self._account_manager,
                 )
+            except Exception:
+                logger.exception("emitter raised")
 
-            # - notify strategy about deals
-            if deals and instrument is not None:
-                self._strategy.on_deals(self._context, instrument, deals)
-
-            # - process active targets: if we got 0 position after executions remove current position from active
-            if not self._context.get_position(instrument).is_open():
-                self._active_targets.pop(instrument, None)
-
-            return None
+        # - process active targets: if position closed after the fill, drop the active target
+        pos = self._account_manager.get_position(instrument)
+        if pos is None or not pos.is_open():
+            self._active_targets.pop(instrument, None)
 
     def _is_order_update(self, d_type: str) -> bool:
         return d_type in ["order", "deals"]
@@ -1209,8 +1321,8 @@ class ProcessingManager(IProcessingManager):
 
         warmup_positions, warmup_orders = self._context.get_warmup_positions(), self._context.get_warmup_orders()
 
-        positions = self._account.get_positions()
-        orders = self._account.get_orders()
+        positions = self._account_manager.get_positions()
+        orders = self._account_manager.get_orders()
         instrument_to_orders = defaultdict(list)
         for o in orders.values():
             instrument_to_orders[o.instrument].append(o)
