@@ -618,8 +618,34 @@ class AccountManager:
         if pos is None:
             pos = Position(instrument=instrument)
             state._set_position(instrument, pos)
-        pos.update_position_by_deal(deal, conversion_rate=1.0)
+        # update_position_by_deal returns (realized_pnl, fee) for this fill, both in
+        # the portfolio funded currency (conversion_rate=1.0 — the backtester is
+        # single-base-currency, matching the old BasicAccountProcessor default).
+        realized_pnl, fee = pos.update_position_by_deal(deal, conversion_rate=1.0)
+        self._apply_deal_to_balances(state, instrument, deal, realized_pnl, fee)
         return pos
+
+    def _apply_deal_to_balances(self, state, instrument, deal, realized_pnl: float, fee: float) -> None:
+        """Propagate a fill's cash impact to balances (mirrors old process_deals).
+
+        Futures/swap: realized PnL settles to the settle-currency balance and the
+        fee is debited from it. Spot: the quote currency is debited by the trade
+        cost (notional + fee) and the base asset is credited by the filled amount.
+        """
+        if instrument.is_futures():
+            self._adjust_balance(state, instrument.settle, realized_pnl - fee)
+        else:
+            self._adjust_balance(state, instrument.quote, -(deal.amount * deal.price + fee))
+            self._adjust_balance(state, instrument.base, deal.amount)
+
+    def _adjust_balance(self, state, currency: str, delta: float) -> None:
+        bal = state.get_balance(currency)
+        if bal is None:
+            bal = Balance(exchange=state.exchange, currency=currency)
+        # keep free consistent with total (free == total - locked), as the funding handler does
+        bal.total += delta
+        bal.free += delta
+        state._update_balance(currency, bal)
 
     def on_market_quote(self, instrument, quote) -> None:
         state = self._states.get(instrument.exchange)
@@ -677,10 +703,19 @@ class AccountManager:
         bal = state.get_balance(base)
         if bal is None:
             return 0.0
+        # Fills fold realized PnL/fees into the base balance, so it already reflects
+        # closed trades. Open positions are added on top:
+        #  - futures: only the unrealized PnL (the base balance, not the position
+        #    notional, holds the cash), and
+        #  - spot: the position's market value (the base cash was debited to buy it,
+        #    so the holding's value restores total capital).
+        # This reproduces the old get_total_capital = cash + sum(market_value_funds).
         total = bal.total
         for pos in state.positions.values():
             if pos.instrument.is_futures():
                 total += pos.unrealized_pnl()
+            else:
+                total += float(np.nan_to_num(pos.market_value_funds))
         return total
 
     def _free_capital_for(self, state) -> float:

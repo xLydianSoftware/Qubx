@@ -41,6 +41,22 @@ def _instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
     )
 
 
+def _spot_instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SPOT,
+        exchange=exchange,
+        base=symbol.replace("USDT", ""),
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol=symbol,
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+        contract_size=1.0,
+    )
+
+
 def _am(exchange="binance"):
     am = AccountManager.__new__(AccountManager)
     am._states = {exchange: AccountState(exchange=exchange)}
@@ -256,3 +272,44 @@ def test_funding_payment_different_bucket_applies_again():
     first = pos.cumulative_funding
     am.apply(FundingPaymentEvent(instrument=inst, payment=p2))
     assert pos.cumulative_funding != first
+
+
+def test_futures_realized_pnl_folds_into_total_capital():
+    # A futures round-trip realizing +X must credit the settle balance by +X, and
+    # get_total_capital() (seeded capital + realized) must reflect it.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=100_000.0, free=100_000.0))
+
+    # open long 1.0 @ 50k
+    am._apply_deal_to_position(state, inst, _fill(trade_id="t1", amount=1.0, price=50_000.0))
+    # opening a futures position does not touch cash
+    assert state.get_balance("USDT").total == 100_000.0
+    assert am.get_total_capital("binance") == 100_000.0
+
+    # close 1.0 @ 60k -> realized +10k
+    am._apply_deal_to_position(state, inst, _fill(trade_id="t2", amount=-1.0, price=60_000.0))
+    bal = state.get_balance("USDT")
+    assert abs(bal.total - 110_000.0) < 1e-6
+    assert abs(bal.free - 110_000.0) < 1e-6
+    assert abs(am.get_total_capital("binance") - 110_000.0) < 1e-6
+
+
+def test_spot_fill_credits_base_and_debits_quote():
+    # A spot buy debits the quote currency by the notional and credits the base asset;
+    # total capital is unchanged (cash converted to a holding of equal value).
+    am = _am()
+    state = am._states["binance"]
+    inst = _spot_instrument()
+    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=100_000.0, free=100_000.0))
+
+    deal = _fill(trade_id="t1", amount=0.5, price=100_000.0)
+    am._apply_deal_to_position(state, inst, deal)
+    # mark the position so its market value contributes to total capital
+    state.get_position(inst).update_market_price(am._time.time(), 100_000.0, 1.0)
+
+    assert abs(state.get_balance("USDT").total - 50_000.0) < 1e-6
+    assert abs(state.get_balance("USDT").free - 50_000.0) < 1e-6
+    assert abs(state.get_balance("BTC").free - 0.5) < 1e-9
+    assert abs(am.get_total_capital("binance") - 100_000.0) < 1e-6

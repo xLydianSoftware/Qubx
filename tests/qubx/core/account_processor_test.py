@@ -203,6 +203,10 @@ class TestAccountProcessorStuff:
         assert account.get_net_leverage() == pytest.approx(0.5)
         assert account.get_gross_leverage() == pytest.approx(0.5)
         assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL)
+        # spot fill: quote (USDT) debited by the notional, base asset (BTC) credited
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL / 2)
+        assert balances["BTC"].free == pytest.approx(0.5)
 
         ##############################################
         # 2. Place + cancel a resting limit order
@@ -223,6 +227,10 @@ class TestAccountProcessorStuff:
         assert account.get_gross_leverage() == 0
         assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL)
         assert account.get_position(i1).quantity == pytest.approx(0.0)
+        # round-trip closed: quote restored to initial, base holding back to zero
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL)
+        assert balances["BTC"].free == pytest.approx(0.0)
 
     def test_swap_account_processor(self, trading_setup):
         trading_manager, account, connector = trading_setup
@@ -255,10 +263,15 @@ class TestAccountProcessorStuff:
         expected_margin_2x = 100_000 * (i1.maint_margin or DEFAULT_MAINTENANCE_MARGIN)
         assert pos.maint_margin == pytest.approx(expected_margin_2x)
 
-        # liquidate position
+        # liquidate position: realized PnL = 0.5 * (200k - 100k) = +50k folds into
+        # the settle balance, so both the USDT balance and total capital reflect it
         trading_manager.trade(i1, -0.5)
         assert pos.quantity == pytest.approx(0, abs=i1.min_size)
         assert pos.market_value == pytest.approx(0)
+        balances = balances_to_dict(account.get_balances())
+        assert balances["USDT"].free == pytest.approx(self.INITIAL_CAPITAL + 50_000)
+        assert balances["USDT"].total == pytest.approx(self.INITIAL_CAPITAL + 50_000)
+        assert account.get_total_capital() == pytest.approx(self.INITIAL_CAPITAL + 50_000)
 
     def test_account_basics(self):
         initial_capital = 10_000
