@@ -18,9 +18,11 @@ from qubx.core.basics import (
     OpenInterest,
     Order,
     OrderOrigin,
+    OrderSide,
     Position,
     dt_64,
 )
+from qubx.core.exceptions import BadRequest, InvalidOrderParameters
 from qubx.core.series import OrderBook, Quote, Trade
 from qubx.core.utils import recognize_time
 from qubx.utils.marketdata.ccxt import (
@@ -391,6 +393,88 @@ def find_instrument_for_exch_symbol(exch_symbol: str, symbol_to_instrument: Dict
 
 def instrument_to_ccxt_symbol(instr: Instrument) -> str:
     return f"{instr.base}/{instr.quote}:{instr.settle}" if instr.is_futures() else f"{instr.base}/{instr.quote}"
+
+
+def prepare_ccxt_order_payload(
+    instrument: Instrument,
+    order_side: OrderSide,
+    order_type: str,
+    amount: float,
+    price: float | None,
+    client_id: str | None,
+    time_in_force: str,
+    quote: Quote | None,
+    reduce_only: bool,
+) -> dict[str, Any]:
+    """Build the ccxt ``create_order`` payload and perform framework-side validation.
+
+    Venue-agnostic and side-effect free: the caller supplies the current ``quote``
+    (the only READ dependency) and the already-resolved ``reduce_only`` flag, so this
+    function holds no account / data-provider reference. Raises ``BadRequest`` /
+    ``InvalidOrderParameters`` for framework-side rejections — the caller is expected
+    to surface those synchronously (never on the channel).
+
+    Ported from ``CcxtBroker._prepare_order_payload`` minus the position-reading
+    reduce-only auto-detection (the connector has no account; reduce-only must arrive
+    resolved from the caller).
+    """
+    params: dict[str, Any] = {}
+    _is_trigger_order = order_type.startswith("stop_")
+
+    if quote is None:
+        logger.warning(f"[<y>{instrument.symbol}</y>] :: Quote is not available for order creation.")
+        raise BadRequest(f"Quote is not available for order creation for {instrument.symbol}")
+
+    if reduce_only:
+        params["reduceOnly"] = True
+    else:
+        min_notional = instrument.min_notional
+        if min_notional > 0 and abs(amount) * instrument.quantity_multiplier * quote.mid_price() < min_notional:
+            raise InvalidOrderParameters(
+                f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
+            )
+
+    # - handle trigger (stop) orders
+    if _is_trigger_order:
+        params["triggerPrice"] = price
+        order_type = order_type.split("_")[1]
+
+    if client_id:
+        params["clientOrderId"] = client_id
+
+    if instrument.is_futures():
+        params["type"] = "swap"
+
+    ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+
+    if order_type.lower() == "limit" or _is_trigger_order:
+        time_in_force = time_in_force.upper()
+        params["timeInForce"] = time_in_force
+        if price is None:
+            raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
+        # GTX (post-only) crossing-the-spread adjustment: nudge the price 1 tick to the
+        # passive side so the venue does not reject the post-only order outright.
+        if order_side == "BUY" and time_in_force == "GTX" and price >= quote.ask:
+            logger.info(
+                f"[{instrument.symbol}] :: GTX BUY order price {price} is greater than ask price {quote.ask}. "
+                "Setting 1 tick below ask."
+            )
+            price = quote.ask - instrument.tick_size
+        elif order_side == "SELL" and time_in_force == "GTX" and price <= quote.bid:
+            logger.info(
+                f"[{instrument.symbol}] :: GTX SELL order price {price} is less than bid price {quote.bid}. "
+                "Setting 1 tick above bid."
+            )
+            price = quote.bid + instrument.tick_size
+
+    return {
+        "symbol": ccxt_symbol,
+        "type": order_type.lower(),
+        "side": order_side.lower(),
+        "amount": amount,
+        "price": price,
+        "params": params,
+    }
 
 
 def ccxt_find_instrument(
