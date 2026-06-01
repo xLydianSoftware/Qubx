@@ -5,7 +5,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.backtester.data import SimulatedDataProvider
-from qubx.backtester.simulated_data import EmulatedTickSequence, SimulatedDataIterator
+from qubx.backtester.simulated_data import SimulatedDataIterator
 from qubx.backtester.utils import SimulatedTimeProvider
 from qubx.core.basics import DataType
 from qubx.core.lookups import lookup
@@ -216,7 +216,7 @@ class TestSimulatedDataIterator:
         _time_when_readded = None
 
         for d in isd.create_iterable("2023-07-01", "2023-07-02"):
-            instr, data_type, event, is_hist = d[0], d[1], d[2], d[3]
+            instr, _data_type, event, _is_hist = d[0], d[1], d[2], d[3]
             _n += 1
 
             close_price = event.close if hasattr(event, "close") else None
@@ -337,7 +337,7 @@ class TestSimulatedDataIterator:
         monotonic_violations = 0
 
         for d in isd.create_iterable("2023-07-02", "2023-07-03"):
-            instr, data_type, event, is_hist = d[0], d[1], d[2], d[3]
+            _instr, data_type, event, is_hist = d[0], d[1], d[2], d[3]
 
             # - events carry the parameterized OHLC type (the iterator labels OHLC with
             #   its requested timeframe so typed events/cache get the right ohlc(<tf>))
@@ -444,7 +444,7 @@ class TestSimulatedDataIterator:
         phase3_s1_times: list[int] = []
 
         for d in isd.create_iterable("2023-07-01", "2023-07-02"):
-            instr, data_type, event, is_hist = d[0], d[1], d[2], d[3]
+            instr, _data_type, event, _is_hist = d[0], d[1], d[2], d[3]
 
             if _n == 0:
                 assert pd.Timestamp(event.time).second == 5, "Update must be +5 sec shifted"
