@@ -6,6 +6,7 @@ import pytest
 
 from qubx.backtester.simulated_data import DataPump, SimulatedDataIterator
 from qubx.core.basics import DataType, FundingPayment, Instrument, MarketEvent, MarketType
+from qubx.core.events import FundingPaymentEvent
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.data.containers import RawData
 from qubx.data.storage import IReader, IStorage
@@ -177,7 +178,6 @@ class TestFundingPaymentSubscription:
     def test_process_event_routes_funding_payment_to_both_paths(self, mock_instrument, sample_funding_payment):
         """process_event(FundingPaymentEvent) is a hybrid: it books funding via AM
         (on_funding_payment) AND runs the market-data side effects."""
-        from qubx.core.events import FundingPaymentEvent
 
         processor = Mock()
         event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
@@ -193,7 +193,6 @@ class TestFundingPaymentSubscription:
     ):
         """_dispatch_market_data on a FundingPaymentEvent updates base data and feeds
         the MarketEvent into the strategy pipeline (no AM mutation on this half)."""
-        from qubx.core.events import FundingPaymentEvent
 
         processor = Mock()
         processor._time_provider = Mock()
@@ -223,7 +222,6 @@ class TestFundingPaymentSubscription:
 
     def test_md_payload_extracts_funding_payment(self, mock_instrument, sample_funding_payment):
         """_md_payload unwraps FundingPaymentEvent to its FundingPayment payload."""
-        from qubx.core.events import FundingPaymentEvent
 
         event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
         assert ProcessingManager._md_payload(event) is sample_funding_payment

@@ -379,7 +379,7 @@ class ProcessingManager(IProcessingManager):
         for m in metrics:
             ctx.emitter.emit(m["name"], m["value"], m["tags"])
 
-    # Base DataTypes carried by the typed market-data bus (the live isinstance path).
+    # Base DataTypes routed as typed market-data events.
     _LIVE_MARKET_DATA_TYPES: frozenset = frozenset(
         {
             DataType.QUOTE,
@@ -394,10 +394,13 @@ class ProcessingManager(IProcessingManager):
     )
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        if not is_historical and d_type and (base := DataType.from_str(d_type)[0]) in self._LIVE_MARKET_DATA_TYPES:
-            # OHLC arrives as the bare base type from the simulator; the typed event
-            # needs a timeframe, so backfill the cache's default before wrapping.
-            if base == DataType.OHLC and DataType.from_str(d_type)[1].get("timeframe") is None:
+        base, params = DataType.from_str(d_type) if d_type else (None, {})
+        if not is_historical and base in self._LIVE_MARKET_DATA_TYPES:
+            # OHLC arrives as the bare base type from the simulator; OhlcEvent needs a
+            # timeframe, so label it with the cache's default before wrapping. (The
+            # live OHLC cache buckets off the Bar itself, not this string — the
+            # timeframe only labels the event/series.)
+            if base == DataType.OHLC and params.get("timeframe") is None:
                 d_type = DataType.OHLC[timedelta_to_str(self._cache.default_timeframe)]
             self.process_event(event_for_data_type(d_type, instrument=instrument, payload=data))
         else:
@@ -1373,9 +1376,6 @@ class ProcessingManager(IProcessingManager):
         pos = self._account_manager.get_position(instrument)
         if pos is None or not pos.is_open():
             self._active_targets.pop(instrument, None)
-
-    def _is_order_update(self, d_type: str) -> bool:
-        return d_type in ["order", "deals"]
 
     def _log_state_mismatch(self) -> None:
         logger.info("<yellow>State comparison between warmup and current state:</yellow>")
