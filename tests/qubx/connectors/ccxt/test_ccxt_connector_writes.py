@@ -313,7 +313,10 @@ async def test_cancel_by_venue_id_emits_canceled() -> None:
     conn.cancel_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
     await _drive(conn)
 
-    exchange.cancel_order.assert_awaited_once_with("VENUE123")
+    # Order not in cache (never submitted via this connector) -> symbol is None; the
+    # read-side cache fills the symbol in for orders this connector submitted (see the
+    # reads test suite). ccxt resolves the market from the id alone in that case.
+    exchange.cancel_order.assert_awaited_once_with("VENUE123", None)
     assert isinstance(sent[0], OrderCanceledEvent)
     assert sent[0].venue_order_id == "VENUE123"
 
@@ -328,7 +331,7 @@ async def test_cancel_by_cloid_uses_cloid_endpoint() -> None:
     conn.cancel_order(client_order_id="qubx_BTCUSDT_1")
     await _drive(conn)
 
-    exchange.cancel_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1")
+    exchange.cancel_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1", None)
     assert isinstance(sent[0], OrderCanceledEvent)
 
 
@@ -426,7 +429,7 @@ async def test_update_cancel_recreate_path_cancels_then_rejects_without_cache() 
     conn.update_order(venue_order_id="VENUE123", price=102.0, quantity=2.0)
     await _drive(conn)
 
-    exchange.cancel_order.assert_awaited_once_with("VENUE123")
+    exchange.cancel_order.assert_awaited_once_with("VENUE123", None)
     assert isinstance(sent[0], OrderUpdateRejectedEvent)
 
 
