@@ -22,7 +22,7 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
 )
-from qubx.core.exceptions import QueueTimeout
+from qubx.core.exceptions import InvalidOrder, QueueTimeout
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
@@ -300,6 +300,46 @@ def test_submit_stop_order_options_forwarded_to_ome(setup):
     order = next(iter(open_orders.values()))
     assert order.options.get(OPTION_FILL_AT_SIGNAL_PRICE) is True
     assert order.options.get(OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION) is True
+
+
+def test_submit_would_trigger_stop_emits_rejected_not_raises(setup):
+    # A BUY STOP_MARKET below the ask "would trigger immediately" (OME: BUY triggers
+    # when ask >= stop price) — a venue verdict. Per the connector rejection boundary
+    # it must ride the channel as an OrderRejectedEvent, NOT raise out of submit_order.
+    conn, channel, _exchange, instr, _time = setup
+    request = OrderRequest(
+        client_id="qubx-stop-reject",
+        instrument=instr,
+        quantity=0.1,
+        price=31500.0,  # below ask 32001 -> BUY stop would trigger immediately
+        side="BUY",
+        order_type="STOP_MARKET",
+        time_in_force="gtc",
+    )
+    conn.submit_order(request)  # must not raise
+    events = _drain(channel)
+    rejects = [e for e in events if isinstance(e, OrderRejectedEvent)]
+    assert len(rejects) == 1, events
+    assert rejects[0].client_order_id == "qubx-stop-reject"
+    assert "would trigger" in rejects[0].reason.lower()
+    assert not any(isinstance(e, OrderAcceptedEvent) for e in events)
+
+
+def test_submit_invalid_amount_raises(setup):
+    # Framework-side rejection (amount <= 0) must raise synchronously — it is the
+    # caller's bug to fix, not a venue verdict that rides the channel.
+    conn, _channel, _exchange, instr, _time = setup
+    request = OrderRequest(
+        client_id="qubx-bad",
+        instrument=instr,
+        quantity=-1.0,
+        price=32000.0,
+        side="BUY",
+        order_type="LIMIT",
+        time_in_force="gtc",
+    )
+    with pytest.raises(InvalidOrder):
+        conn.submit_order(request)
 
 
 def test_stop_order_fills_at_signal_price_not_bbo(setup):

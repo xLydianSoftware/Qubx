@@ -18,6 +18,7 @@ from qubx.core.basics import (
 from qubx.core.events import (
     AccountMessage,
     AccountSnapshotEvent,
+    BalanceUpdateEvent,
     FundingPaymentEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
@@ -28,6 +29,7 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
+    PositionUpdateEvent,
     ReconcileDiff,
 )
 from qubx.core.exceptions import InvalidOrderTransition
@@ -87,6 +89,12 @@ class AccountManager:
         tcc: TransactionCostsCalculator | None = None,
     ):
         self._pm = pm
+        self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
+        self._register_ticks()
+
+    def _init_state(self, *, connectors, strategy, time, cfg, account_id, tcc) -> None:
+        # Shared field init for both the live and simulation managers, so the
+        # subclass can't silently drift from the parent's field set.
         self._connectors = connectors
         self._strategy = strategy
         self._time = time
@@ -99,12 +107,14 @@ class AccountManager:
         # (evict old buckets) in a later PR.
         self._applied_funding_buckets: dict[str, set] = {}
         self._ctx = None  # set via set_context once StrategyContext is built
+
+    def _register_ticks(self) -> None:
         if self._cfg.inflight_check_interval_ms > 0:
-            pm.schedule(_ms_to_cron(self._cfg.inflight_check_interval_ms), self._on_inflight_tick)
+            self._pm.schedule(_ms_to_cron(self._cfg.inflight_check_interval_ms), self._on_inflight_tick)
         if self._cfg.snapshot_check_interval_ms > 0:
-            pm.schedule(_ms_to_cron(self._cfg.snapshot_check_interval_ms), self._on_snapshot_tick)
+            self._pm.schedule(_ms_to_cron(self._cfg.snapshot_check_interval_ms), self._on_snapshot_tick)
         if self._cfg.liveness_check_interval_ms > 0:
-            pm.schedule(_ms_to_cron(self._cfg.liveness_check_interval_ms), self._on_liveness_tick)
+            self._pm.schedule(_ms_to_cron(self._cfg.liveness_check_interval_ms), self._on_liveness_tick)
 
     def set_context(self, ctx) -> None:
         """Wire the IStrategyContext after construction.
@@ -246,6 +256,14 @@ class AccountManager:
                 return self._handle_snapshot(state, event)
             case FundingPaymentEvent():
                 return self._handle_funding_payment(state, event)
+            case PositionUpdateEvent() | BalanceUpdateEvent():
+                # No connector emits these yet; positions/balances are derived from
+                # fills and corrected by snapshot reconcile. PM still fires the
+                # on_position_update/on_balance_update callback off the event payload.
+                # TODO(account-mgmt): apply venue WS position/balance to AccountState
+                # here (via _set_position/_update_balance) when the live connectors emit
+                # them (PR 7), with the same freshness/ratchet guard as snapshot reconcile.
+                return None
             case _:
                 logger.warning(f"unhandled AccountMessage: {type(event)}")
                 return None
@@ -841,13 +859,5 @@ class SimulationAccountManager(AccountManager):
         tcc: TransactionCostsCalculator | None = None,
     ):
         self._pm = None
-        self._connectors = connectors
-        self._strategy = strategy
-        self._time = time
-        self._cfg = cfg or AccountManagerConfig()
-        self.account_id = account_id
-        self._tcc = tcc
-        self._states = {ex: AccountState(exchange=ex) for ex in connectors}
-        self._liveness_unready_since = {}
-        self._applied_funding_buckets = {}
-        self._ctx = None
+        self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
+        # Backtest has no asyncio/WS/periodic scheduling — no ticks registered.

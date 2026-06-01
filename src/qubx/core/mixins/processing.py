@@ -29,6 +29,7 @@ from qubx.core.basics import (
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
+    MARKET_DATA_TYPES,
     AccountMessage,
     AccountSnapshotEvent,
     BalanceUpdateEvent,
@@ -380,23 +381,9 @@ class ProcessingManager(IProcessingManager):
         for m in metrics:
             ctx.emitter.emit(m["name"], m["value"], m["tags"])
 
-    # Base DataTypes routed as typed market-data events.
-    _LIVE_MARKET_DATA_TYPES: frozenset = frozenset(
-        {
-            DataType.QUOTE,
-            DataType.TRADE,
-            DataType.ORDERBOOK,
-            DataType.OHLC,
-            DataType.FUNDING_RATE,
-            DataType.OPEN_INTEREST,
-            DataType.LIQUIDATION,
-            DataType.FUNDING_PAYMENT,
-        }
-    )
-
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         base, params = DataType.from_str(d_type) if d_type else (None, {})
-        if not is_historical and base in self._LIVE_MARKET_DATA_TYPES:
+        if not is_historical and base in MARKET_DATA_TYPES:
             # OHLC arrives as the bare base type from the simulator; OhlcEvent needs a
             # timeframe, so label it with the cache's default before wrapping. (The
             # live OHLC cache buckets off the Bar itself, not this string — the

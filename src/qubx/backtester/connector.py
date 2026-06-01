@@ -15,7 +15,7 @@ from qubx.core.events import (
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
 )
-from qubx.core.exceptions import OrderNotFound
+from qubx.core.exceptions import ExchangeError, InvalidOrder, InvalidOrderParameters, OrderNotFound
 from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 
 
@@ -49,16 +49,32 @@ class SimulatedConnector:
         self.channel.send(event)
 
     def submit_order(self, request: OrderRequest) -> None:
-        report = self._exchange.place_order(
-            instrument=request.instrument,
-            order_side=request.side,
-            order_type=request.order_type,
-            amount=request.quantity,
-            price=request.price,
-            client_id=request.client_id,
-            time_in_force=request.time_in_force,
-            **(request.options or {}),
-        )
+        try:
+            report = self._exchange.place_order(
+                instrument=request.instrument,
+                order_side=request.side,
+                order_type=request.order_type,
+                amount=request.quantity,
+                price=request.price,
+                client_id=request.client_id,
+                time_in_force=request.time_in_force,
+                **(request.options or {}),
+            )
+        except (InvalidOrder, InvalidOrderParameters):
+            # Framework-side rejection (bad side/type/amount/price/TIF) — surface
+            # synchronously so the caller fixes it; never rides the channel.
+            raise
+        except ExchangeError as e:
+            # Venue verdict (e.g. a stop that would trigger immediately) — rides the
+            # channel as OrderRejectedEvent rather than raising. This is the connector
+            # rejection boundary: the same logical failure must take the same path
+            # everywhere, so venue refusals are always async events, not exceptions.
+            self.send(
+                OrderRejectedEvent(
+                    instrument=request.instrument, client_order_id=request.client_id, reason=str(e)
+                )
+            )
+            return
         self._emit_from_report(report)
 
     def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:

@@ -197,7 +197,6 @@ def test_process_data_routes_live_market_data_through_process_event():
     instr = _instrument()
     quote = Quote(0, 100.0, 101.0, 1.0, 1.0)
     pm = Mock()
-    pm._LIVE_MARKET_DATA_TYPES = ProcessingManager._LIVE_MARKET_DATA_TYPES
     pm._context = Mock()
     pm._context.emitter = None
 
@@ -216,7 +215,6 @@ def test_process_data_historical_falls_to_legacy_path():
     instr = _instrument()
     quote = Quote(0, 100.0, 101.0, 1.0, 1.0)
     pm = Mock()
-    pm._LIVE_MARKET_DATA_TYPES = ProcessingManager._LIVE_MARKET_DATA_TYPES
     pm._context = Mock()
     pm._context.emitter = None
 

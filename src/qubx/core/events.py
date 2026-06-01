@@ -208,6 +208,23 @@ class CustomEvent(ChannelMessage):
     payload: Any
 
 
+# Base DataTypes that map to a typed market-data event (the set event_for_data_type
+# converts). Producers and the process_data adapter share this constant to agree on
+# what becomes a typed event vs. what stays on the tuple path.
+MARKET_DATA_TYPES: frozenset = frozenset(
+    {
+        DataType.QUOTE,
+        DataType.TRADE,
+        DataType.ORDERBOOK,
+        DataType.OHLC,
+        DataType.FUNDING_RATE,
+        DataType.OPEN_INTEREST,
+        DataType.LIQUIDATION,
+        DataType.FUNDING_PAYMENT,
+    }
+)
+
+
 def event_for_data_type(
     data_type: str | DataType,
     *,

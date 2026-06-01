@@ -12,7 +12,7 @@ from qubx.core.account_manager import SimulationAccountManager
 from qubx.core.account_manager_config import AccountManagerConfig
 from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
-from qubx.core.events import ScheduledEvent, event_for_data_type
+from qubx.core.events import MARKET_DATA_TYPES, ScheduledEvent, event_for_data_type
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
 from qubx.core.initializer import BasicStrategyInitializer
@@ -28,7 +28,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
-from qubx.core.mixins.processing import ProcessingManager
 from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 from qubx.core.utils import time_delta_to_str
 from qubx.data.cache import CachedStorage, MemoryCache
@@ -259,14 +258,14 @@ class SimulationRunner:
         return cc.control.is_set()
 
     def _send_market_data(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> None:
-        # Live market-data types that have a typed event go on the channel as that event
-        # (routed to ProcessingManager.process_event). Historical batches and live types
-        # without a typed event (e.g. features/record) stay tuples on the __process_data
-        # path. The convertible set mirrors the process_data adapter so both producers and
-        # the adapter agree on what becomes a typed event.
+        # Live market-data types with a typed event go on the channel as that event
+        # (routed to process_event). Historical batches and live types without a typed
+        # event (e.g. features/record) stay tuples on the __process_data path. The
+        # convertible set (events.MARKET_DATA_TYPES) is shared with the process_data
+        # adapter so producer and adapter agree on what becomes a typed event.
         # TODO(account-mgmt): historical batches still ride the tuple/__process_data path;
         # PR10 revisits converting warmup data to typed historical events.
-        if is_hist or DataType.from_str(data_type)[0] not in ProcessingManager._LIVE_MARKET_DATA_TYPES:
+        if is_hist or DataType.from_str(data_type)[0] not in MARKET_DATA_TYPES:
             self.channel.send((instrument, data_type, data, is_hist))
         else:
             self.channel.send(event_for_data_type(data_type, instrument=instrument, payload=data))
