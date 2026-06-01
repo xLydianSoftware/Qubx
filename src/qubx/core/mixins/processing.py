@@ -53,6 +53,7 @@ from qubx.core.events import (
     OrderUpdateRejectedEvent,
     PositionUpdateEvent,
     QuoteEvent,
+    ScheduledEvent,
     TradeEvent,
     data_type_for_event,
     event_for_data_type,
@@ -402,16 +403,22 @@ class ProcessingManager(IProcessingManager):
             # timeframe only labels the event/series.)
             if base == DataType.OHLC and params.get("timeframe") is None:
                 d_type = DataType.OHLC[timedelta_to_str(self._cache.default_timeframe)]
+            # process_event emits the post-data notify itself.
             self.process_event(event_for_data_type(d_type, instrument=instrument, payload=data))
         else:
-            # TODO(account-mgmt): historical data and control/scheduled tuples still
-            # route through __process_data; 6.5.3/6.5.4 convert these to typed events.
+            # TODO(account-mgmt): historical data and not-yet-typed control tuples still
+            # route through __process_data; 6.5.4/PR10 convert/remove these.
             self.__process_data(instrument, d_type, data, is_historical)
-        if not is_historical:
-            self._logging.notify(self._time_provider.time())
-            if self._context.emitter is not None:
-                self._context.emitter.notify(self._context)
+            if not is_historical:
+                self._notify_after_data()
         return False
+
+    def _notify_after_data(self) -> None:
+        # Flush position/portfolio logging cadence + metric heartbeat after a live
+        # data/scheduled event. Account events do not trigger it.
+        self._logging.notify(self._time_provider.time())
+        if self._context.emitter is not None:
+            self._context.emitter.notify(self._context)
 
     def is_fitted(self) -> bool:
         return self._context._strategy_state.is_on_fit_called
@@ -1222,9 +1229,17 @@ class ProcessingManager(IProcessingManager):
         if isinstance(event, FundingPaymentEvent):
             self._dispatch_account(event)
             self._dispatch_market_data(event)
+            if not event.is_historical:
+                self._notify_after_data()
             return
         if isinstance(event, MarketDataMessage):
             self._dispatch_market_data(event)
+            if not event.is_historical:
+                self._notify_after_data()
+            return
+        if isinstance(event, ScheduledEvent):
+            self._dispatch_scheduled(event)
+            self._notify_after_data()
             return
         if isinstance(event, AccountMessage):
             self._dispatch_account(event)
@@ -1236,6 +1251,18 @@ class ProcessingManager(IProcessingManager):
             self._safe_call(self._strategy.on_event, event)
             return
         logger.warning(f"unknown event type: {type(event)}")
+
+    def _dispatch_scheduled(self, event: ScheduledEvent) -> None:
+        # Scheduled/control triggers (time/fit/delisting_check/stale_data_check/
+        # state_snapshot/custom). Produce the strategy event the same way the tuple
+        # path did — control handler when one exists, else the custom-event path
+        # (which runs a registered scheduled method) — then run the shared pipeline.
+        handler = self._handlers.get(event.kind)
+        if handler is not None:
+            strat_event = handler(self, event.instrument, event.kind, event.payload)
+        else:
+            strat_event = self._process_custom_event(event.instrument, event.kind, event.payload)
+        self._run_strategy_pipeline(strat_event)
 
     def _dispatch_market_data(self, event: MarketDataMessage) -> None:
         instrument = event.instrument

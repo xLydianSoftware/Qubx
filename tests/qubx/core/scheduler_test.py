@@ -108,8 +108,8 @@ class TestScheduler:
 
         t1, t2 = 0, 0
         while c.control.is_set():
-            s, event, data, _ = c.receive()
-            print(event, data)
+            msg = c.receive()
+            event = msg.kind
             if event == "test-1":
                 t1 += 1
             if event == "test-2":
@@ -153,7 +153,7 @@ class TestScheduler:
                     while True:
                         print(self.chan._queue.get(block=False))
                         n += 1
-                except Empty as e:
+                except Empty:
                     pass
                 print(f"DONE: {n}")
                 return n

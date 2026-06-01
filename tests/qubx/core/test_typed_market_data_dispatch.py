@@ -23,6 +23,7 @@ from qubx.core.events import (
     OhlcEvent,
     OrderBookEvent,
     QuoteEvent,
+    ScheduledEvent,
     TradeEvent,
 )
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
@@ -130,6 +131,40 @@ def test_fire_md_reaction_routes_to_typed_callbacks():
     pm._safe_call.reset_mock()
     ProcessingManager._fire_md_reaction(pm, OrderBookEvent(instrument=instr, orderbook=ob))
     pm._safe_call.assert_called_once_with(pm._strategy.on_orderbook, ob)
+
+
+def test_dispatch_scheduled_routes_to_control_handler():
+    pm = Mock()
+    handler = Mock(return_value="trigger-event")
+    pm._handlers = {"time": handler}
+    ev = ScheduledEvent(instrument=None, kind="time", payload=(1, 2))
+
+    ProcessingManager._dispatch_scheduled(pm, ev)
+
+    handler.assert_called_once_with(pm, None, "time", (1, 2))
+    pm._run_strategy_pipeline.assert_called_once_with("trigger-event")
+
+
+def test_dispatch_scheduled_falls_back_to_custom_event():
+    pm = Mock()
+    pm._handlers = {}
+    pm._process_custom_event = Mock(return_value=None)
+    ev = ScheduledEvent(instrument=None, kind="my_scheduled_method", payload=(1, 2))
+
+    ProcessingManager._dispatch_scheduled(pm, ev)
+
+    pm._process_custom_event.assert_called_once_with(None, "my_scheduled_method", (1, 2))
+    pm._run_strategy_pipeline.assert_called_once_with(None)
+
+
+def test_process_event_routes_scheduled_event_and_notifies():
+    pm = Mock()
+    ev = ScheduledEvent(instrument=None, kind="time", payload=(1, 2))
+
+    ProcessingManager.process_event(pm, ev)
+
+    pm._dispatch_scheduled.assert_called_once_with(ev)
+    pm._notify_after_data.assert_called_once()
 
 
 def test_quote_marks_account_to_market():
