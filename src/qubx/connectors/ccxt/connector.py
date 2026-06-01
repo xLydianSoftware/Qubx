@@ -64,8 +64,11 @@ _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
     ccxt.PermissionDenied,
     ccxt.ExchangeNotAvailable,
     ccxt.OnMaintenance,
-    ccxt.ExchangeError,  # catch-all (BadRequest, NotSupported, NetworkError all subclass this)
+    ccxt.ExchangeError,  # catch-all for venue-side ExchangeError subtypes (BadRequest, NotSupported, ...)
 )
+# ccxt.NetworkError (incl. RequestTimeout) is NOT an ExchangeError — it's transient
+# connectivity, an UNKNOWN outcome, not a venue verdict. Handled separately: the
+# order is left inflight for AM to reconcile, never terminal-rejected.
 
 _CLIENT_ID_PREFIX = "qubx_"
 
@@ -126,7 +129,18 @@ class CcxtConnector:
         (await the public method's coroutine directly) instead of crossing a
         real thread/loop boundary.
         """
-        self._loop.submit(coro)
+        future = self._loop.submit(coro)
+        # The Future is otherwise discarded; surface any uncaught exception in the
+        # coroutine (e.g. post-success emit work) instead of silently dead-lettering it.
+        future.add_done_callback(self._log_spawn_error)
+
+    def _log_spawn_error(self, future: Any) -> None:
+        try:
+            exc = future.exception()
+        except Exception:  # noqa: BLE001 — cancelled/loop-teardown; nothing to surface
+            return
+        if exc is not None:
+            logger.error(f"[{self.exchange_name}] background connector task failed: {exc!r}")
 
     def _run_sync(self, coro: Any, timeout: float | None = None) -> Any:
         """Run a coroutine on the exchange loop and block for the result.
@@ -188,6 +202,12 @@ class CcxtConnector:
     async def _submit_async(self, instrument: Instrument, client_id: str | None, payload: dict[str, Any]) -> None:
         try:
             r = await self._em.exchange.create_order(**payload)
+        except ccxt.NetworkError as e:
+            # Transient connectivity / timeout: the order may or may not have reached
+            # the venue. Do NOT terminal-reject — leave it inflight so AM's inflight
+            # check / snapshot reconcile resolves the true state from the venue.
+            logger.warning(f"[{self.exchange_name}] Network error submitting {client_id}: {e}; leaving inflight")
+            return
         except _VENUE_VERDICT_ERRORS as e:
             self._emit_submit_rejected(instrument, client_id, e)
             return
@@ -247,10 +267,14 @@ class CcxtConnector:
         if ok:
             self._emit_canceled_from_response(client_order_id, venue_order_id, response)
         else:
+            # Route by the real client_order_id (TradingManager always passes it). Do
+            # NOT substitute venue_order_id as the cid — AM's reject handlers resolve
+            # the order by client_order_id, so a venue-id-as-cid would never match and
+            # the order would stick in PENDING_CANCEL.
             self.send(
                 OrderCancelRejectedEvent(
                     instrument=None,
-                    client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]
+                    client_order_id=client_order_id,  # type: ignore[arg-type]
                     reason=f"venue rejected cancel for {venue_order_id or client_order_id}",
                 )
             )
@@ -369,6 +393,11 @@ class CcxtConnector:
                 r = await self._edit_order_direct(venue_order_id or client_order_id, price, quantity)
             else:
                 r = await self._update_via_cancel_recreate(client_order_id, venue_order_id, price, quantity)
+        except ccxt.NetworkError as e:
+            # Transient: UNKNOWN whether the edit landed. Leave the order PENDING_UPDATE
+            # inflight for AM to reconcile rather than emitting a terminal reject.
+            logger.warning(f"[{self.exchange_name}] Network error updating {client_order_id}: {e}; leaving inflight")
+            return
         except _VENUE_VERDICT_ERRORS as e:
             self._emit_update_rejected(client_order_id, e)
             return
@@ -397,9 +426,12 @@ class CcxtConnector:
     async def _edit_order_direct(
         self, order_id: str | None, price: float | None, quantity: float | None
     ) -> dict[str, Any]:
-        # editOrder requires symbol/side/type which we don't carry without an order
-        # cache; ccxt accepts None for unchanged fields on most venues. Subclasses
-        # (commit 4) override with venue-correct semantics once the cache exists.
+        # TODO(account-mgmt): editOrder needs symbol/side/type, which require an order
+        # cache the write-side connector doesn't have yet — so on venues that resolve
+        # the market from `symbol` (e.g. Binance) this direct-edit fails and surfaces as
+        # OrderUpdateRejectedEvent. The read-side commit adds the cache (and venue-correct
+        # edit/recreate); until then direct edit is only reliable where ccxt tolerates the
+        # missing fields.
         return await self._em.exchange.edit_order(
             id=order_id,
             symbol=None,

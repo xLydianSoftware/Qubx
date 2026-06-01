@@ -340,12 +340,42 @@ async def test_cancel_venue_reject_emits_cancel_rejected() -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(venue_order_id="VENUE123")
+    # TradingManager always passes both ids; the reject must route by the REAL cid
+    # (not the venue id) so AM can revert the order from PENDING_CANCEL.
+    conn.cancel_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
     await _drive(conn)
 
     assert len(sent) == 1
     assert isinstance(sent[0], OrderCancelRejectedEvent)
-    assert sent[0].client_order_id == "VENUE123"
+    assert sent[0].client_order_id == "qubx_BTCUSDT_1"
+
+
+@pytest.mark.asyncio
+async def test_submit_network_error_leaves_inflight_no_reject() -> None:
+    # Transient network error is an UNKNOWN outcome, not a venue verdict: the order
+    # must be left inflight (no terminal OrderRejectedEvent) for AM to reconcile.
+    exchange = Mock()
+    exchange.create_order = AsyncMock(side_effect=ccxt.NetworkError("connection reset"))
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.submit_order(_order_request())
+    await _drive(conn)
+
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_update_network_error_leaves_inflight_no_reject() -> None:
+    exchange = Mock()
+    exchange.edit_order = AsyncMock(side_effect=ccxt.NetworkError("timeout"))
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=123.0)
+    await _drive(conn)
+
+    assert sent == []
 
 
 # --------------------------------------------------------------------------- #
