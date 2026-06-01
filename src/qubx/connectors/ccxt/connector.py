@@ -661,39 +661,66 @@ class CcxtConnector:
         their fills. The loop survives WS drops: it retries with backoff on transient
         errors and exits cleanly on cancellation / channel close. OKX and Bitfinex
         split fills into a separate ``watch_my_trades`` stream — they override this
-        method (commit 4b); the base assumes the unified Binance feed.
+        method (commit 4b) by running two ``_run_ws_loop`` loops concurrently; the
+        base assumes the unified Binance feed.
+        """
+        await self._run_ws_loop(
+            watch=self._em.exchange.watch_orders,
+            handle=self._handle_ws_order,
+            stream="executions",
+            mark_ready=True,
+        )
+        logger.debug(f"[{self.exchange_name}] executions stream ended")
+
+    async def _run_ws_loop(
+        self,
+        *,
+        watch: Any,
+        handle: Any,
+        stream: str,
+        mark_ready: bool,
+    ) -> None:
+        """Generic WS subscription loop: ``await watch()`` → ``handle(raw)`` per item.
+
+        Owns the reconnect/backoff/teardown contract shared by every account WS stream
+        (the single Binance ``watch_orders`` feed and the split OKX/Bitfinex
+        ``watch_orders`` + ``watch_my_trades`` feeds). ``mark_ready`` flips
+        ``_ws_ready`` after the first successful round-trip — only the order stream
+        owns liveness, so a trade-only stream passes ``mark_ready=False``. On exit
+        (cancellation, channel close, or max retries) readiness is cleared so a
+        half-open split feed can't report ready.
         """
         n_retry = 0
         while self.channel.control.is_set():
             try:
-                updates = await self._em.exchange.watch_orders()
-                self._ws_ready = True
+                updates = await watch()
+                if mark_ready:
+                    self._ws_ready = True
                 n_retry = 0
                 for raw in updates:
-                    self._handle_ws_order(raw)
+                    handle(raw)
             except CcxtSymbolNotRecognized:
                 continue
             except CancelledError:
                 break
             except ExchangeClosedByUser:
-                logger.info(f"[{self.exchange_name}] executions stream stopped")
+                logger.info(f"[{self.exchange_name}] {stream} stream stopped")
                 break
             except (NetworkError, ExchangeError, ExchangeNotAvailable) as e:
-                logger.error(f"[{self.exchange_name}] error in executions stream: {e}")
+                logger.error(f"[{self.exchange_name}] error in {stream} stream: {e}")
                 await asyncio.sleep(1)
                 continue
             except Exception as e:  # noqa: BLE001
                 if not self.channel.control.is_set():
                     break
-                logger.error(f"[{self.exchange_name}] exception in executions stream: {e}")
+                logger.error(f"[{self.exchange_name}] exception in {stream} stream: {e}")
                 logger.exception(e)
                 n_retry += 1
                 if n_retry >= self.max_ws_retries:
-                    logger.error(f"[{self.exchange_name}] max retries reached for executions stream")
+                    logger.error(f"[{self.exchange_name}] max retries reached for {stream} stream")
                     break
                 await asyncio.sleep(min(2**n_retry, 60))
         self._ws_ready = False
-        logger.debug(f"[{self.exchange_name}] executions stream ended")
 
     def _handle_ws_order(self, raw: dict[str, Any]) -> None:
         """Convert one ccxt order update and emit the matching lifecycle event(s)."""
@@ -721,13 +748,12 @@ class CcxtConnector:
         no-ops there), so the connector stays minimal.
         """
         status = order.status  # OrderStatus enum (mapped from the ccxt status by utils)
-        deals = ccxt_extract_deals_from_exec(raw)
 
         if status == OrderStatus.PARTIALLY_FILLED:
-            self._emit_fills(instrument, order, deals, partial=True)
+            self._handle_partial_fill_status(instrument, order, raw)
             return
         if status == OrderStatus.FILLED:
-            self._emit_fills(instrument, order, deals, partial=False)
+            self._handle_filled_status(instrument, order, raw)
             return
         if status == OrderStatus.CANCELED:
             self.send(OrderCanceledEvent(
@@ -762,6 +788,25 @@ class CcxtConnector:
                 venue_order_id=order.venue_order_id,
                 accepted_at=order.time,
             ))
+
+    def _handle_partial_fill_status(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
+        """Emit the PARTIALLY_FILLED fill(s) for a watch_orders report (base / Binance).
+
+        Binance carries the trade inline on the order report, so the deals are
+        extracted straight from ``raw``. Two-stream venues (OKX/Bitfinex) override this
+        in ``_TwoStreamExecutionsMixin``: their watch_orders report carries no trades,
+        and the partials arrive on the separate watch_my_trades stream instead.
+        """
+        self._emit_fills(instrument, order, ccxt_extract_deals_from_exec(raw), partial=True)
+
+    def _handle_filled_status(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
+        """Emit the terminal FILLED fill(s) for a watch_orders report (base / Binance).
+
+        The inline trades close the order (the last deal becomes OrderFilledEvent).
+        Two-stream venues override this to promote-to-FILLED using the deal last seen
+        on their watch_my_trades stream.
+        """
+        self._emit_fills(instrument, order, ccxt_extract_deals_from_exec(raw), partial=False)
 
     def _emit_fills(self, instrument: Instrument, order: Order, deals: list[Deal], *, partial: bool) -> None:
         """Emit one fill event per extracted deal (AM dedups by trade_id).
@@ -901,7 +946,7 @@ class CcxtConnector:
         if isinstance(raw_balance, BaseException):
             logger.warning(f"[{self.exchange_name}] snapshot: fetch_balance failed: {raw_balance}")
         else:
-            balances = ccxt_convert_balance(raw_balance, self.exchange_name)
+            balances = self._convert_balances(raw_balance)
 
         self.send(AccountSnapshotEvent(
             instrument=None,
@@ -913,6 +958,16 @@ class CcxtConnector:
                 balances=balances,
             ),
         ))
+
+    def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
+        """Convert a ccxt fetch_balance response to framework Balances.
+
+        Base impl reads ccxt's canonical ``total``/``used`` maps. OKX overrides this
+        (commit 4b): ccxt maps OKX's ``eq`` (= cashBal + unrealizedPnL) to ``total``,
+        but the framework wants the cash leg — so OKX reads per-currency ``cashBal``/
+        ``frozenBal`` straight from the raw ``info.data[0].details``.
+        """
+        return ccxt_convert_balance(raw_balance, self.exchange_name)
 
     # ------------------------------------------------------------------ #
     # Lifecycle / health

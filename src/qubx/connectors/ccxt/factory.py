@@ -9,8 +9,9 @@ from qubx.core.basics import CtrlChannel
 from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IHealthMonitor, ITimeProvider
 
 from .account import CcxtAccountProcessor
+from .connector import CcxtConnector
 from .exchange_manager import ExchangeManager
-from .exchanges import CUSTOM_ACCOUNTS, CUSTOM_BROKERS, EXCHANGE_ALIASES
+from .exchanges import CUSTOM_ACCOUNTS, CUSTOM_BROKERS, CUSTOM_CONNECTORS, EXCHANGE_ALIASES
 
 
 def get_ccxt_exchange(
@@ -162,6 +163,26 @@ def get_ccxt_account(
 ) -> IAccountProcessor:
     account_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower(), CcxtAccountProcessor)
     return account_cls(exchange_name=exchange_name, **kwargs)
+
+
+def get_ccxt_connector(
+    exchange_name: str,
+    **kwargs,
+) -> CcxtConnector:
+    """Construct the right CcxtConnector subclass for the exchange (commit 4b).
+
+    Mirrors ``get_ccxt_broker`` / ``get_ccxt_account``: resolves the per-exchange
+    subclass from ``CUSTOM_CONNECTORS`` keyed by the lowercased framework exchange
+    name (OKX/Bitfinex get the split orders/fills streams), falling back to the base
+    ``CcxtConnector`` for any unlisted exchange (Binance, Hyperliquid, ...). The
+    ``CUSTOM_CONNECTORS`` map already carries both the dotted (``okx.f``) and bare
+    (``okx``) names, mirroring how ``EXCHANGE_ALIASES`` covers each form. The
+    connector takes ``exchange_name`` plus the keyword-only construction args
+    (channel/time_provider/exchange_manager/data_provider/...). Commit 5 calls this
+    from the runner; it is not wired yet.
+    """
+    connector_cls = CUSTOM_CONNECTORS.get(exchange_name.lower(), CcxtConnector)
+    return connector_cls(exchange_name=exchange_name, **kwargs)
 
 
 def _get_api_credentials(

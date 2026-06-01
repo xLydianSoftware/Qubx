@@ -7,8 +7,10 @@ from dataclasses import dataclass, field
 import ccxt.pro as cxp
 
 from ..broker import CcxtBroker
+from ..connector import CcxtConnector
 from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
+from .bitfinex.connector import BitfinexCcxtConnector
 from .gateio.gateio import GateioFutures
 from .hyperliquid.account import HyperliquidAccountProcessor
 from .hyperliquid.broker import HyperliquidCcxtBroker
@@ -16,6 +18,7 @@ from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
 from .okx.account import OkxAccountProcessor
 from .okx.broker import OkxCcxtBroker
+from .okx.connector import OkxCcxtConnector
 from .okx.okx import OkxFutures
 
 # Bitfinex requires optional qubx-bitfinex-api package
@@ -83,6 +86,20 @@ CUSTOM_ACCOUNTS = {
     "hyperliquid": HyperliquidAccountProcessor,
     "hyperliquid.f": HyperliquidAccountProcessor,
     "okx.f": OkxAccountProcessor,
+}
+
+# CcxtConnector subclasses per exchange (commit 4b). Unlisted exchanges (Binance,
+# Hyperliquid, ...) use the base CcxtConnector via the factory fallback. OKX/Bitfinex
+# need the split orders/fills streams; OKX additionally overrides balance/clOrdId.
+# Keyed by the same normalized exchange names the broker/account registries use, plus
+# the bare ``okx``/``bitfinex`` aliases the factory may receive. Bitfinex's connector
+# subclass has NO dependency on the optional qubx-bitfinex-api package (it only needs
+# the base connector + shared mixin), so it is registered unconditionally.
+CUSTOM_CONNECTORS: dict[str, type[CcxtConnector]] = {
+    "okx": OkxCcxtConnector,
+    "okx.f": OkxCcxtConnector,
+    "bitfinex": BitfinexCcxtConnector,
+    "bitfinex.f": BitfinexCcxtConnector,
 }
 
 READER_CAPABILITIES = {
