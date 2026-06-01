@@ -13,7 +13,8 @@ import ccxt
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
-from qubx.core.basics import Balance, Instrument, MarketType, OrderRequest, Position
+from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.basics import Balance, Instrument, MarketType, OrderRequest, OrderStatus, Position
 from qubx.core.events import (
     AccountSnapshotEvent,
     OrderAcceptedEvent,
@@ -304,11 +305,16 @@ async def test_request_order_status_emits_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_order_status_not_found_emits_rejected() -> None:
+async def test_request_order_status_not_found_routes_reject_by_real_cid() -> None:
+    # I2: a venue-id-only request (cid None) must resolve the real cid from the order
+    # cache before emitting the reject — OrderRejectedEvent carries no venue id, so AM
+    # routes it by cid. Seed the cache via a prior WS open update.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_order = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
     conn, sent, _ = _make_connector(exchange=exchange)
+    conn._handle_ws_order(_ws_order(status="open", cid="qubx_BTCUSDT_1", venue_id="VENUE123"))
+    sent.clear()
 
     conn.request_order_status(venue_order_id="VENUE123")
     await _drive(conn)
@@ -317,6 +323,23 @@ async def test_request_order_status_not_found_emits_rejected() -> None:
     ev = sent[0]
     assert isinstance(ev, OrderRejectedEvent)
     assert ev.reason == "reconcile: order not present at venue"
+    # Routed by the real cid resolved from the venue->cid index, NOT None.
+    assert ev.client_order_id == "qubx_BTCUSDT_1"
+
+
+@pytest.mark.asyncio
+async def test_request_order_status_not_found_unknown_cid_skips() -> None:
+    # I2: if the cid can't be resolved (venue id never seen), the reject would be
+    # unroutable — log and skip rather than emit an event AM silently drops.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_order = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_order_status(venue_order_id="VENUE_UNKNOWN")
+    await _drive(conn)
+
+    assert sent == []
 
 
 @pytest.mark.asyncio
@@ -457,3 +480,49 @@ async def test_is_ws_ready_reflects_stream_state() -> None:
     # Loop exited cleanly; readiness was True during the run and reset on exit.
     assert conn.is_ws_ready() is False
     assert calls["n"] >= 1
+
+
+# --------------------------------------------------------------------------- #
+# (f) connector -> AccountManager seam: a snapshot the connector emits must
+#     apply cleanly to a REAL AccountManager (the order's status must be an
+#     OrderStatus enum, or AccountState._add_order -> order.status.is_terminal()
+#     raises AttributeError).
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_snapshot_applies_to_real_account_manager() -> None:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_open_orders = AsyncMock(
+        return_value=[_ws_order(status="open", cid="qubx_BTCUSDT_1", venue_id="V1")]
+    )
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1000.0}, "used": {"USDT": 100.0}})
+    exchange.markets = {}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert len(sent) == 1
+    event = sent[0]
+    assert isinstance(event, AccountSnapshotEvent)
+    # Sanity: the converted open order carries an OrderStatus enum, not a raw string.
+    assert event.snapshot.open_orders[0].status is OrderStatus.ACCEPTED
+
+    # Apply the connector-emitted snapshot to a REAL AccountManager. This is the seam
+    # the unit tests skipped: AccountState._add_order calls order.status.is_terminal(),
+    # which only exists on OrderStatus (a raw string would raise AttributeError here).
+    strategy = Mock()
+    am = SimulationAccountManager(
+        connectors={"BINANCE.UM": object()},
+        strategy=strategy,
+        time=DummyTimeProvider(),
+    )
+    am.apply(event)  # must NOT raise
+
+    # The open order was registered against the real account state (materialized
+    # EXTERNAL since its cid does not match the qubx- recovered prefix).
+    registered = am.find_order_by_id("V1")
+    assert registered is not None
+    assert registered.status is OrderStatus.ACCEPTED
+    assert am.get_balance("USDT", exchange="BINANCE.UM").total == 1000.0

@@ -19,6 +19,7 @@ from qubx.core.basics import (
     Order,
     OrderOrigin,
     OrderSide,
+    OrderStatus,
     Position,
     dt_64,
 )
@@ -38,6 +39,43 @@ from .exceptions import (
 
 EXCH_SYMBOL_PATTERN = re.compile(r"(?P<base>[^/]+)/(?P<quote>[^:]+)(?::(?P<margin>.+))?")
 
+# ccxt canonical order status -> framework OrderStatus. ccxt lowercases the
+# canonical `status` field; venue-specific `info.status` values are uppercase, so
+# we match case-insensitively.
+_CCXT_STATUS_MAP: dict[str, OrderStatus] = {
+    "open": OrderStatus.ACCEPTED,
+    "new": OrderStatus.ACCEPTED,
+    "accepted": OrderStatus.ACCEPTED,
+    "closed": OrderStatus.FILLED,
+    "filled": OrderStatus.FILLED,
+    "partially_filled": OrderStatus.PARTIALLY_FILLED,
+    "partial": OrderStatus.PARTIALLY_FILLED,
+    "canceled": OrderStatus.CANCELED,
+    "cancelled": OrderStatus.CANCELED,
+    "expired": OrderStatus.EXPIRED,
+    "rejected": OrderStatus.REJECTED,
+}
+
+
+def ccxt_status_to_order_status(raw: str | None, info: dict[str, Any] | None = None) -> OrderStatus:
+    """Map a ccxt order status string to a framework ``OrderStatus`` enum.
+
+    ccxt reports a canonical, lowercase ``status``; for an ``open`` order some venues
+    carry the truer state (e.g. ``PARTIALLY_FILLED``) in the venue-specific
+    ``info.status`` — that refinement is applied before mapping. A genuinely unknown
+    status is logged (so it surfaces) and mapped to the non-terminal ``ACCEPTED``: it
+    is never fabricated into a terminal state, and AM's reconcile heals the true one.
+    """
+    status = (raw or "").lower()
+    # Preserve the existing open->info.status refinement before mapping.
+    if status == "open" and info is not None:
+        status = str(info.get("status", status)).lower()
+    mapped = _CCXT_STATUS_MAP.get(status)
+    if mapped is None:
+        logger.warning(f"Unknown ccxt order status '{raw}' (refined '{status}'); defaulting to ACCEPTED")
+        return OrderStatus.ACCEPTED
+    return mapped
+
 
 def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Order:
     """
@@ -54,7 +92,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
     amnt = float(amnt_raw)
     price = raw["price"] or 0.0
-    status = raw["status"] or "UNKNOWN"
+    status = ccxt_status_to_order_status(raw.get("status"), ri)
     side_raw = raw["side"]
     if side_raw is None:
         side = "UNKNOWN"
@@ -67,14 +105,6 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         _type = "UNKNOWN"
     else:
         _type = _type.upper()
-    if status == "open":
-        status = ri.get("status", status)  # for filled / part_filled ?
-
-    # Ensure status is always a string and uppercase
-    if not status:
-        status = "UNKNOWN"
-
-    status = status.upper()
     options = {}
     if raw.get("reduceOnly"):
         options["reduceOnly"] = True

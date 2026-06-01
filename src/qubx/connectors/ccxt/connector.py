@@ -38,7 +38,17 @@ import ccxt
 from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
 from qubx import logger
-from qubx.core.basics import Balance, CtrlChannel, Deal, Instrument, Order, OrderRequest, Position, dt_64
+from qubx.core.basics import (
+    Balance,
+    CtrlChannel,
+    Deal,
+    Instrument,
+    Order,
+    OrderRequest,
+    OrderStatus,
+    Position,
+    dt_64,
+)
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
@@ -96,11 +106,6 @@ _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
 
 _CLIENT_ID_PREFIX = "qubx_"
 
-# ccxt_convert_order_info returns Order.status as an UPPERCASED raw ccxt status
-# STRING (not an OrderStatus enum), so the read side keys its status→event mapping on
-# these strings. Terminal ones drive cache eviction.
-_TERMINAL_STATUSES: frozenset[str] = frozenset({"FILLED", "CLOSED", "CANCELED", "CANCELLED", "EXPIRED", "REJECTED"})
-
 
 @dataclass
 class _CachedOrder:
@@ -110,7 +115,7 @@ class _CachedOrder:
     don't carry: the ccxt ``symbol`` (cancel/edit require it on most venues), the
     ``side`` and ``type`` (edit_order requires them), and the venue id once known
     (so a cloid-keyed cache can still resolve a venue-id cancel). ``status`` is the
-    last status we converted from a WS update, used only to drive the
+    last ``OrderStatus`` we converted from a WS update, used only to drive the
     new→ACCEPTED-once transition and terminal eviction.
     """
 
@@ -119,7 +124,7 @@ class _CachedOrder:
     side: str
     type: str
     venue_order_id: str | None = None
-    status: str | None = None
+    status: OrderStatus | None = None
 
 
 class CcxtConnector:
@@ -264,7 +269,7 @@ class CcxtConnector:
         if order.venue_order_id is not None:
             self._index_venue_id(cid, order.venue_order_id)
         cached.status = order.status
-        if order.status in _TERMINAL_STATUSES:
+        if order.status.is_terminal():
             self._evict(cid)
 
     def _evict(self, client_order_id: str) -> None:
@@ -715,36 +720,46 @@ class CcxtConnector:
         gate — AM is idempotent on every other transition (late/duplicate events are
         no-ops there), so the connector stays minimal.
         """
-        status = order.status  # uppercased ccxt status (NEW/OPEN/PARTIALLY_FILLED/FILLED/...)
+        status = order.status  # OrderStatus enum (mapped from the ccxt status by utils)
         deals = ccxt_extract_deals_from_exec(raw)
 
-        if status == "PARTIALLY_FILLED":
+        if status == OrderStatus.PARTIALLY_FILLED:
             self._emit_fills(instrument, order, deals, partial=True)
             return
-        if status in ("FILLED", "CLOSED"):
+        if status == OrderStatus.FILLED:
             self._emit_fills(instrument, order, deals, partial=False)
             return
-        if status in ("CANCELED", "CANCELLED"):
+        if status == OrderStatus.CANCELED:
             self.send(OrderCanceledEvent(
                 instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id))
             return
-        if status == "EXPIRED":
+        if status == OrderStatus.EXPIRED:
             self.send(OrderExpiredEvent(
                 instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id))
             return
-        if status == "REJECTED":
+        if status == OrderStatus.REJECTED:
             self.send(OrderRejectedEvent(
                 instrument=instrument, client_order_id=order.client_order_id, reason="rejected by venue"))
             return
-        # new/open and anything else live → first venue ack becomes ACCEPTED. A repeat
-        # (e.g. the venue re-broadcasting an open order) is dropped here rather than
-        # re-emitting; AM would treat a duplicate ACCEPTED as benign, but not emitting
-        # keeps the channel quiet.
+        # ACCEPTED (mapped from new/open, and the safe default for any status the
+        # utils mapper couldn't recognize — it already logged that) → first venue ack
+        # becomes ACCEPTED. A repeat (e.g. the venue re-broadcasting an open order) is
+        # dropped here rather than re-emitting; AM would treat a duplicate ACCEPTED as
+        # benign, but not emitting keeps the channel quiet.
         if not had_prior_ack:
+            if order.venue_order_id is None:
+                # An ACCEPTED ack with no venue id can't be indexed (AM keys the
+                # venue-id index off it). The venue's open/new report effectively
+                # always carries one, so this is an anomaly worth logging, not a "".
+                logger.warning(
+                    f"[{self.exchange_name}] open WS update for {order.client_order_id} carried no venue id; "
+                    "skipping ACCEPTED emit"
+                )
+                return
             self.send(OrderAcceptedEvent(
                 instrument=instrument,
                 client_order_id=order.client_order_id,
-                venue_order_id=order.venue_order_id or "",
+                venue_order_id=order.venue_order_id,
                 accepted_at=order.time,
             ))
 
@@ -752,14 +767,20 @@ class CcxtConnector:
         """Emit one fill event per extracted deal (AM dedups by trade_id).
 
         OrderPartiallyFilledEvent / OrderFilledEvent both require a Deal, so when the
-        venue update carries no per-trade detail (some venues omit ``trades`` on the
-        terminal report) there is nothing to emit — the final size/qty truth is then
-        carried by the snapshot / order-status reconcile path instead.
+        venue update carries no per-trade detail there is nothing to emit here. The
+        venues that omit ``trades`` on a ``watch_orders`` terminal report (OKX,
+        Bitfinex) feed their fills through a separate ``watch_my_trades`` stream — the
+        commit-4b subclass override that splits them — so the Deal still arrives.
+        Binance carries the trade inline on the order report, so the unified base feed
+        needs no split. (Reconcile does NOT recover a missed fill: a snapshot taken
+        after a fully-filled order leaves the open-orders set would see it gone and
+        transition it to CANCELED, not FILLED — so the trade stream, not reconcile, is
+        the mitigation.)
         """
         if not deals:
             logger.debug(
                 f"[{self.exchange_name}] {order.client_order_id} {order.status} WS update carried no trades; "
-                "awaiting reconcile for fill detail"
+                "fill detail expected from the watch_my_trades stream"
             )
             return
         last = len(deals) - 1
@@ -798,12 +819,7 @@ class CcxtConnector:
         try:
             raw = await self._em.exchange.fetch_order(lookup_id, symbol)
         except ccxt.OrderNotFound:
-            self.send(OrderRejectedEvent(
-                instrument=cached.instrument if cached is not None else None,
-                client_order_id=client_order_id,  # type: ignore[arg-type]
-                reason="reconcile: order not present at venue",
-                code="OrderNotFound",
-            ))
+            self._emit_order_status_not_found(client_order_id, venue_order_id, cached)
             return
         except NetworkError as e:
             logger.warning(f"[{self.exchange_name}] Network error fetching order {lookup_id}: {e}; leaving inflight")
@@ -812,14 +828,35 @@ class CcxtConnector:
             logger.error(f"[{self.exchange_name}] error fetching order {lookup_id}: {e}")
             return
         if raw is None or raw.get("id") is None:
-            self.send(OrderRejectedEvent(
-                instrument=cached.instrument if cached is not None else None,
-                client_order_id=client_order_id,  # type: ignore[arg-type]
-                reason="reconcile: order not present at venue",
-                code="OrderNotFound",
-            ))
+            self._emit_order_status_not_found(client_order_id, venue_order_id, cached)
             return
         self._handle_ws_order(raw)
+
+    def _emit_order_status_not_found(
+        self, client_order_id: str | None, venue_order_id: str | None, cached: _CachedOrder | None
+    ) -> None:
+        """Emit the reconcile not-found reject, routed by the REAL client_order_id.
+
+        OrderRejectedEvent carries no venue id and AM routes a reject by cid, so a
+        venue-id-only request (cid None) must resolve the cid from the order cache's
+        venue->cid index. If it can't be resolved, the reject would be unroutable —
+        log and skip rather than emit an event AM silently drops.
+        """
+        cid = client_order_id
+        if cid is None and venue_order_id is not None:
+            cid = self._venue_to_cid.get(venue_order_id)
+        if cid is None:
+            logger.warning(
+                f"[{self.exchange_name}] order-status not-found for venue id {venue_order_id} but no cid known; "
+                "skipping unroutable reject"
+            )
+            return
+        self.send(OrderRejectedEvent(
+            instrument=cached.instrument if cached is not None else None,
+            client_order_id=cid,
+            reason="reconcile: order not present at venue",
+            code="OrderNotFound",
+        ))
 
     def request_snapshot(self) -> None:
         self._spawn(self._snapshot_async())
