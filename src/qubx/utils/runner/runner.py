@@ -1,5 +1,8 @@
 import asyncio
+import os
+import shutil
 import socket
+import tempfile
 import time
 from collections import defaultdict
 from dataclasses import dataclass
@@ -8,8 +11,10 @@ from pathlib import Path
 from threading import Thread
 
 from qubx import QubxLogConfig, file_formatter, logger
+from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
+from qubx.backtester.simulated_exchange import get_simulated_exchange
 from qubx.backtester.simulator import simulate
 from qubx.backtester.utils import (
     SetupTypes,
@@ -17,6 +22,7 @@ from qubx.backtester.utils import (
     SimulationSetup,
     recognize_simulation_data_config,
 )
+from qubx.config import settings as qubx_settings
 from qubx.connectors.registry import ConnectorRegistry
 from qubx.core.account_manager import SimulationAccountManager
 from qubx.core.account_manager_config import AccountManagerConfig
@@ -35,8 +41,6 @@ from qubx.core.exceptions import WarmupValidationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
-    IAccountProcessor,
-    IBroker,
     IDataProvider,
     IHealthMonitor,
     IStrategyContext,
@@ -49,6 +53,7 @@ from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.storages.stub import NoConfiguredStorage
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
+from qubx.rate_limiting.manager import RateLimitManager
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
@@ -76,6 +81,7 @@ from qubx.utils.runner.factory import (
     create_state_persistence,
 )
 from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
+from qubx.utils.throttler import InstrumentThrottler
 from qubx.utils.time import convert_seconds_to_str, to_timedelta, to_timestamp
 
 from .accounts import AccountConfigurationManager
@@ -281,11 +287,9 @@ def run_strategy(
     QubxLogConfig.setup_logger(level=QubxLogConfig.get_log_level(), colorize=not no_color)
 
     # Start control server early so liveness probe works during init/warmup
-    from qubx.config import settings as _qubx_settings
-
     _control_server = None
     _health_ctx_ref: list[IStrategyContext | None] = [None]  # mutable ref for closure
-    _control_port = _qubx_settings.control_port or _qubx_settings.health_port
+    _control_port = qubx_settings.control_port or qubx_settings.health_port
 
     if _control_port:
         from qubx.control import ControlServer
@@ -299,7 +303,7 @@ def run_strategy(
 
     # Resolve strategy identity once — BOT_ID takes precedence over config name.
     # This identity is used for state restoration, logging, metric emission, and persistence.
-    stg_name = _qubx_settings.bot_id or _get_strategy_name(config)
+    stg_name = qubx_settings.bot_id or _get_strategy_name(config)
 
     # Restore state if configured
     restored_state = (
@@ -464,8 +468,6 @@ def create_strategy_context(
         raise ValueError("Live configuration is required for strategy execution")
 
     # --- Platform identity from unified settings ---
-    from qubx.config import settings as qubx_settings
-
     _bot_id = qubx_settings.bot_id
     _run_mode = "paper" if paper else "live"
 
@@ -522,8 +524,6 @@ def create_strategy_context(
     exchanges = list(config.live.exchanges.keys())
 
     # Rate limiting (backend, IP discovery, per-exchange limiters)
-    from qubx.rate_limiting.manager import RateLimitManager
-
     _rl_manager = RateLimitManager(config.live.rate_limiting, loop)
 
     _exchange_to_tcc = {}
@@ -770,9 +770,6 @@ def _create_paper_connector(
     Execution is simulated synchronously (no event loop), while market data still comes from
     the real CcxtDataProvider built alongside it — mirroring the backtester's connector wiring.
     """
-    from qubx.backtester.connector import SimulatedConnector
-    from qubx.backtester.simulated_exchange import get_simulated_exchange
-
     return SimulatedConnector(
         channel=channel,
         exchange=get_simulated_exchange(exchange_name, time_provider, tcc),
@@ -793,115 +790,6 @@ def _seed_paper_capital(
     account_manager._states[exchange_name]._update_balance(
         base_currency,
         Balance(exchange=exchange_name, currency=base_currency, total=capital, free=capital, locked=0.0),
-    )
-
-
-def _create_account_processor(
-    exchange_name: str,
-    exchange_config: ExchangeConfig,
-    channel: CtrlChannel,
-    time_provider: ITimeProvider,
-    account_manager: AccountConfigurationManager,
-    tcc: TransactionCostsCalculator,
-    paper: bool,
-    health_monitor: IHealthMonitor,
-    live_config: LiveConfig,
-    data_provider: IDataProvider | None = None,
-    restored_state: RestoredState | None = None,
-    read_only: bool = False,
-    loop: asyncio.AbstractEventLoop | None = None,
-) -> IAccountProcessor:
-    base_currency = _resolve_base_currency(exchange_name, exchange_config, live_config, account_manager)
-
-    if paper:
-        # Paper trading: create SimulatedAccountProcessor directly (not registered with registry)
-        from qubx.backtester.account import SimulatedAccountProcessor
-        from qubx.backtester.simulated_exchange import get_simulated_exchange
-
-        settings = account_manager.get_exchange_settings(exchange_name)
-        simulated_exchange = get_simulated_exchange(exchange_name, time_provider, tcc)
-
-        return SimulatedAccountProcessor(
-            account_id=exchange_name,
-            exchange=simulated_exchange,
-            channel=channel,
-            health_monitor=health_monitor,
-            base_currency=base_currency,
-            exchange_name=exchange_name,
-            initial_capital=settings.initial_capital,
-            restored_state=restored_state,
-        )
-
-    if exchange_config.account is not None:
-        connector = exchange_config.account.connector
-    else:
-        connector = exchange_config.connector
-
-    connector_name = connector.lower()
-
-    return ConnectorRegistry.get_account_processor(
-        connector_name,
-        exchange_name=exchange_name,
-        channel=channel,
-        time_provider=time_provider,
-        account_manager=account_manager,
-        tcc=tcc,
-        health_monitor=health_monitor,
-        data_provider=data_provider,
-        restored_state=restored_state,
-        read_only=read_only,
-        loop=loop,
-        base_currency=base_currency,
-    )
-
-
-def _create_broker(
-    exchange_name: str,
-    exchange_config: ExchangeConfig,
-    channel: CtrlChannel,
-    time_provider: ITimeProvider,
-    account: IAccountProcessor,
-    data_provider: IDataProvider,
-    account_manager: AccountConfigurationManager,
-    health_monitor: IHealthMonitor,
-    paper: bool,
-    loop: asyncio.AbstractEventLoop | None = None,
-) -> IBroker:
-    if paper:
-        # Paper trading: create SimulatedBroker directly (not registered with registry)
-        from qubx.backtester.account import SimulatedAccountProcessor
-        from qubx.backtester.broker import SimulatedBroker
-
-        assert isinstance(account, SimulatedAccountProcessor), (
-            "Account must be SimulatedAccountProcessor for paper mode"
-        )
-
-        return SimulatedBroker(
-            channel=channel,
-            account=account,
-            simulated_exchange=account._exchange,
-        )
-
-    if exchange_config.broker is not None:
-        connector = exchange_config.broker.connector
-        params = dict(exchange_config.broker.params)
-    else:
-        connector = exchange_config.connector
-        params = {}
-
-    connector_name = connector.lower()
-
-    return ConnectorRegistry.get_broker(
-        connector_name,
-        exchange_name=exchange_name,
-        channel=channel,
-        time_provider=time_provider,
-        account=account,
-        data_provider=data_provider,
-        account_manager=account_manager,
-        health_monitor=health_monitor,
-        loop=loop,
-        **params,
     )
 
 
@@ -932,8 +820,6 @@ def _create_data_throttler(throttling_config):
     Returns:
         InstrumentThrottler configured with per-data-type frequency limits, or None if disabled
     """
-    from qubx.utils.throttler import InstrumentThrottler
-
     if not throttling_config or not throttling_config.enabled:
         return None
 
@@ -1318,10 +1204,6 @@ def _safe_store_results(
         results_saver.store_simulation_results(test_res, sim_time_sec, log_file=cloud_log_file)
     except Exception as _store_err:
         if save_path is not None and is_cloud_path(save_path):
-            import os
-            import shutil
-            import tempfile
-
             _fallback_base = str(Path(tempfile.gettempdir()) / "backtests")
             logger.warning(
                 f"[simulate_strategy] Failed to save results to cloud storage ({save_path}): {_store_err}"
@@ -1486,8 +1368,6 @@ def simulate_strategy(
         _is_cloud = is_cloud_path(save_path)
 
         if _is_cloud:
-            import tempfile
-
             _tmp = tempfile.NamedTemporaryFile(suffix=".log", delete=False)
             _tmp.close()
             _log_file = _cloud_log_file = _tmp.name
