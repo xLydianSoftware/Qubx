@@ -46,7 +46,7 @@ from qubx.core.basics import (
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import ReconcileDiff
 from qubx.core.helpers import set_parameters_to_object
-from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
+from qubx.core.series import OHLCV, Bar, GenericSeries, OrderBook, Quote, Trade
 from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
@@ -2800,6 +2800,22 @@ class IStrategy(metaclass=Mixable):
             List of signals, single signal, or None.
         """
         return None
+
+    def on_quote(self, ctx: IStrategyContext, quote: Quote) -> None:
+        """Called on a new quote. Typed reaction callback fired alongside the
+        on_market_data->signals path; does not itself generate signals. Override
+        to react to raw quotes."""
+        ...
+
+    def on_trade(self, ctx: IStrategyContext, trade: Trade) -> None:
+        """Called on a new trade. Typed reaction callback fired alongside the
+        on_market_data->signals path; does not itself generate signals."""
+        ...
+
+    def on_orderbook(self, ctx: IStrategyContext, orderbook: OrderBook) -> None:
+        """Called on a new order book. Typed reaction callback fired alongside the
+        on_market_data->signals path; does not itself generate signals."""
+        ...
 
     def on_order_update(self, ctx: IStrategyContext, order: Order) -> list[Signal] | Signal | None:
         """

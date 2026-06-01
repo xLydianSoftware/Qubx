@@ -5,9 +5,14 @@ import numpy as np
 
 from qubx.core.basics import (
     Balance,
+    Bar,
+    DataType,
     Deal,
     FundingPayment,
+    FundingRate,
     Instrument,
+    Liquidation,
+    OpenInterest,
     Order,
     OrderBook,
     Position,
@@ -159,6 +164,40 @@ class OrderBookEvent(MarketDataMessage):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
+class OhlcEvent(MarketDataMessage):
+    bar: Bar
+    # The timeframe lives in the data-type string (ohlc(1h)), not on the Bar, and
+    # the cache keys its OHLC series by it — so it travels on the event.
+    timeframe: str
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class FundingRateEvent(MarketDataMessage):
+    funding_rate: FundingRate
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OpenInterestEvent(MarketDataMessage):
+    open_interest: OpenInterest
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class LiquidationEvent(MarketDataMessage):
+    liquidation: Liquidation
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class ScheduledEvent(ChannelMessage):
+    """Scheduled/control trigger off the channel (time, fit, delisting_check,
+    stale_data_check, state_snapshot, or a custom scheduled method). `kind` is the
+    scheduled event identifier the dispatcher routes on; `payload` carries the
+    trigger's (prev, exec) time tuple or custom data."""
+
+    kind: str
+    payload: Any = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
 class ErrorEvent(ChannelMessage):
     error: Any
 
@@ -167,3 +206,64 @@ class ErrorEvent(ChannelMessage):
 class CustomEvent(ChannelMessage):
     name: str
     payload: Any
+
+
+def event_for_data_type(
+    data_type: str | DataType,
+    *,
+    instrument: Instrument | None,
+    payload: Any,
+    is_historical: bool = False,
+) -> ChannelMessage:
+    """Wrap an arriving market-data payload in its typed event — the single source
+    of truth used by data producers and the `process_data` tuple adapter.
+    `data_type_for_event` is the inverse the typed dispatch uses to recover the
+    (parameterized) data-type string the cache keys on. `funding_payment` maps to
+    the `AccountMessage` `FundingPaymentEvent` (it both mutates balances and feeds
+    the market-data path — the dispatch handles that hybrid)."""
+    base, params = DataType.from_str(data_type)
+    match base:
+        case DataType.QUOTE:
+            return QuoteEvent(instrument=instrument, is_historical=is_historical, quote=payload)
+        case DataType.TRADE:
+            return TradeEvent(instrument=instrument, is_historical=is_historical, trade=payload)
+        case DataType.ORDERBOOK:
+            return OrderBookEvent(instrument=instrument, is_historical=is_historical, orderbook=payload)
+        case DataType.OHLC:
+            return OhlcEvent(
+                instrument=instrument, is_historical=is_historical, bar=payload, timeframe=params["timeframe"]
+            )
+        case DataType.FUNDING_RATE:
+            return FundingRateEvent(instrument=instrument, is_historical=is_historical, funding_rate=payload)
+        case DataType.OPEN_INTEREST:
+            return OpenInterestEvent(instrument=instrument, is_historical=is_historical, open_interest=payload)
+        case DataType.LIQUIDATION:
+            return LiquidationEvent(instrument=instrument, is_historical=is_historical, liquidation=payload)
+        case DataType.FUNDING_PAYMENT:
+            return FundingPaymentEvent(instrument=instrument, is_historical=is_historical, payment=payload)
+        case _:
+            raise ValueError(f"no typed market-data event for data type: {data_type}")
+
+
+def data_type_for_event(event: ChannelMessage) -> str:
+    """Inverse of `event_for_data_type`: the (parameterized) data-type string for a
+    typed market-data event."""
+    match event:
+        case QuoteEvent():
+            return str(DataType.QUOTE)
+        case TradeEvent():
+            return str(DataType.TRADE)
+        case OrderBookEvent():
+            return str(DataType.ORDERBOOK)
+        case OhlcEvent():
+            return DataType.OHLC[event.timeframe]
+        case FundingRateEvent():
+            return str(DataType.FUNDING_RATE)
+        case OpenInterestEvent():
+            return str(DataType.OPEN_INTEREST)
+        case LiquidationEvent():
+            return str(DataType.LIQUIDATION)
+        case FundingPaymentEvent():
+            return str(DataType.FUNDING_PAYMENT)
+        case _:
+            raise ValueError(f"no data type for event: {type(event).__name__}")
