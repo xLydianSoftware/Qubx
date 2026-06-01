@@ -2,7 +2,7 @@ import asyncio
 
 from qubx.backtester.ome import SimulatedExecutionReport
 from qubx.backtester.simulated_exchange import ISimulatedExchange
-from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest
+from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest, Timestamped
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
@@ -163,8 +163,17 @@ class SimulatedConnector:
         )
         self.send(AccountSnapshotEvent(instrument=None, snapshot=snapshot))
 
-    def process_market_data(self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray) -> None:
-        for report in self._exchange.process_market_data(instrument, data):
+    def process_market_data(self, instrument: Instrument, data: Timestamped) -> None:
+        # The OME matches on Quote/OrderBook/Trade/TradeArray only; other market-data types
+        # (e.g. OHLC bars in paper trading) are translated to an emulated quote first, mirroring
+        # how the simulated exchange derives a tradeable BBO from non-tick data.
+        if isinstance(data, (Quote, OrderBook, Trade, TradeArray)):
+            feed: Quote | OrderBook | Trade | TradeArray | None = data
+        else:
+            feed = self._exchange.emulate_quote_from_data(instrument, self._time.time(), data)
+        if feed is None:
+            return
+        for report in self._exchange.process_market_data(instrument, feed):
             self._emit_from_report(report)
 
     def _emit_from_report(self, report: SimulatedExecutionReport) -> None:

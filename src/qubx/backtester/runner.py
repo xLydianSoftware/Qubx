@@ -28,7 +28,6 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
-from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 from qubx.core.utils import time_delta_to_str
 from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.guards import TimeGuardedStorage
@@ -271,19 +270,9 @@ class SimulationRunner:
             self.channel.send(event_for_data_type(data_type, instrument=instrument, payload=data))
 
     def _feed_ome(self, instrument: Instrument, data: Any) -> None:
-        # The OME matches on Quote/OrderBook/Trade/TradeArray only; OHLC bars (and
-        # other types) are translated to an emulated quote first, mirroring the way
-        # the simulated exchange derives a tradeable BBO from non-tick data.
-        connector = self._connectors[instrument.exchange]
-        if isinstance(data, (TradeArray, Quote, Trade, OrderBook)):
-            feed = data
-        else:
-            feed = self._sim_exchanges[instrument.exchange].emulate_quote_from_data(
-                instrument, self.time_provider.time(), data
-            )
-            if feed is None:
-                return
-        connector.process_market_data(instrument, feed)
+        # The connector translates non-tick data (e.g. OHLC bars) into an emulated
+        # quote before matching, so pass the raw tick straight through.
+        self._connectors[instrument.exchange].process_market_data(instrument, data)
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:

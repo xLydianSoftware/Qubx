@@ -1259,9 +1259,25 @@ class ProcessingManager(IProcessingManager):
         if self._data_throttler is not None and not self._data_throttler.should_send(d_type, instrument):
             return
 
+        # - paper trading: drive the simulated connector's OME with this tick so resting orders
+        #   match and the OME's BBO reflects it BEFORE the strategy reacts (mirrors the backtester
+        #   runner's _feed_ome). Live trading executes at the venue, so the connector is not fed.
+        self._feed_simulated_connector(instrument, payload)
+
         base_update = self.__update_base_data(instrument, d_type, payload)
         mkt = MarketEvent(self._time_provider.time(), d_type, instrument, payload, is_trigger=base_update)
         self._run_strategy_pipeline(mkt, md_reaction=event)
+
+    def _feed_simulated_connector(self, instrument: Instrument, payload: Any) -> None:
+        # Paper only. is_paper_trading is also True in the backtester (it too uses a
+        # SimulatedConnector), but there the SimulationRunner already feeds the OME via
+        # _feed_ome — so gate on `not _is_simulation` as well to avoid double-feeding the
+        # OME in backtests. Live (not paper) executes at the venue and has no local OME.
+        if self._is_simulation or not self._context.is_paper_trading:
+            return
+        connector = self._context._connectors.get(instrument.exchange)
+        if connector is not None:
+            connector.process_market_data(instrument, payload)
 
     @staticmethod
     def _md_payload(event: MarketDataMessage) -> Any:

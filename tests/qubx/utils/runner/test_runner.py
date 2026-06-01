@@ -192,10 +192,79 @@ class TestRunStrategyYaml:
         mock.get_exchange_settings.return_value = MagicMock(testnet=False, commissions={})
         return mock
 
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner._create_data_provider")
+    def test_paper_context_wires_simulated_connector_and_account_manager(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """Network-free wiring assertion: paper=True builds SimulatedConnectors + a central
+        SimulationAccountManager seeded with the configured initial capital, exposed through
+        ctx.account."""
+        from qubx.backtester.connector import SimulatedConnector
+        from qubx.core.account_manager import SimulationAccountManager
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        # - no warmup: focus the test on construction-time wiring (warmup is exercised elsewhere)
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions=None, testnet=False
+        )
+
+        with (
+            patch(
+                "qubx.utils.runner.runner.class_import",
+                side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+            ),
+            patch("qubx.utils.runner.runner._create_tcc", return_value=lookup.find_fees("BINANCE.UM", None)),
+        ):
+            ctx = create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="paper_wiring_test",
+            )
+
+        assert isinstance(ctx, StrategyContext)
+
+        # - connectors are per-exchange SimulatedConnectors
+        assert set(ctx._connectors.keys()) == {"BINANCE.UM"}
+        assert isinstance(ctx._connectors["BINANCE.UM"], SimulatedConnector)
+        assert ctx.is_paper_trading
+
+        # - central account manager is the simulation variant, seeded with configured capital
+        assert isinstance(ctx._account_manager, SimulationAccountManager)
+        assert ctx.account is ctx._account_manager
+        balance = ctx.account.get_balance("USDT", exchange="BINANCE.UM")
+        assert balance is not None
+        assert balance.total == 100_000.0
+        assert balance.free == 100_000.0
+
+        # - the resolved strategy instance is wired into the AM for AM-fired callbacks
+        assert ctx._account_manager._strategy is ctx.strategy
+
     @pytest.mark.skip(
-        reason="Paper-trading execution simulation (live market data -> SimulatedConnector OME) "
-        "is wired with the live connectors; the live runner still constructs the removed "
-        "SimulatedAccountProcessor/SimulatedBroker."
+        reason="Restored-state positions/balances are not yet injected into the central "
+        "SimulationAccountManager in the paper runner (the old SimulatedAccountProcessor took "
+        "restored_state=). Restored-state->AM seeding lands with the live connector wiring "
+        "(PR 7 commit 5 / account-mgmt). Paper execution itself is covered by "
+        "test_run_strategy_yaml_with_warmup."
     )
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
@@ -249,9 +318,7 @@ class TestRunStrategyYaml:
                 initializer.set_state_resolver(StateResolver.SYNC_STATE)
 
             def on_start(self, ctx: IStrategyContext) -> None:
-                instr = btc_instrument
-                # logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                # ctx.emit_signal(instr.signal(ctx, 1.0))
+                pass
 
         # Run the function under test
         with patch(
@@ -297,11 +364,6 @@ class TestRunStrategyYaml:
         assert pos.quantity == 0.0
         assert pos.instrument == eth_instrument
 
-    @pytest.mark.skip(
-        reason="Paper-trading execution simulation (live market data -> SimulatedConnector OME) "
-        "is wired with the live connectors; the live runner still constructs the removed "
-        "SimulatedAccountProcessor/SimulatedBroker."
-    )
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")

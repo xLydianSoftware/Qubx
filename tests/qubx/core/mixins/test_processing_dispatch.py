@@ -10,6 +10,7 @@ from qubx.core.series import Quote
 
 def _pm() -> ProcessingManager:
     pm = ProcessingManager.__new__(ProcessingManager)
+    pm._is_simulation = True  # not paper: keeps _feed_simulated_connector a no-op here
     pm._strategy = MagicMock()
     pm._account_manager = MagicMock()
     pm._metrics = _CounterSink()

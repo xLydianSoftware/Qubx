@@ -18,8 +18,10 @@ from qubx.backtester.utils import (
     recognize_simulation_data_config,
 )
 from qubx.connectors.registry import ConnectorRegistry
-from qubx.core.account import CompositeAccountProcessor
+from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.account_manager_config import AccountManagerConfig
 from qubx.core.basics import (
+    Balance,
     CtrlChannel,
     Instrument,
     LiveTimeProvider,
@@ -27,6 +29,7 @@ from qubx.core.basics import (
     RestoredState,
     TransactionCostsCalculator,
 )
+from qubx.core.connector import IConnector
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import WarmupValidationError
 from qubx.core.helpers import BasicScheduler
@@ -524,9 +527,8 @@ def create_strategy_context(
     _rl_manager = RateLimitManager(config.live.rate_limiting, loop)
 
     _exchange_to_tcc = {}
-    _exchange_to_broker = {}
     _exchange_to_data_provider = {}
-    _exchange_to_account = {}
+    _connectors: dict[str, IConnector] = {}
     _instruments = []
 
     for exchange_name, exchange_config in config.live.exchanges.items():
@@ -534,46 +536,23 @@ def create_strategy_context(
         if rate_limiter is not None:
             exchange_config.params["rate_limiter"] = rate_limiter
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
-        _exchange_to_data_provider[exchange_name] = (
-            data_provider := _create_data_provider(
-                exchange_name,
-                exchange_config,
-                time_provider=_time,
-                channel=_chan,
-                account_manager=account_manager,
-                health_monitor=_health_monitor,
-                loop=loop,
-            )
-        )
-        _exchange_to_account[exchange_name] = (
-            account := _create_account_processor(
-                exchange_name,
-                exchange_config,
-                channel=_chan,
-                time_provider=_time,
-                account_manager=account_manager,
-                tcc=tcc,
-                paper=paper,
-                health_monitor=_health_monitor,
-                live_config=config.live,
-                data_provider=data_provider,
-                restored_state=restored_state.filter_by_exchange(exchange_name) if restored_state else None,
-                read_only=config.live.read_only,
-                loop=loop,
-            )
-        )
-        _exchange_to_broker[exchange_name] = _create_broker(
+        # - paper uses a REAL market-data provider (live quotes/OHLC); only execution is simulated.
+        _exchange_to_data_provider[exchange_name] = _create_data_provider(
             exchange_name,
             exchange_config,
-            _chan,
             time_provider=_time,
-            account=account,
-            data_provider=data_provider,
+            channel=_chan,
             account_manager=account_manager,
             health_monitor=_health_monitor,
-            paper=paper,
             loop=loop,
         )
+        if paper:
+            _connectors[exchange_name] = _create_paper_connector(
+                exchange_name, time_provider=_time, channel=_chan, tcc=tcc
+            )
+        else:
+            # TODO(account-mgmt): live CcxtConnector wiring lands in PR 7 commit 5.
+            raise NotImplementedError("live CcxtConnector wiring lands in PR 7 commit 5")
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
 
     # Use provided aux_configs or resolve if not provided (for backwards compatibility)
@@ -606,11 +585,20 @@ def create_strategy_context(
             f"Strategy {config.name or ''} is trying to access aux data bit no auxiliary storage configured for live mode"
         )
 
-    _account = (
-        CompositeAccountProcessor(_time, _exchange_to_account)
-        if len(exchanges) > 1
-        else _exchange_to_account[exchanges[0]]
+    # - central account manager: paper's simulated execution is synchronous (no pm/ticks),
+    #   so it uses SimulationAccountManager exactly like the backtester. The function param
+    #   `account_manager` is the credentials manager — keep them distinct (`_am`).
+    _am = SimulationAccountManager(
+        connectors=_connectors,
+        strategy=_strategy_class,  # type: ignore
+        time=_time,
+        cfg=AccountManagerConfig(),
+        account_id=stg_name,
+        tcc=_exchange_to_tcc[exchanges[0]],
     )
+    for exchange_name, exchange_config in config.live.exchanges.items():
+        _seed_paper_capital(_am, exchange_name, exchange_config, config.live, account_manager)
+
     _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
 
     # Create exporters if configured
@@ -618,7 +606,7 @@ def create_strategy_context(
         logger.info("Trade exporters disabled via CLI flag")
         _exporter = None
     else:
-        _exporter = create_exporters(config.live.exporters, stg_name, _account) if config.live.exporters else None
+        _exporter = create_exporters(config.live.exporters, stg_name, _am) if config.live.exporters else None
 
     # Create data throttler from config
     _data_throttler = _create_data_throttler(config.live.throttling) if config.live.throttling else None
@@ -633,9 +621,9 @@ def create_strategy_context(
 
     ctx = StrategyContext(
         strategy=_strategy_class,  # type: ignore
-        brokers=list(_exchange_to_broker.values()),
+        connectors=_connectors,
         data_providers=list(_exchange_to_data_provider.values()),
-        account=_account,
+        account_manager=_am,
         scheduler=_sched,
         time_provider=_time,
         instruments=_instruments,
@@ -655,6 +643,11 @@ def create_strategy_context(
         rate_limiting_config=_rate_limiting_config,
         event_loop=loop,
     )
+
+    # - the AM is built before StrategyContext resolves the strategy instance; wire the
+    #   resolved instance now so AM-fired callbacks target the real strategy (mirrors
+    #   backtester/runner.py).
+    _am._strategy = ctx.strategy
 
     # Set context for metric emitters to enable is_live tag and time access
     if _metric_emitter is not None:
@@ -752,6 +745,57 @@ def _create_data_provider(
     )
 
 
+def _resolve_base_currency(
+    exchange_name: str,
+    exchange_config: ExchangeConfig,
+    live_config: LiveConfig,
+    account_manager: AccountConfigurationManager,
+) -> str:
+    # Resolve base_currency with priority: per-exchange YAML > global YAML > accounts.toml
+    if exchange_config.base_currency is not None:
+        return exchange_config.base_currency
+    if live_config.base_currency is not None:
+        return live_config.base_currency
+    return account_manager.get_exchange_settings(exchange_name).base_currency
+
+
+def _create_paper_connector(
+    exchange_name: str,
+    time_provider: ITimeProvider,
+    channel: CtrlChannel,
+    tcc: TransactionCostsCalculator,
+) -> IConnector:
+    """Build a paper-trading connector: a SimulatedConnector wrapping the OME-backed exchange.
+
+    Execution is simulated synchronously (no event loop), while market data still comes from
+    the real CcxtDataProvider built alongside it — mirroring the backtester's connector wiring.
+    """
+    from qubx.backtester.connector import SimulatedConnector
+    from qubx.backtester.simulated_exchange import get_simulated_exchange
+
+    return SimulatedConnector(
+        channel=channel,
+        exchange=get_simulated_exchange(exchange_name, time_provider, tcc),
+        time_provider=time_provider,
+    )
+
+
+def _seed_paper_capital(
+    account_manager: SimulationAccountManager,
+    exchange_name: str,
+    exchange_config: ExchangeConfig,
+    live_config: LiveConfig,
+    credentials_manager: AccountConfigurationManager,
+) -> None:
+    """Seed the per-exchange account state with the configured initial capital (paper mode)."""
+    base_currency = _resolve_base_currency(exchange_name, exchange_config, live_config, credentials_manager)
+    capital = credentials_manager.get_exchange_settings(exchange_name).initial_capital
+    account_manager._states[exchange_name]._update_balance(
+        base_currency,
+        Balance(exchange=exchange_name, currency=base_currency, total=capital, free=capital, locked=0.0),
+    )
+
+
 def _create_account_processor(
     exchange_name: str,
     exchange_config: ExchangeConfig,
@@ -767,13 +811,7 @@ def _create_account_processor(
     read_only: bool = False,
     loop: asyncio.AbstractEventLoop | None = None,
 ) -> IAccountProcessor:
-    # Resolve base_currency with priority: per-exchange YAML > global YAML > accounts.toml
-    if exchange_config.base_currency is not None:
-        base_currency = exchange_config.base_currency
-    elif live_config.base_currency is not None:
-        base_currency = live_config.base_currency
-    else:
-        base_currency = account_manager.get_exchange_settings(exchange_name).base_currency
+    base_currency = _resolve_base_currency(exchange_name, exchange_config, live_config, account_manager)
 
     if paper:
         # Paper trading: create SimulatedAccountProcessor directly (not registered with registry)
