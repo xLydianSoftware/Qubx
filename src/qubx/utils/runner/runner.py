@@ -24,7 +24,7 @@ from qubx.backtester.utils import (
 )
 from qubx.config import settings as qubx_settings
 from qubx.connectors.registry import ConnectorRegistry
-from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.account_manager import AccountManager, SimulationAccountManager
 from qubx.core.account_manager_config import AccountManagerConfig
 from qubx.core.basics import (
     Balance,
@@ -536,8 +536,9 @@ def create_strategy_context(
         if rate_limiter is not None:
             exchange_config.params["rate_limiter"] = rate_limiter
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
-        # - paper uses a REAL market-data provider (live quotes/OHLC); only execution is simulated.
-        _exchange_to_data_provider[exchange_name] = _create_data_provider(
+        # Both paper and live use a REAL market-data provider (live quotes/OHLC); only
+        # paper's *execution* is simulated.
+        _data_provider = _create_data_provider(
             exchange_name,
             exchange_config,
             time_provider=_time,
@@ -546,13 +547,25 @@ def create_strategy_context(
             health_monitor=_health_monitor,
             loop=loop,
         )
+        _exchange_to_data_provider[exchange_name] = _data_provider
+        # Per-exchange connector: paper wraps the OME in a SimulatedConnector (synchronous
+        # execution), live builds the real CcxtConnector (WS execution stream). Everything
+        # downstream (AM, StrategyContext) is identical for both.
         if paper:
             _connectors[exchange_name] = _create_paper_connector(
                 exchange_name, time_provider=_time, channel=_chan, tcc=tcc
             )
         else:
-            # TODO(account-mgmt): live CcxtConnector wiring lands in PR 7 commit 5.
-            raise NotImplementedError("live CcxtConnector wiring lands in PR 7 commit 5")
+            _connectors[exchange_name] = _create_live_connector(
+                exchange_name,
+                time_provider=_time,
+                channel=_chan,
+                account_manager=account_manager,
+                data_provider=_data_provider,
+                health_monitor=_health_monitor,
+                read_only=config.live.read_only,
+                loop=loop,
+            )
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
 
     # Use provided aux_configs or resolve if not provided (for backwards compatibility)
@@ -585,10 +598,14 @@ def create_strategy_context(
             f"Strategy {config.name or ''} is trying to access aux data bit no auxiliary storage configured for live mode"
         )
 
-    # - central account manager: paper's simulated execution is synchronous (no pm/ticks),
-    #   so it uses SimulationAccountManager exactly like the backtester. The function param
+    # - central account manager. Paper's simulated execution is synchronous (no pm/ticks),
+    #   so it uses SimulationAccountManager exactly like the backtester. Live builds the
+    #   real AccountManager WITHOUT a pm — the ProcessingManager lives inside StrategyContext
+    #   (which takes the AM), so the AM↔pm cycle is resolved by registering the periodic ticks
+    #   in AccountManager.set_context once ctx._processing_manager exists. The function param
     #   `account_manager` is the credentials manager — keep them distinct (`_am`).
-    _am = SimulationAccountManager(
+    _am_cls = SimulationAccountManager if paper else AccountManager
+    _am = _am_cls(
         connectors=_connectors,
         strategy=_strategy_class,  # type: ignore
         time=_time,
@@ -596,8 +613,14 @@ def create_strategy_context(
         account_id=stg_name,
         tcc=_exchange_to_tcc[exchanges[0]],
     )
-    for exchange_name, exchange_config in config.live.exchanges.items():
-        _seed_paper_capital(_am, exchange_name, exchange_config, config.live, account_manager)
+    # Paper seeds the configured initial capital per exchange (no venue to query); live seeds
+    # nothing here — balances/positions come from the venue snapshot. Restored state (positions
+    # + balances persisted across restarts) is injected into the AM for both modes.
+    if paper:
+        for exchange_name, exchange_config in config.live.exchanges.items():
+            _seed_paper_capital(_am, exchange_name, exchange_config, config.live, account_manager)
+    if restored_state is not None:
+        _inject_restored_state(_am, restored_state)
 
     _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
 
@@ -775,6 +798,67 @@ def _create_paper_connector(
         exchange=get_simulated_exchange(exchange_name, time_provider, tcc),
         time_provider=time_provider,
     )
+
+
+def _create_live_connector(
+    exchange_name: str,
+    time_provider: ITimeProvider,
+    channel: CtrlChannel,
+    account_manager: AccountConfigurationManager,
+    data_provider: IDataProvider,
+    health_monitor: IHealthMonitor,
+    read_only: bool,
+    loop: asyncio.AbstractEventLoop | None = None,
+) -> IConnector:
+    """Build a live execution connector: the real CcxtConnector for the exchange.
+
+    The connector needs an authenticated ccxt ExchangeManager (to place/cancel/edit orders
+    and watch the execution stream), so it is built from the venue credentials — a separate
+    cached manager from the unauthenticated one the CcxtDataProvider uses for market data
+    (the manager cache keys on api_key/secret). This mirrors how the old CcxtAccountProcessor
+    obtained its ExchangeManager.
+    """
+    from qubx.connectors.ccxt.factory import get_ccxt_connector, get_ccxt_exchange_manager
+
+    creds = account_manager.get_exchange_credentials(exchange_name)
+    exchange_manager = get_ccxt_exchange_manager(
+        exchange=exchange_name,
+        use_testnet=creds.testnet,
+        api_key=creds.api_key,
+        secret=creds.secret,
+        health_monitor=health_monitor,
+        time_provider=time_provider,
+        loop=loop,
+        **(creds.model_extra or {}),
+    )
+    return get_ccxt_connector(
+        exchange_name,
+        channel=channel,
+        time_provider=time_provider,
+        exchange_manager=exchange_manager,
+        data_provider=data_provider,
+        read_only=read_only,
+        loop=loop,
+    )
+
+
+def _inject_restored_state(account_manager: AccountManager, restored_state: RestoredState) -> None:
+    """Seed the central AccountManager's per-exchange state from restored state.
+
+    RestoredState carries persisted positions and balances (no open orders — the venue
+    snapshot reconciles those live). Positions are seeded via _set_position (carrying the
+    persisted accounting fields: commissions, r_pnl, cumulative_funding, funding history),
+    balances via _update_balance — mirroring how the old SimulatedAccountProcessor consumed
+    restored_state. Records for exchanges the AM doesn't manage are skipped.
+    """
+    for instrument, position in restored_state.positions.items():
+        state = account_manager._states.get(instrument.exchange)
+        if state is not None:
+            state._set_position(instrument, position)
+    for balance in restored_state.balances:
+        state = account_manager._states.get(balance.exchange)
+        if state is not None:
+            state._update_balance(balance.currency, balance)
 
 
 def _seed_paper_capital(

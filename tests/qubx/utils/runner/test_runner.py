@@ -259,13 +259,6 @@ class TestRunStrategyYaml:
         # - the resolved strategy instance is wired into the AM for AM-fired callbacks
         assert ctx._account_manager._strategy is ctx.strategy
 
-    @pytest.mark.skip(
-        reason="Restored-state positions/balances are not yet injected into the central "
-        "SimulationAccountManager in the paper runner (the old SimulatedAccountProcessor took "
-        "restored_state=). Restored-state->AM seeding lands with the live connector wiring "
-        "(PR 7 commit 5 / account-mgmt). Paper execution itself is covered by "
-        "test_run_strategy_yaml_with_warmup."
-    )
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")

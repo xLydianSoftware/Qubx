@@ -2,29 +2,22 @@
 This module contains the CCXT connectors for the exchanges.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import ccxt.pro as cxp
 
-from ..broker import CcxtBroker
 from ..connector import CcxtConnector
-from .binance.broker import BinanceCcxtBroker
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.connector import BitfinexCcxtConnector
 from .gateio.gateio import GateioFutures
-from .hyperliquid.account import HyperliquidAccountProcessor
-from .hyperliquid.broker import HyperliquidCcxtBroker
 from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
-from .okx.account import OkxAccountProcessor
-from .okx.broker import OkxCcxtBroker
 from .okx.connector import OkxCcxtConnector
 from .okx.okx import OkxFutures
 
 # Bitfinex requires optional qubx-bitfinex-api package
 try:
     from .bitfinex.bitfinex import BitfinexF
-    from .bitfinex.bitfinex_account import BitfinexAccountProcessor
 
     _HAS_BITFINEX = True
 except ImportError:
@@ -54,38 +47,6 @@ EXCHANGE_ALIASES = {
     "bybit.f": "bybit",
     "gateio.f": "gateio_futures",
     "okx.f": "okx_futures",
-}
-
-@dataclass(frozen=True)
-class BrokerConfig:
-    """Exchange-specific broker class and default kwargs."""
-
-    cls: type
-    kwargs: dict = field(default_factory=dict)
-
-
-CUSTOM_BROKERS: dict[str, BrokerConfig] = {
-    "binance": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": False}),
-    "binance.um": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": True}),
-    "binance.cm": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": False}),
-    "binance.pm": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": False, "enable_cancel_order_ws": False}),
-    **({"bitfinex.f": BrokerConfig(CcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": True})} if _HAS_BITFINEX else {}),
-    "hyperliquid": BrokerConfig(
-        HyperliquidCcxtBroker,
-        {"enable_create_order_ws": True, "enable_cancel_order_ws": False, "enable_edit_order_ws": True},
-    ),
-    "hyperliquid.f": BrokerConfig(
-        HyperliquidCcxtBroker,
-        {"enable_create_order_ws": True, "enable_cancel_order_ws": False, "enable_edit_order_ws": True},
-    ),
-    "okx.f": BrokerConfig(OkxCcxtBroker, {}),
-}
-
-CUSTOM_ACCOUNTS = {
-    **({"bitfinex.f": BitfinexAccountProcessor} if _HAS_BITFINEX else {}),
-    "hyperliquid": HyperliquidAccountProcessor,
-    "hyperliquid.f": HyperliquidAccountProcessor,
-    "okx.f": OkxAccountProcessor,
 }
 
 # CcxtConnector subclasses per exchange (commit 4b). Unlisted exchanges (Binance,

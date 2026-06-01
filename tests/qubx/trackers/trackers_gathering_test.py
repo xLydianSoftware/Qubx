@@ -7,7 +7,6 @@ from pytest import approx
 
 from qubx import logger
 from qubx.backtester.simulator import simulate
-from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
     DataType,
     Deal,
@@ -31,13 +30,12 @@ from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.data import CsvStorage
 from qubx.gathering.simplest import SimplePositionGatherer
-from qubx.health.dummy import DummyHealthMonitor
 from qubx.ta.indicators import sma
 from qubx.trackers.advanced import TimeExpirationTracker
 from qubx.trackers.composite import CompositeTracker, CompositeTrackerPerSide, LongTracker
 from qubx.trackers.riskctrl import AtrRiskTracker, StopTakePositionTracker, TrailingStopPositionTracker
 from qubx.trackers.sizers import FixedLeverageSizer, FixedRiskSizer, FixedSizer
-from tests.qubx.core.utils_test import DummyTimeProvider
+from tests.qubx.core.utils_test import StubAccount
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)  # noqa: E731
 
@@ -76,9 +74,7 @@ class DebugStratageyCtx(IStrategyContext):
         self.capital = capital
 
         positions = {i: Position(i) for i in instrs}
-        self.account = BasicAccountProcessor(
-            "test", DummyTimeProvider(), "USDT", DummyHealthMonitor(), "TEST"
-        )  # , initial_capital=10000.0)
+        self.account = StubAccount(base_currency="USDT", exchange="TEST")
         self.account.update_balance("USDT", capital, 0)
         self.account.attach_positions(*positions.values())
         self._n_orders = 0

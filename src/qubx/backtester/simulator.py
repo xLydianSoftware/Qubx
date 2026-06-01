@@ -1,4 +1,4 @@
-from typing import Literal, cast
+from typing import Literal
 
 import pandas as pd
 from joblib import delayed
@@ -15,7 +15,6 @@ from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import handle_start_stop, to_timestamp, to_utc_naive
 
 from .runner import SimulationRunner
-from .transfers import SimulationTransferManager
 from .utils import (
     ExchangeName_t,
     SimulationDataConfig,
@@ -315,13 +314,15 @@ def _run_setup(
         if enable_inmemory_emitter and emitter is not None:
             emitter_data = emitter.get_dataframe()
 
-        # - get transfers log
+        # - get transfers log: the simulation transfer manager was removed with the old
+        #   account stack (it depended on CompositeAccountProcessor) and nothing wires a
+        #   transfer manager in simulation, so there is no transfers log to collect.
+        #   TODO(account-mgmt): reintroduce inter-exchange transfers on the AccountManager
+        #   if/when multi-exchange capital movement is modelled again.
         transfers_log = None
-        if hasattr(runner.ctx, "_transfer_manager") and isinstance(
-            getattr(runner.ctx, "_transfer_manager"), SimulationTransferManager
-        ):
+        transfer_manager = getattr(runner.ctx, "_transfer_manager", None)
+        if transfer_manager is not None and hasattr(transfer_manager, "get_transfers_dataframe"):
             try:
-                transfer_manager = cast(SimulationTransferManager, getattr(runner.ctx, "_transfer_manager"))
                 transfers_log = transfer_manager.get_transfers_dataframe()
             except Exception as e:
                 logger.error(f"Failed to get transfers log: {e}")

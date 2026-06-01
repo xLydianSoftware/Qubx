@@ -5,13 +5,10 @@ from pytest import approx
 from qubx.connectors.ccxt.utils import (
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
-    ccxt_extract_deals_from_exec,
     ccxt_restore_position_from_deals,
 )
-from qubx.core.account import BasicAccountProcessor
-from qubx.core.basics import ZERO_COSTS, CtrlChannel, Deal, Instrument, ITimeProvider, Position, dt_64
+from qubx.core.basics import Deal, Instrument, Position
 from qubx.core.lookups import lookup
-from qubx.health.dummy import DummyHealthMonitor
 from tests.qubx.connectors.ccxt.data.ccxt_responses import (
     C1,
     C2,
@@ -21,17 +18,7 @@ from tests.qubx.connectors.ccxt.data.ccxt_responses import (
     C5new,
     C6ex,
     C7cancel,
-    buy_RAREUSDT1,
-    buy_RAREUSDT2,
-    buy_RAREUSDT3,
-    execs_ACA,
-    execs_SUPERUSDT1,
-    execs_SUPERUSDT2,
-    execs_SUPERUSDT3,
-    sell_RAREUSDT1,
-    sell_RAREUSDT2,
 )
-from tests.qubx.core.utils_test import DummyTimeProvider
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
@@ -292,45 +279,3 @@ class TestStrats:
 
         pos2 = ccxt_restore_position_from_deals(pos2, vol2, deals)
         assert N(pos2.quantity, instr2.lot_size) == vol2
-
-    def test_account_processor_from_ccxt_reports(self):
-        acc = BasicAccountProcessor(
-            account_id="TestAcc1",
-            time_provider=DummyTimeProvider(),
-            base_currency="USDT",
-            health_monitor=DummyHealthMonitor(),
-            exchange="BINANCE",
-            initial_capital=100,
-        )
-        acc.attach_positions(
-            Position(lookup.find_symbol("BINANCE", "RAREUSDT")),  # type: ignore
-            Position(lookup.find_symbol("BINANCE", "SUPERUSDT")),  # type: ignore
-            Position(lookup.find_symbol("BINANCE", "ACAUSDT")),  # type: ignore
-        )
-
-        for exs in [
-            *execs_ACA,
-            buy_RAREUSDT1,
-            buy_RAREUSDT2,
-            buy_RAREUSDT3,
-            sell_RAREUSDT1,
-            sell_RAREUSDT2,
-            execs_SUPERUSDT1,
-            execs_SUPERUSDT2,
-            execs_SUPERUSDT3,
-        ]:
-            for report in exs:
-                symbol = report["info"]["s"]
-                instrument = lookup.find_symbol("BINANCE", symbol)  # type: ignore
-                order = ccxt_convert_order_info(instrument, report)
-                deals = ccxt_extract_deals_from_exec(report)
-                acc.process_deals(symbol, deals)
-                acc.process_order(order)
-
-        print("- " * 50)
-        print(pd.DataFrame.from_dict(acc.position_report()).T)
-        print("- " * 50)
-        print(f"Capital: {acc.get_capital()}")
-        print(f"Margin Capital: {acc.get_total_capital()}")
-        print(f"Net leverage: {acc.get_net_leverage()}")
-        print(f"Gross leverage: {acc.get_gross_leverage()}")

@@ -80,7 +80,7 @@ class AccountManager:
     def __init__(
         self,
         *,
-        pm,
+        pm=None,
         connectors,
         strategy,
         time,
@@ -90,7 +90,12 @@ class AccountManager:
     ):
         self._pm = pm
         self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
-        self._register_ticks()
+        # The live runner builds the AM before the ProcessingManager (which lives inside
+        # StrategyContext and needs the AM), so pm is None there — ticks register later in
+        # set_context once ctx._processing_manager exists. Direct-construction callers
+        # (tests) still pass pm and get ticks immediately.
+        if self._pm is not None:
+            self._register_ticks()
 
     def _init_state(self, *, connectors, strategy, time, cfg, account_id, tcc) -> None:
         # Shared field init for both the live and simulation managers, so the
@@ -121,8 +126,15 @@ class AccountManager:
 
         AM-fired callbacks (reconcile, inflight-exhaustion) pass this ctx so their
         signature matches PM-fired callbacks — no None placeholder.
+
+        Live: the AM is built before the ProcessingManager (the AM↔pm cycle — pm lives
+        inside StrategyContext, which takes the AM), so pm is None at construction and
+        the periodic ticks register HERE, once ctx._processing_manager exists.
         """
         self._ctx = ctx
+        if self._pm is None:
+            self._pm = ctx._processing_manager
+            self._register_ticks()
 
     def add_order(self, exchange: str, order: Order) -> None:
         self._states[exchange]._add_order(order)
@@ -861,3 +873,9 @@ class SimulationAccountManager(AccountManager):
         self._pm = None
         self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
         # Backtest has no asyncio/WS/periodic scheduling — no ticks registered.
+
+    def set_context(self, ctx) -> None:
+        # Backtest is synchronous: wire the ctx but NEVER register periodic ticks
+        # (no PM scheduler drives them in simulation). Overrides the base, which would
+        # otherwise pull pm from ctx and schedule.
+        self._ctx = ctx
