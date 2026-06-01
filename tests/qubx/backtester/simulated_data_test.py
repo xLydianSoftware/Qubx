@@ -339,8 +339,9 @@ class TestSimulatedDataIterator:
         for d in isd.create_iterable("2023-07-02", "2023-07-03"):
             instr, data_type, event, is_hist = d[0], d[1], d[2], d[3]
 
-            # - all events produce "ohlc" data type (both are EmulatedBarSequence)
-            assert data_type == "ohlc", f"Expected 'ohlc', got '{data_type}'"
+            # - events carry the parameterized OHLC type (the iterator labels OHLC with
+            #   its requested timeframe so typed events/cache get the right ohlc(<tf>))
+            assert data_type in ("ohlc(1h)", "ohlc(4h)"), f"Expected 'ohlc(1h|4h)', got '{data_type}'"
 
             # - check monotonic time (non-decreasing)
             if event.time < prev_time:

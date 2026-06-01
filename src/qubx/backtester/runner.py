@@ -12,6 +12,7 @@ from qubx.core.account_manager import SimulationAccountManager
 from qubx.core.account_manager_config import AccountManagerConfig
 from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
+from qubx.core.events import ScheduledEvent, event_for_data_type
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
 from qubx.core.initializer import BasicStrategyInitializer
@@ -27,6 +28,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup
+from qubx.core.mixins.processing import ProcessingManager
 from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 from qubx.core.utils import time_delta_to_str
 from qubx.data.cache import CachedStorage, MemoryCache
@@ -216,7 +218,7 @@ class SimulationRunner:
 
             while sigs and t >= (_signal_time := sigs[0][0].as_unit("ns").asm8):
                 self.time_provider.set_time(_signal_time)
-                cc.send((instrument, "event", {"order": sigs[0][1]}, False))
+                cc.send(ScheduledEvent(instrument=instrument, kind="event", payload={"order": sigs[0][1]}))
                 sigs.pop(0)
 
             if q := _exchange.emulate_quote_from_data(instrument, t, data):
@@ -226,7 +228,7 @@ class SimulationRunner:
         # - drive the OME so resting orders match against this tick (emits typed events)
         if not is_hist:
             self._feed_ome(instrument, data)
-        cc.send((instrument, data_type, data, is_hist))
+        self._send_market_data(instrument, data_type, data, is_hist)
 
         return cc.control.is_set()
 
@@ -252,9 +254,22 @@ class SimulationRunner:
         #   before the strategy places stop/limit orders against it.
         if not is_hist:
             self._feed_ome(instrument, data)
-        cc.send((instrument, data_type, data, is_hist))
+        self._send_market_data(instrument, data_type, data, is_hist)
 
         return cc.control.is_set()
+
+    def _send_market_data(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> None:
+        # Live market-data types that have a typed event go on the channel as that event
+        # (routed to ProcessingManager.process_event). Historical batches and live types
+        # without a typed event (e.g. features/record) stay tuples on the __process_data
+        # path. The convertible set mirrors the process_data adapter so both producers and
+        # the adapter agree on what becomes a typed event.
+        # TODO(account-mgmt): historical batches still ride the tuple/__process_data path;
+        # PR10 revisits converting warmup data to typed historical events.
+        if is_hist or DataType.from_str(data_type)[0] not in ProcessingManager._LIVE_MARKET_DATA_TYPES:
+            self.channel.send((instrument, data_type, data, is_hist))
+        else:
+            self.channel.send(event_for_data_type(data_type, instrument=instrument, payload=data))
 
     def _feed_ome(self, instrument: Instrument, data: Any) -> None:
         # The OME matches on Quote/OrderBook/Trade/TradeArray only; OHLC bars (and

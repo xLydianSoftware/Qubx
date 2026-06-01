@@ -575,7 +575,14 @@ class DataPump:
             self._transformer.set_emulation_adjustment_time(time_indent_seconds)
 
     @property
-    def producing_data_type(self) -> str:
+    def event_data_type(self) -> str:
+        # The type label carried on emitted records. For OHLC the producing type is the
+        # bare "ohlc" but downstream typed events (and the cache) need the parameterized
+        # "ohlc(<tf>)"; the requested type carries that timeframe. Tick-emulated OHLC
+        # (ohlc_quotes/ohlc_trades) produces unparameterized quote/trade, so the producing
+        # type is already the right label.
+        if self._producing_data_type == DataType.OHLC:
+            return self._requested_data_type
         return self._producing_data_type
 
     # -----------------------------------------------------------------------
@@ -1142,7 +1149,9 @@ class SimulatedDataIterator(Iterator):
                     return None, "", v, False
 
                 instr, pump, subt = self._instruments[k]
-                data_type = pump.producing_data_type
+                # - parameterized label (ohlc -> ohlc(<tf>)) so typed events carry the
+                #   timeframe; non-OHLC types are returned unparameterized as-is.
+                data_type = pump.event_data_type
                 is_historical = False
                 if t < self._current_time:
                     is_historical = True
