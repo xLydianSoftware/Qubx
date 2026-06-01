@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import signal
 import traceback
@@ -76,8 +77,6 @@ from .mixins import (
 )
 
 if TYPE_CHECKING:
-    import asyncio
-
     from qubx.control.executor import ActionExecutor
     from qubx.utils.throttler import InstrumentThrottler
 
@@ -163,11 +162,16 @@ class StrategyContext(IStrategyContext):
         state_persistence: IStatePersistence | None = None,
         state_snapshot_interval: str | None = None,
         rate_limiting_config: Any | None = None,
-        event_loop: "asyncio.AbstractEventLoop | None" = None,
+        event_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self._account_manager = account_manager
-        # self.account is the IAccountViewer surface the strategy/mixins read from;
-        # AccountManager satisfies it fully.
+        # self.account exposes the read-only IAccountViewer surface (the strategy and
+        # mixins read positions/balances/capital through it); self._account_manager is
+        # the same object kept under its concrete type for the state-machine operations
+        # (apply/add_order/transition_order/set_context) that are not on the viewer.
+        # TODO(account-mgmt): IStrategyContext.account is still typed IAccountProcessor;
+        # drop the public attribute (callers use ctx.get_position/get_balance/...) or
+        # retype it to IAccountViewer in the cleanup pass.
         self.account = account_manager
         self.strategy = self.__instantiate_strategy(strategy, config)
         self.emitter = emitter if emitter is not None else IMetricEmitter()
@@ -920,8 +924,8 @@ class StrategyContext(IStrategyContext):
 
             try:
                 # - waiting for incoming data (with timeout so commands are checked regularly).
-                #   The channel carries BOTH typed ChannelMessages (from connectors) and
-                #   legacy market-data tuples (instrument, d_type, data, hist).
+                #   The channel carries two payload shapes: typed ChannelMessages (order/account
+                #   events from connectors) and market-data tuples (instrument, d_type, data, hist).
                 msg = channel.receive(timeout=1)
 
                 if isinstance(msg, ChannelMessage):

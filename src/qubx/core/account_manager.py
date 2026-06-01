@@ -788,9 +788,10 @@ class AccountManager:
         return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
 
     # Per-instrument exchange-side settings: the venue's configured leverage tier,
-    # hard caps and margin mode. These are not tracked by AccountManager (they live
-    # on the venue), so they default to the same neutral values the base
-    # IAccountProcessor uses for connectors without the concept.
+    # hard caps and margin mode. Simulation does not model margin, so these return
+    # neutral values; the real settings live on the venue.
+    # TODO(account-mgmt): back these with venue-sourced leverage/margin/mode held in
+    # AccountState once the margin-aware live connectors are wired.
     def get_instrument_leverage(self, instrument: Instrument) -> float | None:
         return None
 
