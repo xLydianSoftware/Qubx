@@ -5,6 +5,7 @@ import numpy as np
 from qubx.core.basics import Deal
 from qubx.core.events import OrderAcceptedEvent, OrderFilledEvent, QuoteEvent
 from qubx.core.mixins.processing import ProcessingManager, _CounterSink
+from qubx.core.series import Quote
 
 
 def _pm() -> ProcessingManager:
@@ -26,13 +27,23 @@ def _pm() -> ProcessingManager:
     return pm
 
 
-def test_quote_event_marks_to_market_only():
-    # A typed QuoteEvent feeds AM mark-to-market and does NOT touch AM.apply or
-    # fire any strategy market-data callback (those stay on on_market_data).
+def test_quote_event_marks_to_market_and_runs_pipeline():
+    # A typed QuoteEvent rides the full market-data path: it updates base data
+    # (which feeds AM mark-to-market off the quote mid) and runs the strategy
+    # pipeline. It is NOT an AccountMessage, so AM.apply is never touched.
     pm = _pm()
-    pm.process_event(QuoteEvent(instrument=MagicMock(), quote=MagicMock()))
+    pm._data_throttler = None
+    pm._time_provider = MagicMock()
+    pm._run_strategy_pipeline = MagicMock()
+    pm._ProcessingManager__update_base_data = MagicMock(return_value=True)
+
+    quote = Quote(0, 100.0, 101.0, 1.0, 1.0)
+    instrument = MagicMock()
+    pm.process_event(QuoteEvent(instrument=instrument, quote=quote))
+
     pm._account_manager.apply.assert_not_called()
-    pm._account_manager.on_market_quote.assert_called_once()
+    pm._ProcessingManager__update_base_data.assert_called_once_with(instrument, "quote", quote)
+    pm._run_strategy_pipeline.assert_called_once()
 
 
 def test_filled_event_routes_through_am_then_strategy():
