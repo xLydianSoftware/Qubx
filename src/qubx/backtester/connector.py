@@ -2,7 +2,7 @@ import asyncio
 
 from qubx.backtester.ome import SimulatedExecutionReport
 from qubx.backtester.simulated_exchange import ISimulatedExchange
-from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest, Timestamped
+from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest, OrderStatus, Timestamped
 from qubx.core.connector import ChannelEmitter
 from qubx.core.events import (
     AccountSnapshot,
@@ -175,10 +175,9 @@ class SimulatedConnector(ChannelEmitter):
     def _emit_from_report(self, report: SimulatedExecutionReport) -> None:
         order = report.order
         status = order.status
-        # Raw UPPERCASE status strings from the OME (not the lowercase OrderStatus enum used elsewhere
-        # in core). The OME emits "OPEN", "CLOSED", and "CANCELED" in practice; "NEW" and "FILLED"
-        # are accepted defensively for forward-compatibility with other exchange adapters.
-        if status in ("OPEN", "NEW"):
+        # The OME emits ACCEPTED (resting / just-placed) and CANCELED on the order; a fill
+        # carries the deal in report.exec with status FILLED.
+        if status in (OrderStatus.ACCEPTED, OrderStatus.SUBMITTED):
             self.send(
                 OrderAcceptedEvent(
                     instrument=report.instrument,
@@ -187,7 +186,7 @@ class SimulatedConnector(ChannelEmitter):
                     accepted_at=report.timestamp,
                 )
             )
-        elif status == "CANCELED":
+        elif status == OrderStatus.CANCELED:
             self.send(
                 OrderCanceledEvent(
                     instrument=report.instrument,
@@ -196,9 +195,9 @@ class SimulatedConnector(ChannelEmitter):
                 )
             )
         if report.exec is not None:
-            # OME marks a fully-filled order CLOSED; a still-OPEN order with an exec
-            # is a partial fill (resting remainder stays in the book).
-            if status in ("CLOSED", "FILLED"):
+            # A FILLED order is fully filled; a still-live order with an exec is a partial
+            # fill (resting remainder stays in the book).
+            if status == OrderStatus.FILLED:
                 self.send(
                     OrderFilledEvent(
                         instrument=report.instrument,

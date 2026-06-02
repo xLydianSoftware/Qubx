@@ -7,6 +7,7 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Order,
+    OrderStatus,
     Timestamped,
     TransactionCostsCalculator,
     dt_64,
@@ -179,10 +180,10 @@ class BasicSimulatedExchange(ISimulatedExchange):
     def _process_ome_response(self, report: SimulatedExecutionReport | None) -> SimulatedExecutionReport | None:
         if report is not None:
             _order = report.order
-            _new = _order.status == "NEW"
-            _open = _order.status == "OPEN"
-            _cancel = _order.status == "CANCELED"
-            _closed = _order.status == "CLOSED"
+            _new = _order.status == OrderStatus.SUBMITTED
+            _open = _order.status == OrderStatus.ACCEPTED
+            _cancel = _order.status == OrderStatus.CANCELED
+            _closed = _order.status == OrderStatus.FILLED
 
             if _new or _open:
                 self._order_to_instrument[_order.id] = _order.instrument

@@ -12,6 +12,7 @@ from qubx.core.basics import (
     CtrlChannel,
     ITimeProvider,
     OrderRequest,
+    OrderStatus,
 )
 from qubx.core.connector import IConnector
 from qubx.core.events import (
@@ -75,7 +76,7 @@ def test_submit_limit_emits_accepted_event():
     exchange = MagicMock()
     exchange.exchange_id = "binance.um"
     report = MagicMock()
-    report.order.status = "OPEN"
+    report.order.status = OrderStatus.ACCEPTED
     report.order.id = "V1"
     report.order.client_id = "qubx-1"
     report.exec = None
