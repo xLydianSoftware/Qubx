@@ -1816,16 +1816,6 @@ class IPositionGathering:
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
 
-    def on_order_update(self, ctx: IStrategyContext, order: Order) -> None:
-        """
-        Called when an order status is updated.
-
-        Args:
-            ctx: Strategy context object
-            order: The order with updated status
-        """
-        pass
-
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """
         Called when an error occurs.
@@ -2722,16 +2712,6 @@ class IStrategy(metaclass=Mixable):
         on_market_data->signals path; does not itself generate signals."""
         ...
 
-    def on_order_update(self, ctx: IStrategyContext, order: Order) -> list[Signal] | Signal | None:
-        """
-        Called when an order update is received.
-
-        Args:
-            ctx: Strategy context.
-            order: The order update.
-        """
-        return None
-
     def on_deals(self, ctx: IStrategyContext, instrument: Instrument, deals: list[Deal]) -> None:
         """
         Called when deals are received.
@@ -2756,17 +2736,11 @@ class IStrategy(metaclass=Mixable):
 
     def on_order_updated(self, ctx: IStrategyContext, order: Order) -> None: ...
 
-    def on_order_cancel_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None:
-        logger.warning(
-            f"[{order.client_order_id}] cancel rejected by venue: {reason}; "
-            f"order is STILL ALIVE at the venue"
-        )
+    # The venue-rejection warning is logged by ProcessingManager's dispatch, not here:
+    # a default-method body is silently lost if a strategy overrides without super().
+    def on_order_cancel_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
 
-    def on_order_update_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None:
-        logger.warning(
-            f"[{order.client_order_id}] update rejected by venue: {reason}; "
-            f"order is STILL ALIVE with prior parameters"
-        )
+    def on_order_update_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
 
     def on_position_update(self, ctx: IStrategyContext, position: Position) -> None: ...
 

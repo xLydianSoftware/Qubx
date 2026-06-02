@@ -2,8 +2,15 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
+from qubx import logger
 from qubx.core.basics import Deal
-from qubx.core.events import OrderAcceptedEvent, OrderFilledEvent, QuoteEvent
+from qubx.core.events import (
+    OrderAcceptedEvent,
+    OrderCancelRejectedEvent,
+    OrderFilledEvent,
+    OrderUpdateRejectedEvent,
+    QuoteEvent,
+)
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.core.series import Quote
 
@@ -97,3 +104,31 @@ def test_am_apply_error_is_swallowed_and_does_not_raise():
     )
     pm._account_manager.apply.assert_called_once()
     pm._strategy.on_order_accepted.assert_not_called()
+
+
+def test_cancel_rejected_logs_warning_in_dispatch():
+    # The venue-rejection warning lives in the dispatch, so it fires regardless of whether a
+    # strategy overrides on_order_cancel_rejected.
+    pm = _pm()
+    pm._account_manager.apply.return_value = MagicMock(client_order_id="C-1")
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(m), level="WARNING")
+    try:
+        pm.process_event(OrderCancelRejectedEvent(instrument=MagicMock(), client_order_id="C-1", reason="nope"))
+    finally:
+        logger.remove(sink)
+    assert any("STILL ALIVE at the venue" in m for m in messages)
+    pm._strategy.on_order_cancel_rejected.assert_called_once()
+
+
+def test_update_rejected_logs_warning_in_dispatch():
+    pm = _pm()
+    pm._account_manager.apply.return_value = MagicMock(client_order_id="C-2")
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(m), level="WARNING")
+    try:
+        pm.process_event(OrderUpdateRejectedEvent(instrument=MagicMock(), client_order_id="C-2", reason="nope"))
+    finally:
+        logger.remove(sink)
+    assert any("STILL ALIVE with prior parameters" in m for m in messages)
+    pm._strategy.on_order_update_rejected.assert_called_once()

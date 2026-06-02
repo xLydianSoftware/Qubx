@@ -511,13 +511,6 @@ class ProcessingManager(IProcessingManager):
                 # - we reset failures counter when we successfully process on_event
                 self._fails_counter = 0
 
-            if isinstance(event, Order):
-                with self._health_monitor("stg.order_update"):
-                    signals.extend(self._as_list(self._strategy.on_order_update(self._context, event)))
-
-                # Notify position gatherer about order update
-                self._position_gathering.on_order_update(self._context, event)
-
             self._subscription_manager.commit()  # apply pending operations
 
         except Exception as strat_error:
@@ -1344,8 +1337,16 @@ class ProcessingManager(IProcessingManager):
             case OrderRejectedEvent():
                 self._safe_call(self._strategy.on_order_rejected, updated, event.reason)
             case OrderCancelRejectedEvent():
+                logger.warning(
+                    f"[{event.client_order_id}] cancel rejected by venue: {event.reason}; "
+                    f"order is STILL ALIVE at the venue"
+                )
                 self._safe_call(self._strategy.on_order_cancel_rejected, updated, event.reason)
             case OrderUpdateRejectedEvent():
+                logger.warning(
+                    f"[{event.client_order_id}] update rejected by venue: {event.reason}; "
+                    f"order is STILL ALIVE with prior parameters"
+                )
                 self._safe_call(self._strategy.on_order_update_rejected, updated, event.reason)
             case PositionUpdateEvent():
                 self._safe_call(self._strategy.on_position_update, event.position)
