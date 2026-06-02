@@ -388,7 +388,7 @@ def test_resolve_via_terminal_history_fallback():
     )
     state = am._states["binance"]
     # no phantom EXTERNAL order materialized
-    assert "ext:V1" not in state.active_orders
+    assert "ext:V1" not in state._active_orders
     assert state.get_order("cid-1").status is OrderStatus.FILLED
 
 
@@ -403,7 +403,7 @@ def test_resolve_via_venue_id_index():
     )
     o = am._states["binance"].get_order("cid-1")
     assert o.filled_quantity == 0.4
-    assert "ext:V1" not in am._states["binance"].active_orders
+    assert "ext:V1" not in am._states["binance"]._active_orders
 
 
 def test_late_cancel_on_filled_order_is_noop():
@@ -455,7 +455,7 @@ def test_late_fill_on_evicted_order_does_not_raise():
     am._states["binance"].set_venue_id("cid-1", "V1")
     am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.0)))
     am._states["binance"].evict_to_history("cid-1")
-    assert "cid-1" not in am._states["binance"].active_orders
+    assert "cid-1" not in am._states["binance"]._active_orders
 
     # each of these resolves to the evicted order via the terminal-history fallback
     am.apply(
@@ -471,9 +471,9 @@ def test_late_fill_on_evicted_order_does_not_raise():
     )
 
     state = am._states["binance"]
-    assert "cid-1" not in state.active_orders
-    assert "ext:V1" not in state.active_orders
-    assert "ext:cid-1" not in state.active_orders
+    assert "cid-1" not in state._active_orders
+    assert "ext:V1" not in state._active_orders
+    assert "ext:cid-1" not in state._active_orders
     # the evicted order remains FILLED and untouched
     assert state.get_order("cid-1").status is OrderStatus.FILLED
 

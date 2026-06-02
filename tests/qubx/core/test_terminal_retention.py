@@ -86,7 +86,7 @@ def test_terminal_in_active_during_grace():
     # sweep before grace elapses -> still in active_orders
     am._time.adv(10_000)
     am._sweep_terminal_evictions()
-    assert "cid-1" in state.active_orders
+    assert "cid-1" in state._active_orders
 
 
 def test_terminal_evicted_after_grace():
@@ -97,7 +97,7 @@ def test_terminal_evicted_after_grace():
     am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill()))
     am._time.adv(31_000)
     am._sweep_terminal_evictions()
-    assert "cid-1" not in state.active_orders
+    assert "cid-1" not in state._active_orders
     # still resolvable from terminal history
     assert state.get_order("cid-1").status is OrderStatus.FILLED
 
@@ -112,15 +112,15 @@ def test_late_accepted_on_terminal_sets_venue_id_no_phantom():
     # evict to history then deliver a late OrderAccepted resolving via venue/cid
     am._time.adv(31_000)
     am._sweep_terminal_evictions()
-    assert "cid-1" not in state.active_orders
+    assert "cid-1" not in state._active_orders
     am.apply(
         OrderAcceptedEvent(
             instrument=inst, client_order_id="cid-1", venue_order_id="V1", accepted_at=np.datetime64("2026-05-28")
         )
     )
     # no phantom EXTERNAL order, evicted order remains FILLED
-    assert "ext:V1" not in state.active_orders
-    assert "cid-1" not in state.active_orders
+    assert "ext:V1" not in state._active_orders
+    assert "cid-1" not in state._active_orders
     assert state.get_order("cid-1").status is OrderStatus.FILLED
 
 
@@ -133,5 +133,5 @@ def test_terminal_eviction_runs_on_inflight_tick():
     am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill()))
     am._time.adv(31_000)
     am._sweep_terminal_evictions()
-    assert "cid-1" not in state.active_orders
+    assert "cid-1" not in state._active_orders
     assert len(state._terminal_history) == 1

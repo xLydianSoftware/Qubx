@@ -47,63 +47,60 @@ class MarketDataMessage(ChannelMessage):
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderAcceptedEvent(AccountMessage):
+class OrderEvent(AccountMessage):
+    """Base for order-lifecycle events, addressed by ``client_order_id`` (always present —
+    synthesized ``ext:<venue_id>`` for external orders). ``venue_order_id`` is None until
+    the venue acks (and stays None on reject events that never reached the venue)."""
+
     client_order_id: str
-    venue_order_id: str
+    venue_order_id: str | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class OrderAcceptedEvent(OrderEvent):
     accepted_at: np.datetime64
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderRejectedEvent(AccountMessage):
-    client_order_id: str
+class OrderRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderPartiallyFilledEvent(AccountMessage):
-    client_order_id: str
-    venue_order_id: str | None
+class OrderPartiallyFilledEvent(OrderEvent):
     fill: Deal
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderFilledEvent(AccountMessage):
-    client_order_id: str
-    venue_order_id: str | None
+class OrderFilledEvent(OrderEvent):
     fill: Deal
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderCanceledEvent(AccountMessage):
-    client_order_id: str
-    venue_order_id: str | None
+class OrderCanceledEvent(OrderEvent):
+    pass
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderExpiredEvent(AccountMessage):
-    client_order_id: str
-    venue_order_id: str | None
+class OrderExpiredEvent(OrderEvent):
+    pass
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderUpdatedEvent(AccountMessage):
-    client_order_id: str
-    venue_order_id: str
+class OrderUpdatedEvent(OrderEvent):
     new_price: float | None
     new_quantity: float | None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderCancelRejectedEvent(AccountMessage):
-    client_order_id: str
+class OrderCancelRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
-class OrderUpdateRejectedEvent(AccountMessage):
-    client_order_id: str
+class OrderUpdateRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
 

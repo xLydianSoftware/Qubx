@@ -268,7 +268,7 @@ class CcxtConnector(ChannelEmitter):
         if order.venue_order_id is not None:
             self._index_venue_id(cid, order.venue_order_id)
         cached.status = order.status
-        if order.status.is_terminal():
+        if order.status.is_terminal:
             self._evict(cid)
 
     def _evict(self, client_order_id: str) -> None:

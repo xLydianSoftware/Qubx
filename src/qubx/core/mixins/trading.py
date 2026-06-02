@@ -164,7 +164,7 @@ class TradingManager(ITradingManager):
         # instead of materializing a phantom EXTERNAL twin. A sync raise from
         # submit_order is a framework-side rejection — mark the order REJECTED so the
         # cache never keeps a phantom in-flight order.
-        self._account_manager.add_order(connector.exchange_name, order)
+        self._account_manager.add_order(order)
         try:
             connector.submit_order(request)
         except Exception:
@@ -360,7 +360,7 @@ class TradingManager(ITradingManager):
         if order is None:
             raise OrderNotFound(client_order_id or order_id or "")
 
-        if order.status.is_terminal() or order.status is OrderStatus.PENDING_CANCEL:
+        if order.status.is_terminal or order.status is OrderStatus.PENDING_CANCEL:
             return True
 
         cid = order.client_order_id
@@ -380,7 +380,7 @@ class TradingManager(ITradingManager):
 
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         for o in self._account_manager.get_orders(instrument).values():
-            if o.status.is_terminal() or o.status is OrderStatus.PENDING_CANCEL:
+            if o.status.is_terminal or o.status is OrderStatus.PENDING_CANCEL:
                 continue
             self.cancel_order(client_order_id=o.client_order_id, exchange=o.instrument.exchange)
 
@@ -402,7 +402,7 @@ class TradingManager(ITradingManager):
         if order is None:
             raise OrderNotFound(client_order_id or order_id or "")
 
-        if order.status.is_terminal():
+        if order.status.is_terminal:
             raise OrderAlreadyTerminal(order.client_order_id, order.status)
         if order.status is OrderStatus.PENDING_UPDATE:
             return

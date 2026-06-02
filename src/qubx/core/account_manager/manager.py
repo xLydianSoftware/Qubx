@@ -1,5 +1,5 @@
 from collections import deque
-from typing import Literal
+from typing import TYPE_CHECKING, Literal
 
 import numpy as np
 
@@ -10,12 +10,14 @@ from qubx.core.account_manager.state_machine import can_transition, validate_tra
 from qubx.core.basics import (
     Balance,
     Instrument,
+    ITimeProvider,
     Order,
     OrderOrigin,
     OrderStatus,
     Position,
     TransactionCostsCalculator,
 )
+from qubx.core.connector import IConnector
 from qubx.core.events import (
     AccountMessage,
     AccountSnapshotEvent,
@@ -24,6 +26,7 @@ from qubx.core.events import (
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
+    OrderEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
@@ -35,6 +38,11 @@ from qubx.core.events import (
 )
 from qubx.core.exceptions import InvalidOrderTransition
 
+if TYPE_CHECKING:
+    from qubx.core.context import StrategyContext
+    from qubx.core.interfaces import IStrategy
+    from qubx.core.mixins.processing import ProcessingManager
+
 # Client-id prefix that marks an order as framework-originated. MUST match the prefix
 # ClientIdStore._create_id produces in qubx.core.mixins.trading ("qubx_<symbol>_<n>");
 # a snapshot order carrying it is a RECOVERED framework order, anything else is EXTERNAL.
@@ -45,10 +53,10 @@ class AccountManager:
     def __init__(
         self,
         *,
-        pm=None,
-        connectors,
-        strategy,
-        time,
+        pm: "ProcessingManager | None" = None,
+        connectors: dict[str, IConnector],
+        strategy: "IStrategy",
+        time: ITimeProvider,
         cfg: AccountManagerConfig | None = None,
         account_id: str = "AccountManager",
         tcc: TransactionCostsCalculator | None = None,
@@ -62,7 +70,16 @@ class AccountManager:
         if self._pm is not None:
             self._register_ticks()
 
-    def _init_state(self, *, connectors, strategy, time, cfg, account_id, tcc) -> None:
+    def _init_state(
+        self,
+        *,
+        connectors: dict[str, IConnector],
+        strategy: "IStrategy",
+        time: ITimeProvider,
+        cfg: AccountManagerConfig | None,
+        account_id: str,
+        tcc: TransactionCostsCalculator | None,
+    ) -> None:
         # Shared field init for both the live and simulation managers, so the
         # subclass can't silently drift from the parent's field set.
         self._connectors = connectors
@@ -76,7 +93,8 @@ class AccountManager:
         # TODO(account-mgmt): this set grows unbounded over long sessions; bound it
         # (evict old buckets) in a later PR.
         self._applied_funding_buckets: dict[str, set] = {}
-        self._ctx = None  # set via set_context once StrategyContext is built
+        # Deferred init: always wired via set_context before any tick/callback fires.
+        self._ctx: "StrategyContext" = None  # type: ignore[assignment]
 
     def _register_ticks(self) -> None:
         if self._cfg.inflight_check_interval_ms > 0:
@@ -86,7 +104,7 @@ class AccountManager:
         if self._cfg.liveness_check_interval_ms > 0:
             self._pm.schedule(_ms_to_cron(self._cfg.liveness_check_interval_ms), self._on_liveness_tick)
 
-    def set_context(self, ctx) -> None:
+    def set_context(self, ctx: "StrategyContext") -> None:
         """Wire the IStrategyContext after construction.
 
         AM-fired callbacks (reconcile, inflight-exhaustion) pass this ctx so their
@@ -101,12 +119,13 @@ class AccountManager:
             self._pm = ctx._processing_manager
             self._register_ticks()
 
-    def add_order(self, exchange: str, order: Order) -> None:
-        self._states[exchange].add_order(order)
+    def add_order(self, order: Order) -> None:
+        # exchange is derived from the order's instrument — no separate parameter needed.
+        self._states[order.instrument.exchange].add_order(order)
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
         state = self._states[exchange]
-        order = state.active_orders.get(cid)
+        order = state._active_orders.get(cid)
         if order is None:
             raise KeyError(f"order {cid} not found in {exchange}")
         validate_transition(cid, order.status, new_status)
@@ -121,7 +140,7 @@ class AccountManager:
         it; tick/snapshot callers guard or expect only legal moves). ``transition_order``
         is the low-level setter — the legality check lives here, in AccountManager.
         """
-        validate_transition(cid, state.active_orders[cid].status, new_status)
+        validate_transition(cid, state._active_orders[cid].status, new_status)
         return state.transition_order(cid, new_status, self._time.time())
 
     def get_state(self, exchange: str) -> AccountState:
@@ -140,7 +159,7 @@ class AccountManager:
         # Public "open orders" view: terminal orders are retained in active_orders
         # during the grace window for late-event resolution, but callers reading
         # get_orders() want only live orders.
-        orders = {cid: o for cid, o in orders.items() if not o.status.is_terminal()}
+        orders = {cid: o for cid, o in orders.items() if not o.status.is_terminal}
         if instrument is not None:
             orders = {cid: o for cid, o in orders.items() if o.instrument == instrument}
         if origin is not None:
@@ -169,7 +188,7 @@ class AccountManager:
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         if exchange is not None:
             return self._states[exchange].get_positions()
-        return {ins: pos for s in self._states.values() for ins, pos in s.positions.items()}
+        return {ins: pos for s in self._states.values() for ins, pos in s._positions.items()}
 
     @property
     def positions(self) -> dict[Instrument, Position]:
@@ -185,8 +204,8 @@ class AccountManager:
 
     def get_balances(self, exchange: str | None = None) -> list[Balance]:
         if exchange is not None:
-            return list(self._states[exchange].balances.values())
-        return [b for s in self._states.values() for b in s.balances.values()]
+            return list(self._states[exchange]._balances.values())
+        return [b for s in self._states.values() for b in s._balances.values()]
 
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
         if self._tcc is None:
@@ -253,56 +272,51 @@ class AccountManager:
                 logger.warning(f"unhandled AccountMessage: {type(event)}")
                 return None
 
-    def _get_state_for_event(self, event):
+    def _get_state_for_event(self, event: AccountMessage) -> AccountState | None:
         if isinstance(event, AccountSnapshotEvent):
             return self._states.get(event.snapshot.exchange)
         if event.instrument is not None:
             return self._states.get(event.instrument.exchange)
-        # instrument is None — try to route by order identifiers so that reject
-        # events emitted without an instrument (e.g. SimulatedConnector on
-        # update-of-missing-order) still reach the correct handler.
-        cid = getattr(event, "client_order_id", None)
-        if cid is not None:
+        # No instrument — route an order event by its identifiers so a reject emitted
+        # without one (e.g. SimulatedConnector on update-of-missing-order) still reaches
+        # the right state.
+        if isinstance(event, OrderEvent):
             for state in self._states.values():
-                if state.get_order(cid) is not None:
+                if state.get_order(event.client_order_id) is not None:
                     return state
-        venue_id = getattr(event, "venue_order_id", None)
-        if venue_id is not None:
-            for state in self._states.values():
-                if state.get_order_by_venue_id(venue_id) is not None:
-                    return state
+            if event.venue_order_id is not None:
+                for state in self._states.values():
+                    if state.get_order_by_venue_id(event.venue_order_id) is not None:
+                        return state
         if len(self._states) == 1:
             return next(iter(self._states.values()))
         logger.debug(f"cannot route {type(event).__name__} with no instrument/identifiers — dropped")
         return None
 
-    def _resolve_or_materialize(self, state, event):
-        cid = getattr(event, "client_order_id", None)
-        venue_id = getattr(event, "venue_order_id", None)
-        if cid is not None and cid in state.active_orders:
-            return state.active_orders[cid]
+    def _resolve_or_materialize(self, state: AccountState, event: OrderEvent) -> Order:
+        cid = event.client_order_id
+        if cid in state._active_orders:
+            return state._active_orders[cid]
+        venue_id = event.venue_order_id
         if venue_id is not None and venue_id in state._venue_id_index:
-            return state.active_orders[state._venue_id_index[venue_id]]
-        if cid is not None:
-            for hist in state._terminal_history:
-                if hist.client_order_id == cid:
-                    return hist
-        return self._materialize_external(state, event)
+            return state._active_orders[state._venue_id_index[venue_id]]
+        for hist in state._terminal_history:
+            if hist.client_order_id == cid:
+                return hist
+        # Unknown to us => external order (manual UI / another bot / pre-existing). A venue
+        # lifecycle event always carries the id the venue assigned; fall back to the cid
+        # for a stable identity only in the (malformed) case where it doesn't.
+        return self._materialize_external(state, event, venue_id or cid)
 
-    def _materialize_external(self, state, event):
-        venue_id = getattr(event, "venue_order_id", None)
-        if venue_id is None:
-            # No venue id → no stable identity; all such orders would collide on
-            # ext:unknown. Real venue events always carry one, so warn loudly.
-            venue_id = "unknown"
-            logger.warning(f"materializing EXTERNAL order with no venue_order_id: {event}")
-        cid = f"ext:{venue_id}"
+    def _materialize_external(self, state: AccountState, event: OrderEvent, venue_id: str) -> Order:
         order = Order(
-            client_order_id=cid,
-            venue_order_id=venue_id,
+            client_order_id=f"ext:{venue_id}",
+            venue_order_id=event.venue_order_id,
             origin=OrderOrigin.EXTERNAL,
             type="LIMIT",
-            instrument=event.instrument,
+            # external (venue) events always carry the instrument; downstream position
+            # updates guard the rare None, so Order keeps its non-optional instrument.
+            instrument=event.instrument,  # type: ignore[arg-type]
             time=self._time.time(),
             quantity=0.0,
             price=0.0,
@@ -313,15 +327,15 @@ class AccountManager:
         state.add_order(order)
         return order
 
-    def _handle_accepted(self, state, event: OrderAcceptedEvent):
+    def _handle_accepted(self, state: AccountState, event: OrderAcceptedEvent) -> Order:
         order = self._resolve_or_materialize(state, event)
-        if order.status.is_terminal():
+        if order.status.is_terminal:
             # Late accept on an already-terminal order (design "OrderFilled before
             # OrderAccepted"): benign side-effect, no transition, no phantom. Set
             # the venue id ONLY if the order is still in active_orders — an evicted
             # order's venue-id index was already dropped, so set_venue_id would
             # KeyError on active_orders[cid].
-            if order.client_order_id in state.active_orders:
+            if order.client_order_id in state._active_orders:
                 state.set_venue_id(order.client_order_id, event.venue_order_id)
                 order.accepted_at = event.accepted_at
             return order
@@ -335,30 +349,21 @@ class AccountManager:
             return self._transition(state, order.client_order_id, OrderStatus.ACCEPTED)
         return order
 
-    # Terminal-order guard (shared by the lifecycle handlers below).
-    # A late event for an order that is already terminal — possibly still in
-    # active_orders during the grace window, possibly already evicted to
-    # _terminal_history — must be a benign no-op: NO status change (a terminal
-    # state has no legal outgoing edge) and NO active_orders[cid] mutation (which
-    # would KeyError for an evicted order). This generalizes the OrderAccepted
-    # grace rule (design "OrderFilled before OrderAccepted" / terminal retention)
-    # to every lifecycle event, and is what keeps a late OrderCanceled from
-    # silently flipping a FILLED order to CANCELED.
-    def _is_late_terminal(self, order) -> bool:
-        return order.status.is_terminal()
-
-    def _handle_partial_fill(self, state, event: OrderPartiallyFilledEvent):
+    # A late event for an already-terminal order is a benign no-op: a terminal state has no
+    # legal outgoing edge, and the order may already be evicted from active_orders. Each
+    # lifecycle handler below short-circuits on order.status.is_terminal before mutating.
+    def _handle_partial_fill(self, state: AccountState, event: OrderPartiallyFilledEvent) -> Order:
         order = self._resolve_or_materialize(state, event)
-        if self._is_late_terminal(order):
+        if order.status.is_terminal:
             logger.debug(f"late partial-fill on terminal {order.client_order_id}; ignoring")
             return order
-        if event.venue_order_id and order.venue_order_id is None:
+        if event.venue_order_id:
             state.set_venue_id(order.client_order_id, event.venue_order_id)
         is_new_trade = event.fill.trade_id not in order.seen_trade_ids
         state.apply_fill(order.client_order_id, event.fill, self._time.time())
         if is_new_trade and order.instrument is not None:
             self._apply_deal_to_position(state, order.instrument, event.fill)
-        if order.status.is_pending():
+        if order.status.is_pending:
             # filled_quantity mirrors real, irreversible fills (and the position),
             # so it is NEVER reduced. A fill that races a pending modify can push it
             # past the new (smaller) target — surface that as a warning only; the
@@ -370,17 +375,17 @@ class AccountManager:
                     f"filled_quantity ({order.filled_quantity}) past target "
                     f"({order.quantity}); leaving filled intact, awaiting venue verdict"
                 )
-            return state.get_order(order.client_order_id)
+            return order
         if can_transition(order.status, OrderStatus.PARTIALLY_FILLED):
             return self._transition(state, order.client_order_id, OrderStatus.PARTIALLY_FILLED)
         return order
 
-    def _handle_fill(self, state, event: OrderFilledEvent):
+    def _handle_fill(self, state: AccountState, event: OrderFilledEvent) -> Order:
         order = self._resolve_or_materialize(state, event)
-        if self._is_late_terminal(order):
+        if order.status.is_terminal:
             logger.debug(f"late fill on terminal {order.client_order_id}; ignoring")
             return order
-        if event.venue_order_id and order.venue_order_id is None:
+        if event.venue_order_id:
             state.set_venue_id(order.client_order_id, event.venue_order_id)
         is_new_trade = event.fill.trade_id not in order.seen_trade_ids
         state.apply_fill(order.client_order_id, event.fill, self._time.time())
@@ -388,34 +393,34 @@ class AccountManager:
             self._apply_deal_to_position(state, order.instrument, event.fill)
         return self._transition(state, order.client_order_id, OrderStatus.FILLED)
 
-    def _handle_canceled(self, state, event):
+    def _handle_canceled(self, state: AccountState, event: OrderCanceledEvent) -> Order:
         order = self._resolve_or_materialize(state, event)
-        if self._is_late_terminal(order):
+        if order.status.is_terminal:
             logger.debug(f"late cancel on terminal {order.client_order_id}; ignoring")
             return order
         return self._transition(state, order.client_order_id, OrderStatus.CANCELED)
 
-    def _handle_expired(self, state, event):
+    def _handle_expired(self, state: AccountState, event: OrderExpiredEvent) -> Order:
         order = self._resolve_or_materialize(state, event)
-        if self._is_late_terminal(order):
+        if order.status.is_terminal:
             logger.debug(f"late expire on terminal {order.client_order_id}; ignoring")
             return order
         return self._transition(state, order.client_order_id, OrderStatus.EXPIRED)
 
-    def _handle_rejected(self, state, event: OrderRejectedEvent):
-        order = state.active_orders.get(event.client_order_id)
+    def _handle_rejected(self, state: AccountState, event: OrderRejectedEvent) -> Order | None:
+        order = state._active_orders.get(event.client_order_id)
         if order is None:
             logger.warning(f"reject for unknown order {event.client_order_id}")
             return None
-        if order.status.is_terminal():
+        if order.status.is_terminal:
             logger.debug(f"late reject on terminal {order.client_order_id}; ignoring")
             return order
         order.rejected_reason = event.reason
         return self._transition(state, order.client_order_id, OrderStatus.REJECTED)
 
-    def _handle_updated(self, state, event: OrderUpdatedEvent):
+    def _handle_updated(self, state: AccountState, event: OrderUpdatedEvent) -> Order:
         order = self._resolve_or_materialize(state, event)
-        if self._is_late_terminal(order):
+        if order.status.is_terminal:
             logger.debug(f"late update on terminal {order.client_order_id}; ignoring")
             return order
         if order.venue_order_id != event.venue_order_id:
@@ -432,14 +437,14 @@ class AccountManager:
         return order
 
     def _handle_cancel_rejected(self, state, event):
-        order = state.active_orders.get(event.client_order_id)
+        order = state._active_orders.get(event.client_order_id)
         if order is None or order.status != OrderStatus.PENDING_CANCEL:
             logger.warning(f"cancel-rejected for unexpected state: {order}")
             return None
         return self._revert_from_pending(state, order)
 
     def _handle_update_rejected(self, state, event):
-        order = state.active_orders.get(event.client_order_id)
+        order = state._active_orders.get(event.client_order_id)
         if order is None or order.status != OrderStatus.PENDING_UPDATE:
             logger.warning(f"update-rejected for unexpected state: {order}")
             return None
@@ -464,8 +469,8 @@ class AccountManager:
 
         if snapshot.open_orders is not None:
             snap_by_vid = {o.venue_order_id: o for o in snapshot.open_orders if o.venue_order_id}
-            for cid, cached in list(state.active_orders.items()):
-                if cached.status.is_terminal():
+            for cid, cached in list(state._active_orders.items()):
+                if cached.status.is_terminal:
                     continue
                 vid = cached.venue_order_id
                 if vid is not None and vid in snap_by_vid:
@@ -572,7 +577,7 @@ class AccountManager:
         for exchange, state in self._states.items():
             for cid in list(state._inflight_index):
                 try:
-                    order = state.active_orders.get(cid)
+                    order = state._active_orders.get(cid)
                     if order is None or order.status not in (
                         OrderStatus.SUBMITTED,
                         OrderStatus.PENDING_CANCEL,
@@ -736,7 +741,7 @@ class AccountManager:
         #  - spot: the position's market value (the base cash was debited to buy it,
         #    so the holding's value restores total capital).
         total = bal.total
-        for pos in state.positions.values():
+        for pos in state._positions.values():
             if pos.instrument.is_futures():
                 total += pos.unrealized_pnl()
             else:
@@ -758,9 +763,9 @@ class AccountManager:
         return self._base_currency_for(state) if state is not None else "USDT"
 
     def _base_currency_for(self, state) -> str:
-        if not state.balances:
+        if not state._balances:
             return "USDT"
-        return max(state.balances.values(), key=lambda b: b.total).currency
+        return max(state._balances.values(), key=lambda b: b.total).currency
 
     def _notional(self, pos) -> float:
         # notional_value is NaN for an unmarked position; treat as 0 so a single
@@ -780,13 +785,13 @@ class AccountManager:
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
         states = [self._states[exchange]] if exchange else list(self._states.values())
-        net = sum(self._notional(p) for s in states for p in s.positions.values())
+        net = sum(self._notional(p) for s in states for p in s._positions.values())
         total = sum(self._total_capital_for(s) for s in states)
         return abs(net) / total if total > 0 else 0.0
 
     def get_gross_leverage(self, exchange: str | None = None) -> float:
         states = [self._states[exchange]] if exchange else list(self._states.values())
-        gross = sum(abs(self._notional(p)) for s in states for p in s.positions.values())
+        gross = sum(abs(self._notional(p)) for s in states for p in s._positions.values())
         total = sum(self._total_capital_for(s) for s in states)
         return gross / total if total > 0 else 0.0
 
@@ -850,7 +855,7 @@ class SimulationAccountManager(AccountManager):
         self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
         # Backtest has no asyncio/WS/periodic scheduling — no ticks registered.
 
-    def set_context(self, ctx) -> None:
+    def set_context(self, ctx: "StrategyContext") -> None:
         # Backtest is synchronous: wire the ctx but NEVER register periodic ticks
         # (no PM scheduler drives them in simulation). Overrides the base, which would
         # otherwise pull pm from ctx and schedule.

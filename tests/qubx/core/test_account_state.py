@@ -138,7 +138,7 @@ def testevict_to_history_moves_order_and_drains_indexes():
     state.set_venue_id("qubx-1", "VENUE_ABC")
     state.transition_order("qubx-1", OrderStatus.FILLED, np.datetime64("2026-05-28T00:01:00"))
     state.evict_to_history("qubx-1")
-    assert "qubx-1" not in state.active_orders
+    assert "qubx-1" not in state._active_orders
     assert state.get_order_by_venue_id("VENUE_ABC") is None
     assert "qubx-1" not in state._pending_evict_index
     # still resolvable via terminal history

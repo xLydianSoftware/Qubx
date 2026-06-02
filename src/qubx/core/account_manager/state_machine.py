@@ -56,9 +56,9 @@ LEGAL_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
 
 def can_transition(frm: OrderStatus, to: OrderStatus) -> bool:
     """Whether ``frm → to`` is allowed by the state machine."""
-    if frm.is_terminal():
+    if frm.is_terminal:
         return False  # terminal states never transition
-    if to.is_terminal():
+    if to.is_terminal:
         return True  # venue-authoritative terminalization from any live state
     return to in LEGAL_TRANSITIONS.get(frm, set())
 

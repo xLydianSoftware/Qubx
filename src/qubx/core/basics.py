@@ -678,9 +678,11 @@ class OrderStatus(str, Enum):
     REJECTED = "rejected"
     EXPIRED = "expired"
 
+    @property
     def is_terminal(self) -> bool:
         return self in (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED)
 
+    @property
     def is_pending(self) -> bool:
         return self in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
 
