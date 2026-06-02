@@ -1218,7 +1218,16 @@ class ProcessingManager(IProcessingManager):
             self._safe_call(self._strategy.on_error, event.error)
             return
         if isinstance(event, CustomEvent):
-            self._safe_call(self._strategy.on_event, event)
+            # Data types with no typed market-data event (custom storages, features, the
+            # generated-signals "event" stream). Same effect as the legacy tuple path:
+            # historical warms the cache; live runs the custom-event handler (which also
+            # services registered scheduled methods) through the strategy pipeline.
+            if event.is_historical:
+                self._process_hist_event(event.instrument, event.name, event.payload)
+                self._run_strategy_pipeline(None)
+            else:
+                strat_event = self._process_custom_event(event.instrument, event.name, event.payload)
+                self._run_strategy_pipeline(strat_event)
             return
         logger.warning(f"unknown event type: {type(event)}")
 
@@ -1238,6 +1247,15 @@ class ProcessingManager(IProcessingManager):
         instrument = event.instrument
         d_type = data_type_for_event(event)
         payload = self._md_payload(event)
+
+        if event.is_historical:
+            # Warmup: update cache/indicators only (no throttle, no OME feed, no trading) —
+            # the same effect the legacy tuple path produced via __process_data's historical
+            # branch. The pipeline runs with no strategy event so only start/warmup/fit
+            # lifecycle gating fires.
+            self._process_hist_event(instrument, d_type, payload)
+            self._run_strategy_pipeline(None)
+            return
 
         if self._data_throttler is not None and not self._data_throttler.should_send(d_type, instrument):
             return
