@@ -732,7 +732,7 @@ class Order:
     time: dt_64                       # submission timestamp; grace-window reconcile
                                       # measures order age from this field
     quantity: float
-    price: float
+    price: float | None               # None for market orders (no limit price)
     side: OrderSide
     status: OrderStatus
     time_in_force: str

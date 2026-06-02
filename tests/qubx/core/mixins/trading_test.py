@@ -418,6 +418,32 @@ def _live_order(order_id="test_order_123"):
     return order
 
 
+class TestTradingManagerTradeOrderShape:
+    """The Order trade() builds carries None price for market orders (no fake 0.0)."""
+
+    def test_market_order_has_none_price(self, trading_manager, mock_connector, mock_account):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+        mock_account.get_position.return_value = None
+
+        trading_manager.trade(instr, 0.1)  # no price => market order
+
+        registered = mock_account.add_order.call_args.args[0]
+        assert registered.type == "MARKET"
+        assert registered.price is None
+
+    def test_limit_order_keeps_price(self, trading_manager, mock_connector, mock_account):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+        mock_account.get_position.return_value = None
+
+        trading_manager.trade(instr, 0.1, price=50_000.0)
+
+        registered = mock_account.add_order.call_args.args[0]
+        assert registered.type == "LIMIT"
+        assert registered.price == 50_000.0
+
+
 class TestTradingManagerTradeSubmitFailure:
     """trade() registers the order before submitting, and cleans up on a synchronous raise."""
 

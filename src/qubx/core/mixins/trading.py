@@ -132,7 +132,7 @@ class TradingManager(ITradingManager):
             instrument=instrument,
             time=self._context.time(),
             quantity=size_adj,
-            price=price or 0.0,
+            price=price,  # None for market orders
             side=side,
             status=OrderStatus.SUBMITTED,
             time_in_force=time_in_force,
