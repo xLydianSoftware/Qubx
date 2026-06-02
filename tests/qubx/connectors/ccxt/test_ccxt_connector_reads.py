@@ -165,7 +165,7 @@ def test_ws_open_twice_emits_accepted_only_once() -> None:
     assert sum(isinstance(e, OrderAcceptedEvent) for e in sent) == 1
 
 
-def test_ws_partial_fill_emits_partially_filled_with_deal() -> None:
+def test_ws_partial_fill_first_emits_accepted_then_partially_filled() -> None:
     conn, sent, _ = _make_connector()
     raw = _ws_order(status="open", trades=[_ws_trade("T1", amount=0.5)])
     # Outer status "open" but inner partial: ccxt reports partially_filled in the
@@ -173,20 +173,25 @@ def test_ws_partial_fill_emits_partially_filled_with_deal() -> None:
     raw["status"] = "open"
     raw["info"] = {"status": "PARTIALLY_FILLED"}
     conn._handle_ws_order(raw)
-    assert len(sent) == 1
-    ev = sent[0]
+    # A fill seen with no prior venue ack synthesizes ACCEPTED first, so the strategy's
+    # on_order_accepted fires before the fill and the order lifecycle stays ordered.
+    assert len(sent) == 2
+    assert isinstance(sent[0], OrderAcceptedEvent)
+    ev = sent[1]
     assert isinstance(ev, OrderPartiallyFilledEvent)
     assert ev.fill.trade_id == "T1"
     assert ev.fill.amount == 0.5
     assert ev.client_order_id == "qubx_BTCUSDT_1"
 
 
-def test_ws_filled_emits_filled_with_deal() -> None:
+def test_ws_filled_first_emits_accepted_then_filled() -> None:
     conn, sent, _ = _make_connector()
     raw = _ws_order(status="closed", trades=[_ws_trade("T9", amount=1.0)])
     conn._handle_ws_order(raw)
-    assert len(sent) == 1
-    ev = sent[0]
+    # Fill-first → ACCEPTED synthesized ahead of the terminal fill.
+    assert len(sent) == 2
+    assert isinstance(sent[0], OrderAcceptedEvent)
+    ev = sent[1]
     assert isinstance(ev, OrderFilledEvent)
     assert ev.fill.trade_id == "T9"
     assert ev.fill.amount == 1.0
@@ -199,11 +204,13 @@ def test_ws_filled_multiple_trades_partials_then_filled() -> None:
         trades=[_ws_trade("T1", amount=0.4), _ws_trade("T2", amount=0.6)],
     )
     conn._handle_ws_order(raw)
-    assert len(sent) == 2
-    assert isinstance(sent[0], OrderPartiallyFilledEvent)
-    assert isinstance(sent[1], OrderFilledEvent)
-    assert sent[0].fill.trade_id == "T1"
-    assert sent[1].fill.trade_id == "T2"
+    # Fill-first: ACCEPTED, then one PartiallyFilled per non-final trade, then Filled.
+    assert len(sent) == 3
+    assert isinstance(sent[0], OrderAcceptedEvent)
+    assert isinstance(sent[1], OrderPartiallyFilledEvent)
+    assert isinstance(sent[2], OrderFilledEvent)
+    assert sent[1].fill.trade_id == "T1"
+    assert sent[2].fill.trade_id == "T2"
 
 
 def test_ws_canceled_emits_canceled() -> None:
@@ -300,8 +307,10 @@ async def test_request_order_status_emits_event() -> None:
     await _drive(conn)
 
     exchange.fetch_order.assert_awaited_once_with("VENUE123", None)
-    assert isinstance(sent[0], OrderFilledEvent)
-    assert sent[0].fill.trade_id == "TX"
+    # Reconcile fetch of a filled order with no prior ack: ACCEPTED then the terminal fill.
+    assert isinstance(sent[0], OrderAcceptedEvent)
+    assert isinstance(sent[1], OrderFilledEvent)
+    assert sent[1].fill.trade_id == "TX"
 
 
 @pytest.mark.asyncio

@@ -140,3 +140,31 @@ def test_leverage_zero_when_no_capital():
     assert am.get_gross_leverage("binance") == 0.0
     assert am.get_net_leverage("binance") == 0.0
     assert am.get_leverage(inst) == 0.0
+
+
+def test_total_margins_aggregate_across_positions():
+    # Regression guard: get_total_initial_margin / get_total_maint_margin sum the
+    # per-position margins (venue-reported, set externally) across the book. This
+    # aggregation lost its dedicated coverage when the old account-processor tests were
+    # removed; the per-position setter is tested elsewhere, the AM summation was not.
+    am = _am()
+    state = am._states["binance"]
+    inst1 = _instrument("BTCUSDT")
+    inst2 = _instrument("ETHUSDT")
+    p1 = _marked_position(inst1, 1.0, 50_000.0, 50_000.0)
+    p2 = _marked_position(inst2, 10.0, 3_000.0, 3_000.0)
+    p1.set_external_initial_margin(500.0)
+    p1.set_external_maint_margin(250.0)
+    p2.set_external_initial_margin(300.0)
+    p2.set_external_maint_margin(150.0)
+    state._set_position(inst1, p1)
+    state._set_position(inst2, p2)
+    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=2_000.0))
+
+    assert am.get_total_initial_margin("binance") == 800.0
+    assert am.get_total_maint_margin("binance") == 400.0
+    # exchange=None aggregates across all states
+    assert am.get_total_initial_margin() == 800.0
+    assert am.get_total_maint_margin() == 400.0
+    # available margin = total capital - total initial margin
+    assert am.get_available_margin("binance") == 2_000.0 - 800.0

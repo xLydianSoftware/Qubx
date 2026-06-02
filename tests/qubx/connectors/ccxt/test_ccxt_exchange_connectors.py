@@ -126,6 +126,10 @@ def test_okx_watch_orders_open_carries_no_fill() -> None:
     # OKX watch_orders never carries a fill even on a partial/filled report; the trade
     # stream owns fills. A PARTIALLY_FILLED status from watch_orders is a no-op here.
     conn, sent, _ = _make_connector(OkxCcxtConnector)
+    # Seed the venue ack via the prior open report (the realistic order: open precedes
+    # the partial), so the partial status isn't mistaken for a first-seen fill.
+    conn._handle_ws_order(_ws_order(status="open"))
+    sent.clear()
     raw = _ws_order(status="open")
     raw["info"] = {"status": "PARTIALLY_FILLED"}
     conn._handle_ws_order(raw)

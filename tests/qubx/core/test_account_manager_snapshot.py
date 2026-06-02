@@ -157,13 +157,16 @@ def test_recovered_order_materialized_from_snapshot():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    snap_order = _order("qubx-abc", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VY", instrument=inst)
+    # Realistic framework cid as produced by ClientIdStore._create_id ("qubx_<sym>_<n>").
+    # Reconcile must classify it as RECOVERED — using the doc's illustrative "qubx-"
+    # would silently misclassify every recovered framework order as EXTERNAL.
+    snap_order = _order("qubx_BTCUSDT_1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VY", instrument=inst)
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
-    materialized = state.get_order("qubx-abc")
+    materialized = state.get_order("qubx_BTCUSDT_1")
     assert materialized is not None
     assert materialized.origin is OrderOrigin.RECOVERED
-    assert materialized.client_order_id == "qubx-abc"
+    assert materialized.client_order_id == "qubx_BTCUSDT_1"
 
 
 def test_existing_order_updated_from_fresh_snapshot():

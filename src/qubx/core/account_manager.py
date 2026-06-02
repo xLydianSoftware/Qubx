@@ -34,6 +34,11 @@ from qubx.core.events import (
 )
 from qubx.core.exceptions import InvalidOrderTransition
 
+# Client-id prefix that marks an order as framework-originated. MUST match the prefix
+# ClientIdStore._create_id produces in qubx.core.mixins.trading ("qubx_<symbol>_<n>");
+# a snapshot order carrying it is a RECOVERED framework order, anything else is EXTERNAL.
+_FRAMEWORK_CID_PREFIX = "qubx_"
+
 _LEGAL_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
     OrderStatus.INITIALIZED: {OrderStatus.SUBMITTED, OrderStatus.REJECTED},
     OrderStatus.SUBMITTED: {
@@ -544,7 +549,7 @@ class AccountManager:
         # cid prefix classifies origin: our prefix → a recovered framework order;
         # anything else → external. Keep an already-synthesized ext: cid as-is,
         # otherwise synthesize one from the venue id.
-        if snap_order.client_order_id.startswith("qubx-"):
+        if snap_order.client_order_id.startswith(_FRAMEWORK_CID_PREFIX):
             origin = OrderOrigin.RECOVERED
             cid = snap_order.client_order_id
         elif snap_order.client_order_id.startswith("ext:"):

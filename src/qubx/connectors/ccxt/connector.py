@@ -100,9 +100,12 @@ _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
     ccxt.OnMaintenance,
     ccxt.ExchangeError,  # catch-all for venue-side ExchangeError subtypes (BadRequest, NotSupported, ...)
 )
-# ccxt.NetworkError (incl. RequestTimeout) is NOT an ExchangeError — it's transient
-# connectivity, an UNKNOWN outcome, not a venue verdict. Handled separately: the
-# order is left inflight for AM to reconcile, never terminal-rejected.
+# RateLimitExceeded / ExchangeNotAvailable / OnMaintenance are ccxt NetworkError
+# *subclasses* but the venue actively refused the request, so they are venue verdicts
+# and listed above. The except sites MUST match this tuple BEFORE a bare ccxt.NetworkError
+# catch, otherwise those three are swallowed as "transient" and never emit a reject.
+# A bare NetworkError (RequestTimeout, connection reset) is a genuine UNKNOWN outcome —
+# the order is left inflight for AM to reconcile, never terminal-rejected.
 
 _CLIENT_ID_PREFIX = "qubx_"
 
@@ -337,14 +340,16 @@ class CcxtConnector:
     async def _submit_async(self, instrument: Instrument, client_id: str | None, payload: dict[str, Any]) -> None:
         try:
             r = await self._em.exchange.create_order(**payload)
+        except _VENUE_VERDICT_ERRORS as e:
+            # Venue verdict — must precede the bare NetworkError catch (rate-limit /
+            # maintenance / unavailable are NetworkError subclasses but are verdicts).
+            self._emit_submit_rejected(instrument, client_id, e)
+            return
         except ccxt.NetworkError as e:
             # Transient connectivity / timeout: the order may or may not have reached
             # the venue. Do NOT terminal-reject — leave it inflight so AM's inflight
             # check / snapshot reconcile resolves the true state from the venue.
             logger.warning(f"[{self.exchange_name}] Network error submitting {client_id}: {e}; leaving inflight")
-            return
-        except _VENUE_VERDICT_ERRORS as e:
-            self._emit_submit_rejected(instrument, client_id, e)
             return
         except Exception as e:  # noqa: BLE001 — unexpected: still a venue-side failure, must not raise across the loop
             logger.error(f"[{self.exchange_name}] Unexpected error creating order {client_id}: {e}")
@@ -397,36 +402,58 @@ class CcxtConnector:
         """Cancel with retry/backoff. Prefers venue_order_id; falls back to cloid.
 
         A successful REST cancel ack emits OrderCanceledEvent immediately; the WS
-        read side (commit 4) also emits one and AM dedups. A definitive venue
-        cancel-rejection emits OrderCancelRejectedEvent.
+        read side also emits one and AM dedups. A definitive venue cancel-rejection
+        emits OrderCancelRejectedEvent. A transient network failure is an UNKNOWN
+        outcome (the cancel may still have landed), so the order is left inflight for
+        AM to reconcile rather than terminal-rejected.
         """
-        ok, response = await self._cancel_with_retry(client_order_id, venue_order_id)
+        try:
+            ok, response = await self._cancel_with_retry(client_order_id, venue_order_id)
+        except ccxt.NetworkError as e:
+            logger.warning(
+                f"[{self.exchange_name}] Network error cancelling {client_order_id or venue_order_id}: "
+                f"{e}; leaving inflight"
+            )
+            return
         if ok:
             self._emit_canceled_from_response(client_order_id, venue_order_id, response)
         else:
-            # Route by the real client_order_id (TradingManager always passes it). Do
-            # NOT substitute venue_order_id as the cid — AM's reject handlers resolve
-            # the order by client_order_id, so a venue-id-as-cid would never match and
-            # the order would stick in PENDING_CANCEL.
-            self.send(
-                OrderCancelRejectedEvent(
-                    instrument=None,
-                    client_order_id=client_order_id,  # type: ignore[arg-type]
-                    reason=f"venue rejected cancel for {venue_order_id or client_order_id}",
-                )
+            self._emit_cancel_rejected(client_order_id, venue_order_id)
+
+    def _emit_cancel_rejected(self, client_order_id: str | None, venue_order_id: str | None) -> None:
+        # Route by the real client_order_id: AM's reject handler resolves the order by
+        # cid, so a venue-id-as-cid (or None) would never match and the order would
+        # stick in PENDING_CANCEL. When the caller passed only a venue id (external-order
+        # cancel), recover the cid from the venue→cid index; drop if still unknown.
+        cid = client_order_id or (self._venue_to_cid.get(venue_order_id) if venue_order_id else None)
+        if cid is None:
+            logger.warning(
+                f"[{self.exchange_name}] Cancel rejected for venue order {venue_order_id} with no known "
+                "client id; dropping (unroutable)"
             )
+            return
+        self.send(
+            OrderCancelRejectedEvent(
+                instrument=None,
+                client_order_id=cid,
+                reason=f"venue rejected cancel for {venue_order_id or cid}",
+            )
+        )
 
     async def _cancel_with_retry(
         self, client_order_id: str | None, venue_order_id: str | None
     ) -> tuple[bool, dict[str, Any] | None]:
-        """Port of CcxtBroker._cancel_order_with_retry.
+        """Cancel with retry/backoff. Prefers venue_order_id; falls back to cloid.
 
-        Returns ``(ok, venue_response)``. Does NOT emit: the caller decides whether
-        a success becomes an OrderCanceledEvent (public cancel) or is folded into an
-        OrderUpdatedEvent (update via cancel+recreate). The ccxt ``symbol`` (which
-        most venues — e.g. Binance — require) is supplied from the order cache; if
-        the order is unknown (e.g. cancel of an external order we never submitted) we
-        fall back to passing none and let ccxt resolve it from the id alone.
+        Returns ``(ok, venue_response)`` for a DEFINITIVE outcome: ``(True, r)`` on a
+        confirmed cancel, ``(False, None)`` on a venue refusal (→ cancel-reject). RAISES
+        ``ccxt.NetworkError`` when the outcome is UNKNOWN (transient connectivity, or
+        retries exhausted without a definitive answer) so the caller leaves the order
+        inflight rather than terminal-rejecting a cancel that may have landed. Does NOT
+        emit: the caller maps the outcome to an event. The ccxt ``symbol`` (which most
+        venues — e.g. Binance — require) is supplied from the order cache; if the order
+        is unknown (e.g. cancel of an external order we never submitted) we fall back to
+        passing none and let ccxt resolve it from the id alone.
         """
         cached = self._resolve_cached(client_order_id, venue_order_id)
         symbol = cached.ccxt_symbol if cached is not None else None
@@ -438,14 +465,13 @@ class CcxtConnector:
             try:
                 r = await self._em.exchange.cancel_order_with_client_order_id(client_order_id, symbol)
                 return True, r
-            except (
-                ccxt.NotSupported,
-                ccxt.BadRequest,
-                ccxt.ExchangeError,
-                ccxt.ExchangeNotAvailable,
-                ccxt.NetworkError,
-            ) as e:
-                logger.warning(f"[{client_order_id}] Cancel-by-client-id failed: {e}")
+            except ccxt.NetworkError:
+                # Transient (incl. ExchangeNotAvailable / OnMaintenance / rate-limit):
+                # UNKNOWN whether the cancel landed → re-raise so the caller leaves it
+                # inflight rather than terminal-rejecting.
+                raise
+            except (ccxt.NotSupported, ccxt.BadRequest, ccxt.ExchangeError) as e:
+                logger.warning(f"[{client_order_id}] Cancel-by-client-id rejected by venue: {e}")
                 return False, None
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[{client_order_id}] Cancel-by-client-id unexpected error: {e}")
@@ -453,6 +479,7 @@ class CcxtConnector:
 
         start_time = self._time.time()
         retries = 0
+        last_network_error: ccxt.NetworkError | None = None
         while True:
             try:
                 r = await self._em.exchange.cancel_order(venue_order_id, symbol)
@@ -461,18 +488,28 @@ class CcxtConnector:
                 err_msg = str(err).lower()
                 if "unknown order" in err_msg or "order does not exist" in err_msg or "order not found" in err_msg:
                     logger.debug(f"[{venue_order_id}] Order not found for cancellation, might retry: {err}")
+                    last_network_error = None
                 elif "filled" in err_msg or "partially filled" in err_msg:
                     logger.debug(f"[{venue_order_id}] Order cannot be cancelled - already executed: {err}")
                     return False, None
                 else:
                     logger.debug(f"[{venue_order_id}] Could not cancel order: {err}")
                     return False, None
-            except (ccxt.NetworkError, ccxt.ExchangeError, ccxt.ExchangeNotAvailable) as e:
-                err_msg = str(e)
-                if "Mandatory parameter 'orderId' was not sent" in err_msg:
+            except ccxt.NetworkError as e:
+                # Transient connectivity (incl. ExchangeNotAvailable / rate-limit): retry,
+                # and raise on exhaustion so the UNKNOWN outcome leaves the order inflight.
+                if "Mandatory parameter 'orderId' was not sent" in str(e):
                     logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
                     return False, None
-                logger.warning(f"[{venue_order_id}] Network or exchange error while cancelling: {e}")
+                last_network_error = e
+                logger.warning(f"[{venue_order_id}] Network error while cancelling: {e}")
+            except ccxt.ExchangeError as e:
+                # Definitive venue refusal (non-network) → cancel-reject after retries.
+                if "Mandatory parameter 'orderId' was not sent" in str(e):
+                    logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
+                    return False, None
+                last_network_error = None
+                logger.warning(f"[{venue_order_id}] Exchange error while cancelling: {e}")
             except Exception as err:  # noqa: BLE001
                 logger.error(f"Unexpected error canceling order {venue_order_id}: {err}")
                 return False, None
@@ -480,6 +517,9 @@ class CcxtConnector:
             elapsed_seconds = to_timedelta(self._time.time() - start_time).total_seconds()
             retries += 1
             if elapsed_seconds >= self.cancel_timeout or retries >= self.max_cancel_retries:
+                if last_network_error is not None:
+                    logger.error(f"[{venue_order_id}] Cancel exhausted retries after network errors; leaving inflight")
+                    raise last_network_error
                 logger.error(f"Timeout reached for canceling order {venue_order_id}")
                 return False, None
 
@@ -536,13 +576,14 @@ class CcxtConnector:
                 r = await self._edit_order_direct(venue_order_id or client_order_id, price, quantity, cached)
             else:
                 r = await self._update_via_cancel_recreate(client_order_id, venue_order_id, price, quantity)
+        except _VENUE_VERDICT_ERRORS as e:
+            # Venue verdict — must precede the bare NetworkError catch (see _submit_async).
+            self._emit_update_rejected(client_order_id, e)
+            return
         except ccxt.NetworkError as e:
             # Transient: UNKNOWN whether the edit landed. Leave the order PENDING_UPDATE
             # inflight for AM to reconcile rather than emitting a terminal reject.
             logger.warning(f"[{self.exchange_name}] Network error updating {client_order_id}: {e}; leaving inflight")
-            return
-        except _VENUE_VERDICT_ERRORS as e:
-            self._emit_update_rejected(client_order_id, e)
             return
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] Unexpected error updating order {client_order_id}: {e}")
@@ -748,6 +789,22 @@ class CcxtConnector:
         no-ops there), so the connector stays minimal.
         """
         status = order.status  # OrderStatus enum (mapped from the ccxt status by utils)
+
+        # A fill can be the FIRST event we observe for an order (fast aggressive fills,
+        # or a venue that sends no separate "open" report). Synthesize the venue ACCEPTED
+        # ack before the fill so the strategy's on_order_accepted fires and the order
+        # lifecycle stays ordered. AM dedups ACCEPTED, so this is safe alongside the REST
+        # immediate-ack. Skipped when the venue id is missing (can't index the order).
+        if not had_prior_ack and order.venue_order_id is not None and status in (
+            OrderStatus.PARTIALLY_FILLED,
+            OrderStatus.FILLED,
+        ):
+            self.send(OrderAcceptedEvent(
+                instrument=instrument,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                accepted_at=order.time,
+            ))
 
         if status == OrderStatus.PARTIALLY_FILLED:
             self._handle_partial_fill_status(instrument, order, raw)

@@ -818,6 +818,9 @@ def _create_live_connector(
     (the manager cache keys on api_key/secret). This mirrors how the old CcxtAccountProcessor
     obtained its ExchangeManager.
     """
+    # Lazy: importing the ccxt factory pulls in ccxt.pro; only the live path needs it,
+    # so paper/backtest runs don't pay that import cost (mirrors the lazy connector
+    # registration above).
     from qubx.connectors.ccxt.factory import get_ccxt_connector, get_ccxt_exchange_manager
 
     creds = account_manager.get_exchange_credentials(exchange_name)

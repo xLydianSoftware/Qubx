@@ -425,3 +425,39 @@ class TestRunStrategyYaml:
         pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
         assert pos.quantity == 1
         assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
+
+
+def test_inject_restored_state_preserves_accounting_fields():
+    # Regression guard: _inject_restored_state seeds the whole persisted Position, so the
+    # accounting fields (r_pnl, commissions, cumulative_funding) survive a restart — not
+    # just quantity. This lost dedicated coverage when merge_restored_accounting was removed.
+    from qubx.core.account_manager import AccountManager
+    from qubx.core.account_state import AccountState
+    from qubx.utils.runner.runner import _inject_restored_state
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=2.0, pos_average_price=50_000.0)
+    pos.r_pnl = 123.0
+    pos.commissions = 4.5
+    pos.cumulative_funding = -7.0
+
+    am = AccountManager.__new__(AccountManager)
+    am._states = {inst.exchange: AccountState(exchange=inst.exchange)}
+
+    restored = RestoredState(
+        time=np.datetime64("now"),
+        balances=[Balance(exchange=inst.exchange, currency="USDT", free=1000.0, locked=0.0, total=1000.0)],
+        instrument_to_target_positions={},
+        instrument_to_signal_positions={},
+        positions={inst: pos},
+    )
+    _inject_restored_state(am, restored)
+
+    restored_pos = am.get_position(inst)
+    assert restored_pos.quantity == 2.0
+    assert restored_pos.r_pnl == 123.0
+    assert restored_pos.commissions == 4.5
+    assert restored_pos.cumulative_funding == -7.0
+    balances = am.get_balances(inst.exchange)
+    assert any(b.currency == "USDT" and b.total == 1000.0 for b in balances)

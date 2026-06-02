@@ -248,6 +248,32 @@ async def test_submit_generic_exchange_error_emits_rejected() -> None:
     assert isinstance(sent[0], OrderRejectedEvent)
 
 
+@pytest.mark.parametrize(
+    "error",
+    [
+        ccxt.RateLimitExceeded("slow down"),
+        ccxt.ExchangeNotAvailable("down"),
+        ccxt.OnMaintenance("maintenance window"),
+    ],
+)
+@pytest.mark.asyncio
+async def test_submit_networkerror_subclass_verdicts_emit_rejected(error) -> None:
+    # RateLimitExceeded / ExchangeNotAvailable / OnMaintenance are ccxt NetworkError
+    # *subclasses* but they are venue verdicts (the venue actively refused), so they
+    # must emit OrderRejectedEvent — NOT be swallowed as transient and left inflight.
+    exchange = Mock()
+    exchange.create_order = AsyncMock(side_effect=error)
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.submit_order(_order_request())
+    await _drive(conn)
+
+    assert len(sent) == 1
+    assert isinstance(sent[0], OrderRejectedEvent)
+    assert sent[0].client_order_id == "qubx_BTCUSDT_1"
+
+
 # --------------------------------------------------------------------------- #
 # (4) successful create with venue id -> OrderAcceptedEvent
 # --------------------------------------------------------------------------- #
@@ -346,6 +372,41 @@ async def test_cancel_venue_reject_emits_cancel_rejected() -> None:
     # TradingManager always passes both ids; the reject must route by the REAL cid
     # (not the venue id) so AM can revert the order from PENDING_CANCEL.
     conn.cancel_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    await _drive(conn)
+
+    assert len(sent) == 1
+    assert isinstance(sent[0], OrderCancelRejectedEvent)
+    assert sent[0].client_order_id == "qubx_BTCUSDT_1"
+
+
+@pytest.mark.asyncio
+async def test_cancel_cloid_network_error_leaves_inflight_no_reject() -> None:
+    # A transient network error on a cloid cancel is an UNKNOWN outcome (the cancel may
+    # still have landed): leave the order inflight, do NOT emit a terminal cancel-reject
+    # (which would wrongly revert PENDING_CANCEL -> ACCEPTED).
+    exchange = Mock()
+    exchange.cancel_order_with_client_order_id = AsyncMock(side_effect=ccxt.NetworkError("timeout"))
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.cancel_order(client_order_id="qubx_BTCUSDT_1")
+    await _drive(conn)
+
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_cancel_reject_by_venue_id_only_resolves_real_cid() -> None:
+    # When the caller passes only a venue id, the cancel-reject must recover the real
+    # client_order_id from the venue->cid index — OrderCancelRejectedEvent carries no
+    # venue id, so a None cid would be unroutable and the order would stick.
+    exchange = Mock()
+    exchange.cancel_order = AsyncMock(side_effect=ccxt.OperationRejected("Order already filled"))
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._index_venue_id("qubx_BTCUSDT_1", "VENUE123")  # seed the reverse index
+
+    conn.cancel_order(venue_order_id="VENUE123")
     await _drive(conn)
 
     assert len(sent) == 1
