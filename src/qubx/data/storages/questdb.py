@@ -515,10 +515,19 @@ class QuestDBReader(IReader):
                             _symbs_lookup[symb][dt := x.dtype] = x
                         dtypes.append(dt)
                 else:
-                    if x.data_timeframe:
-                        _symbs_lookup[symb][dt := f"{x.dtype}({x.data_timeframe})"] = x
+                    if x.alias_for_record_type:
+                        # Use the original table-name alias so multiple RECORD-typed tables
+                        # at the same timeframe don't clobber each other in the lookup.
+                        dt = (
+                            f"{x.alias_for_record_type}_{x.data_timeframe}"
+                            if x.data_timeframe
+                            else x.alias_for_record_type
+                        )
+                    elif x.data_timeframe:
+                        dt = f"{x.dtype}({x.data_timeframe})"
                     else:
-                        _symbs_lookup[symb][dt := (x.alias_for_record_type if x.alias_for_record_type else x.dtype)] = x
+                        dt = x.dtype
+                    _symbs_lookup[symb][dt] = x
                     dtypes.append(dt)
 
             # - for every dtype store symbols and reference to table meta info
