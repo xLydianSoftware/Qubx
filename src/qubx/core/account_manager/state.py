@@ -34,6 +34,26 @@ class AccountState:
         cid = self._venue_id_index.get(venue_order_id)
         return self._active_orders.get(cid) if cid else None
 
+    def get_active_order(self, client_order_id: str) -> Order | None:
+        # Active (non-evicted) order only — distinct from get_order, which also searches
+        # the terminal-history ring buffer.
+        return self._active_orders.get(client_order_id)
+
+    def has_active_order(self, client_order_id: str) -> bool:
+        return client_order_id in self._active_orders
+
+    def get_inflight_orders(self) -> list[Order]:
+        # Orders still awaiting a venue verdict (SUBMITTED / PENDING_*). Prunes any cid whose
+        # order was evicted or is no longer in-flight (lazy index maintenance).
+        out: list[Order] = []
+        for cid in list(self._inflight_index):
+            order = self._active_orders.get(cid)
+            if order is None or not (order.status == OrderStatus.SUBMITTED or order.status.is_pending):
+                self._inflight_index.discard(cid)
+                continue
+            out.append(order)
+        return out
+
     def get_positions(self) -> dict[Instrument, Position]:
         return dict(self._positions)
 
@@ -42,6 +62,9 @@ class AccountState:
 
     def get_balance(self, currency: str) -> Balance | None:
         return self._balances.get(currency)
+
+    def get_balances(self) -> list[Balance]:
+        return list(self._balances.values())
 
     def add_order(self, order: Order) -> None:
         self._active_orders[order.client_order_id] = order
@@ -65,6 +88,9 @@ class AccountState:
 
     def set_venue_id(self, cid: str, venue_order_id: str) -> None:
         order = self._active_orders[cid]
+        # Re-key: drop any previous venue id this order was indexed under before re-pointing.
+        if order.venue_order_id is not None:
+            self._venue_id_index.pop(order.venue_order_id, None)
         order.venue_order_id = venue_order_id
         self._venue_id_index[venue_order_id] = cid
 
@@ -103,3 +129,21 @@ class AccountState:
 
     def update_balance(self, currency: str, balance: Balance) -> None:
         self._balances[currency] = balance
+
+    def is_snapshot_stale(self, as_of: np.datetime64) -> bool:
+        return self._last_snapshot_as_of is not None and as_of <= self._last_snapshot_as_of
+
+    def mark_snapshot_applied(self, as_of: np.datetime64) -> None:
+        self._last_snapshot_as_of = as_of
+
+    def get_last_snapshot_as_of(self) -> np.datetime64 | None:
+        return self._last_snapshot_as_of
+
+    def evict_due_terminals(self, now: np.datetime64, grace: np.timedelta64, history_size: int) -> None:
+        # Move terminal orders past the grace window into the bounded history ring buffer,
+        # resizing it first if the configured size changed.
+        if self._terminal_history.maxlen != history_size:
+            self._terminal_history = deque(self._terminal_history, maxlen=history_size)
+        for cid in list(self._pending_evict_index):
+            if (now - self._pending_evict_index[cid]) >= grace:
+                self.evict_to_history(cid)

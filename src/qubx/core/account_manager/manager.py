@@ -1,4 +1,3 @@
-from collections import deque
 from typing import TYPE_CHECKING, Literal
 
 import numpy as np
@@ -128,7 +127,7 @@ class AccountManager:
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
         state = self._states[exchange]
-        order = state._active_orders.get(cid)
+        order = state.get_active_order(cid)
         if order is None:
             raise KeyError(f"order {cid} not found in {exchange}")
         validate_transition(cid, order.status, new_status)
@@ -143,7 +142,10 @@ class AccountManager:
         it; tick/snapshot callers guard or expect only legal moves). ``transition_order``
         is the low-level setter — the legality check lives here, in AccountManager.
         """
-        validate_transition(cid, state._active_orders[cid].status, new_status)
+        order = state.get_active_order(cid)
+        if order is None:
+            raise KeyError(f"order {cid} not found in {state.exchange}")
+        validate_transition(cid, order.status, new_status)
         return state.transition_order(cid, new_status, self._time.time())
 
     def get_state(self, exchange: str) -> AccountState:
@@ -191,7 +193,7 @@ class AccountManager:
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         if exchange is not None:
             return self._states[exchange].get_positions()
-        return {ins: pos for s in self._states.values() for ins, pos in s._positions.items()}
+        return {ins: pos for s in self._states.values() for ins, pos in s.get_positions().items()}
 
     @property
     def positions(self) -> dict[Instrument, Position]:
@@ -207,8 +209,8 @@ class AccountManager:
 
     def get_balances(self, exchange: str | None = None) -> list[Balance]:
         if exchange is not None:
-            return list(self._states[exchange]._balances.values())
-        return [b for s in self._states.values() for b in s._balances.values()]
+            return self._states[exchange].get_balances()
+        return [b for s in self._states.values() for b in s.get_balances()]
 
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
         if self._tcc is None:
@@ -298,14 +300,12 @@ class AccountManager:
 
     def _resolve_or_materialize(self, state: AccountState, event: OrderEvent) -> Order:
         cid = event.client_order_id
-        if cid in state._active_orders:
-            return state._active_orders[cid]
+        # Known by cid (active or terminal-history) or by the venue id it was assigned.
+        if (order := state.get_order(cid)) is not None:
+            return order
         venue_id = event.venue_order_id
-        if venue_id is not None and venue_id in state._venue_id_index:
-            return state._active_orders[state._venue_id_index[venue_id]]
-        for hist in state._terminal_history:
-            if hist.client_order_id == cid:
-                return hist
+        if venue_id is not None and (order := state.get_order_by_venue_id(venue_id)) is not None:
+            return order
         # Unknown to us => external order (manual UI / another bot / pre-existing). A venue
         # lifecycle event always carries the id the venue assigned; fall back to the cid
         # for a stable identity only in the (malformed) case where it doesn't.
@@ -338,7 +338,7 @@ class AccountManager:
             # the venue id ONLY if the order is still in active_orders — an evicted
             # order's venue-id index was already dropped, so set_venue_id would
             # KeyError on active_orders[cid].
-            if order.client_order_id in state._active_orders:
+            if state.has_active_order(order.client_order_id):
                 state.set_venue_id(order.client_order_id, event.venue_order_id)
                 order.accepted_at = event.accepted_at
             return order
@@ -411,7 +411,7 @@ class AccountManager:
         return self._transition(state, order.client_order_id, OrderStatus.EXPIRED)
 
     def _handle_rejected(self, state: AccountState, event: OrderRejectedEvent) -> Order | None:
-        order = state._active_orders.get(event.client_order_id)
+        order = state.get_active_order(event.client_order_id)
         if order is None:
             logger.warning(f"reject for unknown order {event.client_order_id}")
             return None
@@ -427,8 +427,7 @@ class AccountManager:
             logger.debug(f"late update on terminal {order.client_order_id}; ignoring")
             return order
         if order.venue_order_id != event.venue_order_id:
-            if order.venue_order_id is not None:
-                state._venue_id_index.pop(order.venue_order_id, None)
+            # set_venue_id re-keys internally: it drops the order's previous venue id.
             state.set_venue_id(order.client_order_id, event.venue_order_id)
         if event.new_price is not None:
             order.price = event.new_price
@@ -440,14 +439,14 @@ class AccountManager:
         return order
 
     def _handle_cancel_rejected(self, state, event):
-        order = state._active_orders.get(event.client_order_id)
+        order = state.get_active_order(event.client_order_id)
         if order is None or order.status != OrderStatus.PENDING_CANCEL:
             logger.warning(f"cancel-rejected for unexpected state: {order}")
             return None
         return self._revert_from_pending(state, order)
 
     def _handle_update_rejected(self, state, event):
-        order = state._active_orders.get(event.client_order_id)
+        order = state.get_active_order(event.client_order_id)
         if order is None or order.status != OrderStatus.PENDING_UPDATE:
             logger.warning(f"update-rejected for unexpected state: {order}")
             return None
@@ -463,16 +462,16 @@ class AccountManager:
 
     def _handle_snapshot(self, state, event: AccountSnapshotEvent):
         snapshot = event.snapshot
-        if state._last_snapshot_as_of is not None and snapshot.as_of <= state._last_snapshot_as_of:
+        if state.is_snapshot_stale(snapshot.as_of):
             return None
-        state._last_snapshot_as_of = snapshot.as_of
+        state.mark_snapshot_applied(snapshot.as_of)
 
         grace = np.timedelta64(self._cfg.snapshot_check_threshold_ms, "ms")
         diff = ReconcileDiff(exchange=snapshot.exchange, as_of=snapshot.as_of)
 
         if snapshot.open_orders is not None:
             snap_by_vid = {o.venue_order_id: o for o in snapshot.open_orders if o.venue_order_id}
-            for cid, cached in list(state._active_orders.items()):
+            for cid, cached in state.get_orders().items():
                 if cached.status.is_terminal:
                     continue
                 vid = cached.venue_order_id
@@ -499,7 +498,7 @@ class AccountManager:
 
         # Positions and balances: the snapshot is the venue's authoritative full
         # truth for size/amount, and stale snapshots are already rejected wholesale
-        # by the _last_snapshot_as_of ratchet above — so an accepted snapshot always
+        # by the is_snapshot_stale ratchet above — so an accepted snapshot always
         # overwrites. No per-record freshness here (unlike orders, where it guards a
         # fresh fill): Position/Balance carry no reliable last-update timestamp yet.
         # TODO(account-mgmt): once WS PositionUpdate/BalanceUpdate events are wired
@@ -565,29 +564,15 @@ class AccountManager:
         grace = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
         now = self._time.time()
         for state in self._states.values():
-            if state._terminal_history.maxlen != self._cfg.terminal_order_history_size:
-                state._terminal_history = deque(
-                    state._terminal_history,
-                    maxlen=self._cfg.terminal_order_history_size,
-                )
-            for cid in list(state._pending_evict_index):
-                if (now - state._pending_evict_index[cid]) >= grace:
-                    state.evict_to_history(cid)
+            state.evict_due_terminals(now, grace, self._cfg.terminal_order_history_size)
 
     def _on_inflight_tick(self, ctx) -> None:
         now = self._time.time()
         threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
         for exchange, state in self._states.items():
-            for cid in list(state._inflight_index):
+            for order in state.get_inflight_orders():
+                cid = order.client_order_id
                 try:
-                    order = state._active_orders.get(cid)
-                    if order is None or order.status not in (
-                        OrderStatus.SUBMITTED,
-                        OrderStatus.PENDING_CANCEL,
-                        OrderStatus.PENDING_UPDATE,
-                    ):
-                        state._inflight_index.discard(cid)
-                        continue
                     last = order.last_updated_at or order.time
                     if (now - last) < threshold:
                         continue
@@ -625,7 +610,7 @@ class AccountManager:
         now = self._time.time()
         interval = np.timedelta64(self._cfg.snapshot_check_interval_ms, "ms")
         for exchange, state in self._states.items():
-            last = state._last_snapshot_as_of
+            last = state.get_last_snapshot_as_of()
             if last is None or (now - last) > interval:
                 self._connectors[exchange].request_snapshot()
 
@@ -744,7 +729,7 @@ class AccountManager:
         #  - spot: the position's market value (the base cash was debited to buy it,
         #    so the holding's value restores total capital).
         total = bal.total
-        for pos in state._positions.values():
+        for pos in state.get_positions().values():
             if pos.instrument.is_futures():
                 total += pos.unrealized_pnl()
             else:
@@ -766,9 +751,10 @@ class AccountManager:
         return self._base_currency_for(state) if state is not None else "USDT"
 
     def _base_currency_for(self, state) -> str:
-        if not state._balances:
+        balances = state.get_balances()
+        if not balances:
             return "USDT"
-        return max(state._balances.values(), key=lambda b: b.total).currency
+        return max(balances, key=lambda b: b.total).currency
 
     def _notional(self, pos) -> float:
         # notional_value is NaN for an unmarked position; treat as 0 so a single
@@ -788,13 +774,13 @@ class AccountManager:
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
         states = [self._states[exchange]] if exchange else list(self._states.values())
-        net = sum(self._notional(p) for s in states for p in s._positions.values())
+        net = sum(self._notional(p) for s in states for p in s.get_positions().values())
         total = sum(self._total_capital_for(s) for s in states)
         return abs(net) / total if total > 0 else 0.0
 
     def get_gross_leverage(self, exchange: str | None = None) -> float:
         states = [self._states[exchange]] if exchange else list(self._states.values())
-        gross = sum(abs(self._notional(p)) for s in states for p in s._positions.values())
+        gross = sum(abs(self._notional(p)) for s in states for p in s.get_positions().values())
         total = sum(self._total_capital_for(s) for s in states)
         return gross / total if total > 0 else 0.0
 
