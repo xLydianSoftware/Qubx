@@ -46,6 +46,7 @@ from qubx.core.events import (
     OrderBookEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
+    OrderEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
@@ -1319,6 +1320,13 @@ class ProcessingManager(IProcessingManager):
             logger.exception(f"strategy callback {getattr(fn, '__name__', fn)} raised")
 
     def _safe_fire_account_callback(self, event: AccountMessage, updated: Any) -> None:
+        # Order callbacks below all take the affected Order (`updated`). AM returns None when
+        # it couldn't resolve/transition the order (unknown order, unexpected state — already
+        # logged); firing on_order_*(None, ...) would break the `order: Order` contract, so
+        # skip. Non-order events (position/balance/funding/snapshot) read their own payload
+        # off `event`, not `updated`, so they are unaffected.
+        if isinstance(event, OrderEvent) and updated is None:
+            return
         match event:
             case OrderPartiallyFilledEvent():
                 self._safe_call(self._strategy.on_order_partially_filled, updated, event.fill)
