@@ -860,7 +860,7 @@ class CcxtConnector:
         venue update carries no per-trade detail there is nothing to emit here. The
         venues that omit ``trades`` on a ``watch_orders`` terminal report (OKX,
         Bitfinex) feed their fills through a separate ``watch_my_trades`` stream — the
-        commit-4b subclass override that splits them — so the Deal still arrives.
+        two-stream subclass override that splits them — so the Deal still arrives.
         Binance carries the trade inline on the order report, so the unified base feed
         needs no split. (Reconcile does NOT recover a missed fill: a snapshot taken
         after a fully-filled order leaves the open-orders set would see it gone and

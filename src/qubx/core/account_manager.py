@@ -446,22 +446,12 @@ class AccountManager:
         return self._revert_from_pending(state, order)
 
     def _revert_from_pending(self, state, order):
-        target = self._previous_status_before_pending(order)
+        # Revert to the status captured on entry to PENDING_* — never inferred from
+        # filled_quantity/venue_id (brittle when venues roll back partial fills). ACCEPTED
+        # is the safe default for the rare order with no captured status.
+        target = order.pre_pending_status or OrderStatus.ACCEPTED
         order.pre_pending_status = None
         return self._transition(state, order.client_order_id, target)
-
-    def _previous_status_before_pending(self, order) -> OrderStatus:
-        """Live status to revert a PENDING_* order to when the venue rejects the
-        cancel/modify (or the sweep gives up). Prefer the captured pre_pending_status;
-        otherwise derive it from the order's fills / venue ack (e.g. a PENDING_* order
-        adopted from a snapshot has no captured pre_pending_status)."""
-        if order.pre_pending_status is not None:
-            return order.pre_pending_status
-        if order.filled_quantity > 0:
-            return OrderStatus.PARTIALLY_FILLED
-        if order.venue_order_id is None:
-            return OrderStatus.SUBMITTED
-        return OrderStatus.ACCEPTED
 
     def _handle_snapshot(self, state, event: AccountSnapshotEvent):
         snapshot = event.snapshot
@@ -581,26 +571,31 @@ class AccountManager:
         threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
         for exchange, state in self._states.items():
             for cid in list(state._inflight_index):
-                order = state.active_orders.get(cid)
-                if order is None or order.status not in (
-                    OrderStatus.SUBMITTED,
-                    OrderStatus.PENDING_CANCEL,
-                    OrderStatus.PENDING_UPDATE,
-                ):
-                    state._inflight_index.discard(cid)
-                    continue
-                last = order.last_updated_at or order.time
-                if (now - last) < threshold:
-                    continue
-                if order.retry_count >= self._cfg.inflight_check_retries:
-                    self._resolve_exhausted_inflight(state, exchange, order)
-                else:
-                    self._connectors[exchange].request_order_status(
-                        client_order_id=cid,
-                        venue_order_id=order.venue_order_id,
-                    )
-                    order.retry_count += 1
-                    order.last_updated_at = now
+                try:
+                    order = state.active_orders.get(cid)
+                    if order is None or order.status not in (
+                        OrderStatus.SUBMITTED,
+                        OrderStatus.PENDING_CANCEL,
+                        OrderStatus.PENDING_UPDATE,
+                    ):
+                        state._inflight_index.discard(cid)
+                        continue
+                    last = order.last_updated_at or order.time
+                    if (now - last) < threshold:
+                        continue
+                    if order.retry_count >= self._cfg.inflight_check_retries:
+                        self._resolve_exhausted_inflight(state, exchange, order)
+                    else:
+                        self._connectors[exchange].request_order_status(
+                            client_order_id=cid,
+                            venue_order_id=order.venue_order_id,
+                        )
+                        order.retry_count += 1
+                        order.last_updated_at = now
+                except Exception:
+                    # One bad order / raising strategy callback / connector error must not
+                    # abort the rest of the sweep or skip terminal eviction (design §1260).
+                    logger.exception(f"[{exchange}] inflight sweep failed for {cid}")
         self._sweep_terminal_evictions()
 
     def _resolve_exhausted_inflight(self, state, exchange, order):
@@ -609,7 +604,7 @@ class AccountManager:
             order.rejected_reason = reason
             self._transition(state, order.client_order_id, OrderStatus.REJECTED)
             return
-        target = self._previous_status_before_pending(order)
+        target = order.pre_pending_status or OrderStatus.ACCEPTED
         order.pre_pending_status = None
         was = order.status
         self._transition(state, order.client_order_id, target)

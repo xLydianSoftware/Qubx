@@ -248,3 +248,43 @@ def test_init_skips_disabled_ticks():
     )
     AccountManager(pm=pm, connectors={"binance": conn}, strategy=strategy, time=_T(), cfg=cfg)
     assert pm.schedule.call_count == 1
+
+
+def _mk_order(cid, status, vid):
+    return Order(
+        client_order_id=cid,
+        venue_order_id=vid,
+        origin=OrderOrigin.FRAMEWORK,
+        type="LIMIT",
+        instrument=None,
+        time=np.datetime64("2026-05-28T00:00:00"),
+        quantity=1.0,
+        price=50_000.0,
+        side="BUY",
+        status=status,
+        time_in_force="gtc",
+    )
+
+
+def test_inflight_sweep_isolates_raising_callback():
+    # A raising strategy callback (or connector error) on one order must not abort the
+    # rest of the sweep — design §1260 "one bad callback never blocks the next".
+    conn = MagicMock()
+    am = _am({"binance": conn})
+    am._strategy.on_order_cancel_rejected.side_effect = RuntimeError("boom")
+    state = am._states["binance"]
+
+    a = _mk_order("cid-a", OrderStatus.PENDING_CANCEL, "VA")
+    a.retry_count = 3  # exhausted -> revert + (raising) callback
+    a.pre_pending_status = OrderStatus.ACCEPTED
+    state._add_order(a)
+    b = _mk_order("cid-b", OrderStatus.SUBMITTED, "VB")  # retries left
+    state._add_order(b)
+
+    am._time.adv(6_000)
+    am._on_inflight_tick(None)  # must not raise
+
+    # order B still processed despite A's callback raising
+    conn.request_order_status.assert_any_call(client_order_id="cid-b", venue_order_id="VB")
+    # A reverted out of PENDING_CANCEL to its captured pre-pending status
+    assert state.get_order("cid-a").status is OrderStatus.ACCEPTED

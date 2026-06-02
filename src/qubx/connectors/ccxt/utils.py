@@ -141,12 +141,19 @@ def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
     if "fee" in raw:
         fee_amount = float(raw["fee"]["cost"])
         fee_currency = raw["fee"]["currency"]
+    order_id = raw["order"]
+    timestamp = raw["timestamp"]
+    amount = float(raw["amount"])
+    price = float(raw["price"])
+    # Some venues omit a per-fill id; synthesize a deterministic one from
+    # (order_id, timestamp, qty, price) so fill dedup (seen_trade_ids) still works.
+    trade_id = raw.get("id") or f"{order_id}:{timestamp}:{amount}:{price}"
     return Deal(
-        trade_id=raw["id"],
-        order_id=raw["order"],
-        time=to_timestamp(raw["timestamp"], unit="ms"),
-        amount=float(raw["amount"]) * (-1 if raw["side"] == "sell" else +1),
-        price=float(raw["price"]),
+        trade_id=trade_id,
+        order_id=order_id,
+        time=to_timestamp(timestamp, unit="ms"),
+        amount=amount * (-1 if raw["side"] == "sell" else +1),
+        price=price,
         aggressive=raw["takerOrMaker"] == "taker",
         fee_amount=fee_amount,
         fee_currency=fee_currency,

@@ -86,6 +86,24 @@ class TestStrats:
         }
         print(ccxt_convert_deal_info(raw))
 
+    def test_deal_synthesizes_trade_id_when_venue_omits_it(self):
+        # Some venues omit a per-fill id; the converter must synthesize a deterministic
+        # one from (order_id, timestamp, qty, price) so fill dedup still works.
+        raw = {
+            "order": "ORD-1",
+            "timestamp": 1712497717270,
+            "side": "buy",
+            "takerOrMaker": "taker",
+            "price": 2.1129,
+            "amount": 2.4,
+        }
+        deal = ccxt_convert_deal_info(raw)  # must not raise KeyError on missing "id"
+        assert deal.trade_id == "ORD-1:1712497717270:2.4:2.1129"
+        # deterministic: same fill -> same id (so seen_trade_ids dedups it)
+        assert ccxt_convert_deal_info(dict(raw)).trade_id == deal.trade_id
+        # a real venue id is used verbatim when present
+        assert ccxt_convert_deal_info({**raw, "id": "T9"}).trade_id == "T9"
+
     def test_position_restoring_from_deals(self):
         deals = [
             Deal(
