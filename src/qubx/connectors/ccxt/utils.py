@@ -111,12 +111,11 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
 
     tif = raw.get("timeInForce")
 
-    client_order_id = raw["clientOrderId"]
-    origin = (
-        OrderOrigin.FRAMEWORK
-        if client_order_id is not None and client_order_id.startswith("qubx_")
-        else OrderOrigin.EXTERNAL
-    )
+    # Some venues omit clientOrderId (e.g. externally-placed orders); fall back to the
+    # framework's external-order id convention (ext:<venue_id>) so it reads as EXTERNAL and
+    # still has a stable, non-null client_order_id.
+    client_order_id = raw.get("clientOrderId") or f"ext:{raw['id']}"
+    origin = OrderOrigin.FRAMEWORK if client_order_id.startswith("qubx_") else OrderOrigin.EXTERNAL
 
     return Order(
         client_order_id=client_order_id,

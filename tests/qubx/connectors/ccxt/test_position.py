@@ -7,7 +7,7 @@ from qubx.connectors.ccxt.utils import (
     ccxt_convert_order_info,
     ccxt_restore_position_from_deals,
 )
-from qubx.core.basics import Deal, Instrument, Position
+from qubx.core.basics import Deal, Instrument, OrderOrigin, Position
 from qubx.core.lookups import lookup
 from tests.qubx.connectors.ccxt.data.ccxt_responses import (
     C1,
@@ -297,3 +297,30 @@ class TestStrats:
 
         pos2 = ccxt_restore_position_from_deals(pos2, vol2, deals)
         assert N(pos2.quantity, instr2.lot_size) == vol2
+
+
+def _raw_order(**overrides):
+    raw = {
+        "info": {}, "amount": 1.0, "price": 50_000.0, "status": "open",
+        "side": "buy", "type": "limit", "timestamp": 1_716_854_400_000,
+        "id": "VENUE-999", "cost": 0.0,
+    }
+    raw.update(overrides)
+    return raw
+
+
+def test_convert_order_info_without_client_order_id_falls_back_to_ext():
+    # A venue that omits clientOrderId must not KeyError; the order reads as EXTERNAL with a
+    # stable ext:<venue_id> client_order_id.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order())  # no clientOrderId
+    assert order.client_order_id == "ext:VENUE-999"
+    assert order.origin == OrderOrigin.EXTERNAL
+    assert order.venue_order_id == "VENUE-999"
+
+
+def test_convert_order_info_with_framework_client_order_id():
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(clientOrderId="qubx_BTCUSDT_1"))
+    assert order.client_order_id == "qubx_BTCUSDT_1"
+    assert order.origin == OrderOrigin.FRAMEWORK
