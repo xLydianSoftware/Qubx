@@ -172,22 +172,6 @@ class TradingManager(ITradingManager):
             raise
         return order
 
-    def trade_async(
-        self,
-        instrument: Instrument,
-        amount: float,
-        price: float | None = None,
-        time_in_force="gtc",
-        client_id: str | None = None,
-        **options,
-    ) -> str | None:
-        # submit_order is already non-blocking on the connector; the typed-event
-        # path makes sync/async submission identical from the caller's side.
-        order = self.trade(
-            instrument, amount, price=price, time_in_force=time_in_force, client_id=client_id, **options
-        )
-        return order.client_order_id
-
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         raise NotImplementedError("Not implemented yet")
 
@@ -301,7 +285,7 @@ class TradingManager(ITradingManager):
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Closing position {quantity} with market order for {closing_amount}"
             )
-            self.trade_async(instrument, closing_amount, reduce_only=True)
+            self.trade(instrument, closing_amount, reduce_only=True)
         else:
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Closing position {quantity} by emitting signal with 0 target"
