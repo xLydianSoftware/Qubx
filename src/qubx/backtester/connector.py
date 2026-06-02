@@ -159,9 +159,13 @@ class SimulatedConnector(ChannelEmitter):
         self.send(AccountSnapshotEvent(instrument=None, snapshot=snapshot))
 
     def process_market_data(self, instrument: Instrument, data: Timestamped) -> None:
-        # The OME matches on Quote/OrderBook/Trade/TradeArray only; other market-data types
-        # (e.g. OHLC bars in paper trading) are translated to an emulated quote first, mirroring
-        # how the simulated exchange derives a tradeable BBO from non-tick data.
+        # Single entry point that drives the OME (runner._feed_ome in backtest,
+        # _feed_simulated_connector in paper) with whatever a subscription produces. The OME
+        # matches resting orders against Quote/OrderBook/Trade/TradeArray, so those pass
+        # through unchanged — full book depth / trade-array fidelity. Anything else (an OHLC
+        # Bar, a bare price) isn't matchable, so emulate a tradeable quote from it. Note we
+        # can't just always emulate: emulate_quote_from_data has no TradeArray case and
+        # collapses an OrderBook to a single quote.
         if isinstance(data, (Quote, OrderBook, Trade, TradeArray)):
             feed: Quote | OrderBook | Trade | TradeArray | None = data
         else:
