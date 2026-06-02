@@ -37,10 +37,13 @@ from qubx.core.events import (
     ReconcileDiff,
 )
 from qubx.core.exceptions import InvalidOrderTransition
+from qubx.core.interfaces import IStrategy
 
+# StrategyContext and ProcessingManager both import AccountManager (the context builds it,
+# the PM holds/schedules for it), so importing them here at runtime is a circular import —
+# they're type-only forward refs. IStrategy has no such cycle and is imported normally above.
 if TYPE_CHECKING:
     from qubx.core.context import StrategyContext
-    from qubx.core.interfaces import IStrategy
     from qubx.core.mixins.processing import ProcessingManager
 
 # Client-id prefix that marks an order as framework-originated. MUST match the prefix
@@ -55,7 +58,7 @@ class AccountManager:
         *,
         pm: "ProcessingManager | None" = None,
         connectors: dict[str, IConnector],
-        strategy: "IStrategy",
+        strategy: IStrategy,
         time: ITimeProvider,
         cfg: AccountManagerConfig | None = None,
         account_id: str = "AccountManager",
@@ -74,7 +77,7 @@ class AccountManager:
         self,
         *,
         connectors: dict[str, IConnector],
-        strategy: "IStrategy",
+        strategy: IStrategy,
         time: ITimeProvider,
         cfg: AccountManagerConfig | None,
         account_id: str,
