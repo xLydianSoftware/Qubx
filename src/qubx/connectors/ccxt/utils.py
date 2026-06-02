@@ -91,7 +91,8 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         # Try alternative fields for different exchanges
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
     amnt = float(amnt_raw)
-    price = raw["price"] or 0.0
+    # None for market orders (no limit price) — matches Order.price: float | None.
+    price = raw.get("price")
     status = ccxt_status_to_order_status(raw.get("status"), ri)
     side_raw = raw["side"]
     if side_raw is None:
@@ -125,7 +126,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         instrument=instrument,
         time=recognize_time(raw["timestamp"]),
         quantity=abs(amnt) * (-1 if side == "SELL" else 1),
-        price=float(price) if price is not None else 0.0,
+        price=float(price) if price is not None else None,
         side=side,
         status=status,
         time_in_force=tif,
@@ -135,12 +136,12 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
 
 
 def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
-    fee_amount = None
-    fee_currency = None
-    if "fee" in raw:
-        fee_amount = float(raw["fee"]["cost"])
-        fee_currency = raw["fee"]["currency"]
-    order_id = raw["order"]
+    # CCXT may return fee absent, an empty {}, or {"cost": None} — guard all three.
+    fee = raw.get("fee") or {}
+    _fee_cost = fee.get("cost")
+    fee_amount = float(_fee_cost) if _fee_cost is not None else None
+    fee_currency = fee.get("currency")
+    order_id = raw.get("order")
     timestamp = raw["timestamp"]
     amount = float(raw["amount"])
     price = float(raw["price"])
@@ -151,9 +152,9 @@ def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
         trade_id=trade_id,
         order_id=order_id,
         time=to_timestamp(timestamp, unit="ms"),
-        amount=amount * (-1 if raw["side"] == "sell" else +1),
+        amount=amount * (-1 if raw.get("side") == "sell" else +1),
         price=price,
-        aggressive=raw["takerOrMaker"] == "taker",
+        aggressive=raw.get("takerOrMaker") == "taker",  # absent -> maker (some venues omit it)
         fee_amount=fee_amount,
         fee_currency=fee_currency,
     )

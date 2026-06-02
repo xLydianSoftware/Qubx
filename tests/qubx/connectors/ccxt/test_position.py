@@ -324,3 +324,20 @@ def test_convert_order_info_with_framework_client_order_id():
     order = ccxt_convert_order_info(instrument, _raw_order(clientOrderId="qubx_BTCUSDT_1"))
     assert order.client_order_id == "qubx_BTCUSDT_1"
     assert order.origin == OrderOrigin.FRAMEWORK
+
+
+def test_convert_order_info_market_order_price_is_none():
+    # Market orders carry no limit price; the converter must yield None, not a fake 0.0
+    # (matches Order.price: float | None).
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market"))
+    assert order.price is None
+
+
+def test_convert_deal_info_tolerates_empty_fee_and_missing_taker():
+    # CCXT may send fee={} (or cost=None) and omit takerOrMaker — must not KeyError/TypeError.
+    raw = {"order": "O1", "timestamp": 1_716_854_400_000, "side": "buy", "price": 100.0, "amount": 1.0, "fee": {}}
+    deal = ccxt_convert_deal_info(raw)
+    assert deal.fee_amount is None
+    assert deal.fee_currency is None
+    assert deal.aggressive is False  # takerOrMaker absent -> treated as maker

@@ -586,7 +586,7 @@ class CcxtConnector(ChannelEmitter):
             OrderUpdatedEvent(
                 instrument=None,
                 client_order_id=client_order_id,  # type: ignore[arg-type]
-                venue_order_id=vid or "",
+                venue_order_id=vid,  # str | None — never coerce to "" (AM would index a bogus id)
                 new_price=price,
                 new_quantity=quantity,
             )
@@ -612,13 +612,12 @@ class CcxtConnector(ChannelEmitter):
     async def _update_via_cancel_recreate(
         self, client_order_id: str | None, venue_order_id: str | None, price: float | None, quantity: float | None
     ) -> dict[str, Any] | None:
-        ok, _response = await self._cancel_with_retry(client_order_id, venue_order_id)
-        if not ok:
-            raise RuntimeError(f"failed to cancel order {venue_order_id or client_order_id} during update")
-        # TODO(account-mgmt): cancel+recreate still needs the ORIGINAL order's full
-        # parameters (quantity/price/tif when the update leaves one unspecified) which
-        # the connector-local cache deliberately does not hold (AM owns that state).
-        # Until that wiring exists, this path raises, surfacing as OrderUpdateRejected.
+        # Raise BEFORE cancelling: cancel+recreate still needs the ORIGINAL order's full
+        # parameters (quantity/price/tif when the update leaves one unspecified) which the
+        # connector-local cache deliberately does not hold (AM owns that state). Cancelling
+        # first and then raising would leave the order DEAD at the venue while the strategy
+        # is told only "update rejected, order still alive". Until the recreate is wired,
+        # reject without touching the live order. TODO(account-mgmt): wire the recreate.
         raise ccxt.NotSupported("cancel+recreate update requires the original order parameters")
 
     def _emit_update_rejected(self, client_order_id: str | None, error: Exception) -> None:
