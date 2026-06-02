@@ -81,21 +81,6 @@ from qubx.trackers.riskctrl import _InitializationStageTracker
 from qubx.utils.time import interval_to_cron, timedelta_to_str
 
 
-class _CounterSink:
-    """Minimal best-effort counter sink for dispatch-failure metrics.
-
-    Errors during event dispatch must never themselves raise; this no-op default
-    just records the counts in-process so they can be inspected/overridden without
-    coupling the processing loop to any concrete metric backend.
-    """
-
-    def __init__(self) -> None:
-        self.counts: dict[str, int] = {}
-
-    def inc(self, name: str, labels: dict | None = None) -> None:
-        self.counts[name] = self.counts.get(name, 0) + 1
-
-
 class ProcessingManager(IProcessingManager):
     MAX_NUMBER_OF_STRATEGY_FAILURES: int = 10
     DATA_READY_TIMEOUT: td_64 = td_64(60, "s")
@@ -107,7 +92,6 @@ class ProcessingManager(IProcessingManager):
     _subscription_manager: ISubscriptionManager
     _time_provider: ITimeProvider
     _account_manager: AccountManager
-    _metrics: _CounterSink
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
     _cache: IMarketDataCache
@@ -171,7 +155,6 @@ class ProcessingManager(IProcessingManager):
         self._subscription_manager = subscription_manager
         self._time_provider = time_provider
         self._account_manager = account_manager
-        self._metrics = _CounterSink()
         self._is_simulation = is_simulation
         self._position_gathering = position_gathering
         self._position_tracker = position_tracker
@@ -1318,7 +1301,6 @@ class ProcessingManager(IProcessingManager):
             return
         except Exception:
             logger.exception(f"AM.apply raised on {type(event).__name__}")
-            self._metrics.inc("account_manager_apply_errors", labels={"event": type(event).__name__})
             return
         self._safe_fire_account_callback(event, updated)
 
@@ -1327,7 +1309,6 @@ class ProcessingManager(IProcessingManager):
             fn(self._context, *args)
         except Exception:
             logger.exception(f"strategy callback {getattr(fn, '__name__', fn)} raised")
-            self._metrics.inc("strategy_callback_errors", labels={"callback": getattr(fn, "__name__", str(fn))})
 
     def _safe_fire_account_callback(self, event: AccountMessage, updated: Any) -> None:
         match event:

@@ -7,6 +7,7 @@ from qubx.core.account_manager.config import AccountManagerConfig, _ms_to_cron
 from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import can_transition, validate_transition
 from qubx.core.basics import (
+    ZERO_COSTS,
     Balance,
     Instrument,
     ITimeProvider,
@@ -166,9 +167,9 @@ class AccountManager:
         return [b for s in self._states.values() for b in s.get_balances()]
 
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
-        if self._tcc is None:
-            raise NotImplementedError("get_fees_calculator: no TransactionCostsCalculator provided to AccountManager")
-        return self._tcc
+        # No TCC configured => zero-fee calculator (rather than raising), so callers that
+        # only need fee arithmetic still work in fee-agnostic setups.
+        return self._tcc if self._tcc is not None else ZERO_COSTS
 
     def find_order_by_id(self, order_id: str) -> Order | None:
         for state in self._states.values():

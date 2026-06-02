@@ -4,7 +4,7 @@ import numpy as np
 
 from qubx.core.basics import Deal
 from qubx.core.events import OrderAcceptedEvent, OrderFilledEvent, QuoteEvent
-from qubx.core.mixins.processing import ProcessingManager, _CounterSink
+from qubx.core.mixins.processing import ProcessingManager
 from qubx.core.series import Quote
 
 
@@ -13,7 +13,6 @@ def _pm() -> ProcessingManager:
     pm._is_simulation = True  # not paper: keeps _feed_simulated_connector a no-op here
     pm._strategy = MagicMock()
     pm._account_manager = MagicMock()
-    pm._metrics = _CounterSink()
     pm._context = MagicMock()
     pm._context.emitter = None
     pm._position_gathering = MagicMock()
@@ -78,22 +77,23 @@ def test_callback_exception_does_not_halt_dispatch():
     pm = _pm()
     pm._strategy.on_order_accepted.side_effect = RuntimeError("boom")
     pm._account_manager.apply.return_value = MagicMock()
+    # the bad callback is swallowed (logged, not raised); reaching here proves dispatch survived
     pm.process_event(
         OrderAcceptedEvent(
             instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
         )
     )
-    # the bad callback is swallowed and recorded as a metric, dispatch survives
-    assert pm._metrics.counts.get("strategy_callback_errors", 0) >= 1
+    pm._strategy.on_order_accepted.assert_called_once()
 
 
-def test_am_apply_error_is_recorded_and_does_not_raise():
+def test_am_apply_error_is_swallowed_and_does_not_raise():
     pm = _pm()
     pm._account_manager.apply.side_effect = RuntimeError("kaboom")
+    # AM.apply raising is logged and swallowed; the callback must not fire on a failed apply
     pm.process_event(
         OrderAcceptedEvent(
             instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
         )
     )
-    assert pm._metrics.counts.get("account_manager_apply_errors", 0) >= 1
+    pm._account_manager.apply.assert_called_once()
     pm._strategy.on_order_accepted.assert_not_called()
