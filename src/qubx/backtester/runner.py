@@ -8,6 +8,7 @@ from qubx import QubxLogConfig, logger
 from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import SimulatedDataIterator
+from qubx.backtester.transfers import SimulationTransferManager
 from qubx.core.account_manager import AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
@@ -562,6 +563,15 @@ class SimulationRunner:
             notifier=self.notifier,
             initializer=self.initializer,
         )
+
+        # - auto-assign the simulation transfer manager unless the strategy set its own in
+        #   on_init; context.start() then picks it up from the initializer. Wired via the
+        #   context's initializer (the runner's own initializer may be None — the context
+        #   builds a default one).
+        if self.ctx.initializer.get_transfer_manager() is None:
+            self.ctx.initializer.set_transfer_manager(
+                SimulationTransferManager(self.account_manager, self.time_provider)
+            )
 
         # - attach emmiter
         if self.emitter is not None:
