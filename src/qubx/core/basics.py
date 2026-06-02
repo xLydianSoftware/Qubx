@@ -802,6 +802,13 @@ class Balance:
         self.locked += lock_amount
         self.free = self.total - self.locked
 
+    def reset_by_balance(self, balance: "Balance") -> None:
+        # In-place value copy (exchange/currency are identity) so holders of this
+        # Balance keep a live reference. Mirrors Position.reset_by_position.
+        self.free = balance.free
+        self.locked = balance.locked
+        self.total = balance.total
+
     def __add__(self, amount: float) -> "Balance":
         self.total += amount
         self.free += amount

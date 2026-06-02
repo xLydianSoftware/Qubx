@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from qubx.core.account_manager import AccountManager, AccountManagerConfig, AccountState
+from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import (
     Balance,
     Instrument,
@@ -44,13 +44,14 @@ def _instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 
 def _am(exchange="binance", cfg=None):
     am = AccountManager.__new__(AccountManager)
-    am._states = {exchange: AccountState(exchange=exchange)}
-    am._connectors = {exchange: MagicMock()}
-    am._cfg = cfg or AccountManagerConfig(snapshot_check_threshold_ms=5_000)
-    am._time = _T()
-    am._strategy = MagicMock()
-    am._liveness_unready_since = {}
-    am._applied_funding_buckets = {}
+    am._init_state(
+        connectors={exchange: MagicMock()},
+        strategy=MagicMock(),
+        time=_T(),
+        cfg=cfg or AccountManagerConfig(snapshot_check_threshold_ms=5_000),
+        account_id="test",
+        tcc=None,
+    )
     am._ctx = object()
     return am
 
@@ -207,25 +208,29 @@ def test_balance_updated_from_snapshot():
     assert state.get_balance("USDT").total == 1000.0
 
 
-def test_snapshot_overwrites_existing_position_and_balance():
-    # Regression for C1: getattr(existing, "last_updated_at", np.datetime64(0))
-    # crashed under numpy 2.x. A snapshot carrying the same instrument/currency
-    # with new values must overwrite a pre-existing position+balance with NO
-    # exception (no per-record freshness; the whole-snapshot ratchet gates it).
+def test_snapshot_updates_existing_position_and_balance_in_place():
+    # A snapshot carrying the same instrument/currency with new values updates the
+    # EXISTING position/balance objects in place (identity preserved — code across the
+    # framework holds references), never swapping in the snapshot's throwaway objects.
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
     state.set_position(inst, Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0))
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    pos_ref = state.get_position(inst)
+    bal_ref = state.get_balance("USDT")
 
     snap_pos = Position(instrument=inst, quantity=3.0, pos_average_price=49_000.0)
     snap_bal = Balance(exchange="binance", currency="USDT", free=400.0, locked=100.0, total=500.0)
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos], balances=[snap_bal]))
 
-    assert state.get_position(inst) is snap_pos
+    # identity preserved (same objects), values overwritten from the snapshot
+    assert state.get_position(inst) is pos_ref
+    assert state.get_position(inst) is not snap_pos
     assert state.get_position(inst).quantity == 3.0
-    assert state.get_balance("USDT") is snap_bal
+    assert state.get_balance("USDT") is bal_ref
+    assert state.get_balance("USDT") is not snap_bal
     assert state.get_balance("USDT").total == 500.0
 
 

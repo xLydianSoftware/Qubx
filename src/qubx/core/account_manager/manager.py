@@ -72,40 +72,6 @@ class AccountManager:
         if self._pm is not None:
             self._register_ticks()
 
-    def _init_state(
-        self,
-        *,
-        connectors: dict[str, IConnector],
-        strategy: IStrategy,
-        time: ITimeProvider,
-        cfg: AccountManagerConfig | None,
-        account_id: str,
-        tcc: TransactionCostsCalculator | None,
-    ) -> None:
-        # Shared field init for both the live and simulation managers, so the
-        # subclass can't silently drift from the parent's field set.
-        self._connectors = connectors
-        self._strategy = strategy
-        self._time = time
-        self._cfg = cfg or AccountManagerConfig()
-        self.account_id = account_id
-        self._tcc = tcc
-        self._states = {ex: AccountState(exchange=ex) for ex in connectors}
-        self._liveness_unready_since: dict[str, np.datetime64] = {}
-        # TODO(account-mgmt): this set grows unbounded over long sessions; bound it
-        # (evict old buckets) in a later PR.
-        self._applied_funding_buckets: dict[str, set] = {}
-        # Deferred init: always wired via set_context before any tick/callback fires.
-        self._ctx: "StrategyContext" = None  # type: ignore[assignment]
-
-    def _register_ticks(self) -> None:
-        if self._cfg.inflight_check_interval_ms > 0:
-            self._pm.schedule(_ms_to_cron(self._cfg.inflight_check_interval_ms), self._on_inflight_tick)
-        if self._cfg.snapshot_check_interval_ms > 0:
-            self._pm.schedule(_ms_to_cron(self._cfg.snapshot_check_interval_ms), self._on_snapshot_tick)
-        if self._cfg.liveness_check_interval_ms > 0:
-            self._pm.schedule(_ms_to_cron(self._cfg.liveness_check_interval_ms), self._on_liveness_tick)
-
     def set_context(self, ctx: "StrategyContext") -> None:
         """Wire the IStrategyContext after construction.
 
@@ -134,19 +100,6 @@ class AccountManager:
         if new_status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE):
             order.pre_pending_status = order.status
         state.transition_order(cid, new_status, self._time.time())
-
-    def _transition(self, state: AccountState, cid: str, new_status: OrderStatus) -> Order:
-        """Single validating chokepoint for every AM-driven status change.
-
-        Raises InvalidOrderTransition on an illegal move (the PM dispatch logs + skips
-        it; tick/snapshot callers guard or expect only legal moves). ``transition_order``
-        is the low-level setter — the legality check lives here, in AccountManager.
-        """
-        order = state.get_active_order(cid)
-        if order is None:
-            raise KeyError(f"order {cid} not found in {state.exchange}")
-        validate_transition(cid, order.status, new_status)
-        return state.transition_order(cid, new_status, self._time.time())
 
     def get_state(self, exchange: str) -> AccountState:
         return self._states[exchange]
@@ -276,6 +229,149 @@ class AccountManager:
             case _:
                 logger.warning(f"unhandled AccountMessage: {type(event)}")
                 return None
+
+    def on_market_quote(self, instrument, quote) -> None:
+        state = self._states.get(instrument.exchange)
+        if state is None:
+            return
+        pos = state.get_position(instrument)
+        if pos is None:
+            return
+        # Position.update_market_price expects (timestamp, price, conversion_rate);
+        # mark-to-market uses the quote mid.
+        pos.update_market_price(self._time.time(), quote.mid_price(), 1.0)
+
+    def get_total_capital(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            return self._total_capital_for(self._states[exchange])
+        return sum(self._total_capital_for(s) for s in self._states.values())
+
+    def get_capital(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            return self._free_capital_for(self._states[exchange])
+        return sum(self._free_capital_for(s) for s in self._states.values())
+
+    def get_base_currency(self, exchange: str | None = None) -> str:
+        state = self._states[exchange] if exchange is not None else next(iter(self._states.values()), None)
+        return self._base_currency_for(state) if state is not None else "USDT"
+
+    def get_leverage(self, instrument) -> float:
+        state = self._states.get(instrument.exchange)
+        if state is None:
+            return 0.0
+        pos = state.get_position(instrument)
+        if pos is None:
+            return 0.0
+        total = self._total_capital_for(state)
+        return abs(self._notional(pos)) / total if total > 0 else 0.0
+
+    def get_net_leverage(self, exchange: str | None = None) -> float:
+        states = [self._states[exchange]] if exchange else list(self._states.values())
+        net = sum(self._notional(p) for s in states for p in s.get_positions().values())
+        total = sum(self._total_capital_for(s) for s in states)
+        return abs(net) / total if total > 0 else 0.0
+
+    def get_gross_leverage(self, exchange: str | None = None) -> float:
+        states = [self._states[exchange]] if exchange else list(self._states.values())
+        gross = sum(abs(self._notional(p)) for s in states for p in s.get_positions().values())
+        total = sum(self._total_capital_for(s) for s in states)
+        return gross / total if total > 0 else 0.0
+
+    def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
+        return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
+
+    # Per-instrument exchange-side settings: the venue's configured leverage tier,
+    # hard caps and margin mode. Simulation does not model margin, so these return
+    # neutral values; the real settings live on the venue.
+    # TODO(account-mgmt): back these with venue-sourced leverage/margin/mode held in
+    # AccountState once the margin-aware live connectors are wired.
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        return float("inf")
+
+    def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
+        return None
+
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        return sum(p.initial_margin for p in self.get_positions(exchange).values())
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        return sum(p.maint_margin for p in self.get_positions(exchange).values())
+
+    def get_available_margin(self, exchange: str | None = None) -> float:
+        return self.get_total_capital(exchange) - self.get_total_initial_margin(exchange)
+
+    def get_margin_ratio(self, exchange: str | None = None) -> float:
+        maint = self.get_total_maint_margin(exchange)
+        if maint == 0:
+            return 100.0
+        return min(100.0, self.get_total_capital(exchange) / maint)
+
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        pos = self.get_position(instrument)
+        return pos.adl_level if pos is not None else None
+
+    def get_reserved(self, instrument: Instrument) -> float:
+        return 0.0
+
+    def _init_state(
+        self,
+        *,
+        connectors: dict[str, IConnector],
+        strategy: IStrategy,
+        time: ITimeProvider,
+        cfg: AccountManagerConfig | None,
+        account_id: str,
+        tcc: TransactionCostsCalculator | None,
+    ) -> None:
+        # Shared field init for both the live and simulation managers, so the
+        # subclass can't silently drift from the parent's field set.
+        self._connectors = connectors
+        self._strategy = strategy
+        self._time = time
+        self._cfg = cfg or AccountManagerConfig()
+        self.account_id = account_id
+        self._tcc = tcc
+        # Derived timedeltas (config is fixed for the AM's lifetime) — computed once
+        # here rather than rebuilt on every tick/snapshot.
+        self._snapshot_grace = np.timedelta64(self._cfg.snapshot_check_threshold_ms, "ms")
+        self._snapshot_interval = np.timedelta64(self._cfg.snapshot_check_interval_ms, "ms")
+        self._inflight_threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
+        self._liveness_threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
+        self._terminal_retention = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
+        self._states = {ex: AccountState(exchange=ex) for ex in connectors}
+        self._liveness_unready_since: dict[str, np.datetime64] = {}
+        # TODO(account-mgmt): this set grows unbounded over long sessions; bound it
+        # (evict old buckets) in a later PR.
+        self._applied_funding_buckets: dict[str, set] = {}
+        # Deferred init: always wired via set_context before any tick/callback fires.
+        self._ctx: "StrategyContext" = None  # type: ignore[assignment]
+
+    def _register_ticks(self) -> None:
+        if self._cfg.inflight_check_interval_ms > 0:
+            self._pm.schedule(_ms_to_cron(self._cfg.inflight_check_interval_ms), self._on_inflight_tick)
+        if self._cfg.snapshot_check_interval_ms > 0:
+            self._pm.schedule(_ms_to_cron(self._cfg.snapshot_check_interval_ms), self._on_snapshot_tick)
+        if self._cfg.liveness_check_interval_ms > 0:
+            self._pm.schedule(_ms_to_cron(self._cfg.liveness_check_interval_ms), self._on_liveness_tick)
+
+    def _transition(self, state: AccountState, cid: str, new_status: OrderStatus) -> Order:
+        """Single validating chokepoint for every AM-driven status change.
+
+        Raises InvalidOrderTransition on an illegal move (the PM dispatch logs + skips
+        it; tick/snapshot callers guard or expect only legal moves). ``transition_order``
+        is the low-level setter — the legality check lives here, in AccountManager.
+        """
+        order = state.get_active_order(cid)
+        if order is None:
+            raise KeyError(f"order {cid} not found in {state.exchange}")
+        validate_transition(cid, order.status, new_status)
+        return state.transition_order(cid, new_status, self._time.time())
 
     def _get_state_for_event(self, event: AccountMessage) -> AccountState | None:
         if isinstance(event, AccountSnapshotEvent):
@@ -466,7 +562,6 @@ class AccountManager:
             return None
         state.mark_snapshot_applied(snapshot.as_of)
 
-        grace = np.timedelta64(self._cfg.snapshot_check_threshold_ms, "ms")
         diff = ReconcileDiff(exchange=snapshot.exchange, as_of=snapshot.as_of)
 
         if snapshot.open_orders is not None:
@@ -476,25 +571,27 @@ class AccountManager:
                     continue
                 vid = cached.venue_order_id
                 if vid is not None and vid in snap_by_vid:
+                    # Still open at the venue — property drift is reconciled in the
+                    # open-orders loop below (_update_from_snapshot), not here.
                     continue
-                if (snapshot.as_of - cached.time) < grace:
+                if (snapshot.as_of - cached.time) < self._snapshot_grace:
                     continue
                 terminal = OrderStatus.REJECTED if cached.status == OrderStatus.SUBMITTED else OrderStatus.CANCELED
                 cached.rejected_reason = "reconcile: missing from snapshot"
                 cached.pre_pending_status = None
                 try:
                     self._transition(state, cid, terminal)
-                    diff.orders_newly_terminal.append(cached)
+                    diff.record_order_terminal(cached)
                 except InvalidOrderTransition:
                     logger.warning(f"reconcile: cannot terminate {cid} from {cached.status}")
             for snap_order in snapshot.open_orders:
                 existing = state.get_order_by_venue_id(snap_order.venue_order_id) if snap_order.venue_order_id else None
                 if existing is None:
                     self._materialize_from_snapshot(state, snap_order, snapshot.as_of)
-                    diff.orders_materialized.append(snap_order)
+                    diff.record_order_materialized(snap_order)
                 elif existing.last_updated_at is None or snapshot.as_of > existing.last_updated_at:
                     self._update_from_snapshot(state, existing, snap_order, snapshot.as_of)
-                    diff.orders_updated.append(existing)
+                    diff.record_order_updated(existing)
 
         # Positions and balances: the snapshot is the venue's authoritative full
         # truth for size/amount, and stale snapshots are already rejected wholesale
@@ -506,13 +603,13 @@ class AccountManager:
         # older than a recent WS update can't clobber it.
         if snapshot.positions is not None:
             for snap_pos in snapshot.positions:
-                state.set_position(snap_pos.instrument, snap_pos)
-                diff.positions_updated.append(snap_pos)
+                if state.apply_position_snapshot(snap_pos):
+                    diff.record_position_updated(state.get_position(snap_pos.instrument))
 
         if snapshot.balances is not None:
             for snap_bal in snapshot.balances:
-                state.update_balance(snap_bal.currency, snap_bal)
-                diff.balances_updated.append(snap_bal)
+                if state.apply_balance_snapshot(snap_bal):
+                    diff.record_balance_updated(state.get_balance(snap_bal.currency))
 
         try:
             self._strategy.on_reconcile_complete(self._ctx, snapshot.exchange, diff)
@@ -561,20 +658,18 @@ class AccountManager:
         existing.last_updated_at = as_of
 
     def _sweep_terminal_evictions(self) -> None:
-        grace = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
         now = self._time.time()
         for state in self._states.values():
-            state.evict_due_terminals(now, grace, self._cfg.terminal_order_history_size)
+            state.evict_due_terminals(now, self._terminal_retention, self._cfg.terminal_order_history_size)
 
     def _on_inflight_tick(self, ctx) -> None:
         now = self._time.time()
-        threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
         for exchange, state in self._states.items():
             for order in state.get_inflight_orders():
                 cid = order.client_order_id
                 try:
                     last = order.last_updated_at or order.time
-                    if (now - last) < threshold:
+                    if (now - last) < self._inflight_threshold:
                         continue
                     if order.retry_count >= self._cfg.inflight_check_retries:
                         self._resolve_exhausted_inflight(state, exchange, order)
@@ -608,21 +703,19 @@ class AccountManager:
 
     def _on_snapshot_tick(self, ctx) -> None:
         now = self._time.time()
-        interval = np.timedelta64(self._cfg.snapshot_check_interval_ms, "ms")
         for exchange, state in self._states.items():
             last = state.get_last_snapshot_as_of()
-            if last is None or (now - last) > interval:
+            if last is None or (now - last) > self._snapshot_interval:
                 self._connectors[exchange].request_snapshot()
 
     def _on_liveness_tick(self, ctx) -> None:
         now = self._time.time()
-        threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
         for exchange, connector in self._connectors.items():
             if connector.is_ws_ready():
                 self._liveness_unready_since.pop(exchange, None)
                 continue
             since = self._liveness_unready_since.setdefault(exchange, now)
-            if (now - since) >= threshold:
+            if (now - since) >= self._liveness_threshold:
                 logger.warning(f"[{exchange}] WS unready past threshold; reconnecting")
                 try:
                     connector.reconnect()
@@ -666,17 +759,6 @@ class AccountManager:
         bal.free += delta
         state.update_balance(currency, bal)
 
-    def on_market_quote(self, instrument, quote) -> None:
-        state = self._states.get(instrument.exchange)
-        if state is None:
-            return
-        pos = state.get_position(instrument)
-        if pos is None:
-            return
-        # Position.update_market_price expects (timestamp, price, conversion_rate);
-        # mark-to-market uses the quote mid.
-        pos.update_market_price(self._time.time(), quote.mid_price(), 1.0)
-
     def _handle_funding_payment(self, state, event: FundingPaymentEvent):
         payment = event.payment
         instrument = event.instrument
@@ -707,16 +789,6 @@ class AccountManager:
             state.update_balance(instrument.settle, bal)
         return payment
 
-    def get_total_capital(self, exchange: str | None = None) -> float:
-        if exchange is not None:
-            return self._total_capital_for(self._states[exchange])
-        return sum(self._total_capital_for(s) for s in self._states.values())
-
-    def get_capital(self, exchange: str | None = None) -> float:
-        if exchange is not None:
-            return self._free_capital_for(self._states[exchange])
-        return sum(self._free_capital_for(s) for s in self._states.values())
-
     def _total_capital_for(self, state) -> float:
         base = self._base_currency_for(state)
         bal = state.get_balance(base)
@@ -746,10 +818,6 @@ class AccountManager:
         bal = state.get_balance(base)
         return bal.free if bal else 0.0
 
-    def get_base_currency(self, exchange: str | None = None) -> str:
-        state = self._states[exchange] if exchange is not None else next(iter(self._states.values()), None)
-        return self._base_currency_for(state) if state is not None else "USDT"
-
     def _base_currency_for(self, state) -> str:
         balances = state.get_balances()
         if not balances:
@@ -761,70 +829,6 @@ class AccountManager:
         # unmarked position can't poison aggregate leverage (consumed by emitters,
         # loggers, sizers). A real position gets a mark on its first quote.
         return float(np.nan_to_num(pos.notional_value))
-
-    def get_leverage(self, instrument) -> float:
-        state = self._states.get(instrument.exchange)
-        if state is None:
-            return 0.0
-        pos = state.get_position(instrument)
-        if pos is None:
-            return 0.0
-        total = self._total_capital_for(state)
-        return abs(self._notional(pos)) / total if total > 0 else 0.0
-
-    def get_net_leverage(self, exchange: str | None = None) -> float:
-        states = [self._states[exchange]] if exchange else list(self._states.values())
-        net = sum(self._notional(p) for s in states for p in s.get_positions().values())
-        total = sum(self._total_capital_for(s) for s in states)
-        return abs(net) / total if total > 0 else 0.0
-
-    def get_gross_leverage(self, exchange: str | None = None) -> float:
-        states = [self._states[exchange]] if exchange else list(self._states.values())
-        gross = sum(abs(self._notional(p)) for s in states for p in s.get_positions().values())
-        total = sum(self._total_capital_for(s) for s in states)
-        return gross / total if total > 0 else 0.0
-
-    def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
-        return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
-
-    # Per-instrument exchange-side settings: the venue's configured leverage tier,
-    # hard caps and margin mode. Simulation does not model margin, so these return
-    # neutral values; the real settings live on the venue.
-    # TODO(account-mgmt): back these with venue-sourced leverage/margin/mode held in
-    # AccountState once the margin-aware live connectors are wired.
-    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        return None
-
-    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        return None
-
-    def get_max_instrument_notional(self, instrument: Instrument) -> float:
-        return float("inf")
-
-    def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
-        return None
-
-    def get_total_initial_margin(self, exchange: str | None = None) -> float:
-        return sum(p.initial_margin for p in self.get_positions(exchange).values())
-
-    def get_total_maint_margin(self, exchange: str | None = None) -> float:
-        return sum(p.maint_margin for p in self.get_positions(exchange).values())
-
-    def get_available_margin(self, exchange: str | None = None) -> float:
-        return self.get_total_capital(exchange) - self.get_total_initial_margin(exchange)
-
-    def get_margin_ratio(self, exchange: str | None = None) -> float:
-        maint = self.get_total_maint_margin(exchange)
-        if maint == 0:
-            return 100.0
-        return min(100.0, self.get_total_capital(exchange) / maint)
-
-    def get_adl_level(self, instrument: Instrument) -> int | None:
-        pos = self.get_position(instrument)
-        return pos.adl_level if pos is not None else None
-
-    def get_reserved(self, instrument: Instrument) -> float:
-        return 0.0
 
 
 class SimulationAccountManager(AccountManager):

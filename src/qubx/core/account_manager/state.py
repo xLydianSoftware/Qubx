@@ -125,10 +125,41 @@ class AccountState:
         self._pending_evict_index.pop(cid, None)
 
     def set_position(self, instrument: Instrument, position: Position) -> None:
-        self._positions[instrument] = position
+        # Identity-preserving: an existing Position is updated in place (callers across
+        # the framework hold references to it), never swapped for a new object.
+        existing = self._positions.get(instrument)
+        if existing is None:
+            self._positions[instrument] = position
+        else:
+            existing.reset_by_position(position)
 
     def update_balance(self, currency: str, balance: Balance) -> None:
-        self._balances[currency] = balance
+        # Identity-preserving, like set_position.
+        existing = self._balances.get(currency)
+        if existing is None:
+            self._balances[currency] = balance
+        else:
+            existing.reset_by_balance(balance)
+
+    def apply_position_snapshot(self, position: Position) -> bool:
+        # Reconcile a snapshot position into state; returns True if it was new or its
+        # size/price changed (so the caller records it in the reconcile diff).
+        existing = self._positions.get(position.instrument)
+        changed = (
+            existing is None
+            or existing.quantity != position.quantity
+            or existing.position_avg_price != position.position_avg_price
+        )
+        self.set_position(position.instrument, position)
+        return changed
+
+    def apply_balance_snapshot(self, balance: Balance) -> bool:
+        existing = self._balances.get(balance.currency)
+        changed = existing is None or (
+            existing.total != balance.total or existing.free != balance.free or existing.locked != balance.locked
+        )
+        self.update_balance(balance.currency, balance)
+        return changed
 
     def is_snapshot_stale(self, as_of: np.datetime64) -> bool:
         return self._last_snapshot_as_of is not None and as_of <= self._last_snapshot_as_of

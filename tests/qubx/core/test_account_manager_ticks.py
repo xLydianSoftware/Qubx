@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from qubx.core.account_manager import AccountManager, AccountManagerConfig, AccountState
+from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
 
 
@@ -17,15 +17,16 @@ class _T:
         self.t = self.t + np.timedelta64(ms, "ms")
 
 
-def _am(connectors):
+def _am(connectors, cfg=None):
     am = AccountManager.__new__(AccountManager)
-    am._states = {ex: AccountState(exchange=ex) for ex in connectors}
-    am._connectors = connectors
-    am._cfg = AccountManagerConfig(inflight_check_threshold_ms=5_000, inflight_check_retries=3)
-    am._time = _T()
-    am._strategy = MagicMock()
-    am._liveness_unready_since = {}
-    am._applied_funding_buckets = {}
+    am._init_state(
+        connectors=connectors,
+        strategy=MagicMock(),
+        time=_T(),
+        cfg=cfg or AccountManagerConfig(inflight_check_threshold_ms=5_000, inflight_check_retries=3),
+        account_id="test",
+        tcc=None,
+    )
     am._ctx = object()
     return am
 
@@ -189,9 +190,8 @@ def test_snapshot_tick_calls_request_snapshot_when_stale():
 
 def test_snapshot_tick_skips_when_fresh():
     conn = MagicMock()
-    am = _am({"binance": conn})
-    am._cfg.snapshot_check_interval_ms = 30_000
-    am._states["binance"]._last_snapshot_as_of = am._time.time()
+    am = _am({"binance": conn}, cfg=AccountManagerConfig(snapshot_check_interval_ms=30_000))
+    am._states["binance"].mark_snapshot_applied(am._time.time())
     am._on_snapshot_tick(None)
     conn.request_snapshot.assert_not_called()
 
@@ -199,8 +199,7 @@ def test_snapshot_tick_skips_when_fresh():
 def test_liveness_tick_forces_reconnect_after_threshold():
     conn = MagicMock()
     conn.is_ws_ready.return_value = False
-    am = _am({"binance": conn})
-    am._cfg.liveness_check_threshold_ms = 5_000
+    am = _am({"binance": conn}, cfg=AccountManagerConfig(liveness_check_threshold_ms=5_000))
     am._on_liveness_tick(None)
     conn.reconnect.assert_not_called()
     am._time.adv(6_000)
@@ -211,8 +210,7 @@ def test_liveness_tick_forces_reconnect_after_threshold():
 def test_liveness_tick_resets_when_ws_recovers():
     conn = MagicMock()
     conn.is_ws_ready.return_value = False
-    am = _am({"binance": conn})
-    am._cfg.liveness_check_threshold_ms = 5_000
+    am = _am({"binance": conn}, cfg=AccountManagerConfig(liveness_check_threshold_ms=5_000))
     am._on_liveness_tick(None)
     # WS recovers before threshold -> unready timer cleared
     conn.is_ws_ready.return_value = True
