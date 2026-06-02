@@ -5,11 +5,11 @@ import pytest
 
 from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.simulated_exchange import get_simulated_exchange
+from qubx.backtester.utils import SimulatedCtrlChannel
 from qubx.core.basics import (
     OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
     OPTION_FILL_AT_SIGNAL_PRICE,
     ZERO_COSTS,
-    CtrlChannel,
     ITimeProvider,
     OrderRequest,
     OrderStatus,
@@ -23,7 +23,7 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
 )
-from qubx.core.exceptions import InvalidOrder, QueueTimeout
+from qubx.core.exceptions import InvalidOrder
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
@@ -46,13 +46,32 @@ def Q(when: str, bid: float, ask: float) -> Quote:
     return Quote(recognize_time(when), bid, ask, 0, 0)
 
 
-def _drain(channel: CtrlChannel) -> list:
-    events = []
-    while True:
-        try:
-            events.append(channel.receive(timeout=0.05))
-        except QueueTimeout:
-            break
+class _Collector:
+    """Stands in for the processing callback the SimulatedCtrlChannel dispatches to:
+    SimulatedConnector.send() invokes process_event() synchronously (no queue, no receive())."""
+
+    def __init__(self):
+        self.events = []
+
+    def process_event(self, event):
+        self.events.append(event)
+        return True
+
+    def process_data(self, *args):
+        return True
+
+
+def _channel() -> tuple[SimulatedCtrlChannel, _Collector]:
+    # The real simulation channel: send() dispatches straight to the registered callback.
+    channel = SimulatedCtrlChannel("sim", sentinel=(None, None, None, None))
+    collector = _Collector()
+    channel.register(collector)
+    return channel, collector
+
+
+def _drain(collector: _Collector) -> list:
+    events = list(collector.events)
+    collector.events.clear()
     return events
 
 
@@ -62,17 +81,16 @@ def setup():
     assert instr is not None
     time = _TimeService()
     exchange = get_simulated_exchange("BINANCE.UM", time, ZERO_COSTS)
-    channel = CtrlChannel("sim")
+    channel, collector = _channel()
     conn = SimulatedConnector(channel=channel, exchange=exchange, time_provider=time)
     # prime the order book so the OME is ready to accept orders; consume the
     # generator so the quote is actually processed.
     list(exchange.process_market_data(instr, time.feed(Q("2020-01-01 10:00", 32000.0, 32001.0))))
-    return conn, channel, exchange, instr, time
+    return conn, collector, exchange, instr, time
 
 
 def test_submit_limit_emits_accepted_event():
-    channel = CtrlChannel("sim")
-    channel.start()
+    channel, collector = _channel()
     exchange = MagicMock()
     exchange.exchange_id = "binance.um"
     report = MagicMock()
@@ -94,21 +112,23 @@ def test_submit_limit_emits_accepted_event():
         time_in_force="gtc",
     )
     conn.submit_order(request)
-    msg = channel.receive(timeout=1)
+    events = _drain(collector)
+    assert len(events) == 1
+    msg = events[0]
     assert isinstance(msg, OrderAcceptedEvent)
     assert msg.client_order_id == "qubx-1"
     assert msg.venue_order_id == "V1"
 
 
 def test_isinstance_iconnector():
-    channel = CtrlChannel("sim")
+    channel, _ = _channel()
     exchange = get_simulated_exchange("BINANCE.UM", _TimeService(), ZERO_COSTS)
     conn = SimulatedConnector(channel=channel, exchange=exchange, time_provider=_TimeService())
     assert isinstance(conn, IConnector)
 
 
 def test_submit_resting_limit_emits_only_accepted(setup):
-    conn, channel, _exchange, instr, _time = setup
+    conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
         client_id="qubx-1",
         instrument=instr,
@@ -119,7 +139,7 @@ def test_submit_resting_limit_emits_only_accepted(setup):
         time_in_force="gtc",
     )
     conn.submit_order(request)
-    events = _drain(channel)
+    events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderAcceptedEvent)
     assert events[0].client_order_id == "qubx-1"
@@ -127,7 +147,7 @@ def test_submit_resting_limit_emits_only_accepted(setup):
 
 
 def test_submit_crossing_limit_emits_filled(setup):
-    conn, channel, _exchange, instr, _time = setup
+    conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
         client_id="qubx-2",
         instrument=instr,
@@ -138,7 +158,7 @@ def test_submit_crossing_limit_emits_filled(setup):
         time_in_force="gtc",
     )
     conn.submit_order(request)
-    events = _drain(channel)
+    events = _drain(collector)
     assert any(isinstance(e, OrderFilledEvent) for e in events)
     fill_event = next(e for e in events if isinstance(e, OrderFilledEvent))
     assert fill_event.client_order_id == "qubx-2"
@@ -146,7 +166,7 @@ def test_submit_crossing_limit_emits_filled(setup):
 
 
 def test_cancel_emits_canceled(setup):
-    conn, channel, _exchange, instr, _time = setup
+    conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
         client_id="qubx-3",
         instrument=instr,
@@ -157,16 +177,16 @@ def test_cancel_emits_canceled(setup):
         time_in_force="gtc",
     )
     conn.submit_order(request)
-    accepted = _drain(channel)[0]
+    accepted = _drain(collector)[0]
     conn.cancel_order(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
-    events = _drain(channel)
+    events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderCanceledEvent)
     assert events[0].venue_order_id == accepted.venue_order_id
 
 
 def test_update_emits_single_updated_event_with_stable_cid(setup):
-    conn, channel, _exchange, instr, _time = setup
+    conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
         client_id="qubx-4",
         instrument=instr,
@@ -177,11 +197,11 @@ def test_update_emits_single_updated_event_with_stable_cid(setup):
         time_in_force="gtc",
     )
     conn.submit_order(request)
-    accepted = _drain(channel)[0]
+    accepted = _drain(collector)[0]
     conn.update_order(
         client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id, price=30500.0, quantity=0.2
     )
-    events = _drain(channel)
+    events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderUpdatedEvent)
     assert events[0].client_order_id == "qubx-4"
@@ -190,7 +210,7 @@ def test_update_emits_single_updated_event_with_stable_cid(setup):
 
 
 def test_process_market_data_translates_fill(setup):
-    conn, channel, _exchange, instr, time = setup
+    conn, collector, _exchange, instr, time = setup
     request = OrderRequest(
         client_id="qubx-5",
         instrument=instr,
@@ -201,16 +221,16 @@ def test_process_market_data_translates_fill(setup):
         time_in_force="gtc",
     )
     conn.submit_order(request)
-    _drain(channel)  # consume the accept
+    _drain(collector)  # consume the accept
     # drop the market down through the resting buy -> it should fill
     conn.process_market_data(instr, time.feed(Q("2020-01-01 10:01", 30900.0, 30901.0)))
-    events = _drain(channel)
+    events = _drain(collector)
     assert any(isinstance(e, OrderFilledEvent) for e in events)
     assert next(e for e in events if isinstance(e, OrderFilledEvent)).client_order_id == "qubx-5"
 
 
 def test_request_snapshot_emits_account_snapshot(setup):
-    conn, channel, _exchange, instr, _time = setup
+    conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
         client_id="qubx-6",
         instrument=instr,
@@ -221,9 +241,9 @@ def test_request_snapshot_emits_account_snapshot(setup):
         time_in_force="gtc",
     )
     conn.submit_order(request)
-    _drain(channel)
+    _drain(collector)
     conn.request_snapshot()
-    events = _drain(channel)
+    events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], AccountSnapshotEvent)
     snapshot = events[0].snapshot
@@ -234,7 +254,7 @@ def test_request_snapshot_emits_account_snapshot(setup):
 
 
 def test_request_order_status_open_emits_accepted(setup):
-    conn, channel, _exchange, instr, _time = setup
+    conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
         client_id="qubx-7",
         instrument=instr,
@@ -245,24 +265,24 @@ def test_request_order_status_open_emits_accepted(setup):
         time_in_force="gtc",
     )
     conn.submit_order(request)
-    accepted = _drain(channel)[0]
+    accepted = _drain(collector)[0]
     conn.request_order_status(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
-    events = _drain(channel)
+    events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderAcceptedEvent)
     assert events[0].venue_order_id == accepted.venue_order_id
 
 
 def test_request_order_status_missing_emits_rejected(setup):
-    conn, channel, _exchange, _instr, _time = setup
+    conn, collector, _exchange, _instr, _time = setup
     conn.request_order_status(client_order_id="does-not-exist")
-    events = _drain(channel)
+    events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderRejectedEvent)
 
 
 def test_identity_and_lifecycle_stubs(setup):
-    conn, _channel, _exchange, instr, _time = setup
+    conn, _collector, _exchange, instr, _time = setup
     assert conn.is_ws_ready() is True
     assert conn.is_simulated_trading is True
     assert conn.read_only is False
@@ -276,7 +296,7 @@ def test_submit_stop_order_options_forwarded_to_ome(setup):
     # A STOP_MARKET sell placed below current bid would normally raise "would trigger
     # immediately". With avoid_stop_order_price_validation=True the OME skips that check
     # and registers the order. This proves submit_order forwards request.options.
-    conn, channel, exchange, instr, time = setup
+    conn, collector, exchange, instr, time = setup
     # market is 32000/32001; place a sell stop BELOW bid (would trigger without the flag)
     stop_price = 31500.0
     request = OrderRequest(
@@ -293,7 +313,7 @@ def test_submit_stop_order_options_forwarded_to_ome(setup):
         },
     )
     conn.submit_order(request)
-    events = _drain(channel)
+    events = _drain(collector)
     # The OME accepted the stop order (OPEN) — no rejection.
     assert any(isinstance(e, OrderAcceptedEvent) for e in events), events
 
@@ -309,7 +329,7 @@ def test_submit_would_trigger_stop_emits_rejected_not_raises(setup):
     # A BUY STOP_MARKET below the ask "would trigger immediately" (OME: BUY triggers
     # when ask >= stop price) — a venue verdict. Per the connector rejection boundary
     # it must ride the channel as an OrderRejectedEvent, NOT raise out of submit_order.
-    conn, channel, _exchange, instr, _time = setup
+    conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
         client_id="qubx-stop-reject",
         instrument=instr,
@@ -320,7 +340,7 @@ def test_submit_would_trigger_stop_emits_rejected_not_raises(setup):
         time_in_force="gtc",
     )
     conn.submit_order(request)  # must not raise
-    events = _drain(channel)
+    events = _drain(collector)
     rejects = [e for e in events if isinstance(e, OrderRejectedEvent)]
     assert len(rejects) == 1, events
     assert rejects[0].client_order_id == "qubx-stop-reject"
@@ -331,7 +351,7 @@ def test_submit_would_trigger_stop_emits_rejected_not_raises(setup):
 def test_submit_invalid_amount_raises(setup):
     # Framework-side rejection (amount <= 0) must raise synchronously — it is the
     # caller's bug to fix, not a venue verdict that rides the channel.
-    conn, _channel, _exchange, instr, _time = setup
+    conn, _collector, _exchange, instr, _time = setup
     request = OrderRequest(
         client_id="qubx-bad",
         instrument=instr,
@@ -348,7 +368,7 @@ def test_submit_invalid_amount_raises(setup):
 def test_stop_order_fills_at_signal_price_not_bbo(setup):
     # Verify that fill_at_signal_price=True causes the fill to happen at the stop
     # price rather than the bar-close BBO when the market crosses the stop level.
-    conn, channel, exchange, instr, time = setup
+    conn, collector, exchange, instr, time = setup
     # market is 32000/32001; place a resting sell stop well above current ask so it
     # rests in the book, then drive a bar that crosses it.
     stop_price = 32500.0
@@ -363,11 +383,11 @@ def test_stop_order_fills_at_signal_price_not_bbo(setup):
         options={OPTION_FILL_AT_SIGNAL_PRICE: True},
     )
     conn.submit_order(request)
-    _drain(channel)  # consume the accept
+    _drain(collector)  # consume the accept
 
     # Drive the market up past the stop level; BBO ask is 33001 — well above stop.
     conn.process_market_data(instr, time.feed(Q("2020-01-01 10:01", 33000.0, 33001.0)))
-    events = _drain(channel)
+    events = _drain(collector)
 
     fills = [e for e in events if isinstance(e, OrderFilledEvent)]
     assert len(fills) == 1, f"expected 1 fill event, got {events}"
@@ -377,7 +397,7 @@ def test_stop_order_fills_at_signal_price_not_bbo(setup):
 
 def test_update_order_preserves_options(setup):
     # update_order cancel+recreates; the recreated order must carry the original options.
-    conn, channel, exchange, instr, time = setup
+    conn, collector, exchange, instr, time = setup
     stop_price = 32500.0
     request = OrderRequest(
         client_id="qubx-stop-3",
@@ -390,13 +410,13 @@ def test_update_order_preserves_options(setup):
         options={OPTION_FILL_AT_SIGNAL_PRICE: True},
     )
     conn.submit_order(request)
-    accepted = _drain(channel)[0]
+    accepted = _drain(collector)[0]
 
     new_stop_price = 32600.0
     conn.update_order(
         client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id, price=new_stop_price
     )
-    _drain(channel)  # consume the updated event
+    _drain(collector)  # consume the updated event
 
     open_orders = exchange.get_open_orders()
     assert len(open_orders) == 1

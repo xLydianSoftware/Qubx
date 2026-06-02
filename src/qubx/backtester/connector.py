@@ -1,5 +1,3 @@
-import asyncio
-
 from qubx.backtester.ome import SimulatedExecutionReport
 from qubx.backtester.simulated_exchange import ISimulatedExchange
 from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest, OrderStatus, Timestamped
@@ -37,8 +35,9 @@ class SimulatedConnector(ChannelEmitter):
         channel: CtrlChannel,
         exchange: ISimulatedExchange,
         time_provider: ITimeProvider,
-        # Accepted for IConnector construction parity with live connectors; simulation has no event loop.
-        loop: asyncio.AbstractEventLoop | None = None,
+        # Absorb extra construction kwargs (e.g. live connectors' loop=...) for parity;
+        # simulation has no event loop, so they're ignored.
+        **_kwargs,
     ):
         self.channel = channel
         self.exchange_name = exchange.exchange_id
