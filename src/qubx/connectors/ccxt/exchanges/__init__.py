@@ -49,10 +49,10 @@ EXCHANGE_ALIASES = {
     "okx.f": "okx_futures",
 }
 
-# CcxtConnector subclasses per exchange (commit 4b). Unlisted exchanges (Binance,
+# CcxtConnector subclasses per exchange. Unlisted exchanges (Binance,
 # Hyperliquid, ...) use the base CcxtConnector via the factory fallback. OKX/Bitfinex
 # need the split orders/fills streams; OKX additionally overrides balance/clOrdId.
-# Keyed by the same normalized exchange names the broker/account registries use, plus
+# Keyed by the normalized framework exchange names, plus
 # the bare ``okx``/``bitfinex`` aliases the factory may receive. Bitfinex's connector
 # subclass has NO dependency on the optional qubx-bitfinex-api package (it only needs
 # the base connector + shared mixin), so it is registered unconditionally.

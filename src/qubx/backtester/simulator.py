@@ -314,9 +314,8 @@ def _run_setup(
         if enable_inmemory_emitter and emitter is not None:
             emitter_data = emitter.get_dataframe()
 
-        # - get transfers log: the simulation transfer manager was removed with the old
-        #   account stack (it depended on CompositeAccountProcessor) and nothing wires a
-        #   transfer manager in simulation, so there is no transfers log to collect.
+        # - get transfers log: nothing currently wires a transfer manager in simulation,
+        #   so there is normally no transfers log to collect.
         #   TODO(account-mgmt): reintroduce inter-exchange transfers on the AccountManager
         #   if/when multi-exchange capital movement is modelled again.
         transfers_log = None

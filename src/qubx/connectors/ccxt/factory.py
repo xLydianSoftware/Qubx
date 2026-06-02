@@ -145,11 +145,8 @@ def get_ccxt_connector(
     Resolves the per-exchange subclass from ``CUSTOM_CONNECTORS`` keyed by the
     lowercased framework exchange name (OKX/Bitfinex get the split orders/fills
     streams), falling back to the base ``CcxtConnector`` for any unlisted exchange
-    (Binance, Hyperliquid, ...). The ``CUSTOM_CONNECTORS`` map already carries both
-    the dotted (``okx.f``) and bare (``okx``) names, mirroring how ``EXCHANGE_ALIASES``
-    covers each form. The connector takes ``exchange_name`` plus the keyword-only
-    construction args (channel/time_provider/exchange_manager/data_provider/...). The
-    live runner calls this in create_strategy_context.
+    (Binance, Hyperliquid, ...). The ``CUSTOM_CONNECTORS`` map carries both the dotted
+    (``okx.f``) and bare (``okx``) names, like ``EXCHANGE_ALIASES``.
     """
     connector_cls = CUSTOM_CONNECTORS.get(exchange_name.lower(), CcxtConnector)
     return connector_cls(exchange_name=exchange_name, **kwargs)

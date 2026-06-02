@@ -1,13 +1,12 @@
 """CcxtConnector — the IConnector adapter for CCXT exchanges (read + write).
 
-Replaces the old ``CcxtBroker`` and ``CcxtAccountProcessor``. This module owns
-both sides of the IConnector surface:
+This module owns both sides of the IConnector surface:
 
-- WRITE (commit 7.1): submit / cancel / update + leverage / margin.
-- READ (commit 7.2): the WS account-event subscription (``watch_orders`` →
-  typed lifecycle events), the full-account snapshot fetch, and single-order
-  status reconcile — plus a small order cache that the write side now consults
-  to fill in the ccxt symbol/side/type that cancel/edit require.
+- WRITE: submit / cancel / update + leverage / margin.
+- READ: the WS account-event subscription (``watch_orders`` → typed lifecycle
+  events), the full-account snapshot fetch, and single-order status reconcile —
+  plus a small order cache the write side consults to fill in the ccxt
+  symbol/side/type that cancel/edit require.
 
 Design contract (see docs/account-management/account-management-design.md
 "IConnector — exchange-facing only" and the rejection-boundary table):
@@ -632,9 +631,8 @@ class CcxtConnector:
         # TODO(account-mgmt): cancel+recreate still needs the ORIGINAL order's full
         # parameters (quantity/price/tif when the update leaves one unspecified) which
         # the connector-local cache deliberately does not hold (AM owns that state).
-        # Wiring the recreate from AM's cached Order lands with the runner (commit 5);
-        # until then this path raises, surfacing as OrderUpdateRejected.
-        raise ccxt.NotSupported("cancel+recreate update requires the original order parameters (commit 5 wiring)")
+        # Until that wiring exists, this path raises, surfacing as OrderUpdateRejected.
+        raise ccxt.NotSupported("cancel+recreate update requires the original order parameters")
 
     def _emit_update_rejected(self, client_order_id: str | None, error: Exception) -> None:
         logger.warning(f"[{self.exchange_name}] Update for {client_order_id} rejected: {error}")
@@ -656,7 +654,7 @@ class CcxtConnector:
         ``ccxt_convert_order_info`` keys order-origin detection on the ``qubx_``
         prefix (FRAMEWORK vs EXTERNAL), so the connector guarantees it. The generic
         base impl only enforces the prefix; venue-specific sanitization (OKX char
-        set / length) is overridden in the subclass (commit 4).
+        set / length) is overridden in the subclass.
         """
         if suggested.startswith(_CLIENT_ID_PREFIX):
             return suggested
@@ -702,8 +700,8 @@ class CcxtConnector:
         their fills. The loop survives WS drops: it retries with backoff on transient
         errors and exits cleanly on cancellation / channel close. OKX and Bitfinex
         split fills into a separate ``watch_my_trades`` stream — they override this
-        method (commit 4b) by running two ``_run_ws_loop`` loops concurrently; the
-        base assumes the unified Binance feed.
+        method by running two ``_run_ws_loop`` loops concurrently; the base assumes
+        the unified Binance feed.
         """
         await self._run_ws_loop(
             watch=self._em.exchange.watch_orders,
@@ -1019,8 +1017,8 @@ class CcxtConnector:
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         """Convert a ccxt fetch_balance response to framework Balances.
 
-        Base impl reads ccxt's canonical ``total``/``used`` maps. OKX overrides this
-        (commit 4b): ccxt maps OKX's ``eq`` (= cashBal + unrealizedPnL) to ``total``,
+        Base impl reads ccxt's canonical ``total``/``used`` maps. OKX overrides this:
+        ccxt maps OKX's ``eq`` (= cashBal + unrealizedPnL) to ``total``,
         but the framework wants the cash leg — so OKX reads per-currency ``cashBal``/
         ``frozenBal`` straight from the raw ``info.data[0].details``.
         """

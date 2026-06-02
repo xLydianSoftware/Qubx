@@ -1,4 +1,4 @@
-"""Shared two-stream executions mixin for split orders/fills venues (commit 4b).
+"""Shared two-stream executions mixin for split orders/fills venues.
 
 Most venues (Binance) carry an order's fills inline on the ``watch_orders`` report,
 so the base ``CcxtConnector`` reads everything from a single stream. OKX and Bitfinex
@@ -99,7 +99,7 @@ class _TwoStreamExecutionsMixin:
         """
         try:
             instrument = self._instrument_for_symbol(raw["symbol"])  # type: ignore[attr-defined]
-        except CcxtSymbolNotRecognized:  # mirrors base _handle_ws_order's skip
+        except CcxtSymbolNotRecognized:  # unknown symbol: skip the trade
             logger.warning(
                 f"[{self.exchange_name}] WS trade for unknown symbol {raw.get('symbol')}; skipped"  # type: ignore[attr-defined]
             )

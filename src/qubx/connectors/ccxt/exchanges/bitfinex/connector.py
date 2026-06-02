@@ -1,10 +1,9 @@
-"""Bitfinex CcxtConnector subclass (commit 4b).
+"""Bitfinex CcxtConnector subclass.
 
 Bitfinex, like OKX, splits the account feed: ``watch_orders`` carries order-status
-transitions and ``watch_my_trades`` carries the fills. The only per-exchange behavior
-the old ``BitfinexAccountProcessor`` had was that split (confirmed against
-``bitfinex_account.py`` — no balance or clOrdId override), so this subclass is just
-the generic ``CcxtConnector`` plus the shared ``_TwoStreamExecutionsMixin``.
+transitions and ``watch_my_trades`` carries the fills. Bitfinex needs no balance or
+clOrdId override, so this subclass is just the generic ``CcxtConnector`` plus the
+shared ``_TwoStreamExecutionsMixin``.
 """
 
 from qubx.connectors.ccxt.connector import CcxtConnector

@@ -67,7 +67,7 @@ def ccxt_status_to_order_status(raw: str | None, info: dict[str, Any] | None = N
     is never fabricated into a terminal state, and AM's reconcile heals the true one.
     """
     status = (raw or "").lower()
-    # Preserve the existing open->info.status refinement before mapping.
+    # For an open order, prefer the venue-specific info.status (it may say partially_filled).
     if status == "open" and info is not None:
         status = str(info.get("status", status)).lower()
     mapped = _CCXT_STATUS_MAP.get(status)
@@ -444,9 +444,8 @@ def prepare_ccxt_order_payload(
     ``InvalidOrderParameters`` for framework-side rejections — the caller is expected
     to surface those synchronously (never on the channel).
 
-    Ported from ``CcxtBroker._prepare_order_payload`` minus the position-reading
-    reduce-only auto-detection (the connector has no account; reduce-only must arrive
-    resolved from the caller).
+    This does not auto-detect reduce-only from positions: the connector has no account,
+    so reduce-only must arrive already resolved from the caller.
     """
     params: dict[str, Any] = {}
     _is_trigger_order = order_type.startswith("stop_")

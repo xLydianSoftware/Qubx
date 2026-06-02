@@ -170,8 +170,7 @@ class AccountManager:
             orders = {cid: o for s in self._states.values() for cid, o in s.get_orders().items()}
         # Public "open orders" view: terminal orders are retained in active_orders
         # during the grace window for late-event resolution, but callers reading
-        # get_orders() want only live orders (this is the IAccountViewer contract the
-        # old broker/account get_orders honoured by reading the venue's open orders).
+        # get_orders() want only live orders.
         orders = {cid: o for cid, o in orders.items() if not o.status.is_terminal()}
         if instrument is not None:
             orders = {cid: o for cid, o in orders.items() if o.instrument == instrument}
@@ -670,8 +669,7 @@ class AccountManager:
             pos = Position(instrument=instrument)
             state._set_position(instrument, pos)
         # update_position_by_deal returns (realized_pnl, fee) for this fill, both in
-        # the portfolio funded currency (conversion_rate=1.0 — the backtester is
-        # single-base-currency, matching the old BasicAccountProcessor default).
+        # the portfolio funded currency (conversion_rate=1.0 — single-base-currency).
         realized_pnl, fee = pos.update_position_by_deal(deal, conversion_rate=1.0)
         self._apply_deal_to_balances(state, instrument, deal, realized_pnl, fee)
         return pos
@@ -763,7 +761,6 @@ class AccountManager:
         #    notional, holds the cash), and
         #  - spot: the position's market value (the base cash was debited to buy it,
         #    so the holding's value restores total capital).
-        # This reproduces the old get_total_capital = cash + sum(market_value_funds).
         total = bal.total
         for pos in state.positions.values():
             if pos.instrument.is_futures():

@@ -599,11 +599,11 @@ def create_strategy_context(
         )
 
     # - central account manager. Paper's simulated execution is synchronous (no pm/ticks),
-    #   so it uses SimulationAccountManager exactly like the backtester. Live builds the
-    #   real AccountManager WITHOUT a pm — the ProcessingManager lives inside StrategyContext
-    #   (which takes the AM), so the AM↔pm cycle is resolved by registering the periodic ticks
-    #   in AccountManager.set_context once ctx._processing_manager exists. The function param
-    #   `account_manager` is the credentials manager — keep them distinct (`_am`).
+    #   so it uses SimulationAccountManager. Live builds the real AccountManager WITHOUT a
+    #   pm — the ProcessingManager lives inside StrategyContext (which takes the AM), so the
+    #   AM↔pm cycle is resolved by registering the periodic ticks in AccountManager.set_context
+    #   once ctx._processing_manager exists. The function param `account_manager` is the
+    #   credentials manager — keep them distinct (`_am`).
     _am_cls = SimulationAccountManager if paper else AccountManager
     _am = _am_cls(
         connectors=_connectors,
@@ -668,8 +668,7 @@ def create_strategy_context(
     )
 
     # - the AM is built before StrategyContext resolves the strategy instance; wire the
-    #   resolved instance now so AM-fired callbacks target the real strategy (mirrors
-    #   backtester/runner.py).
+    #   resolved instance now so AM-fired callbacks target the real strategy.
     _am._strategy = ctx.strategy
 
     # Set context for metric emitters to enable is_live tag and time access
@@ -791,7 +790,7 @@ def _create_paper_connector(
     """Build a paper-trading connector: a SimulatedConnector wrapping the OME-backed exchange.
 
     Execution is simulated synchronously (no event loop), while market data still comes from
-    the real CcxtDataProvider built alongside it — mirroring the backtester's connector wiring.
+    the real CcxtDataProvider built alongside it.
     """
     return SimulatedConnector(
         channel=channel,
@@ -815,12 +814,10 @@ def _create_live_connector(
     The connector needs an authenticated ccxt ExchangeManager (to place/cancel/edit orders
     and watch the execution stream), so it is built from the venue credentials — a separate
     cached manager from the unauthenticated one the CcxtDataProvider uses for market data
-    (the manager cache keys on api_key/secret). This mirrors how the old CcxtAccountProcessor
-    obtained its ExchangeManager.
+    (the manager cache keys on api_key/secret).
     """
     # Lazy: importing the ccxt factory pulls in ccxt.pro; only the live path needs it,
-    # so paper/backtest runs don't pay that import cost (mirrors the lazy connector
-    # registration above).
+    # so paper/backtest runs don't pay that import cost.
     from qubx.connectors.ccxt.factory import get_ccxt_connector, get_ccxt_exchange_manager
 
     creds = account_manager.get_exchange_credentials(exchange_name)
@@ -851,8 +848,7 @@ def _inject_restored_state(account_manager: AccountManager, restored_state: Rest
     RestoredState carries persisted positions and balances (no open orders — the venue
     snapshot reconciles those live). Positions are seeded via _set_position (carrying the
     persisted accounting fields: commissions, r_pnl, cumulative_funding, funding history),
-    balances via _update_balance — mirroring how the old SimulatedAccountProcessor consumed
-    restored_state. Records for exchanges the AM doesn't manage are skipped.
+    balances via _update_balance. Records for exchanges the AM doesn't manage are skipped.
     """
     for instrument, position in restored_state.positions.items():
         state = account_manager._states.get(instrument.exchange)

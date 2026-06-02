@@ -18,6 +18,3 @@ from qubx.connectors.registry import (  # noqa: F401
     data_provider,
 )
 from qubx.connectors.tardis.data import TardisDataProvider  # noqa: F401
-
-# Note: The paper-trading connector (SimulatedConnector) is NOT registered with the
-# registry - it is created directly by the backtester and paper trading runner.
