@@ -1,6 +1,6 @@
 import pytest
 
-from qubx.core.account_manager_config import AccountManagerConfig, _ms_to_cron
+from qubx.core.account_manager.config import AccountManagerConfig, _ms_to_cron
 
 
 def test_default_config():

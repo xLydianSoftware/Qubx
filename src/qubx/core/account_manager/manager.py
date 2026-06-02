@@ -4,8 +4,9 @@ from typing import Literal
 import numpy as np
 
 from qubx import logger
-from qubx.core.account_manager_config import AccountManagerConfig, _ms_to_cron
-from qubx.core.account_state import AccountState
+from qubx.core.account_manager.config import AccountManagerConfig, _ms_to_cron
+from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state_machine import can_transition, validate_transition
 from qubx.core.basics import (
     Balance,
     Instrument,
@@ -33,7 +34,6 @@ from qubx.core.events import (
     ReconcileDiff,
 )
 from qubx.core.exceptions import InvalidOrderTransition
-from qubx.core.order_state_machine import can_transition, validate_transition
 
 # Client-id prefix that marks an order as framework-originated. MUST match the prefix
 # ClientIdStore._create_id produces in qubx.core.mixins.trading ("qubx_<symbol>_<n>");

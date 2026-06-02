@@ -431,8 +431,7 @@ def test_inject_restored_state_preserves_accounting_fields():
     # Regression guard: _inject_restored_state seeds the whole persisted Position, so the
     # accounting fields (r_pnl, commissions, cumulative_funding) survive a restart — not
     # just quantity. This lost dedicated coverage when merge_restored_accounting was removed.
-    from qubx.core.account_manager import AccountManager
-    from qubx.core.account_state import AccountState
+    from qubx.core.account_manager import AccountManager, AccountState
     from qubx.utils.runner.runner import _inject_restored_state
 
     inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")

@@ -1,8 +1,6 @@
 import numpy as np
 
-from qubx.core.account_manager import AccountManager
-from qubx.core.account_manager_config import AccountManagerConfig
-from qubx.core.account_state import AccountState
+from qubx.core.account_manager import AccountManager, AccountManagerConfig, AccountState
 from qubx.core.basics import (
     Balance,
     Deal,

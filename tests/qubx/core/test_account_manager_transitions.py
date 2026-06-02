@@ -1,9 +1,7 @@
 import numpy as np
 import pytest
 
-from qubx.core.account_manager import AccountManager
-from qubx.core.account_manager_config import AccountManagerConfig
-from qubx.core.account_state import AccountState
+from qubx.core.account_manager import AccountManager, AccountManagerConfig, AccountState
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
 from qubx.core.exceptions import InvalidOrderTransition
 

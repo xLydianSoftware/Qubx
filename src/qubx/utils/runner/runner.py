@@ -24,8 +24,7 @@ from qubx.backtester.utils import (
 )
 from qubx.config import settings as qubx_settings
 from qubx.connectors.registry import ConnectorRegistry
-from qubx.core.account_manager import AccountManager, SimulationAccountManager
-from qubx.core.account_manager_config import AccountManagerConfig
+from qubx.core.account_manager import AccountManager, AccountManagerConfig, SimulationAccountManager
 from qubx.core.basics import (
     Balance,
     CtrlChannel,

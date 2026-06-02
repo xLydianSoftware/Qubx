@@ -1,7 +1,6 @@
 import numpy as np
 
-from qubx.core.account_manager import AccountManager
-from qubx.core.account_state import AccountState
+from qubx.core.account_manager import AccountManager, AccountState
 from qubx.core.basics import Deal, Instrument, MarketType, Order, OrderOrigin, OrderStatus
 from qubx.core.events import (
     OrderAcceptedEvent,

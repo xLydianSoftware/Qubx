@@ -8,9 +8,9 @@ states never transition).
 
 import pytest
 
+from qubx.core.account_manager.state_machine import can_transition, validate_transition
 from qubx.core.basics import OrderStatus
 from qubx.core.exceptions import InvalidOrderTransition
-from qubx.core.order_state_machine import can_transition, validate_transition
 
 S = OrderStatus
 ALL = list(OrderStatus)

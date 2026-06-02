@@ -8,8 +8,7 @@ from qubx import QubxLogConfig, logger
 from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import SimulatedDataIterator
-from qubx.core.account_manager import SimulationAccountManager
-from qubx.core.account_manager_config import AccountManagerConfig
+from qubx.core.account_manager import AccountManagerConfig, SimulationAccountManager
 from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
 from qubx.core.events import MARKET_DATA_TYPES, ScheduledEvent, event_for_data_type
