@@ -2,7 +2,7 @@ import inspect
 
 import numpy as np
 
-from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import (
     Balance,
     Instrument,
@@ -55,8 +55,8 @@ def _order(inst, cid="cid-1", venue_id="V1") -> Order:
     )
 
 
-def _am() -> SimulationAccountManager:
-    am = SimulationAccountManager(
+def _am() -> SimulatedAccountManager:
+    am = SimulatedAccountManager(
         connectors={"binance": object()},
         strategy=None,
         time=_T(),

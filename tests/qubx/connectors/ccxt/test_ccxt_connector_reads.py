@@ -13,7 +13,7 @@ import ccxt
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
-from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, Instrument, MarketType, OrderRequest, OrderStatus, Position
 from qubx.core.events import (
     AccountSnapshotEvent,
@@ -503,7 +503,7 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     # the unit tests skipped: AccountState.add_order calls order.status.is_terminal,
     # which only exists on OrderStatus (a raw string would raise AttributeError here).
     strategy = Mock()
-    am = SimulationAccountManager(
+    am = SimulatedAccountManager(
         connectors={"BINANCE.UM": object()},
         strategy=strategy,
         time=DummyTimeProvider(),

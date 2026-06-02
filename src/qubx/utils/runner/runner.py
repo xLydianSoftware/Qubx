@@ -24,7 +24,7 @@ from qubx.backtester.utils import (
 )
 from qubx.config import settings as qubx_settings
 from qubx.connectors.registry import ConnectorRegistry
-from qubx.core.account_manager import AccountManager, AccountManagerConfig, SimulationAccountManager
+from qubx.core.account_manager import AccountManager, AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import (
     Balance,
     CtrlChannel,
@@ -598,12 +598,12 @@ def create_strategy_context(
         )
 
     # - central account manager. Paper's simulated execution is synchronous (no pm/ticks),
-    #   so it uses SimulationAccountManager. Live builds the real AccountManager WITHOUT a
+    #   so it uses SimulatedAccountManager. Live builds the real AccountManager WITHOUT a
     #   pm — the ProcessingManager lives inside StrategyContext (which takes the AM), so the
     #   AM↔pm cycle is resolved by registering the periodic ticks in AccountManager.set_context
     #   once ctx._processing_manager exists. The function param `account_manager` is the
     #   credentials manager — keep them distinct (`_am`).
-    _am_cls = SimulationAccountManager if paper else AccountManager
+    _am_cls = SimulatedAccountManager if paper else AccountManager
     _am = _am_cls(
         connectors=_connectors,
         strategy=_strategy_class,  # type: ignore
@@ -860,7 +860,7 @@ def _inject_restored_state(account_manager: AccountManager, restored_state: Rest
 
 
 def _seed_paper_capital(
-    account_manager: SimulationAccountManager,
+    account_manager: SimulatedAccountManager,
     exchange_name: str,
     exchange_config: ExchangeConfig,
     live_config: LiveConfig,

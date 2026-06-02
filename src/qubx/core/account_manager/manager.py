@@ -832,7 +832,7 @@ class AccountManager:
         return float(np.nan_to_num(pos.notional_value))
 
 
-class SimulationAccountManager(AccountManager):
+class SimulatedAccountManager(AccountManager):
     """Backtest variant — no asyncio, no WS, no periodic ticks."""
 
     def __init__(
@@ -842,7 +842,7 @@ class SimulationAccountManager(AccountManager):
         strategy,
         time,
         cfg: AccountManagerConfig | None = None,
-        account_id: str = "SimulationAccountManager",
+        account_id: str = "SimulatedAccountManager",
         tcc: TransactionCostsCalculator | None = None,
     ):
         self._pm = None

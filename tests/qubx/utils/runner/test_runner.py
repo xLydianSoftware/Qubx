@@ -203,10 +203,10 @@ class TestRunStrategyYaml:
         mock_time_provider,
     ):
         """Network-free wiring assertion: paper=True builds SimulatedConnectors + a central
-        SimulationAccountManager seeded with the configured initial capital, exposed through
+        SimulatedAccountManager seeded with the configured initial capital, exposed through
         ctx.account."""
         from qubx.backtester.connector import SimulatedConnector
-        from qubx.core.account_manager import SimulationAccountManager
+        from qubx.core.account_manager import SimulatedAccountManager
         from qubx.utils.runner.configs import load_strategy_config_from_yaml
         from qubx.utils.runner.runner import create_strategy_context
 
@@ -249,7 +249,7 @@ class TestRunStrategyYaml:
         assert ctx.is_paper_trading
 
         # - central account manager is the simulation variant, seeded with configured capital
-        assert isinstance(ctx._account_manager, SimulationAccountManager)
+        assert isinstance(ctx._account_manager, SimulatedAccountManager)
         assert ctx.account is ctx._account_manager
         balance = ctx.account.get_balance("USDT", exchange="BINANCE.UM")
         assert balance is not None

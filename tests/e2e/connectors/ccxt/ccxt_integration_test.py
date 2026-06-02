@@ -477,7 +477,7 @@ class TestCcxtTrading:
 
         Boots paper mode against the PUBLIC BINANCE.UM OHLC feed, submits a market
         order via ctx.trade, and asserts it fills through the SimulatedConnector -> central
-        SimulationAccountManager path: the order reaches FILLED, the position opens, and the
+        SimulatedAccountManager path: the order reaches FILLED, the position opens, and the
         base-currency balance changes. Verifies the PR 7 commit-2 rewire under live market data.
         """
         exchange = "BINANCE.UM"

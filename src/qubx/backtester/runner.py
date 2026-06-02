@@ -8,7 +8,7 @@ from qubx import QubxLogConfig, logger
 from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import SimulatedDataIterator
-from qubx.core.account_manager import AccountManagerConfig, SimulationAccountManager
+from qubx.core.account_manager import AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
 from qubx.core.events import MARKET_DATA_TYPES, ScheduledEvent, event_for_data_type
@@ -67,7 +67,7 @@ class SimulationRunner:
     logs_writer: InMemoryLogsWriter
     notifier: IStrategyNotifier | None
 
-    account_manager: SimulationAccountManager
+    account_manager: SimulatedAccountManager
     channel: CtrlChannel
     time_provider: SimulatedTimeProvider
     scheduler: SimulatedScheduler
@@ -620,7 +620,7 @@ class SimulationRunner:
         commissions: str | dict[str, str | None] | None,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
-    ) -> SimulationAccountManager:
+    ) -> SimulatedAccountManager:
         _exchange_to_tcc = self._construct_tcc(exchanges, commissions)
         for tcc in _exchange_to_tcc.values():
             if tcc is None:
@@ -646,7 +646,7 @@ class SimulationRunner:
             for exchange in self.setup.exchanges
         }
 
-        am = SimulationAccountManager(
+        am = SimulatedAccountManager(
             connectors=self._connectors,
             strategy=self.setup.generator,
             time=time_provider,

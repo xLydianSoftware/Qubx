@@ -183,9 +183,9 @@ def test_funding_payment_duplicate_skipped():
 
 
 def test_simulation_account_manager_constructs_without_pm():
-    from qubx.core.account_manager import SimulationAccountManager
+    from qubx.core.account_manager import SimulatedAccountManager
 
-    sam = SimulationAccountManager(connectors={"binance": object()}, strategy=None, time=_T())
+    sam = SimulatedAccountManager(connectors={"binance": object()}, strategy=None, time=_T())
     assert sam._pm is None
     assert "binance" in sam._states
     # position math is inherited and works in the sim variant

@@ -1,7 +1,7 @@
 """Central account-management subsystem.
 
 - ``manager``       — AccountManager (state owner + state machine + reconcile) and the
-                      SimulationAccountManager backtest variant.
+                      SimulatedAccountManager backtest variant.
 - ``state``         — AccountState, the pure-data container the manager mutates.
 - ``state_machine`` — pure order-lifecycle transition rules (the bug-magnet, isolated).
 - ``config``        — AccountManagerConfig + the tick cron helper.
@@ -11,7 +11,7 @@ import AccountManager`` without reaching into submodules.
 """
 
 from qubx.core.account_manager.config import AccountManagerConfig
-from qubx.core.account_manager.manager import AccountManager, SimulationAccountManager
+from qubx.core.account_manager.manager import AccountManager, SimulatedAccountManager
 from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import (
     LEGAL_TRANSITIONS,
@@ -21,7 +21,7 @@ from qubx.core.account_manager.state_machine import (
 
 __all__ = [
     "AccountManager",
-    "SimulationAccountManager",
+    "SimulatedAccountManager",
     "AccountManagerConfig",
     "AccountState",
     "LEGAL_TRANSITIONS",
