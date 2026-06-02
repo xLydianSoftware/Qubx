@@ -158,17 +158,19 @@ class TradingManager(ITradingManager):
             options=options,
         )
 
-        # Register the order before submitting: a synchronous connector (the
-        # simulator) emits Accepted/Filled events inside submit_order, and the
-        # account state machine must already know the order to resolve them by cid
-        # instead of materializing a phantom EXTERNAL twin. A sync raise from
-        # submit_order is a framework-side rejection — mark the order REJECTED so the
-        # cache never keeps a phantom in-flight order.
+        # Register the order BEFORE submitting. This is required for synchronous
+        # connectors (the simulator): submit_order emits Accepted/Filled events inline,
+        # so the account state machine must already hold the order to resolve them by cid
+        # rather than materialize a phantom EXTERNAL twin. For async (live) connectors the
+        # ordering is harmless — the venue events arrive later and resolve the same order.
         self._account_manager.add_order(order)
         try:
             connector.submit_order(request)
         except Exception:
-            self._account_manager.transition_order(connector.exchange_name, cid, OrderStatus.REJECTED)
+            # A synchronous raise means the order never reached the venue (a framework-side
+            # rejection — bad params, pre-submit error). Drop it so the cache keeps no
+            # phantom in-flight order; the caller is informed by the re-raised exception.
+            self._account_manager.remove_order(connector.exchange_name, cid)
             raise
         return order
 

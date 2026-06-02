@@ -222,7 +222,7 @@ class SimulationRunner:
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        # - drive the OME so resting orders match against this tick (emits typed events)
+        # match resting orders against this tick before the strategy sees it (see _feed_ome)
         if not is_hist:
             self._feed_ome(instrument, data)
         self._send_market_data(instrument, data_type, data, is_hist)
@@ -246,9 +246,7 @@ class SimulationRunner:
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        # - drive the OME so resting orders match against this tick (emits typed events),
-        #   then deliver the tick to the strategy. The OME's BBO must reflect this tick
-        #   before the strategy places stop/limit orders against it.
+        # match resting orders against this tick before the strategy sees it (see _feed_ome)
         if not is_hist:
             self._feed_ome(instrument, data)
         self._send_market_data(instrument, data_type, data, is_hist)
@@ -269,8 +267,15 @@ class SimulationRunner:
             self.channel.send(event_for_data_type(data_type, instrument=instrument, payload=data))
 
     def _feed_ome(self, instrument: Instrument, data: Any) -> None:
-        # The connector translates non-tick data (e.g. OHLC bars) into an emulated
-        # quote before matching, so pass the raw tick straight through.
+        """Drive the OME (now behind SimulatedConnector) with this tick so resting orders match.
+
+        Before the core cut-over the deleted SimulatedBroker fed the OME from market data
+        internally. The OME now lives behind SimulatedConnector, so the runner must drive it
+        explicitly — once per tick, before the tick reaches the strategy, so the OME's BBO
+        reflects it when the strategy places stop/limit orders against it. The connector
+        translates non-tick data (e.g. OHLC bars) into an emulated quote, so pass the raw
+        tick straight through.
+        """
         self._connectors[instrument.exchange].process_market_data(instrument, data)
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:

@@ -102,6 +102,11 @@ class AccountManager:
             order.pre_pending_status = order.status
         state.transition_order(cid, new_status, self._time.time())
 
+    def remove_order(self, exchange: str, cid: str) -> None:
+        # Drop an order from state entirely (e.g. a submit that raised before reaching the
+        # venue) — distinct from a terminal transition, which keeps it in history.
+        self._states[exchange].remove_order(cid)
+
     def get_state(self, exchange: str) -> AccountState:
         return self._states[exchange]
 

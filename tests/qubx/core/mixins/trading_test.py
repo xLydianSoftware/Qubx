@@ -6,6 +6,7 @@ import pytest
 from qubx.core.basics import Instrument, MarketType, OrderStatus, Position
 from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
 from qubx.core.interfaces import IStrategyContext, ITimeProvider
+from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
 from qubx.health.dummy import DummyHealthMonitor
 
@@ -415,6 +416,26 @@ def _live_order(order_id="test_order_123"):
     order.instrument = instrument
     order.status = OrderStatus.ACCEPTED
     return order
+
+
+class TestTradingManagerTradeSubmitFailure:
+    """trade() registers the order before submitting, and cleans up on a synchronous raise."""
+
+    def test_sync_submit_raise_removes_order_no_phantom(self, trading_manager, mock_connector, mock_account):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+        mock_account.get_position.return_value = None  # flat: skip position-reducing math
+        mock_connector.submit_order.side_effect = RuntimeError("framework reject")
+
+        with pytest.raises(RuntimeError):
+            trading_manager.trade(instr, 0.1, price=50_000.0)
+
+        # the order is registered before submit, then dropped on the raise — not left as a
+        # phantom in-flight order, and NOT a fake REJECTED transition.
+        mock_account.add_order.assert_called_once()
+        registered = mock_account.add_order.call_args.args[0]
+        mock_account.remove_order.assert_called_once_with("BINANCE.UM", registered.client_order_id)
+        mock_account.transition_order.assert_not_called()
 
 
 class TestTradingManagerCancelOrder:
