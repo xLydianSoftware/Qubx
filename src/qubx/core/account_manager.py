@@ -33,52 +33,12 @@ from qubx.core.events import (
     ReconcileDiff,
 )
 from qubx.core.exceptions import InvalidOrderTransition
+from qubx.core.order_state_machine import can_transition, validate_transition
 
 # Client-id prefix that marks an order as framework-originated. MUST match the prefix
 # ClientIdStore._create_id produces in qubx.core.mixins.trading ("qubx_<symbol>_<n>");
 # a snapshot order carrying it is a RECOVERED framework order, anything else is EXTERNAL.
 _FRAMEWORK_CID_PREFIX = "qubx_"
-
-_LEGAL_TRANSITIONS: dict[OrderStatus, set[OrderStatus]] = {
-    OrderStatus.INITIALIZED: {OrderStatus.SUBMITTED, OrderStatus.REJECTED},
-    OrderStatus.SUBMITTED: {
-        OrderStatus.ACCEPTED,
-        OrderStatus.PARTIALLY_FILLED,
-        OrderStatus.PENDING_CANCEL,
-        OrderStatus.FILLED,
-        OrderStatus.CANCELED,
-        OrderStatus.REJECTED,
-        OrderStatus.EXPIRED,
-    },
-    OrderStatus.ACCEPTED: {
-        OrderStatus.PARTIALLY_FILLED,
-        OrderStatus.PENDING_CANCEL,
-        OrderStatus.PENDING_UPDATE,
-        OrderStatus.FILLED,
-        OrderStatus.CANCELED,
-        OrderStatus.EXPIRED,
-    },
-    OrderStatus.PARTIALLY_FILLED: {
-        OrderStatus.PENDING_CANCEL,
-        OrderStatus.PENDING_UPDATE,
-        OrderStatus.FILLED,
-        OrderStatus.CANCELED,
-        OrderStatus.EXPIRED,
-    },
-    OrderStatus.PENDING_CANCEL: {
-        OrderStatus.FILLED,
-        OrderStatus.CANCELED,
-        OrderStatus.EXPIRED,
-    },
-    OrderStatus.PENDING_UPDATE: {
-        OrderStatus.ACCEPTED,
-        OrderStatus.PARTIALLY_FILLED,
-        OrderStatus.PENDING_CANCEL,
-        OrderStatus.FILLED,
-        OrderStatus.CANCELED,
-        OrderStatus.EXPIRED,
-    },
-}
 
 
 class AccountManager:
@@ -149,11 +109,20 @@ class AccountManager:
         order = state.active_orders.get(cid)
         if order is None:
             raise KeyError(f"order {cid} not found in {exchange}")
-        if new_status not in _LEGAL_TRANSITIONS.get(order.status, set()):
-            raise InvalidOrderTransition(cid, order.status, new_status)
+        validate_transition(cid, order.status, new_status)
         if new_status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE):
             order.pre_pending_status = order.status
         state._transition_order(cid, new_status, self._time.time())
+
+    def _transition(self, state: AccountState, cid: str, new_status: OrderStatus) -> Order:
+        """Single validating chokepoint for every AM-driven status change.
+
+        Raises InvalidOrderTransition on an illegal move (the PM dispatch logs + skips
+        it; tick/snapshot callers guard or expect only legal moves). ``_transition_order``
+        is the low-level setter — the legality check lives here, in AccountManager.
+        """
+        validate_transition(cid, state.active_orders[cid].status, new_status)
+        return state._transition_order(cid, new_status, self._time.time())
 
     def get_state(self, exchange: str) -> AccountState:
         return self._states[exchange]
@@ -361,9 +330,9 @@ class AccountManager:
         if order.status == OrderStatus.PENDING_CANCEL:
             return order
         if order.status == OrderStatus.PENDING_UPDATE:
-            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.time())
-        if OrderStatus.ACCEPTED in _LEGAL_TRANSITIONS.get(order.status, set()):
-            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.time())
+            return self._transition(state, order.client_order_id, OrderStatus.ACCEPTED)
+        if can_transition(order.status, OrderStatus.ACCEPTED):
+            return self._transition(state, order.client_order_id, OrderStatus.ACCEPTED)
         return order
 
     # Terminal-order guard (shared by the lifecycle handlers below).
@@ -395,16 +364,15 @@ class AccountManager:
             # past the new (smaller) target — surface that as a warning only; the
             # venue resolves the race (OrderUpdated, or OrderUpdateRejected because
             # it can't shrink an order below what's already filled).
-            if (order.status == OrderStatus.PENDING_UPDATE
-                    and order.filled_quantity > order.quantity):
+            if order.status == OrderStatus.PENDING_UPDATE and order.filled_quantity > order.quantity:
                 logger.warning(
                     f"[{order.client_order_id}] fill during pending-update pushed "
                     f"filled_quantity ({order.filled_quantity}) past target "
                     f"({order.quantity}); leaving filled intact, awaiting venue verdict"
                 )
             return state.get_order(order.client_order_id)
-        if OrderStatus.PARTIALLY_FILLED in _LEGAL_TRANSITIONS.get(order.status, set()):
-            return state._transition_order(order.client_order_id, OrderStatus.PARTIALLY_FILLED, self._time.time())
+        if can_transition(order.status, OrderStatus.PARTIALLY_FILLED):
+            return self._transition(state, order.client_order_id, OrderStatus.PARTIALLY_FILLED)
         return order
 
     def _handle_fill(self, state, event: OrderFilledEvent):
@@ -418,21 +386,21 @@ class AccountManager:
         state._apply_fill(order.client_order_id, event.fill, self._time.time())
         if is_new_trade and order.instrument is not None:
             self._apply_deal_to_position(state, order.instrument, event.fill)
-        return state._transition_order(order.client_order_id, OrderStatus.FILLED, self._time.time())
+        return self._transition(state, order.client_order_id, OrderStatus.FILLED)
 
     def _handle_canceled(self, state, event):
         order = self._resolve_or_materialize(state, event)
         if self._is_late_terminal(order):
             logger.debug(f"late cancel on terminal {order.client_order_id}; ignoring")
             return order
-        return state._transition_order(order.client_order_id, OrderStatus.CANCELED, self._time.time())
+        return self._transition(state, order.client_order_id, OrderStatus.CANCELED)
 
     def _handle_expired(self, state, event):
         order = self._resolve_or_materialize(state, event)
         if self._is_late_terminal(order):
             logger.debug(f"late expire on terminal {order.client_order_id}; ignoring")
             return order
-        return state._transition_order(order.client_order_id, OrderStatus.EXPIRED, self._time.time())
+        return self._transition(state, order.client_order_id, OrderStatus.EXPIRED)
 
     def _handle_rejected(self, state, event: OrderRejectedEvent):
         order = state.active_orders.get(event.client_order_id)
@@ -443,7 +411,7 @@ class AccountManager:
             logger.debug(f"late reject on terminal {order.client_order_id}; ignoring")
             return order
         order.rejected_reason = event.reason
-        return state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.time())
+        return self._transition(state, order.client_order_id, OrderStatus.REJECTED)
 
     def _handle_updated(self, state, event: OrderUpdatedEvent):
         order = self._resolve_or_materialize(state, event)
@@ -460,7 +428,7 @@ class AccountManager:
             order.quantity = event.new_quantity
         order.last_updated_at = self._time.time()
         if order.status == OrderStatus.PENDING_UPDATE:
-            return state._transition_order(order.client_order_id, OrderStatus.ACCEPTED, self._time.time())
+            return self._transition(state, order.client_order_id, OrderStatus.ACCEPTED)
         return order
 
     def _handle_cancel_rejected(self, state, event):
@@ -478,9 +446,22 @@ class AccountManager:
         return self._revert_from_pending(state, order)
 
     def _revert_from_pending(self, state, order):
-        target = order.pre_pending_status or OrderStatus.ACCEPTED
+        target = self._previous_status_before_pending(order)
         order.pre_pending_status = None
-        return state._transition_order(order.client_order_id, target, self._time.time())
+        return self._transition(state, order.client_order_id, target)
+
+    def _previous_status_before_pending(self, order) -> OrderStatus:
+        """Live status to revert a PENDING_* order to when the venue rejects the
+        cancel/modify (or the sweep gives up). Prefer the captured pre_pending_status;
+        otherwise derive it from the order's fills / venue ack (e.g. a PENDING_* order
+        adopted from a snapshot has no captured pre_pending_status)."""
+        if order.pre_pending_status is not None:
+            return order.pre_pending_status
+        if order.filled_quantity > 0:
+            return OrderStatus.PARTIALLY_FILLED
+        if order.venue_order_id is None:
+            return OrderStatus.SUBMITTED
+        return OrderStatus.ACCEPTED
 
     def _handle_snapshot(self, state, event: AccountSnapshotEvent):
         snapshot = event.snapshot
@@ -505,14 +486,12 @@ class AccountManager:
                 cached.rejected_reason = "reconcile: missing from snapshot"
                 cached.pre_pending_status = None
                 try:
-                    state._transition_order(cid, terminal, self._time.time())
+                    self._transition(state, cid, terminal)
                     diff.orders_newly_terminal.append(cached)
                 except InvalidOrderTransition:
                     logger.warning(f"reconcile: cannot terminate {cid} from {cached.status}")
             for snap_order in snapshot.open_orders:
-                existing = (
-                    state.get_order_by_venue_id(snap_order.venue_order_id) if snap_order.venue_order_id else None
-                )
+                existing = state.get_order_by_venue_id(snap_order.venue_order_id) if snap_order.venue_order_id else None
                 if existing is None:
                     self._materialize_from_snapshot(state, snap_order, snapshot.as_of)
                     diff.orders_materialized.append(snap_order)
@@ -628,12 +607,12 @@ class AccountManager:
         reason = f"reconcile: no venue ack after {order.retry_count} retries"
         if order.status == OrderStatus.SUBMITTED:
             order.rejected_reason = reason
-            state._transition_order(order.client_order_id, OrderStatus.REJECTED, self._time.time())
+            self._transition(state, order.client_order_id, OrderStatus.REJECTED)
             return
-        target = order.pre_pending_status or OrderStatus.ACCEPTED
+        target = self._previous_status_before_pending(order)
         order.pre_pending_status = None
         was = order.status
-        state._transition_order(order.client_order_id, target, self._time.time())
+        self._transition(state, order.client_order_id, target)
         if was == OrderStatus.PENDING_CANCEL:
             self._strategy.on_order_cancel_rejected(self._ctx, order, reason)
         else:

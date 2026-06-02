@@ -390,14 +390,14 @@ class CcxtConnector:
     # ------------------------------------------------------------------ #
     # Write side — cancel
     # ------------------------------------------------------------------ #
-    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def cancel_order(self, client_order_id: str, venue_order_id: str | None = None) -> None:
         if self._read_only:
             raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
-        if client_order_id is None and venue_order_id is None:
-            raise InvalidOrderParameters("cancel_order: must provide client_order_id or venue_order_id")
+        if not client_order_id:
+            raise InvalidOrderParameters("cancel_order: client_order_id is required")
         self._spawn(self._cancel_async(client_order_id, venue_order_id))
 
-    async def _cancel_async(self, client_order_id: str | None, venue_order_id: str | None) -> None:
+    async def _cancel_async(self, client_order_id: str, venue_order_id: str | None) -> None:
         """Cancel with retry/backoff. Prefers venue_order_id; falls back to cloid.
 
         A successful REST cancel ack emits OrderCanceledEvent immediately; the WS
@@ -419,23 +419,14 @@ class CcxtConnector:
         else:
             self._emit_cancel_rejected(client_order_id, venue_order_id)
 
-    def _emit_cancel_rejected(self, client_order_id: str | None, venue_order_id: str | None) -> None:
-        # Route by the real client_order_id: AM's reject handler resolves the order by
-        # cid, so a venue-id-as-cid (or None) would never match and the order would
-        # stick in PENDING_CANCEL. When the caller passed only a venue id (external-order
-        # cancel), recover the cid from the venue→cid index; drop if still unknown.
-        cid = client_order_id or (self._venue_to_cid.get(venue_order_id) if venue_order_id else None)
-        if cid is None:
-            logger.warning(
-                f"[{self.exchange_name}] Cancel rejected for venue order {venue_order_id} with no known "
-                "client id; dropping (unroutable)"
-            )
-            return
+    def _emit_cancel_rejected(self, client_order_id: str, venue_order_id: str | None) -> None:
+        # Route by the real client_order_id (always present): AM's reject handler resolves
+        # the order by cid, so the order can revert out of PENDING_CANCEL.
         self.send(
             OrderCancelRejectedEvent(
                 instrument=None,
-                client_order_id=cid,
-                reason=f"venue rejected cancel for {venue_order_id or cid}",
+                client_order_id=client_order_id,
+                reason=f"venue rejected cancel for {venue_order_id or client_order_id}",
             )
         )
 
@@ -549,20 +540,19 @@ class CcxtConnector:
     # ------------------------------------------------------------------ #
     def update_order(
         self,
-        *,
-        client_order_id: str | None = None,
+        client_order_id: str,
         venue_order_id: str | None = None,
         price: float | None = None,
         quantity: float | None = None,
     ) -> None:
         if self._read_only:
             raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
-        if client_order_id is None and venue_order_id is None:
-            raise InvalidOrderParameters("update_order: must provide client_order_id or venue_order_id")
+        if not client_order_id:
+            raise InvalidOrderParameters("update_order: client_order_id is required")
         self._spawn(self._update_async(client_order_id, venue_order_id, price, quantity))
 
     async def _update_async(
-        self, client_order_id: str | None, venue_order_id: str | None, price: float | None, quantity: float | None
+        self, client_order_id: str, venue_order_id: str | None, price: float | None, quantity: float | None
     ) -> None:
         """Direct editOrder where the venue supports it, else cancel+recreate.
 
@@ -906,12 +896,12 @@ class CcxtConnector:
     # ------------------------------------------------------------------ #
     # Reconciliation primitives — READ side
     # ------------------------------------------------------------------ #
-    def request_order_status(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
-        if client_order_id is None and venue_order_id is None:
-            raise InvalidOrderParameters("request_order_status: must provide client_order_id or venue_order_id")
+    def request_order_status(self, client_order_id: str, venue_order_id: str | None = None) -> None:
+        if not client_order_id:
+            raise InvalidOrderParameters("request_order_status: client_order_id is required")
         self._spawn(self._order_status_async(client_order_id, venue_order_id))
 
-    async def _order_status_async(self, client_order_id: str | None, venue_order_id: str | None) -> None:
+    async def _order_status_async(self, client_order_id: str, venue_order_id: str | None) -> None:
         cached = self._resolve_cached(client_order_id, venue_order_id)
         symbol = cached.ccxt_symbol if cached is not None else None
         # Prefer the venue id (more reliable across venues); fall back to the cloid.
@@ -933,27 +923,12 @@ class CcxtConnector:
         self._handle_ws_order(raw)
 
     def _emit_order_status_not_found(
-        self, client_order_id: str | None, venue_order_id: str | None, cached: _CachedOrder | None
+        self, client_order_id: str, venue_order_id: str | None, cached: _CachedOrder | None
     ) -> None:
-        """Emit the reconcile not-found reject, routed by the REAL client_order_id.
-
-        OrderRejectedEvent carries no venue id and AM routes a reject by cid, so a
-        venue-id-only request (cid None) must resolve the cid from the order cache's
-        venue->cid index. If it can't be resolved, the reject would be unroutable —
-        log and skip rather than emit an event AM silently drops.
-        """
-        cid = client_order_id
-        if cid is None and venue_order_id is not None:
-            cid = self._venue_to_cid.get(venue_order_id)
-        if cid is None:
-            logger.warning(
-                f"[{self.exchange_name}] order-status not-found for venue id {venue_order_id} but no cid known; "
-                "skipping unroutable reject"
-            )
-            return
+        """Emit the reconcile not-found reject, routed by the client_order_id (always present)."""
         self.send(OrderRejectedEvent(
             instrument=cached.instrument if cached is not None else None,
-            client_order_id=cid,
+            client_order_id=client_order_id,
             reason="reconcile: order not present at venue",
             code="OrderNotFound",
         ))

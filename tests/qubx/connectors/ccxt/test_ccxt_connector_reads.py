@@ -314,41 +314,22 @@ async def test_request_order_status_emits_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_order_status_not_found_routes_reject_by_real_cid() -> None:
-    # I2: a venue-id-only request (cid None) must resolve the real cid from the order
-    # cache before emitting the reject — OrderRejectedEvent carries no venue id, so AM
-    # routes it by cid. Seed the cache via a prior WS open update.
+async def test_request_order_status_not_found_emits_reject_by_cid() -> None:
+    # A reconcile fetch that comes back OrderNotFound emits OrderRejectedEvent routed by
+    # the client_order_id (always present), so AM can resolve and terminate the order.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_order = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
     conn, sent, _ = _make_connector(exchange=exchange)
-    conn._handle_ws_order(_ws_order(status="open", cid="qubx_BTCUSDT_1", venue_id="VENUE123"))
-    sent.clear()
 
-    conn.request_order_status(venue_order_id="VENUE123")
+    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
     await _drive(conn)
 
     assert len(sent) == 1
     ev = sent[0]
     assert isinstance(ev, OrderRejectedEvent)
     assert ev.reason == "reconcile: order not present at venue"
-    # Routed by the real cid resolved from the venue->cid index, NOT None.
     assert ev.client_order_id == "qubx_BTCUSDT_1"
-
-
-@pytest.mark.asyncio
-async def test_request_order_status_not_found_unknown_cid_skips() -> None:
-    # I2: if the cid can't be resolved (venue id never seen), the reject would be
-    # unroutable — log and skip rather than emit an event AM silently drops.
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.fetch_order = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.request_order_status(venue_order_id="VENUE_UNKNOWN")
-    await _drive(conn)
-
-    assert sent == []
 
 
 @pytest.mark.asyncio
@@ -358,16 +339,16 @@ async def test_request_order_status_network_error_leaves_inflight() -> None:
     exchange.fetch_order = AsyncMock(side_effect=ccxt.NetworkError("timeout"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(venue_order_id="VENUE123")
+    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
     await _drive(conn)
 
     assert sent == []
 
 
-def test_request_order_status_raises_on_no_ids() -> None:
+def test_request_order_status_raises_on_empty_cid() -> None:
     conn, _, _ = _make_connector()
     with pytest.raises(Exception):
-        conn.request_order_status()
+        conn.request_order_status(client_order_id="")
 
 
 # --------------------------------------------------------------------------- #

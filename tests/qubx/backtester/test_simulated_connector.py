@@ -157,7 +157,7 @@ def test_cancel_emits_canceled(setup):
     )
     conn.submit_order(request)
     accepted = _drain(channel)[0]
-    conn.cancel_order(venue_order_id=accepted.venue_order_id)
+    conn.cancel_order(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
     events = _drain(channel)
     assert len(events) == 1
     assert isinstance(events[0], OrderCanceledEvent)
@@ -177,7 +177,9 @@ def test_update_emits_single_updated_event_with_stable_cid(setup):
     )
     conn.submit_order(request)
     accepted = _drain(channel)[0]
-    conn.update_order(venue_order_id=accepted.venue_order_id, price=30500.0, quantity=0.2)
+    conn.update_order(
+        client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id, price=30500.0, quantity=0.2
+    )
     events = _drain(channel)
     assert len(events) == 1
     assert isinstance(events[0], OrderUpdatedEvent)
@@ -243,7 +245,7 @@ def test_request_order_status_open_emits_accepted(setup):
     )
     conn.submit_order(request)
     accepted = _drain(channel)[0]
-    conn.request_order_status(venue_order_id=accepted.venue_order_id)
+    conn.request_order_status(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
     events = _drain(channel)
     assert len(events) == 1
     assert isinstance(events[0], OrderAcceptedEvent)
@@ -252,7 +254,7 @@ def test_request_order_status_open_emits_accepted(setup):
 
 def test_request_order_status_missing_emits_rejected(setup):
     conn, channel, _exchange, _instr, _time = setup
-    conn.request_order_status(venue_order_id="does-not-exist")
+    conn.request_order_status(client_order_id="does-not-exist")
     events = _drain(channel)
     assert len(events) == 1
     assert isinstance(events[0], OrderRejectedEvent)
@@ -390,7 +392,9 @@ def test_update_order_preserves_options(setup):
     accepted = _drain(channel)[0]
 
     new_stop_price = 32600.0
-    conn.update_order(venue_order_id=accepted.venue_order_id, price=new_stop_price)
+    conn.update_order(
+        client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id, price=new_stop_price
+    )
     _drain(channel)  # consume the updated event
 
     open_orders = exchange.get_open_orders()

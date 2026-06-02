@@ -37,42 +37,30 @@ def _make_order(status=OrderStatus.SUBMITTED, cid="cid-1"):
     )
 
 
+# Representative cases exercising the PUBLIC transition_order wiring (status set vs
+# raise). The exhaustive state-machine table is pinned in test_order_state_machine.py.
 LEGAL = [
     (OrderStatus.SUBMITTED, OrderStatus.ACCEPTED),
-    (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED),
     (OrderStatus.SUBMITTED, OrderStatus.PENDING_CANCEL),
-    (OrderStatus.SUBMITTED, OrderStatus.FILLED),
-    (OrderStatus.SUBMITTED, OrderStatus.CANCELED),
     (OrderStatus.SUBMITTED, OrderStatus.REJECTED),
-    (OrderStatus.SUBMITTED, OrderStatus.EXPIRED),
-    (OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED),
     (OrderStatus.ACCEPTED, OrderStatus.PENDING_CANCEL),
     (OrderStatus.ACCEPTED, OrderStatus.PENDING_UPDATE),
     (OrderStatus.ACCEPTED, OrderStatus.FILLED),
-    (OrderStatus.ACCEPTED, OrderStatus.CANCELED),
-    (OrderStatus.ACCEPTED, OrderStatus.EXPIRED),
-    (OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL),
-    (OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_UPDATE),
-    (OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED),
-    (OrderStatus.PARTIALLY_FILLED, OrderStatus.CANCELED),
-    (OrderStatus.PENDING_CANCEL, OrderStatus.FILLED),
+    # venue can terminalize a live order from any state (liquidation / risk reject /
+    # late reject after accept).
+    (OrderStatus.ACCEPTED, OrderStatus.REJECTED),
+    (OrderStatus.PARTIALLY_FILLED, OrderStatus.EXPIRED),
     (OrderStatus.PENDING_CANCEL, OrderStatus.CANCELED),
+    (OrderStatus.PENDING_CANCEL, OrderStatus.ACCEPTED),  # revert on cancel-reject
     (OrderStatus.PENDING_UPDATE, OrderStatus.ACCEPTED),
-    (OrderStatus.PENDING_UPDATE, OrderStatus.PARTIALLY_FILLED),
-    (OrderStatus.PENDING_UPDATE, OrderStatus.PENDING_CANCEL),
-    (OrderStatus.PENDING_UPDATE, OrderStatus.CANCELED),
 ]
 
 ILLEGAL = [
-    (OrderStatus.FILLED, OrderStatus.ACCEPTED),
+    (OrderStatus.FILLED, OrderStatus.ACCEPTED),  # terminal: no outgoing edge
     (OrderStatus.CANCELED, OrderStatus.PARTIALLY_FILLED),
-    (OrderStatus.SUBMITTED, OrderStatus.PENDING_UPDATE),
-    (OrderStatus.ACCEPTED, OrderStatus.REJECTED),
+    (OrderStatus.REJECTED, OrderStatus.SUBMITTED),
+    (OrderStatus.SUBMITTED, OrderStatus.PENDING_UPDATE),  # can't modify before venue ack
 ]
-
-
-def test_legal_count_is_23():
-    assert len(LEGAL) == 23
 
 
 @pytest.mark.parametrize("frm,to", LEGAL, ids=lambda x: x.value if x else "")

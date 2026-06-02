@@ -77,10 +77,10 @@ class SimulatedConnector:
             return
         self._emit_from_report(report)
 
-    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def cancel_order(self, client_order_id: str, venue_order_id: str | None = None) -> None:
+        if not client_order_id:
+            raise ValueError("cancel_order: client_order_id is required")
         oid = venue_order_id or client_order_id
-        if oid is None:
-            raise ValueError("cancel_order: missing identifier")
         try:
             report = self._exchange.cancel_order(oid)
         except OrderNotFound:
@@ -90,8 +90,7 @@ class SimulatedConnector:
 
     def update_order(
         self,
-        *,
-        client_order_id: str | None = None,
+        client_order_id: str,
         venue_order_id: str | None = None,
         price: float | None = None,
         quantity: float | None = None,
@@ -133,7 +132,7 @@ class SimulatedConnector:
             )
         )
 
-    def request_order_status(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def request_order_status(self, client_order_id: str, venue_order_id: str | None = None) -> None:
         oid = venue_order_id or client_order_id
         for order in self._exchange.get_open_orders().values():
             if order.id == oid or order.client_id == oid:
