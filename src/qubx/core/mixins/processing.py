@@ -78,7 +78,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.trackers.riskctrl import _InitializationStageTracker
-from qubx.utils.time import interval_to_cron, timedelta_to_str
+from qubx.utils.time import interval_to_cron
 
 
 class ProcessingManager(IProcessingManager):
@@ -365,19 +365,16 @@ class ProcessingManager(IProcessingManager):
             ctx.emitter.emit(m["name"], m["value"], m["tags"])
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        base, params = DataType.from_str(d_type) if d_type else (None, {})
+        # Adapter for data sources that still emit (instrument, type, data, hist) tuples
+        # rather than typed events (Tardis, the live warmup batch). The simulator and the
+        # CCXT handlers already emit typed events straight to process_event. A live
+        # convertible market-data tuple is wrapped in its typed event (these sources carry
+        # a parameterized OHLC type already — no re-labeling needed); historical batches and
+        # control tuples stay on the legacy __process_data path.
+        base, _ = DataType.from_str(d_type) if d_type else (None, {})
         if not is_historical and base in MARKET_DATA_TYPES:
-            # OHLC arrives as the bare base type from the simulator; OhlcEvent needs a
-            # timeframe, so label it with the cache's default before wrapping. (The
-            # live OHLC cache buckets off the Bar itself, not this string — the
-            # timeframe only labels the event/series.)
-            if base == DataType.OHLC and params.get("timeframe") is None:
-                d_type = DataType.OHLC[timedelta_to_str(self._cache.default_timeframe)]
-            # process_event emits the post-data notify itself.
             self.process_event(event_for_data_type(d_type, instrument=instrument, payload=data))
         else:
-            # TODO(account-mgmt): historical data and not-yet-typed control tuples still
-            # route through __process_data; 6.5.4/PR10 convert/remove these.
             self.__process_data(instrument, d_type, data, is_historical)
             if not is_historical:
                 self._notify_after_data()
