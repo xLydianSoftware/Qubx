@@ -845,18 +845,18 @@ def _inject_restored_state(account_manager: AccountManager, restored_state: Rest
     """Seed the central AccountManager's per-exchange state from restored state.
 
     RestoredState carries persisted positions and balances (no open orders — the venue
-    snapshot reconciles those live). Positions are seeded via _set_position (carrying the
+    snapshot reconciles those live). Positions are seeded via set_position (carrying the
     persisted accounting fields: commissions, r_pnl, cumulative_funding, funding history),
-    balances via _update_balance. Records for exchanges the AM doesn't manage are skipped.
+    balances via update_balance. Records for exchanges the AM doesn't manage are skipped.
     """
     for instrument, position in restored_state.positions.items():
         state = account_manager._states.get(instrument.exchange)
         if state is not None:
-            state._set_position(instrument, position)
+            state.set_position(instrument, position)
     for balance in restored_state.balances:
         state = account_manager._states.get(balance.exchange)
         if state is not None:
-            state._update_balance(balance.currency, balance)
+            state.update_balance(balance.currency, balance)
 
 
 def _seed_paper_capital(
@@ -869,7 +869,7 @@ def _seed_paper_capital(
     """Seed the per-exchange account state with the configured initial capital (paper mode)."""
     base_currency = _resolve_base_currency(exchange_name, exchange_config, live_config, credentials_manager)
     capital = credentials_manager.get_exchange_settings(exchange_name).initial_capital
-    account_manager._states[exchange_name]._update_balance(
+    account_manager._states[exchange_name].update_balance(
         base_currency,
         Balance(exchange=exchange_name, currency=base_currency, total=capital, free=capital, locked=0.0),
     )

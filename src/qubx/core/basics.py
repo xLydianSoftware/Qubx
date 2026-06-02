@@ -725,7 +725,6 @@ class OrderRequest:
 class Order:
     client_order_id: str
     venue_order_id: str | None
-    origin: OrderOrigin
     type: OrderType
     instrument: Instrument
     time: dt_64                       # submission timestamp; grace-window reconcile
@@ -735,6 +734,9 @@ class Order:
     side: OrderSide
     status: OrderStatus
     time_in_force: str
+    # Defaults to FRAMEWORK (the common case); the snapshot/external materialization
+    # paths set EXTERNAL / RECOVERED explicitly.
+    origin: OrderOrigin = OrderOrigin.FRAMEWORK
     filled_quantity: float = 0.0
     avg_fill_price: float | None = None
     accepted_at: dt_64 | None = None

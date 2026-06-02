@@ -7,8 +7,8 @@ def test_iconnector_has_required_methods():
     required = {
         "submit_order", "cancel_order", "update_order",
         "request_order_status", "request_snapshot",
-        "connect", "disconnect", "send",
-        "is_ws_ready", "force_ws_reconnect_sync",
+        "connect", "disconnect",
+        "is_ws_ready", "reconnect",
         "make_client_id",
     }
     actual = {n for n in dir(IConnector) if not n.startswith("_")}

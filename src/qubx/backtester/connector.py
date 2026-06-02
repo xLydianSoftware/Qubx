@@ -3,10 +3,10 @@ import asyncio
 from qubx.backtester.ome import SimulatedExecutionReport
 from qubx.backtester.simulated_exchange import ISimulatedExchange
 from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest, Timestamped
+from qubx.core.connector import ChannelEmitter
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
-    ChannelMessage,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderFilledEvent,
@@ -19,7 +19,7 @@ from qubx.core.exceptions import ExchangeError, InvalidOrder, InvalidOrderParame
 from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 
 
-class SimulatedConnector:
+class SimulatedConnector(ChannelEmitter):
     """IConnector implementation wrapping the simulator's OME via ISimulatedExchange.
 
     submit/cancel/update route through the exchange and translate the resulting
@@ -44,9 +44,6 @@ class SimulatedConnector:
         self.exchange_name = exchange.exchange_id
         self._exchange = exchange
         self._time = time_provider
-
-    def send(self, event: ChannelMessage) -> None:
-        self.channel.send(event)
 
     def submit_order(self, request: OrderRequest) -> None:
         try:
@@ -226,7 +223,7 @@ class SimulatedConnector:
     def is_ws_ready(self) -> bool:
         return True
 
-    def force_ws_reconnect_sync(self) -> bool:
+    def reconnect(self) -> bool:
         return True
 
     def connect(self) -> None:

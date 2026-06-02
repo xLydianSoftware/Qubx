@@ -102,7 +102,7 @@ class AccountManager:
             self._register_ticks()
 
     def add_order(self, exchange: str, order: Order) -> None:
-        self._states[exchange]._add_order(order)
+        self._states[exchange].add_order(order)
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
         state = self._states[exchange]
@@ -112,17 +112,17 @@ class AccountManager:
         validate_transition(cid, order.status, new_status)
         if new_status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE):
             order.pre_pending_status = order.status
-        state._transition_order(cid, new_status, self._time.time())
+        state.transition_order(cid, new_status, self._time.time())
 
     def _transition(self, state: AccountState, cid: str, new_status: OrderStatus) -> Order:
         """Single validating chokepoint for every AM-driven status change.
 
         Raises InvalidOrderTransition on an illegal move (the PM dispatch logs + skips
-        it; tick/snapshot callers guard or expect only legal moves). ``_transition_order``
+        it; tick/snapshot callers guard or expect only legal moves). ``transition_order``
         is the low-level setter — the legality check lives here, in AccountManager.
         """
         validate_transition(cid, state.active_orders[cid].status, new_status)
-        return state._transition_order(cid, new_status, self._time.time())
+        return state.transition_order(cid, new_status, self._time.time())
 
     def get_state(self, exchange: str) -> AccountState:
         return self._states[exchange]
@@ -163,7 +163,7 @@ class AccountManager:
             # a Position object for any known instrument, not None. Materialize an empty
             # one so a never-traded instrument reads as flat rather than KeyError-ing.
             pos = Position(instrument=instrument)
-            state._set_position(instrument, pos)
+            state.set_position(instrument, pos)
         return pos
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
@@ -246,7 +246,7 @@ class AccountManager:
                 # fills and corrected by snapshot reconcile. PM still fires the
                 # on_position_update/on_balance_update callback off the event payload.
                 # TODO(account-mgmt): apply venue WS position/balance to AccountState
-                # here (via _set_position/_update_balance) when the live connectors emit
+                # here (via set_position/update_balance) when the live connectors emit
                 # them (PR 7), with the same freshness/ratchet guard as snapshot reconcile.
                 return None
             case _:
@@ -310,7 +310,7 @@ class AccountManager:
             status=OrderStatus.ACCEPTED,
             time_in_force="gtc",
         )
-        state._add_order(order)
+        state.add_order(order)
         return order
 
     def _handle_accepted(self, state, event: OrderAcceptedEvent):
@@ -319,13 +319,13 @@ class AccountManager:
             # Late accept on an already-terminal order (design "OrderFilled before
             # OrderAccepted"): benign side-effect, no transition, no phantom. Set
             # the venue id ONLY if the order is still in active_orders — an evicted
-            # order's venue-id index was already dropped, so _set_venue_id would
+            # order's venue-id index was already dropped, so set_venue_id would
             # KeyError on active_orders[cid].
             if order.client_order_id in state.active_orders:
-                state._set_venue_id(order.client_order_id, event.venue_order_id)
+                state.set_venue_id(order.client_order_id, event.venue_order_id)
                 order.accepted_at = event.accepted_at
             return order
-        state._set_venue_id(order.client_order_id, event.venue_order_id)
+        state.set_venue_id(order.client_order_id, event.venue_order_id)
         order.accepted_at = event.accepted_at
         if order.status == OrderStatus.PENDING_CANCEL:
             return order
@@ -353,9 +353,9 @@ class AccountManager:
             logger.debug(f"late partial-fill on terminal {order.client_order_id}; ignoring")
             return order
         if event.venue_order_id and order.venue_order_id is None:
-            state._set_venue_id(order.client_order_id, event.venue_order_id)
+            state.set_venue_id(order.client_order_id, event.venue_order_id)
         is_new_trade = event.fill.trade_id not in order.seen_trade_ids
-        state._apply_fill(order.client_order_id, event.fill, self._time.time())
+        state.apply_fill(order.client_order_id, event.fill, self._time.time())
         if is_new_trade and order.instrument is not None:
             self._apply_deal_to_position(state, order.instrument, event.fill)
         if order.status.is_pending():
@@ -381,9 +381,9 @@ class AccountManager:
             logger.debug(f"late fill on terminal {order.client_order_id}; ignoring")
             return order
         if event.venue_order_id and order.venue_order_id is None:
-            state._set_venue_id(order.client_order_id, event.venue_order_id)
+            state.set_venue_id(order.client_order_id, event.venue_order_id)
         is_new_trade = event.fill.trade_id not in order.seen_trade_ids
-        state._apply_fill(order.client_order_id, event.fill, self._time.time())
+        state.apply_fill(order.client_order_id, event.fill, self._time.time())
         if is_new_trade and order.instrument is not None:
             self._apply_deal_to_position(state, order.instrument, event.fill)
         return self._transition(state, order.client_order_id, OrderStatus.FILLED)
@@ -421,7 +421,7 @@ class AccountManager:
         if order.venue_order_id != event.venue_order_id:
             if order.venue_order_id is not None:
                 state._venue_id_index.pop(order.venue_order_id, None)
-            state._set_venue_id(order.client_order_id, event.venue_order_id)
+            state.set_venue_id(order.client_order_id, event.venue_order_id)
         if event.new_price is not None:
             order.price = event.new_price
         if event.new_quantity is not None:
@@ -499,12 +499,12 @@ class AccountManager:
         # older than a recent WS update can't clobber it.
         if snapshot.positions is not None:
             for snap_pos in snapshot.positions:
-                state._set_position(snap_pos.instrument, snap_pos)
+                state.set_position(snap_pos.instrument, snap_pos)
                 diff.positions_updated.append(snap_pos)
 
         if snapshot.balances is not None:
             for snap_bal in snapshot.balances:
-                state._update_balance(snap_bal.currency, snap_bal)
+                state.update_balance(snap_bal.currency, snap_bal)
                 diff.balances_updated.append(snap_bal)
 
         try:
@@ -526,7 +526,7 @@ class AccountManager:
         else:
             origin = OrderOrigin.EXTERNAL
             cid = f"ext:{snap_order.venue_order_id}"
-        state._add_order(
+        state.add_order(
             Order(
                 client_order_id=cid,
                 venue_order_id=snap_order.venue_order_id,
@@ -564,7 +564,7 @@ class AccountManager:
                 )
             for cid in list(state._pending_evict_index):
                 if (now - state._pending_evict_index[cid]) >= grace:
-                    state._evict_to_history(cid)
+                    state.evict_to_history(cid)
 
     def _on_inflight_tick(self, ctx) -> None:
         now = self._time.time()
@@ -632,16 +632,16 @@ class AccountManager:
             if (now - since) >= threshold:
                 logger.warning(f"[{exchange}] WS unready past threshold; reconnecting")
                 try:
-                    connector.force_ws_reconnect_sync()
+                    connector.reconnect()
                 except Exception:
-                    logger.exception(f"force_ws_reconnect_sync failed for {exchange}")
+                    logger.exception(f"reconnect failed for {exchange}")
                 self._liveness_unready_since.pop(exchange, None)
 
     def _apply_deal_to_position(self, state, instrument, deal):
         pos = state.get_position(instrument)
         if pos is None:
             pos = Position(instrument=instrument)
-            state._set_position(instrument, pos)
+            state.set_position(instrument, pos)
         # update_position_by_deal returns (realized_pnl, fee) for this fill, both in
         # the portfolio funded currency (conversion_rate=1.0 — single-base-currency).
         realized_pnl, fee = pos.update_position_by_deal(deal, conversion_rate=1.0)
@@ -671,7 +671,7 @@ class AccountManager:
         # keep free consistent with total (free == total - locked), as the funding handler does
         bal.total += delta
         bal.free += delta
-        state._update_balance(currency, bal)
+        state.update_balance(currency, bal)
 
     def on_market_quote(self, instrument, quote) -> None:
         state = self._states.get(instrument.exchange)
@@ -711,7 +711,7 @@ class AccountManager:
         if bal is not None:
             bal.total += amount
             bal.free += amount  # keep free consistent with total (free == total - locked)
-            state._update_balance(instrument.settle, bal)
+            state.update_balance(instrument.settle, bal)
         return payment
 
     def get_total_capital(self, exchange: str | None = None) -> float:

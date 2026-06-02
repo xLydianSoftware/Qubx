@@ -48,7 +48,7 @@ def test_on_market_quote_updates_position_market_value():
     state = am._states["binance"]
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    state._set_position(inst, pos)
+    state.set_position(inst, pos)
     am.on_market_quote(inst, _quote(50_900.0, 51_100.0))
     # mid = 51_000 -> unrealized = 1 * (51000 - 50000) = 1000
     assert pos.last_update_price == 51_000.0

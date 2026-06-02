@@ -475,7 +475,7 @@ async def test_is_ws_ready_reflects_stream_state() -> None:
 # --------------------------------------------------------------------------- #
 # (f) connector -> AccountManager seam: a snapshot the connector emits must
 #     apply cleanly to a REAL AccountManager (the order's status must be an
-#     OrderStatus enum, or AccountState._add_order -> order.status.is_terminal()
+#     OrderStatus enum, or AccountState.add_order -> order.status.is_terminal()
 #     raises AttributeError).
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
@@ -500,7 +500,7 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     assert event.snapshot.open_orders[0].status is OrderStatus.ACCEPTED
 
     # Apply the connector-emitted snapshot to a REAL AccountManager. This is the seam
-    # the unit tests skipped: AccountState._add_order calls order.status.is_terminal(),
+    # the unit tests skipped: AccountState.add_order calls order.status.is_terminal(),
     # which only exists on OrderStatus (a raw string would raise AttributeError here).
     strategy = Mock()
     am = SimulationAccountManager(

@@ -48,10 +48,10 @@ from qubx.core.basics import (
     Position,
     dt_64,
 )
+from qubx.core.connector import ChannelEmitter
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
-    ChannelMessage,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
@@ -129,7 +129,7 @@ class _CachedOrder:
     status: OrderStatus | None = None
 
 
-class CcxtConnector:
+class CcxtConnector(ChannelEmitter):
     """IConnector implementation backed by a CCXT exchange (write side).
 
     Construction args are intentionally NOT part of the IConnector protocol.
@@ -221,9 +221,6 @@ class CcxtConnector:
         real loop/thread boundary.
         """
         return self._loop.submit(coro).result(timeout=timeout)
-
-    def send(self, event: ChannelMessage) -> None:
-        self.channel.send(event)
 
     # ------------------------------------------------------------------ #
     # Order cache (connector-local venue-call metadata)
@@ -1028,7 +1025,7 @@ class CcxtConnector:
     def is_ws_ready(self) -> bool:
         return self._ws_ready
 
-    def force_ws_reconnect_sync(self) -> bool:
+    def reconnect(self) -> bool:
         return self._em.force_recreation()
 
     @property

@@ -14,7 +14,6 @@ from qubx.core.basics import (
     Instrument,
     ITimeProvider,
     Order,
-    OrderOrigin,
     OrderSide,
     OrderStatus,
     OrderType,
@@ -223,7 +222,6 @@ class OrdersManagementEngine:
         order = Order(
             client_order_id=client_id,
             venue_order_id=self._generate_order_id(),
-            origin=OrderOrigin.FRAMEWORK,
             type=order_type,
             instrument=self.instrument,
             time=timestamp,

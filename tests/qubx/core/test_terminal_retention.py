@@ -48,7 +48,7 @@ def _am(cfg=None):
 
 
 def _add(state, cid="cid-1", status=OrderStatus.ACCEPTED, instrument=None):
-    state._add_order(
+    state.add_order(
         Order(
             client_order_id=cid,
             venue_order_id=None,
@@ -107,7 +107,7 @@ def test_late_accepted_on_terminal_sets_venue_id_no_phantom():
     state = am._states["binance"]
     inst = _instrument()
     _add(state, instrument=inst)
-    state._set_venue_id("cid-1", "V1")
+    state.set_venue_id("cid-1", "V1")
     am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill()))
     # evict to history then deliver a late OrderAccepted resolving via venue/cid
     am._time.adv(31_000)

@@ -89,7 +89,7 @@ def test_missing_order_past_grace_transitions_terminal():
     state = am._states["binance"]
     inst = _instrument()
     # order submitted at t0, vid V1, now snapshot at t0+1h with no open orders -> past grace
-    state._add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    state.add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
     assert state.get_order("cid-1").status is OrderStatus.REJECTED
@@ -100,7 +100,7 @@ def test_missing_order_within_grace_not_terminated():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    state._add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:59:59", vid="V1", instrument=inst))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:59:59", vid="V1", instrument=inst))
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     # snapshot as_of is 1s after order.time which is below the 5s grace window
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
@@ -114,7 +114,7 @@ def test_stale_snapshot_does_not_clobber_fresh_state():
     existing = _order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
     existing.last_updated_at = np.datetime64("2026-05-28T02:00:00")
     existing.filled_quantity = 0.5
-    state._add_order(existing)
+    state.add_order(existing)
     # snapshot older than the order's last_updated_at must not overwrite
     snap_order = _order("cid-1", OrderStatus.FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
     snap_order.filled_quantity = 1.0
@@ -128,12 +128,12 @@ def test_out_of_order_snapshot_skipped():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    state._add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    state.add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
     am._time.t = np.datetime64("2026-05-28T03:00:00")
     am.apply(_snap_event(as_of="2026-05-28T02:00:00", open_orders=[]))
     assert state.get_order("cid-1").status is OrderStatus.REJECTED
     # re-add a fresh order, then deliver an older snapshot — must be skipped
-    state._add_order(_order("cid-2", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V2", instrument=inst))
+    state.add_order(_order("cid-2", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V2", instrument=inst))
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
     assert state.get_order("cid-2").status is OrderStatus.SUBMITTED
 
@@ -173,7 +173,7 @@ def test_existing_order_updated_from_fresh_snapshot():
     inst = _instrument()
     existing = _order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
     existing.last_updated_at = np.datetime64("2026-05-28T00:30:00")
-    state._add_order(existing)
+    state.add_order(existing)
     snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
     snap_order.filled_quantity = 0.4
     snap_order.avg_fill_price = 49_900.0
@@ -215,8 +215,8 @@ def test_snapshot_overwrites_existing_position_and_balance():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    state._set_position(inst, Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0))
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    state.set_position(inst, Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0))
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
     snap_pos = Position(instrument=inst, quantity=3.0, pos_average_price=49_000.0)
     snap_bal = Balance(exchange="binance", currency="USDT", free=400.0, locked=100.0, total=500.0)
@@ -234,7 +234,7 @@ def test_reconcile_diff_emitted():
     state = am._states["binance"]
     inst = _instrument()
     # one missing (terminal), one materialized, plus position and balance
-    state._add_order(_order("cid-gone", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="VG", instrument=inst))
+    state.add_order(_order("cid-gone", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="VG", instrument=inst))
     snap_order = _order("manual-9", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VNEW", instrument=inst)
     snap_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
     snap_bal = Balance(exchange="binance", currency="USDT", total=1000.0)

@@ -43,14 +43,14 @@ class AccountState:
     def get_balance(self, currency: str) -> Balance | None:
         return self.balances.get(currency)
 
-    def _add_order(self, order: Order) -> None:
+    def add_order(self, order: Order) -> None:
         self.active_orders[order.client_order_id] = order
         if order.venue_order_id is not None:
             self._venue_id_index[order.venue_order_id] = order.client_order_id
         if not order.status.is_terminal():
             self._inflight_index.add(order.client_order_id)
 
-    def _transition_order(self, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
+    def transition_order(self, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
         order = self.active_orders[cid]
         order.status = new_status
         order.last_updated_at = now
@@ -63,12 +63,12 @@ class AccountState:
             self._inflight_index.add(cid)
         return order
 
-    def _set_venue_id(self, cid: str, venue_order_id: str) -> None:
+    def set_venue_id(self, cid: str, venue_order_id: str) -> None:
         order = self.active_orders[cid]
         order.venue_order_id = venue_order_id
         self._venue_id_index[venue_order_id] = cid
 
-    def _apply_fill(self, cid: str, fill: Deal, now: np.datetime64) -> Order:
+    def apply_fill(self, cid: str, fill: Deal, now: np.datetime64) -> Order:
         order = self.active_orders[cid]
         if fill.trade_id in order.seen_trade_ids:
             return order
@@ -83,14 +83,14 @@ class AccountState:
         order.last_updated_at = now
         return order
 
-    def _remove_order(self, cid: str) -> None:
+    def remove_order(self, cid: str) -> None:
         order = self.active_orders.pop(cid, None)
         if order is not None and order.venue_order_id is not None:
             self._venue_id_index.pop(order.venue_order_id, None)
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
 
-    def _evict_to_history(self, cid: str) -> None:
+    def evict_to_history(self, cid: str) -> None:
         order = self.active_orders.pop(cid, None)
         if order is not None:
             self._terminal_history.append(order)
@@ -98,8 +98,8 @@ class AccountState:
                 self._venue_id_index.pop(order.venue_order_id, None)
         self._pending_evict_index.pop(cid, None)
 
-    def _set_position(self, instrument: Instrument, position: Position) -> None:
+    def set_position(self, instrument: Instrument, position: Position) -> None:
         self.positions[instrument] = position
 
-    def _update_balance(self, currency: str, balance: Balance) -> None:
+    def update_balance(self, currency: str, balance: Balance) -> None:
         self.balances[currency] = balance

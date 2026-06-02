@@ -658,7 +658,7 @@ class SimulationRunner:
         # - seed initial capital per exchange into the account state
         assert isinstance(self.setup.capital, dict)
         for exchange, capital in self.setup.capital.items():
-            am._states[exchange]._update_balance(
+            am._states[exchange].update_balance(
                 self.setup.base_currency,
                 Balance(
                     exchange=exchange,

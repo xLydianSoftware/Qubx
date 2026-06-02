@@ -4,12 +4,24 @@ from qubx.core.basics import CtrlChannel, Instrument, OrderRequest
 from qubx.core.events import ChannelMessage
 
 
+class ChannelEmitter:
+    """Gives a connector its ``send`` helper for emitting events on the channel.
+
+    ``send`` is NOT part of the IConnector contract — the framework never calls it; the
+    connector emits its own lifecycle / market-data events. Concrete connectors set
+    ``channel`` in their constructor and inherit ``send`` here instead of each redefining
+    it.
+    """
+
+    channel: CtrlChannel
+
+    def send(self, event: ChannelMessage) -> None:
+        self.channel.send(event)
+
+
 @runtime_checkable
 class IConnector(Protocol):
-    channel: CtrlChannel
     exchange_name: str
-
-    def send(self, event: ChannelMessage) -> None: ...
 
     def submit_order(self, request: OrderRequest) -> None: ...
 
@@ -29,7 +41,7 @@ class IConnector(Protocol):
     def request_snapshot(self) -> None: ...
 
     def is_ws_ready(self) -> bool: ...
-    def force_ws_reconnect_sync(self) -> bool: ...
+    def reconnect(self) -> bool: ...  # synchronous WS reconnect; returns success
     def connect(self) -> None: ...
     def disconnect(self) -> None: ...
 
