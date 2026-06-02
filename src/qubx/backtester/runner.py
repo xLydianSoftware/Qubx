@@ -207,7 +207,6 @@ class SimulationRunner:
         t = np.datetime64(int(data.time), "ns")
         _exchange = self._sim_exchanges[instrument.exchange]
         _data_provider = self._get_data_provider(instrument.exchange)
-        _connector = self._connectors[instrument.exchange]
         assert isinstance(_data_provider, SimulatedDataProvider)
 
         if not is_hist:
@@ -350,8 +349,8 @@ class SimulationRunner:
     def _handle_no_data_scenario(self, stop_time):
         """Handle scenario when no data is available but scheduler might have events."""
         # Check if we have pending scheduled events
-        if hasattr(self.scheduler, "_next_nearest_time"):
-            next_scheduled_time = self.scheduler._next_nearest_time
+        if hasattr(self.scheduler, "next_expected_event_time"):
+            next_scheduled_time = self.scheduler.next_expected_event_time()
             current_time = self.time_provider.time()
 
             # Convert to int64 for numerical comparisons (avoid type issues)
@@ -443,29 +442,6 @@ class SimulationRunner:
             trading_session=self.data_config.trading_sessions_time,
             default_trading_session=self.data_config.default_trading_sessions_time,
         )
-
-        # - create time guarded aux data storage, optionally wrapped with in-memory cache.
-        # - stack (outer → inner): TimeGuardedStorage → CachedStorage → inner storage
-        # - TimeGuardedStorage clamps stop to current sim time (look-ahead guard).
-        # - CachedStorage uses prefetch_period = full sim duration so that the FIRST read
-        #   for any (dtype, symbols) fetches the entire backtest range in ONE DB query — same
-        #   behaviour as the old upfront prefetch but lazy-triggered per dtype actually used.
-        # - Subsequent reads (across all sim ticks) return from cache → zero DB queries.
-        # - NOTE: PrefetchConfig.aux_data_names / args are no longer needed — caching is
-        #   transparent and only warms dtypes the strategy actually accesses.
-        # _inner_aux = self.data_config.aux_storage or self.data_config.data_storage
-        # _pcfg = self.data_config.prefetch_config
-        # if _pcfg is not None and _pcfg.enabled:
-        #     # - use max(configured period, full sim duration) so any read grabs the full range
-        #     _sim_duration = self.stop - self.start
-        #     _effective_prefetch = max(_sim_duration, pd.Timedelta(_pcfg.prefetch_period))
-        #     _cache_size_mb = _pcfg.cache_size_mb
-        #     _inner_aux = CachedStorage(
-        #         _inner_aux,
-        #         prefetch_period=str(_effective_prefetch),
-        #         cache_factory=lambda: MemoryCache(_cache_size_mb),
-        #     )
-        # self._aux_storage = TimeGuardedStorage(_inner_aux, self.time_provider)
 
     def _wrap_storage(self, storage: IStorage, prefetch_cfg: PrefetchConfig) -> IStorage:
         # - wrap with CachedStorage only — no TimeGuardedStorage here.
@@ -672,7 +648,7 @@ class SimulationRunner:
         # - seed initial capital per exchange into the account state
         assert isinstance(self.setup.capital, dict)
         for exchange, capital in self.setup.capital.items():
-            am._states[exchange].update_balance(
+            am.get_state(exchange).update_balance(
                 self.setup.base_currency,
                 Balance(
                     exchange=exchange,

@@ -229,8 +229,8 @@ class AccountManager:
                 # fills and corrected by snapshot reconcile. PM still fires the
                 # on_position_update/on_balance_update callback off the event payload.
                 # TODO(account-mgmt): apply venue WS position/balance to AccountState
-                # here (via set_position/update_balance) when the live connectors emit
-                # them (PR 7), with the same freshness/ratchet guard as snapshot reconcile.
+                # here (via set_position/update_balance) once the live connectors emit
+                # them, with the same freshness/ratchet guard as snapshot reconcile.
                 return None
             case _:
                 logger.warning(f"unhandled AccountMessage: {type(event)}")
@@ -604,9 +604,9 @@ class AccountManager:
         # by the is_snapshot_stale ratchet above — so an accepted snapshot always
         # overwrites. No per-record freshness here (unlike orders, where it guards a
         # fresh fill): Position/Balance carry no reliable last-update timestamp yet.
-        # TODO(account-mgmt): once WS PositionUpdate/BalanceUpdate events are wired
-        # (PR 6/7), add per-record freshness backed by a real timestamp so a snapshot
-        # older than a recent WS update can't clobber it.
+        # TODO(account-mgmt): once WS PositionUpdate/BalanceUpdate events are wired,
+        # add per-record freshness backed by a real timestamp so a snapshot older than
+        # a recent WS update can't clobber it.
         if snapshot.positions is not None:
             for snap_pos in snapshot.positions:
                 if state.apply_position_snapshot(snap_pos):
