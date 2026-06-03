@@ -44,7 +44,9 @@ class ISimulatedExchange:
         **options,
     ) -> SimulatedExecutionReport: ...
 
-    def cancel_order(self, order_id: str) -> SimulatedExecutionReport | None: ...
+    # Returns the cancel report, or raises OrderNotFound — never returns None (the OME's
+    # own None is converted to a raise here), so callers don't need a None branch.
+    def cancel_order(self, order_id: str) -> SimulatedExecutionReport: ...
 
     def get_open_orders(self, instrument: Instrument | None = None) -> dict[str, Order]: ...
 
@@ -152,7 +154,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
             **options,
         )
 
-    def cancel_order(self, order_id: str) -> SimulatedExecutionReport | None:
+    def cancel_order(self, order_id: str) -> SimulatedExecutionReport:
         # - first check in active orders
         instrument = self._order_to_instrument.get(order_id)
 
@@ -161,7 +163,8 @@ class BasicSimulatedExchange(ISimulatedExchange):
             for o in self._ome.values():
                 for order in o.get_open_orders():
                     if order.id == order_id:
-                        return self._process_ome_response(o.cancel_order(order_id))
+                        if (result := self._process_ome_response(o.cancel_order(order_id))) is not None:
+                            return result
 
             raise OrderNotFound(f"Order '{order_id}' not found")
 

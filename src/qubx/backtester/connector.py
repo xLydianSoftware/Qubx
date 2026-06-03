@@ -76,13 +76,13 @@ class SimulatedConnector(ChannelEmitter):
     def cancel_order(self, client_order_id: str, venue_order_id: str | None = None) -> None:
         if not client_order_id:
             raise ValueError("cancel_order: client_order_id is required")
+        # Prefer the venue id (the OME keys orders by it); fall back to the cid before the ack.
         oid = venue_order_id or client_order_id
         try:
             report = self._exchange.cancel_order(oid)
         except OrderNotFound:
-            report = None
-        if report is not None:
-            self._emit_from_report(report)
+            return  # already gone at the venue (filled/canceled) — nothing to emit
+        self._emit_from_report(report)
 
     def update_order(
         self,
@@ -93,14 +93,12 @@ class SimulatedConnector(ChannelEmitter):
     ) -> None:
         oid = venue_order_id or client_order_id
         try:
-            old = self._exchange.cancel_order(oid)  # type: ignore[arg-type]
+            old = self._exchange.cancel_order(oid)
         except OrderNotFound:
-            old = None
-        if old is None:
             self.send(
                 OrderUpdateRejectedEvent(
                     instrument=None,
-                    client_order_id=client_order_id or oid,  # type: ignore[arg-type]
+                    client_order_id=client_order_id,
                     reason="update_order: order not found",
                 )
             )

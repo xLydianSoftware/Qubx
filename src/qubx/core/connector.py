@@ -25,8 +25,12 @@ class IConnector(Protocol):
 
     def submit_order(self, request: OrderRequest) -> None: ...
 
-    # client_order_id is always present (synthesized as ``ext:<venue_id>`` for external
-    # orders), so it is required; venue_order_id is optional until the venue acks.
+    # cancel_order / update_order are addressed by BOTH ids of the SAME order — not either/or.
+    # client_order_id is always known (synthesized as ``ext:<venue_id>`` for external orders)
+    # so it is required; venue_order_id is added once the venue acks and is PREFERRED by the
+    # connector when present (it falls back to the client id before the ack). The caller passes
+    # whatever it has and the connector picks the id the venue accepts — so the id choice stays
+    # in the connector (which knows the venue), not the caller.
     def cancel_order(self, client_order_id: str,
                      venue_order_id: str | None = None) -> None: ...
 
