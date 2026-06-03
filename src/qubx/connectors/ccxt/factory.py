@@ -4,13 +4,11 @@ from typing import Any
 
 import ccxt.pro as cxp
 
-from qubx.connectors.ccxt.broker import CcxtBroker
-from qubx.core.basics import CtrlChannel
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider, IHealthMonitor, ITimeProvider
+from qubx.core.interfaces import IHealthMonitor, ITimeProvider
 
-from .account import CcxtAccountProcessor
+from .connector import CcxtConnector
 from .exchange_manager import ExchangeManager
-from .exchanges import CUSTOM_ACCOUNTS, CUSTOM_BROKERS, EXCHANGE_ALIASES
+from .exchanges import CUSTOM_CONNECTORS, EXCHANGE_ALIASES
 
 
 def get_ccxt_exchange(
@@ -138,30 +136,20 @@ def clear_exchange_manager_cache() -> None:
     _exchange_manager_cache.clear()
 
 
-def get_ccxt_broker(
-    exchange_name: str,
-    exchange_manager: ExchangeManager,
-    channel: CtrlChannel,
-    time_provider: ITimeProvider,
-    account: IAccountProcessor,
-    data_provider: IDataProvider,
-    **kwargs,
-) -> IBroker:
-    broker_config = CUSTOM_BROKERS.get(exchange_name.lower())
-    if broker_config is not None:
-        broker_cls = broker_config.cls
-        kwargs = {**broker_config.kwargs, **kwargs}
-    else:
-        broker_cls = CcxtBroker
-    return broker_cls(exchange_manager, channel, time_provider, account, data_provider, **kwargs)
-
-
-def get_ccxt_account(
+def get_ccxt_connector(
     exchange_name: str,
     **kwargs,
-) -> IAccountProcessor:
-    account_cls = CUSTOM_ACCOUNTS.get(exchange_name.lower(), CcxtAccountProcessor)
-    return account_cls(exchange_name=exchange_name, **kwargs)
+) -> CcxtConnector:
+    """Construct the right CcxtConnector subclass for the exchange.
+
+    Resolves the per-exchange subclass from ``CUSTOM_CONNECTORS`` keyed by the
+    lowercased framework exchange name (OKX/Bitfinex get the split orders/fills
+    streams), falling back to the base ``CcxtConnector`` for any unlisted exchange
+    (Binance, Hyperliquid, ...). The ``CUSTOM_CONNECTORS`` map carries both the dotted
+    (``okx.f``) and bare (``okx``) names, like ``EXCHANGE_ALIASES``.
+    """
+    connector_cls = CUSTOM_CONNECTORS.get(exchange_name.lower(), CcxtConnector)
+    return connector_cls(exchange_name=exchange_name, **kwargs)
 
 
 def _get_api_credentials(

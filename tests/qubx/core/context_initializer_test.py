@@ -48,7 +48,7 @@ class TestContextInitializer:
         logging = MagicMock()
 
         return {
-            "broker": broker,
+            "connectors": {"BINANCE.UM": broker},
             "data_provider": data_provider,
             "account": account,
             "scheduler": scheduler,
@@ -74,9 +74,9 @@ class TestContextInitializer:
                         with patch("qubx.core.context.ProcessingManager"):
                             ctx = StrategyContext(
                                 strategy=strategy,
-                                brokers=[mock_components["broker"]],
+                                connectors=mock_components["connectors"],
                                 data_providers=[mock_components["data_provider"]],
-                                account=mock_components["account"],
+                                account_manager=mock_components["account"],
                                 scheduler=mock_components["scheduler"],
                                 time_provider=mock_components["time_provider"],
                                 instruments=mock_components["instruments"],
@@ -107,9 +107,9 @@ class TestContextInitializer:
                         with patch("qubx.core.context.ProcessingManager"):
                             ctx = StrategyContext(
                                 strategy=strategy,
-                                brokers=[mock_components["broker"]],
+                                connectors=mock_components["connectors"],
                                 data_providers=[mock_components["data_provider"]],
-                                account=mock_components["account"],
+                                account_manager=mock_components["account"],
                                 scheduler=mock_components["scheduler"],
                                 time_provider=mock_components["time_provider"],
                                 instruments=mock_components["instruments"],
@@ -140,9 +140,9 @@ class TestContextInitializer:
                         with patch("qubx.core.context.ProcessingManager") as mock_processing_manager:
                             ctx = StrategyContext(
                                 strategy=strategy,
-                                brokers=[mock_components["broker"]],
+                                connectors=mock_components["connectors"],
                                 data_providers=[mock_components["data_provider"]],
-                                account=mock_components["account"],
+                                account_manager=mock_components["account"],
                                 scheduler=mock_components["scheduler"],
                                 time_provider=mock_components["time_provider"],
                                 instruments=mock_components["instruments"],
