@@ -60,17 +60,10 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ConnectorConfig(StrictBaseModel):
-    connector: str
-    params: dict = Field(default_factory=dict)
-
-
 class ExchangeConfig(StrictBaseModel):
     connector: str
     universe: list[str]
     params: dict = Field(default_factory=dict)
-    broker: ConnectorConfig | None = None
-    account: ConnectorConfig | None = None
     base_currency: str | None = None
 
 

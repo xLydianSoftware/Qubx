@@ -1,31 +1,32 @@
 """
-Registry for data providers, account processors, and brokers.
+Registry for data providers.
 
 This module provides a registry pattern for connectors, allowing plugins
-to register custom connectors using decorators (like readers and storages).
+to register custom data providers using decorators (like readers and storages).
 """
 
 from typing import Any, Callable, Type, TypeVar
 
 from qubx import logger
-from qubx.core.interfaces import IAccountProcessor, IBroker, IDataProvider
+from qubx.core.interfaces import IDataProvider
 
 T = TypeVar("T")
 
 
 class ConnectorRegistry:
     """
-    Registry for connector classes (data providers, account processors, brokers).
+    Registry for data-provider classes.
 
-    This registry allows plugins to register their own connector implementations
+    This registry allows plugins to register their own data-provider implementations
     using decorators, making them available for use in strategy configurations.
+    Order execution and account state are handled by ``IConnector`` (see
+    ``qubx.core.connector``), which is constructed directly by the runner rather than
+    looked up here.
 
     Classes are registered and instantiated with standardized constructor arguments.
     """
 
     _data_providers: dict[str, Type[IDataProvider]] = {}
-    _account_processors: dict[str, Type[IAccountProcessor]] = {}
-    _brokers: dict[str, Type[IBroker]] = {}
     _rate_limit_configs: dict[str, Callable] = {}
 
     @classmethod
@@ -44,44 +45,6 @@ class ConnectorRegistry:
             cls._data_providers[name.lower()] = provider_cls  # type: ignore
             logger.debug(f"Registered data provider: {name}")
             return provider_cls
-
-        return decorator
-
-    @classmethod
-    def register_account_processor(cls, name: str) -> Callable[[Type[T]], Type[T]]:
-        """
-        Decorator to register an account processor class.
-
-        Args:
-            name: The name to register the account processor under
-
-        Returns:
-            A decorator function that registers the class
-        """
-
-        def decorator(processor_cls: Type[T]) -> Type[T]:
-            cls._account_processors[name.lower()] = processor_cls  # type: ignore
-            logger.debug(f"Registered account processor: {name}")
-            return processor_cls
-
-        return decorator
-
-    @classmethod
-    def register_broker(cls, name: str) -> Callable[[Type[T]], Type[T]]:
-        """
-        Decorator to register a broker class.
-
-        Args:
-            name: The name to register the broker under
-
-        Returns:
-            A decorator function that registers the class
-        """
-
-        def decorator(broker_cls: Type[T]) -> Type[T]:
-            cls._brokers[name.lower()] = broker_cls  # type: ignore
-            logger.debug(f"Registered broker: {name}")
-            return broker_cls
 
         return decorator
 
@@ -107,52 +70,6 @@ class ConnectorRegistry:
                 f"Available: {list(cls._data_providers.keys())}"
             )
         return provider_cls(**kwargs)
-
-    @classmethod
-    def get_account_processor(cls, name: str, **kwargs: Any) -> IAccountProcessor:
-        """
-        Get an account processor instance by name.
-
-        Args:
-            name: The name of the account processor
-            **kwargs: Arguments to pass to the constructor
-
-        Returns:
-            An instance of the account processor
-
-        Raises:
-            ValueError: If the account processor is not found
-        """
-        processor_cls = cls._account_processors.get(name.lower())
-        if processor_cls is None:
-            raise ValueError(
-                f"Account processor '{name}' is not registered. "
-                f"Available: {list(cls._account_processors.keys())}"
-            )
-        return processor_cls(**kwargs)
-
-    @classmethod
-    def get_broker(cls, name: str, **kwargs: Any) -> IBroker:
-        """
-        Get a broker instance by name.
-
-        Args:
-            name: The name of the broker
-            **kwargs: Arguments to pass to the constructor
-
-        Returns:
-            An instance of the broker
-
-        Raises:
-            ValueError: If the broker is not found
-        """
-        broker_cls = cls._brokers.get(name.lower())
-        if broker_cls is None:
-            raise ValueError(
-                f"Broker '{name}' is not registered. "
-                f"Available: {list(cls._brokers.keys())}"
-            )
-        return broker_cls(**kwargs)
 
     @classmethod
     def register_rate_limit_config(cls, name: str) -> Callable:
@@ -186,29 +103,9 @@ class ConnectorRegistry:
         return name.lower() in cls._data_providers
 
     @classmethod
-    def is_account_processor_registered(cls, name: str) -> bool:
-        """Check if an account processor is registered."""
-        return name.lower() in cls._account_processors
-
-    @classmethod
-    def is_broker_registered(cls, name: str) -> bool:
-        """Check if a broker is registered."""
-        return name.lower() in cls._brokers
-
-    @classmethod
     def get_all_data_providers(cls) -> dict[str, Type[IDataProvider]]:
         """Get all registered data provider classes."""
         return cls._data_providers.copy()
-
-    @classmethod
-    def get_all_account_processors(cls) -> dict[str, Type[IAccountProcessor]]:
-        """Get all registered account processor classes."""
-        return cls._account_processors.copy()
-
-    @classmethod
-    def get_all_brokers(cls) -> dict[str, Type[IBroker]]:
-        """Get all registered broker classes."""
-        return cls._brokers.copy()
 
 
 # Convenience decorators
@@ -223,32 +120,6 @@ def data_provider(name: str) -> Callable[[Type[T]], Type[T]]:
                 ...
     """
     return ConnectorRegistry.register_data_provider(name)
-
-
-def account_processor(name: str) -> Callable[[Type[T]], Type[T]]:
-    """
-    Decorator for registering an account processor class.
-
-    Usage:
-        @account_processor("my_exchange")
-        class MyExchangeAccountProcessor(IAccountProcessor):
-            def __init__(self, exchange_name, channel, time_provider, ...):
-                ...
-    """
-    return ConnectorRegistry.register_account_processor(name)
-
-
-def broker(name: str) -> Callable[[Type[T]], Type[T]]:
-    """
-    Decorator for registering a broker class.
-
-    Usage:
-        @broker("my_exchange")
-        class MyExchangeBroker(IBroker):
-            def __init__(self, exchange_name, channel, time_provider, account, ...):
-                ...
-    """
-    return ConnectorRegistry.register_broker(name)
 
 
 def rate_limit_config(name: str) -> Callable:

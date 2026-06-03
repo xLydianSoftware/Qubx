@@ -169,9 +169,6 @@ class StrategyContext(IStrategyContext):
         # mixins read positions/balances/capital through it); self._account_manager is
         # the same object kept under its concrete type for the state-machine operations
         # (apply/add_order/transition_order/set_context) that are not on the viewer.
-        # TODO(account-mgmt): IStrategyContext.account is still typed IAccountProcessor;
-        # drop the public attribute (callers use ctx.get_position/get_balance/...) or
-        # retype it to IAccountViewer in the cleanup pass.
         self.account = account_manager
         self.strategy = self.__instantiate_strategy(strategy, config)
         self.emitter = emitter if emitter is not None else IMetricEmitter()
@@ -268,6 +265,7 @@ class StrategyContext(IStrategyContext):
             subscription_manager=self,
             time_provider=self,
             account_manager=self._account_manager,
+            connectors=self._connectors,
             position_tracker=__position_tracker,
             position_gathering=__position_gathering,
             universe_manager=self._universe_manager,

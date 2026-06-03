@@ -752,13 +752,11 @@ class Order:
     cost: float = 0.0
     options: dict[str, Any] = field(default_factory=dict)
 
-    # TODO(account-mgmt): remove these legacy id/client_id aliases once the old
-    # IBroker/IAccountProcessor/broker paths that read+write them are deleted.
-    # Old code (BasicAccountProcessor, brokers, trading mixin) reads AND writes
-    # `order.id` and `order.client_id`. These read/write properties let that code
-    # keep working UNCHANGED during coexistence — only Order *construction* sites
-    # migrate to the new kwargs (you cannot pass a property as a constructor
-    # argument). Canonical field is client_order_id.
+    # TODO(account-mgmt): the OME / simulated-exchange / ccxt-conversion internals still
+    # address orders by `order.id` and `order.client_id` (reading AND writing). These
+    # read/write aliases keep that code working against the canonical client_order_id /
+    # venue_order_id fields; migrating those call sites to the canonical names and dropping
+    # the aliases is a separate cleanup. Canonical field is client_order_id.
     @property
     def id(self) -> str:
         return self.venue_order_id if self.venue_order_id is not None else self.client_order_id

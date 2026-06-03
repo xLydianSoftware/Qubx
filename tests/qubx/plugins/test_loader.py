@@ -54,8 +54,6 @@ class TestPluginLoader:
 
     def test_load_plugins_from_path_with_tilde(self):
         """Test loading plugins from a path with tilde expansion."""
-        plugins_path = Path(__file__).parent.parent.parent / "fixtures" / "plugins"
-
         # Create a config with a path using tilde (won't actually work unless home dir matches)
         # We're just testing that the tilde expansion doesn't crash
         config = PluginsConfig(paths=["~/nonexistent_plugin_path"])
@@ -82,21 +80,13 @@ class TestPluginLoader:
 
         # Mock the registry to track registrations without affecting global state
         mock_data_providers = {}
-        mock_account_processors = {}
-        mock_brokers = {}
 
-        with (
-            patch.object(ConnectorRegistry, "_data_providers", mock_data_providers),
-            patch.object(ConnectorRegistry, "_account_processors", mock_account_processors),
-            patch.object(ConnectorRegistry, "_brokers", mock_brokers),
-        ):
+        with patch.object(ConnectorRegistry, "_data_providers", mock_data_providers):
             config = PluginsConfig(modules=["test_connector_plugin"])
             load_plugins(config)
 
-            # Verify the connector was registered in our mocked registries
+            # Verify the connector was registered in our mocked registry
             assert "test_connector" in mock_data_providers
-            assert "test_connector" in mock_account_processors
-            assert "test_connector" in mock_brokers
 
     def test_load_plugins_nonexistent_module(self):
         """Test that loading nonexistent module logs warning but doesn't crash."""
@@ -138,40 +128,6 @@ class TestConnectorRegistry:
         # Cleanup
         del ConnectorRegistry._data_providers["test_dp"]
 
-    def test_register_account_processor(self):
-        """Test registering an account processor class."""
-        from qubx.connectors.registry import account_processor
-
-        @account_processor("test_ap")
-        class TestAccountProcessor:
-            def __init__(self, **kwargs):
-                self.type = "account_processor"
-                self.kwargs = kwargs
-
-        assert ConnectorRegistry.is_account_processor_registered("test_ap")
-        instance = ConnectorRegistry.get_account_processor("test_ap", param1="value1")
-        assert instance.type == "account_processor"
-
-        # Cleanup
-        del ConnectorRegistry._account_processors["test_ap"]
-
-    def test_register_broker(self):
-        """Test registering a broker class."""
-        from qubx.connectors.registry import broker
-
-        @broker("test_br")
-        class TestBroker:
-            def __init__(self, **kwargs):
-                self.type = "broker"
-                self.kwargs = kwargs
-
-        assert ConnectorRegistry.is_broker_registered("test_br")
-        instance = ConnectorRegistry.get_broker("test_br", param1="value1")
-        assert instance.type == "broker"
-
-        # Cleanup
-        del ConnectorRegistry._brokers["test_br"]
-
     def test_case_insensitive_lookup(self):
         """Test that connector names are case-insensitive."""
         from qubx.connectors.registry import data_provider
@@ -212,15 +168,10 @@ class TestBuiltinConnectors:
         """Test that built-in data providers are registered after import."""
         import qubx.connectors  # noqa: F401
 
-        # Data providers are still registered with the registry on import.
+        # Data providers are still registered with the registry on import. Execution is no
+        # longer registry-driven: the old CcxtBroker/CcxtAccountProcessor were replaced by
+        # the CcxtConnector, which the live runner builds via get_ccxt_connector (the
+        # factory) rather than registering with the registry — the registry now only holds
+        # data providers.
         assert ConnectorRegistry.is_data_provider_registered("ccxt")
         assert ConnectorRegistry.is_data_provider_registered("tardis")
-
-        # Execution is no longer registry-driven: the old CcxtBroker/CcxtAccountProcessor
-        # were replaced by the CcxtConnector, which the live runner builds via
-        # get_ccxt_connector (the factory) rather than registering with the registry. So
-        # neither the ccxt nor the paper execution path registers an account/broker.
-        assert not ConnectorRegistry.is_account_processor_registered("ccxt")
-        assert not ConnectorRegistry.is_broker_registered("ccxt")
-        assert not ConnectorRegistry.is_account_processor_registered("paper")
-        assert not ConnectorRegistry.is_broker_registered("paper")

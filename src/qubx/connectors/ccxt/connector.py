@@ -1007,8 +1007,8 @@ class CcxtConnector(ChannelEmitter):
         """Start the WS account-event subscription and emit the initial snapshot.
 
         The exchange/connection itself is owned by the ExchangeManager (already
-        constructed). Read-only connectors keep this read surface alive (the design's
-        standalone-IAccountProcessor use case).
+        constructed). Read-only connectors keep this read surface alive (account events +
+        snapshots flow, but write methods raise ReadOnlyConnector).
         """
         if self._executions_future is None or self._executions_future.done():
             self._executions_future = self._loop.submit(self._subscribe_executions())

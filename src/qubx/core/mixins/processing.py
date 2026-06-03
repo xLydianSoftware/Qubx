@@ -26,6 +26,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.connector import IConnector
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
@@ -90,6 +91,7 @@ class ProcessingManager(IProcessingManager):
     _subscription_manager: ISubscriptionManager
     _time_provider: ITimeProvider
     _account_manager: AccountManager
+    _connectors: dict[str, IConnector]
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
     _cache: IMarketDataCache
@@ -136,6 +138,7 @@ class ProcessingManager(IProcessingManager):
         subscription_manager: ISubscriptionManager,
         time_provider: ITimeProvider,
         account_manager: AccountManager,
+        connectors: dict[str, IConnector],
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
         universe_manager: IUniverseManager,
@@ -153,6 +156,7 @@ class ProcessingManager(IProcessingManager):
         self._subscription_manager = subscription_manager
         self._time_provider = time_provider
         self._account_manager = account_manager
+        self._connectors = connectors
         self._is_simulation = is_simulation
         self._position_gathering = position_gathering
         self._position_tracker = position_tracker
@@ -1264,7 +1268,7 @@ class ProcessingManager(IProcessingManager):
         # OME in backtests. Live (not paper) executes at the venue and has no local OME.
         if self._is_simulation or not self._context.is_paper_trading:
             return
-        connector = self._context._connectors.get(instrument.exchange)
+        connector = self._connectors.get(instrument.exchange)
         if connector is not None:
             connector.process_market_data(instrument, payload)
 
