@@ -7,7 +7,8 @@ Handles subscription and warmup for trade data.
 from typing import Set
 
 from qubx import logger
-from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64
+from qubx.core.basics import CtrlChannel, DataType, Instrument
+from qubx.core.events import event_for_data_type
 from qubx.core.series import Quote
 
 from ..subscription_config import SubscriptionConfiguration
@@ -42,7 +43,9 @@ class TradeDataHandler(BaseDataTypeHandler):
         """
         for trade in trades:
             converted_trade = ccxt_convert_trade(trade)
-            channel.send((instrument, sub_type, converted_trade, False))
+            channel.send(
+                event_for_data_type(sub_type, instrument=instrument, payload=converted_trade, is_historical=False)
+            )
 
         # Generate synthetic quote if no quote/orderbook subscription exists
         if len(trades) > 0 and not (

@@ -101,7 +101,7 @@ class AsyncTakerGatherer(IPositionGathering):
                 )
             return current_position
 
-        ctx.trade_async(instrument, to_trade)
+        ctx.trade(instrument, to_trade)
         return current_position
 
 

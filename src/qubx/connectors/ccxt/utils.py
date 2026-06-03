@@ -18,9 +18,12 @@ from qubx.core.basics import (
     OpenInterest,
     Order,
     OrderOrigin,
+    OrderSide,
+    OrderStatus,
     Position,
     dt_64,
 )
+from qubx.core.exceptions import BadRequest, InvalidOrderParameters
 from qubx.core.series import OrderBook, Quote, Trade
 from qubx.core.utils import recognize_time
 from qubx.utils.marketdata.ccxt import (
@@ -35,6 +38,43 @@ from .exceptions import (
 )
 
 EXCH_SYMBOL_PATTERN = re.compile(r"(?P<base>[^/]+)/(?P<quote>[^:]+)(?::(?P<margin>.+))?")
+
+# ccxt canonical order status -> framework OrderStatus. ccxt lowercases the
+# canonical `status` field; venue-specific `info.status` values are uppercase, so
+# we match case-insensitively.
+_CCXT_STATUS_MAP: dict[str, OrderStatus] = {
+    "open": OrderStatus.ACCEPTED,
+    "new": OrderStatus.ACCEPTED,
+    "accepted": OrderStatus.ACCEPTED,
+    "closed": OrderStatus.FILLED,
+    "filled": OrderStatus.FILLED,
+    "partially_filled": OrderStatus.PARTIALLY_FILLED,
+    "partial": OrderStatus.PARTIALLY_FILLED,
+    "canceled": OrderStatus.CANCELED,
+    "cancelled": OrderStatus.CANCELED,
+    "expired": OrderStatus.EXPIRED,
+    "rejected": OrderStatus.REJECTED,
+}
+
+
+def ccxt_status_to_order_status(raw: str | None, info: dict[str, Any] | None = None) -> OrderStatus:
+    """Map a ccxt order status string to a framework ``OrderStatus`` enum.
+
+    ccxt reports a canonical, lowercase ``status``; for an ``open`` order some venues
+    carry the truer state (e.g. ``PARTIALLY_FILLED``) in the venue-specific
+    ``info.status`` — that refinement is applied before mapping. A genuinely unknown
+    status is logged (so it surfaces) and mapped to the non-terminal ``ACCEPTED``: it
+    is never fabricated into a terminal state, and AM's reconcile heals the true one.
+    """
+    status = (raw or "").lower()
+    # For an open order, prefer the venue-specific info.status (it may say partially_filled).
+    if status == "open" and info is not None:
+        status = str(info.get("status", status)).lower()
+    mapped = _CCXT_STATUS_MAP.get(status)
+    if mapped is None:
+        logger.warning(f"Unknown ccxt order status '{raw}' (refined '{status}'); defaulting to ACCEPTED")
+        return OrderStatus.ACCEPTED
+    return mapped
 
 
 def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Order:
@@ -51,8 +91,9 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         # Try alternative fields for different exchanges
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
     amnt = float(amnt_raw)
-    price = raw["price"] or 0.0
-    status = raw["status"] or "UNKNOWN"
+    # None for market orders (no limit price) — matches Order.price: float | None.
+    price = raw.get("price")
+    status = ccxt_status_to_order_status(raw.get("status"), ri)
     side_raw = raw["side"]
     if side_raw is None:
         side = "UNKNOWN"
@@ -65,26 +106,17 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         _type = "UNKNOWN"
     else:
         _type = _type.upper()
-    if status == "open":
-        status = ri.get("status", status)  # for filled / part_filled ?
-
-    # Ensure status is always a string and uppercase
-    if not status:
-        status = "UNKNOWN"
-
-    status = status.upper()
     options = {}
     if raw.get("reduceOnly"):
         options["reduceOnly"] = True
 
     tif = raw.get("timeInForce")
 
-    client_order_id = raw["clientOrderId"]
-    origin = (
-        OrderOrigin.FRAMEWORK
-        if client_order_id is not None and client_order_id.startswith("qubx_")
-        else OrderOrigin.EXTERNAL
-    )
+    # Some venues omit clientOrderId (e.g. externally-placed orders); fall back to the
+    # framework's external-order id convention (ext:<venue_id>) so it reads as EXTERNAL and
+    # still has a stable, non-null client_order_id.
+    client_order_id = raw.get("clientOrderId") or f"ext:{raw['id']}"
+    origin = OrderOrigin.FRAMEWORK if client_order_id.startswith("qubx_") else OrderOrigin.EXTERNAL
 
     return Order(
         client_order_id=client_order_id,
@@ -94,7 +126,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         instrument=instrument,
         time=recognize_time(raw["timestamp"]),
         quantity=abs(amnt) * (-1 if side == "SELL" else 1),
-        price=float(price) if price is not None else 0.0,
+        price=float(price) if price is not None else None,
         side=side,
         status=status,
         time_in_force=tif,
@@ -104,18 +136,25 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
 
 
 def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
-    fee_amount = None
-    fee_currency = None
-    if "fee" in raw:
-        fee_amount = float(raw["fee"]["cost"])
-        fee_currency = raw["fee"]["currency"]
+    # CCXT may return fee absent, an empty {}, or {"cost": None} — guard all three.
+    fee = raw.get("fee") or {}
+    _fee_cost = fee.get("cost")
+    fee_amount = float(_fee_cost) if _fee_cost is not None else None
+    fee_currency = fee.get("currency")
+    order_id = raw.get("order")
+    timestamp = raw["timestamp"]
+    amount = float(raw["amount"])
+    price = float(raw["price"])
+    # Some venues omit a per-fill id; synthesize a deterministic one from
+    # (order_id, timestamp, qty, price) so fill dedup (seen_trade_ids) still works.
+    trade_id = raw.get("id") or f"{order_id}:{timestamp}:{amount}:{price}"
     return Deal(
-        trade_id=raw["id"],
-        order_id=raw["order"],
-        time=to_timestamp(raw["timestamp"], unit="ms"),
-        amount=float(raw["amount"]) * (-1 if raw["side"] == "sell" else +1),
-        price=float(raw["price"]),
-        aggressive=raw["takerOrMaker"] == "taker",
+        trade_id=trade_id,
+        order_id=order_id,
+        time=to_timestamp(timestamp, unit="ms"),
+        amount=amount * (-1 if raw.get("side") == "sell" else +1),
+        price=price,
+        aggressive=raw.get("takerOrMaker") == "taker",  # absent -> maker (some venues omit it)
         fee_amount=fee_amount,
         fee_currency=fee_currency,
     )
@@ -391,6 +430,87 @@ def find_instrument_for_exch_symbol(exch_symbol: str, symbol_to_instrument: Dict
 
 def instrument_to_ccxt_symbol(instr: Instrument) -> str:
     return f"{instr.base}/{instr.quote}:{instr.settle}" if instr.is_futures() else f"{instr.base}/{instr.quote}"
+
+
+def prepare_ccxt_order_payload(
+    instrument: Instrument,
+    order_side: OrderSide,
+    order_type: str,
+    amount: float,
+    price: float | None,
+    client_id: str | None,
+    time_in_force: str,
+    quote: Quote | None,
+    reduce_only: bool,
+) -> dict[str, Any]:
+    """Build the ccxt ``create_order`` payload and perform framework-side validation.
+
+    Venue-agnostic and side-effect free: the caller supplies the current ``quote``
+    (the only READ dependency) and the already-resolved ``reduce_only`` flag, so this
+    function holds no account / data-provider reference. Raises ``BadRequest`` /
+    ``InvalidOrderParameters`` for framework-side rejections — the caller is expected
+    to surface those synchronously (never on the channel).
+
+    This does not auto-detect reduce-only from positions: the connector has no account,
+    so reduce-only must arrive already resolved from the caller.
+    """
+    params: dict[str, Any] = {}
+    _is_trigger_order = order_type.startswith("stop_")
+
+    if quote is None:
+        logger.warning(f"[<y>{instrument.symbol}</y>] :: Quote is not available for order creation.")
+        raise BadRequest(f"Quote is not available for order creation for {instrument.symbol}")
+
+    if reduce_only:
+        params["reduceOnly"] = True
+    else:
+        min_notional = instrument.min_notional
+        if min_notional > 0 and abs(amount) * instrument.quantity_multiplier * quote.mid_price() < min_notional:
+            raise InvalidOrderParameters(
+                f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
+            )
+
+    # - handle trigger (stop) orders
+    if _is_trigger_order:
+        params["triggerPrice"] = price
+        order_type = order_type.split("_")[1]
+
+    if client_id:
+        params["clientOrderId"] = client_id
+
+    if instrument.is_futures():
+        params["type"] = "swap"
+
+    ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+
+    if order_type.lower() == "limit" or _is_trigger_order:
+        time_in_force = time_in_force.upper()
+        params["timeInForce"] = time_in_force
+        if price is None:
+            raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
+        # GTX (post-only) crossing-the-spread adjustment: nudge the price 1 tick to the
+        # passive side so the venue does not reject the post-only order outright.
+        if order_side == "BUY" and time_in_force == "GTX" and price >= quote.ask:
+            logger.info(
+                f"[{instrument.symbol}] :: GTX BUY order price {price} is greater than ask price {quote.ask}. "
+                "Setting 1 tick below ask."
+            )
+            price = quote.ask - instrument.tick_size
+        elif order_side == "SELL" and time_in_force == "GTX" and price <= quote.bid:
+            logger.info(
+                f"[{instrument.symbol}] :: GTX SELL order price {price} is less than bid price {quote.bid}. "
+                "Setting 1 tick above bid."
+            )
+            price = quote.bid + instrument.tick_size
+
+    return {
+        "symbol": ccxt_symbol,
+        "type": order_type.lower(),
+        "side": order_side.lower(),
+        "amount": amount,
+        "price": price,
+        "params": params,
+    }
 
 
 def ccxt_find_instrument(
