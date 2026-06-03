@@ -25,6 +25,7 @@ from qubx.core.events import (
     QuoteEvent,
     ScheduledEvent,
     TradeEvent,
+    payload_for_event,
 )
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
 from qubx.core.mixins.processing import ProcessingManager
@@ -57,7 +58,6 @@ def _mock_manager():
     pm._time_provider = Mock()
     pm._time_provider.time.return_value = pd.Timestamp("2025-01-08 00:00:00").asm8
     pm._data_throttler = None
-    pm._md_payload = ProcessingManager._md_payload
     pm._ProcessingManager__update_base_data = Mock(return_value=True)
     return pm
 
@@ -180,17 +180,17 @@ def test_quote_marks_account_to_market():
     pm._account_manager.on_market_quote.assert_called_once_with(instr, quote)
 
 
-def test_md_payload_extracts_each_event():
+def test_payload_for_event_extracts_each_event():
     instr = _instrument()
     quote = Quote(0, 100.0, 101.0, 1.0, 1.0)
     trade = Trade(0, 100.0, 1.0)
     ob = OrderBook(0, 100.0, 0.01, 1, np.array([1.0]), np.array([1.0]))
     bar = Bar(0, 1.0, 2.0, 0.5, 1.5, 10.0)
 
-    assert ProcessingManager._md_payload(QuoteEvent(instrument=instr, quote=quote)) is quote
-    assert ProcessingManager._md_payload(TradeEvent(instrument=instr, trade=trade)) is trade
-    assert ProcessingManager._md_payload(OrderBookEvent(instrument=instr, orderbook=ob)) is ob
-    assert ProcessingManager._md_payload(OhlcEvent(instrument=instr, bar=bar, timeframe="1h")) is bar
+    assert payload_for_event(QuoteEvent(instrument=instr, quote=quote)) is quote
+    assert payload_for_event(TradeEvent(instrument=instr, trade=trade)) is trade
+    assert payload_for_event(OrderBookEvent(instrument=instr, orderbook=ob)) is ob
+    assert payload_for_event(OhlcEvent(instrument=instr, bar=bar, timeframe="1h")) is bar
 
 
 def test_process_data_routes_live_market_data_through_process_event():

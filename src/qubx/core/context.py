@@ -699,11 +699,6 @@ class StrategyContext(IStrategyContext):
         # - one of the options is to have multiple entry levels in TargetPosition class
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
 
-    def trade_async(
-        self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options
-    ) -> str | None:
-        return self._trading_manager.trade_async(instrument, amount, price, time_in_force, **options)
-
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         return self._trading_manager.submit_orders(order_requests)
 
@@ -729,16 +724,6 @@ class StrategyContext(IStrategyContext):
         """Cancel a specific order synchronously."""
         return self._trading_manager.cancel_order(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
-    def cancel_order_async(
-        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
-    ) -> None:
-        """Cancel a specific order (non-blocking).
-
-        Cancellation routes through the connector, which is non-blocking; the
-        request returns immediately and the venue verdict arrives as a typed event.
-        """
-        self._trading_manager.cancel_order(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
-
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument."""
         return self._trading_manager.cancel_orders(instrument)
@@ -752,23 +737,6 @@ class StrategyContext(IStrategyContext):
         exchange: str | None = None,
     ) -> None:
         """Update an existing limit order with new price and amount."""
-        return self._trading_manager.update_order(
-            order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
-        )
-
-    def update_order_async(
-        self,
-        price: float,
-        amount: float,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
-        exchange: str | None = None,
-    ) -> None:
-        """Update an existing limit order (non-blocking).
-
-        The connector update is non-blocking; the venue verdict arrives as a typed
-        OrderUpdated/OrderUpdateRejected event.
-        """
         return self._trading_manager.update_order(
             order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
         )

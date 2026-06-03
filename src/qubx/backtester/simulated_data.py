@@ -483,6 +483,7 @@ class DataPump:
     _transformer: IDataTransformer
     _requested_data_type: str
     _producing_data_type: str
+    _event_data_type: str
     _warmup_period: pd.Timedelta | None
     _chunksize: int
 
@@ -570,20 +571,21 @@ class DataPump:
                 self._producing_data_type = subscription_type.lower()
                 self._transformer = TypedRecords()
 
+        # The label carried on emitted records, resolved once here. OHLC produces bare
+        # "ohlc" bars but the event/cache need the parameterized "ohlc(<tf>)" (the requested
+        # type); tick-emulated OHLC (ohlc_quotes/ohlc_trades) produces quote/trade — already
+        # the right label, same as every other subscription.
+        self._event_data_type = (
+            self._requested_data_type if self._producing_data_type == DataType.OHLC else self._producing_data_type
+        )
+
     def update_emulation_time_indent_seconds(self, time_indent_seconds: float):
         if isinstance(self._transformer, EmulatedUpdatesFromOHLC):
             self._transformer.set_emulation_adjustment_time(time_indent_seconds)
 
     @property
     def event_data_type(self) -> str:
-        # The type label carried on emitted records. For OHLC the producing type is the
-        # bare "ohlc" but downstream typed events (and the cache) need the parameterized
-        # "ohlc(<tf>)"; the requested type carries that timeframe. Tick-emulated OHLC
-        # (ohlc_quotes/ohlc_trades) produces unparameterized quote/trade, so the producing
-        # type is already the right label.
-        if self._producing_data_type == DataType.OHLC:
-            return self._requested_data_type
-        return self._producing_data_type
+        return self._event_data_type
 
     # -----------------------------------------------------------------------
     # Instrument management

@@ -1,0 +1,898 @@
+from typing import TYPE_CHECKING, Any, Callable, Literal
+
+import numpy as np
+import pandas as pd
+
+from qubx import logger
+from qubx.core.account_manager.config import AccountManagerConfig
+from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state_machine import can_transition, validate_transition
+from qubx.core.basics import (
+    ZERO_COSTS,
+    Balance,
+    Instrument,
+    ITimeProvider,
+    Order,
+    OrderOrigin,
+    OrderStatus,
+    Position,
+    TransactionCostsCalculator,
+)
+from qubx.core.connector import IConnector
+from qubx.core.events import (
+    AccountMessage,
+    AccountSnapshotEvent,
+    BalanceUpdateEvent,
+    FundingPaymentEvent,
+    OrderAcceptedEvent,
+    OrderCanceledEvent,
+    OrderCancelRejectedEvent,
+    OrderEvent,
+    OrderExpiredEvent,
+    OrderFilledEvent,
+    OrderPartiallyFilledEvent,
+    OrderRejectedEvent,
+    OrderUpdatedEvent,
+    OrderUpdateRejectedEvent,
+    PositionUpdateEvent,
+    ReconcileDiff,
+)
+from qubx.core.exceptions import InvalidOrderTransition
+from qubx.core.interfaces import IProcessingManager, IStrategy
+from qubx.utils.time import timedelta_to_crontab
+
+# StrategyContext and ProcessingManager both import AccountManager (the context builds it,
+# the PM holds/schedules for it), so importing them here at runtime is a circular import —
+# they're type-only forward refs. IStrategy has no such cycle and is imported normally above.
+if TYPE_CHECKING:
+    from qubx.core.context import StrategyContext
+    from qubx.core.mixins.processing import ProcessingManager
+
+# Client-id prefix that marks an order as framework-originated. MUST match the prefix
+# ClientIdStore._create_id produces in qubx.core.mixins.trading ("qubx_<symbol>_<n>");
+# a snapshot order carrying it is a RECOVERED framework order, anything else is EXTERNAL.
+_FRAMEWORK_CID_PREFIX = "qubx_"
+
+
+class AccountManager:
+    _pm: IProcessingManager | None
+    _connectors: dict[str, IConnector]
+    _strategy: IStrategy
+    _time: ITimeProvider
+    _cfg: AccountManagerConfig
+    account_id: str
+    _tcc: TransactionCostsCalculator | None
+    _states: dict[str, AccountState]
+    _ctx: "StrategyContext"
+    _handlers: dict[type[AccountMessage], Callable[..., Any]]
+    # Derived timedeltas, precomputed once in _init_state (config is fixed for the AM's life).
+    _snapshot_grace: np.timedelta64
+    _snapshot_interval: np.timedelta64
+    _inflight_threshold: np.timedelta64
+    _liveness_threshold: np.timedelta64
+    _terminal_retention: np.timedelta64
+    _liveness_unready_since: dict[str, np.datetime64]
+    _applied_funding_buckets: dict[str, set]
+
+    def __init__(
+        self,
+        *,
+        pm: "ProcessingManager | None" = None,
+        connectors: dict[str, IConnector],
+        strategy: IStrategy,
+        time: ITimeProvider,
+        cfg: AccountManagerConfig | None = None,
+        account_id: str = "AccountManager",
+        tcc: TransactionCostsCalculator | None = None,
+    ):
+        self._pm = pm
+        self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
+        # The live runner builds the AM before the ProcessingManager (which lives inside
+        # StrategyContext and needs the AM), so pm is None there — ticks register later in
+        # set_context once ctx._processing_manager exists. Direct-construction callers
+        # (tests) still pass pm and get ticks immediately.
+        if self._pm is not None:
+            self._register_ticks()
+
+    def set_context(self, ctx: "StrategyContext") -> None:
+        """Wire the IStrategyContext after construction.
+
+        AM-fired callbacks (reconcile, inflight-exhaustion) pass this ctx so their
+        signature matches PM-fired callbacks — no None placeholder.
+
+        Live: the AM is built before the ProcessingManager (the AM↔pm cycle — pm lives
+        inside StrategyContext, which takes the AM), so pm is None at construction and
+        the periodic ticks register HERE, once ctx._processing_manager exists.
+        """
+        self._ctx = ctx
+        if self._pm is None:
+            self._pm = ctx._processing_manager
+            self._register_ticks()
+
+    def add_order(self, order: Order) -> None:
+        # exchange is derived from the order's instrument — no separate parameter needed.
+        self._states[order.instrument.exchange].add_order(order)
+
+    def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
+        state = self._states[exchange]
+        order = state.get_active_order(cid)
+        if order is None:
+            raise KeyError(f"order {cid} not found in {exchange}")
+        validate_transition(cid, order.status, new_status)
+        if new_status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE):
+            order.pre_pending_status = order.status
+        state.transition_order(cid, new_status, self._time.time())
+
+    def remove_order(self, exchange: str, cid: str) -> None:
+        # Drop an order from state entirely (e.g. a submit that raised before reaching the
+        # venue) — distinct from a terminal transition, which keeps it in history.
+        self._states[exchange].remove_order(cid)
+
+    def get_state(self, exchange: str) -> AccountState:
+        return self._states[exchange]
+
+    def get_orders(
+        self,
+        instrument: Instrument | None = None,
+        exchange: str | None = None,
+        origin: OrderOrigin | None = None,
+    ) -> dict[str, Order]:
+        if exchange is not None:
+            orders = self._states[exchange].get_orders()
+        else:
+            orders = {cid: o for s in self._states.values() for cid, o in s.get_orders().items()}
+        # Public "open orders" view: terminal orders are retained in active_orders
+        # during the grace window for late-event resolution, but callers reading
+        # get_orders() want only live orders.
+        orders = {cid: o for cid, o in orders.items() if not o.status.is_terminal}
+        if instrument is not None:
+            orders = {cid: o for cid, o in orders.items() if o.instrument == instrument}
+        if origin is not None:
+            orders = {cid: o for cid, o in orders.items() if o.origin == origin}
+        return orders
+
+    def get_order(self, client_order_id: str) -> Order | None:
+        for state in self._states.values():
+            if (o := state.get_order(client_order_id)) is not None:
+                return o
+        return None
+
+    def get_position(self, instrument):
+        state = self._states.get(instrument.exchange)
+        if state is None:
+            return None
+        pos = state.get_position(instrument)
+        if pos is None:
+            # Consumers (gatherers, trackers, sizers, ctx.positions[instrument]) expect
+            # a Position object for any known instrument, not None. Materialize an empty
+            # one so a never-traded instrument reads as flat rather than KeyError-ing.
+            pos = Position(instrument=instrument)
+            state.set_position(instrument, pos)
+        return pos
+
+    def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
+        if exchange is not None:
+            return self._states[exchange].get_positions()
+        return {ins: pos for s in self._states.values() for ins, pos in s.get_positions().items()}
+
+    @property
+    def positions(self) -> dict[Instrument, Position]:
+        return self.get_positions()
+
+    def get_balance(self, currency: str, exchange: str | None = None):
+        if exchange is not None:
+            return self._states[exchange].get_balance(currency)
+        for state in self._states.values():
+            if (b := state.get_balance(currency)) is not None:
+                return b
+        return None
+
+    def get_balances(self, exchange: str | None = None) -> list[Balance]:
+        if exchange is not None:
+            return self._states[exchange].get_balances()
+        return [b for s in self._states.values() for b in s.get_balances()]
+
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        # No TCC configured => zero-fee calculator (rather than raising), so callers that
+        # only need fee arithmetic still work in fee-agnostic setups.
+        return self._tcc if self._tcc is not None else ZERO_COSTS
+
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        for state in self._states.values():
+            if (o := state.get_order_by_venue_id(order_id)) is not None:
+                return o
+        return None
+
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        return self.get_order(client_id)
+
+    def position_report(self, exchange: str | None = None) -> dict:
+        report = {}
+        for pos in self.get_positions(exchange).values():
+            report[pos.instrument.symbol] = {
+                "Qty": pos.quantity,
+                "Price": pos.position_avg_price_funds,
+                "PnL": pos.pnl,
+                "MktValue": pos.market_value_funds,
+                "Leverage": self.get_leverage(pos.instrument),
+            }
+        return report
+
+    def apply(self, event: AccountMessage):
+        state = self._get_state_for_event(event)
+        if state is None:
+            return None
+        handler = self._handlers.get(type(event))
+        if handler is None:
+            logger.warning(f"unhandled AccountMessage: {type(event)}")
+            return None
+        return handler(state, event)
+
+    def _handle_position_balance_noop(self, state: AccountState, event: AccountMessage) -> None:
+        # No connector emits PositionUpdate/BalanceUpdate yet; positions/balances are derived
+        # from fills and corrected by snapshot reconcile. PM still fires the
+        # on_position_update/on_balance_update callback off the event payload.
+        # TODO(account-mgmt): apply venue WS position/balance to AccountState here (via
+        # set_position/update_balance) once the live connectors emit them, with the same
+        # freshness/ratchet guard as snapshot reconcile.
+        return None
+
+    def on_market_quote(self, instrument, quote) -> None:
+        state = self._states.get(instrument.exchange)
+        if state is None:
+            return
+        pos = state.get_position(instrument)
+        if pos is None:
+            return
+        # Position.update_market_price expects (timestamp, price, conversion_rate);
+        # mark-to-market uses the quote mid.
+        pos.update_market_price(self._time.time(), quote.mid_price(), 1.0)
+
+    def get_total_capital(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            return self._total_capital_for(self._states[exchange])
+        return sum(self._total_capital_for(s) for s in self._states.values())
+
+    def get_capital(self, exchange: str | None = None) -> float:
+        if exchange is not None:
+            return self._free_capital_for(self._states[exchange])
+        return sum(self._free_capital_for(s) for s in self._states.values())
+
+    def get_base_currency(self, exchange: str | None = None) -> str:
+        state = self._states[exchange] if exchange is not None else next(iter(self._states.values()), None)
+        return self._base_currency_for(state) if state is not None else "USDT"
+
+    def get_leverage(self, instrument) -> float:
+        state = self._states.get(instrument.exchange)
+        if state is None:
+            return 0.0
+        pos = state.get_position(instrument)
+        if pos is None:
+            return 0.0
+        total = self._total_capital_for(state)
+        return abs(self._notional(pos)) / total if total > 0 else 0.0
+
+    def get_net_leverage(self, exchange: str | None = None) -> float:
+        states = [self._states[exchange]] if exchange else list(self._states.values())
+        net = sum(self._notional(p) for s in states for p in s.get_positions().values())
+        total = sum(self._total_capital_for(s) for s in states)
+        return abs(net) / total if total > 0 else 0.0
+
+    def get_gross_leverage(self, exchange: str | None = None) -> float:
+        states = [self._states[exchange]] if exchange else list(self._states.values())
+        gross = sum(abs(self._notional(p)) for s in states for p in s.get_positions().values())
+        total = sum(self._total_capital_for(s) for s in states)
+        return gross / total if total > 0 else 0.0
+
+    def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
+        return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
+
+    # Per-instrument exchange-side settings: the venue's configured leverage tier,
+    # hard caps and margin mode. Simulation does not model margin, so these return
+    # neutral values; the real settings live on the venue.
+    # TODO(account-mgmt): back these with venue-sourced leverage/margin/mode held in
+    # AccountState once the margin-aware live connectors are wired.
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        return float("inf")
+
+    def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
+        return None
+
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        return sum(p.initial_margin for p in self.get_positions(exchange).values())
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        return sum(p.maint_margin for p in self.get_positions(exchange).values())
+
+    def get_available_margin(self, exchange: str | None = None) -> float:
+        return self.get_total_capital(exchange) - self.get_total_initial_margin(exchange)
+
+    def get_margin_ratio(self, exchange: str | None = None) -> float:
+        maint = self.get_total_maint_margin(exchange)
+        if maint == 0:
+            return 100.0
+        return min(100.0, self.get_total_capital(exchange) / maint)
+
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        pos = self.get_position(instrument)
+        return pos.adl_level if pos is not None else None
+
+    def get_reserved(self, instrument: Instrument) -> float:
+        return 0.0
+
+    def _init_state(
+        self,
+        *,
+        connectors: dict[str, IConnector],
+        strategy: IStrategy,
+        time: ITimeProvider,
+        cfg: AccountManagerConfig | None,
+        account_id: str,
+        tcc: TransactionCostsCalculator | None,
+    ) -> None:
+        # Shared field init for both the live and simulation managers, so the
+        # subclass can't silently drift from the parent's field set.
+        self._connectors = connectors
+        self._strategy = strategy
+        self._time = time
+        self._cfg = cfg or AccountManagerConfig()
+        self.account_id = account_id
+        self._tcc = tcc
+        # Derived timedeltas (config is fixed for the AM's lifetime) — computed once
+        # here rather than rebuilt on every tick/snapshot.
+        self._snapshot_grace = np.timedelta64(self._cfg.snapshot_check_threshold_ms, "ms")
+        self._snapshot_interval = np.timedelta64(self._cfg.snapshot_check_interval_ms, "ms")
+        self._inflight_threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
+        self._liveness_threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
+        self._terminal_retention = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
+        self._states = {ex: AccountState(exchange=ex) for ex in connectors}
+        self._liveness_unready_since = {}
+        # TODO(account-mgmt): this set grows unbounded over long sessions; bound it
+        # (evict old buckets) in a later PR.
+        self._applied_funding_buckets = {}
+        # Deferred init: always wired via set_context before any tick/callback fires.
+        self._ctx = None  # type: ignore[assignment]
+        # Event-type → handler dispatch table (consumed by apply()). All handlers in one
+        # place; dispatch is an O(1) lookup on the exact event type.
+        self._handlers = {
+            OrderPartiallyFilledEvent: self._handle_partial_fill,
+            OrderFilledEvent: self._handle_fill,
+            OrderAcceptedEvent: self._handle_accepted,
+            OrderCanceledEvent: self._handle_canceled,
+            OrderExpiredEvent: self._handle_expired,
+            OrderUpdatedEvent: self._handle_updated,
+            OrderRejectedEvent: self._handle_rejected,
+            OrderCancelRejectedEvent: self._handle_cancel_rejected,
+            OrderUpdateRejectedEvent: self._handle_update_rejected,
+            AccountSnapshotEvent: self._handle_snapshot,
+            FundingPaymentEvent: self._handle_funding_payment,
+            PositionUpdateEvent: self._handle_position_balance_noop,
+            BalanceUpdateEvent: self._handle_position_balance_noop,
+        }
+
+    def _register_ticks(self) -> None:
+        cfg = self._cfg
+        if cfg.inflight_check_interval_ms > 0:
+            self._pm.schedule(
+                timedelta_to_crontab(pd.Timedelta(cfg.inflight_check_interval_ms, "ms")), self._on_inflight_tick
+            )
+        if cfg.snapshot_check_interval_ms > 0:
+            self._pm.schedule(
+                timedelta_to_crontab(pd.Timedelta(cfg.snapshot_check_interval_ms, "ms")), self._on_snapshot_tick
+            )
+        if cfg.liveness_check_interval_ms > 0:
+            self._pm.schedule(
+                timedelta_to_crontab(pd.Timedelta(cfg.liveness_check_interval_ms, "ms")), self._on_liveness_tick
+            )
+
+    def _transition(self, state: AccountState, cid: str, new_status: OrderStatus) -> Order:
+        """Single validating chokepoint for every AM-driven status change.
+
+        Raises InvalidOrderTransition on an illegal move (the PM dispatch logs + skips
+        it; tick/snapshot callers guard or expect only legal moves). ``transition_order``
+        is the low-level setter — the legality check lives here, in AccountManager.
+        """
+        order = state.get_active_order(cid)
+        if order is None:
+            raise KeyError(f"order {cid} not found in {state.exchange}")
+        validate_transition(cid, order.status, new_status)
+        return state.transition_order(cid, new_status, self._time.time())
+
+    def _get_state_for_event(self, event: AccountMessage) -> AccountState | None:
+        if isinstance(event, AccountSnapshotEvent):
+            return self._states.get(event.snapshot.exchange)
+        if event.instrument is not None:
+            return self._states.get(event.instrument.exchange)
+        # No instrument — route an order event by its identifiers so a reject emitted
+        # without one (e.g. SimulatedConnector on update-of-missing-order) still reaches
+        # the right state.
+        if isinstance(event, OrderEvent):
+            for state in self._states.values():
+                if state.get_order(event.client_order_id) is not None:
+                    return state
+            if event.venue_order_id is not None:
+                for state in self._states.values():
+                    if state.get_order_by_venue_id(event.venue_order_id) is not None:
+                        return state
+        if len(self._states) == 1:
+            return next(iter(self._states.values()))
+        logger.debug(f"cannot route {type(event).__name__} with no instrument/identifiers — dropped")
+        return None
+
+    def _resolve_or_materialize(self, state: AccountState, event: OrderEvent) -> Order:
+        cid = event.client_order_id
+        # Known by cid (active or terminal-history) or by the venue id it was assigned.
+        if (order := state.get_order(cid)) is not None:
+            return order
+        venue_id = event.venue_order_id
+        if venue_id is not None and (order := state.get_order_by_venue_id(venue_id)) is not None:
+            return order
+        # Unknown to us => external order (manual UI / another bot / pre-existing). A venue
+        # lifecycle event always carries the id the venue assigned; fall back to the cid
+        # for a stable identity only in the (malformed) case where it doesn't.
+        return self._materialize_external(state, event, venue_id or cid)
+
+    def _materialize_external(self, state: AccountState, event: OrderEvent, venue_id: str) -> Order:
+        order = Order(
+            client_order_id=f"ext:{venue_id}",
+            venue_order_id=event.venue_order_id,
+            origin=OrderOrigin.EXTERNAL,
+            type="LIMIT",
+            # external (venue) events always carry the instrument; downstream position
+            # updates guard the rare None, so Order keeps its non-optional instrument.
+            instrument=event.instrument,  # type: ignore[arg-type]
+            time=self._time.time(),
+            quantity=0.0,
+            price=0.0,
+            side="BUY",
+            status=OrderStatus.ACCEPTED,
+            time_in_force="gtc",
+        )
+        state.add_order(order)
+        return order
+
+    def _handle_accepted(self, state: AccountState, event: OrderAcceptedEvent) -> Order:
+        order = self._resolve_or_materialize(state, event)
+        if order.status.is_terminal:
+            # Late accept on an already-terminal order (design "OrderFilled before
+            # OrderAccepted"): benign side-effect, no transition, no phantom. Set
+            # the venue id ONLY if the order is still in active_orders — an evicted
+            # order's venue-id index was already dropped, so set_venue_id would
+            # KeyError on active_orders[cid].
+            if state.has_active_order(order.client_order_id):
+                state.set_venue_id(order.client_order_id, event.venue_order_id)
+                order.accepted_at = event.accepted_at
+            return order
+        state.set_venue_id(order.client_order_id, event.venue_order_id)
+        order.accepted_at = event.accepted_at
+        if order.status == OrderStatus.PENDING_CANCEL:
+            return order
+        if order.status == OrderStatus.PENDING_UPDATE:
+            return self._transition(state, order.client_order_id, OrderStatus.ACCEPTED)
+        if can_transition(order.status, OrderStatus.ACCEPTED):
+            return self._transition(state, order.client_order_id, OrderStatus.ACCEPTED)
+        return order
+
+    # A late event for an already-terminal order is a benign no-op: a terminal state has no
+    # legal outgoing edge, and the order may already be evicted from active_orders. Each
+    # lifecycle handler below short-circuits on order.status.is_terminal before mutating.
+    def _handle_partial_fill(self, state: AccountState, event: OrderPartiallyFilledEvent) -> Order:
+        order = self._resolve_or_materialize(state, event)
+        if order.status.is_terminal:
+            logger.debug(f"late partial-fill on terminal {order.client_order_id}; ignoring")
+            return order
+        if event.venue_order_id:
+            state.set_venue_id(order.client_order_id, event.venue_order_id)
+        is_new_trade = event.fill.trade_id not in order.seen_trade_ids
+        state.apply_fill(order.client_order_id, event.fill, self._time.time())
+        if is_new_trade and order.instrument is not None:
+            self._apply_deal_to_position(state, order.instrument, event.fill)
+        if order.status.is_pending:
+            # filled_quantity mirrors real, irreversible fills (and the position),
+            # so it is NEVER reduced. A fill that races a pending modify can push it
+            # past the new (smaller) target — surface that as a warning only; the
+            # venue resolves the race (OrderUpdated, or OrderUpdateRejected because
+            # it can't shrink an order below what's already filled).
+            if order.status == OrderStatus.PENDING_UPDATE and order.filled_quantity > order.quantity:
+                logger.warning(
+                    f"[{order.client_order_id}] fill during pending-update pushed "
+                    f"filled_quantity ({order.filled_quantity}) past target "
+                    f"({order.quantity}); leaving filled intact, awaiting venue verdict"
+                )
+            return order
+        if can_transition(order.status, OrderStatus.PARTIALLY_FILLED):
+            return self._transition(state, order.client_order_id, OrderStatus.PARTIALLY_FILLED)
+        return order
+
+    def _handle_fill(self, state: AccountState, event: OrderFilledEvent) -> Order:
+        order = self._resolve_or_materialize(state, event)
+        if order.status.is_terminal:
+            logger.debug(f"late fill on terminal {order.client_order_id}; ignoring")
+            return order
+        if event.venue_order_id:
+            state.set_venue_id(order.client_order_id, event.venue_order_id)
+        is_new_trade = event.fill.trade_id not in order.seen_trade_ids
+        state.apply_fill(order.client_order_id, event.fill, self._time.time())
+        if is_new_trade and order.instrument is not None:
+            self._apply_deal_to_position(state, order.instrument, event.fill)
+        return self._transition(state, order.client_order_id, OrderStatus.FILLED)
+
+    def _handle_canceled(self, state: AccountState, event: OrderCanceledEvent) -> Order:
+        order = self._resolve_or_materialize(state, event)
+        if order.status.is_terminal:
+            logger.debug(f"late cancel on terminal {order.client_order_id}; ignoring")
+            return order
+        return self._transition(state, order.client_order_id, OrderStatus.CANCELED)
+
+    def _handle_expired(self, state: AccountState, event: OrderExpiredEvent) -> Order:
+        order = self._resolve_or_materialize(state, event)
+        if order.status.is_terminal:
+            logger.debug(f"late expire on terminal {order.client_order_id}; ignoring")
+            return order
+        return self._transition(state, order.client_order_id, OrderStatus.EXPIRED)
+
+    def _active_order_for(self, state: AccountState, event: OrderEvent) -> Order | None:
+        # Resolve an ACTIVE order by client id, then by venue id — so a reject addressed by
+        # venue id alone (a venue-id-only cancel/update) still routes. Active-only (no
+        # materialize): a reject has no order to create.
+        order = state.get_active_order(event.client_order_id)
+        if order is None and event.venue_order_id is not None:
+            order = state.get_order_by_venue_id(event.venue_order_id)
+        return order
+
+    def _handle_rejected(self, state: AccountState, event: OrderRejectedEvent) -> Order | None:
+        order = self._active_order_for(state, event)
+        if order is None:
+            logger.warning(f"reject for unknown order {event.client_order_id}")
+            return None
+        if order.status.is_terminal:
+            logger.debug(f"late reject on terminal {order.client_order_id}; ignoring")
+            return order
+        order.rejected_reason = event.reason
+        return self._transition(state, order.client_order_id, OrderStatus.REJECTED)
+
+    def _handle_updated(self, state: AccountState, event: OrderUpdatedEvent) -> Order:
+        order = self._resolve_or_materialize(state, event)
+        if order.status.is_terminal:
+            logger.debug(f"late update on terminal {order.client_order_id}; ignoring")
+            return order
+        if order.venue_order_id != event.venue_order_id:
+            # set_venue_id re-keys internally: it drops the order's previous venue id.
+            state.set_venue_id(order.client_order_id, event.venue_order_id)
+        if event.new_price is not None:
+            order.price = event.new_price
+        if event.new_quantity is not None:
+            order.quantity = event.new_quantity
+        order.last_updated_at = self._time.time()
+        if order.status == OrderStatus.PENDING_UPDATE:
+            return self._transition(state, order.client_order_id, OrderStatus.ACCEPTED)
+        return order
+
+    def _handle_cancel_rejected(self, state, event):
+        order = self._active_order_for(state, event)
+        if order is None or order.status != OrderStatus.PENDING_CANCEL:
+            logger.warning(f"cancel-rejected for unexpected state: {order}")
+            return None
+        return self._revert_from_pending(state, order)
+
+    def _handle_update_rejected(self, state, event):
+        order = self._active_order_for(state, event)
+        if order is None or order.status != OrderStatus.PENDING_UPDATE:
+            logger.warning(f"update-rejected for unexpected state: {order}")
+            return None
+        return self._revert_from_pending(state, order)
+
+    def _revert_from_pending(self, state, order):
+        # Revert to the status captured on entry to PENDING_* — never inferred from
+        # filled_quantity/venue_id (brittle when venues roll back partial fills). ACCEPTED
+        # is the safe default for the rare order with no captured status.
+        target = order.pre_pending_status or OrderStatus.ACCEPTED
+        order.pre_pending_status = None
+        return self._transition(state, order.client_order_id, target)
+
+    def _handle_snapshot(self, state, event: AccountSnapshotEvent):
+        snapshot = event.snapshot
+        if state.is_snapshot_stale(snapshot.as_of):
+            return None
+        state.mark_snapshot_applied(snapshot.as_of)
+
+        diff = ReconcileDiff(exchange=snapshot.exchange, as_of=snapshot.as_of)
+
+        if snapshot.open_orders is not None:
+            snap_by_vid = {o.venue_order_id: o for o in snapshot.open_orders if o.venue_order_id}
+            for cid, cached in state.get_orders().items():
+                if cached.status.is_terminal:
+                    continue
+                vid = cached.venue_order_id
+                if vid is not None and vid in snap_by_vid:
+                    # Still open at the venue — property drift is reconciled in the
+                    # open-orders loop below (_update_from_snapshot), not here.
+                    continue
+                if (snapshot.as_of - cached.time) < self._snapshot_grace:
+                    continue
+                terminal = OrderStatus.REJECTED if cached.status == OrderStatus.SUBMITTED else OrderStatus.CANCELED
+                cached.rejected_reason = "reconcile: missing from snapshot"
+                cached.pre_pending_status = None
+                try:
+                    self._transition(state, cid, terminal)
+                    diff.record_order_terminal(cached)
+                except InvalidOrderTransition:
+                    logger.warning(f"reconcile: cannot terminate {cid} from {cached.status}")
+            for snap_order in snapshot.open_orders:
+                existing = state.get_order_by_venue_id(snap_order.venue_order_id) if snap_order.venue_order_id else None
+                if existing is None:
+                    self._materialize_from_snapshot(state, snap_order, snapshot.as_of)
+                    diff.record_order_materialized(snap_order)
+                elif existing.last_updated_at is None or snapshot.as_of > existing.last_updated_at:
+                    self._update_from_snapshot(state, existing, snap_order, snapshot.as_of)
+                    diff.record_order_updated(existing)
+
+        # Positions and balances: the snapshot is the venue's authoritative full
+        # truth for size/amount, and stale snapshots are already rejected wholesale
+        # by the is_snapshot_stale ratchet above — so an accepted snapshot always
+        # overwrites. No per-record freshness here (unlike orders, where it guards a
+        # fresh fill): Position/Balance carry no reliable last-update timestamp yet.
+        # TODO(account-mgmt): once WS PositionUpdate/BalanceUpdate events are wired,
+        # add per-record freshness backed by a real timestamp so a snapshot older than
+        # a recent WS update can't clobber it.
+        if snapshot.positions is not None:
+            for snap_pos in snapshot.positions:
+                if state.apply_position_snapshot(snap_pos):
+                    diff.record_position_updated(state.get_position(snap_pos.instrument))
+
+        if snapshot.balances is not None:
+            for snap_bal in snapshot.balances:
+                if state.apply_balance_snapshot(snap_bal):
+                    diff.record_balance_updated(state.get_balance(snap_bal.currency))
+
+        try:
+            self._strategy.on_reconcile_complete(self._ctx, snapshot.exchange, diff)
+        except Exception:
+            logger.exception("on_reconcile_complete raised")
+        return None
+
+    def _materialize_from_snapshot(self, state, snap_order, as_of):
+        # cid prefix classifies origin: our prefix → a recovered framework order;
+        # anything else → external. Keep an already-synthesized ext: cid as-is,
+        # otherwise synthesize one from the venue id.
+        if snap_order.client_order_id.startswith(_FRAMEWORK_CID_PREFIX):
+            origin = OrderOrigin.RECOVERED
+            cid = snap_order.client_order_id
+        elif snap_order.client_order_id.startswith("ext:"):
+            origin = OrderOrigin.EXTERNAL
+            cid = snap_order.client_order_id
+        else:
+            origin = OrderOrigin.EXTERNAL
+            cid = f"ext:{snap_order.venue_order_id}"
+        state.add_order(
+            Order(
+                client_order_id=cid,
+                venue_order_id=snap_order.venue_order_id,
+                origin=origin,
+                type=snap_order.type,
+                instrument=snap_order.instrument,
+                time=snap_order.time,
+                quantity=snap_order.quantity,
+                price=snap_order.price,
+                side=snap_order.side,
+                status=snap_order.status,
+                time_in_force=snap_order.time_in_force,
+                filled_quantity=snap_order.filled_quantity,
+                avg_fill_price=snap_order.avg_fill_price,
+                last_updated_at=as_of,
+            )
+        )
+
+    def _update_from_snapshot(self, state, existing, snap_order, as_of):
+        existing.status = snap_order.status
+        existing.filled_quantity = snap_order.filled_quantity
+        existing.avg_fill_price = snap_order.avg_fill_price
+        existing.price = snap_order.price
+        existing.quantity = snap_order.quantity
+        existing.last_updated_at = as_of
+
+    def _sweep_terminal_evictions(self) -> None:
+        now = self._time.time()
+        for state in self._states.values():
+            state.evict_due_terminals(now, self._terminal_retention, self._cfg.terminal_order_history_size)
+
+    def _on_inflight_tick(self, ctx) -> None:
+        now = self._time.time()
+        for exchange, state in self._states.items():
+            for order in state.get_inflight_orders():
+                cid = order.client_order_id
+                try:
+                    last = order.last_updated_at or order.time
+                    if (now - last) < self._inflight_threshold:
+                        continue
+                    if order.retry_count >= self._cfg.inflight_check_retries:
+                        self._resolve_exhausted_inflight(state, exchange, order)
+                    else:
+                        self._connectors[exchange].request_order_status(
+                            client_order_id=cid,
+                            venue_order_id=order.venue_order_id,
+                        )
+                        order.retry_count += 1
+                        order.last_updated_at = now
+                except Exception:
+                    # One bad order / raising strategy callback / connector error must not
+                    # abort the rest of the sweep or skip terminal eviction (design §1260).
+                    logger.exception(f"[{exchange}] inflight sweep failed for {cid}")
+        self._sweep_terminal_evictions()
+
+    def _resolve_exhausted_inflight(self, state, exchange, order):
+        reason = f"reconcile: no venue ack after {order.retry_count} retries"
+        if order.status == OrderStatus.SUBMITTED:
+            order.rejected_reason = reason
+            self._transition(state, order.client_order_id, OrderStatus.REJECTED)
+            return
+        target = order.pre_pending_status or OrderStatus.ACCEPTED
+        order.pre_pending_status = None
+        was = order.status
+        self._transition(state, order.client_order_id, target)
+        if was == OrderStatus.PENDING_CANCEL:
+            self._strategy.on_order_cancel_rejected(self._ctx, order, reason)
+        else:
+            self._strategy.on_order_update_rejected(self._ctx, order, reason)
+
+    def _on_snapshot_tick(self, ctx) -> None:
+        now = self._time.time()
+        for exchange, state in self._states.items():
+            last = state.get_last_snapshot_as_of()
+            if last is None or (now - last) > self._snapshot_interval:
+                self._connectors[exchange].request_snapshot()
+
+    def _on_liveness_tick(self, ctx) -> None:
+        now = self._time.time()
+        for exchange, connector in self._connectors.items():
+            if connector.is_ws_ready():
+                self._liveness_unready_since.pop(exchange, None)
+                continue
+            since = self._liveness_unready_since.setdefault(exchange, now)
+            if (now - since) >= self._liveness_threshold:
+                logger.warning(f"[{exchange}] WS unready past threshold; reconnecting")
+                try:
+                    connector.reconnect()
+                except Exception:
+                    logger.exception(f"reconnect failed for {exchange}")
+                self._liveness_unready_since.pop(exchange, None)
+
+    def _apply_deal_to_position(self, state, instrument, deal):
+        pos = state.get_position(instrument)
+        if pos is None:
+            pos = Position(instrument=instrument)
+            state.set_position(instrument, pos)
+        # update_position_by_deal returns (realized_pnl, fee) for this fill, both in
+        # the portfolio funded currency (conversion_rate=1.0 — single-base-currency).
+        realized_pnl, fee = pos.update_position_by_deal(deal, conversion_rate=1.0)
+        self._apply_deal_to_balances(state, instrument, deal, realized_pnl, fee)
+        return pos
+
+    def _apply_deal_to_balances(self, state, instrument, deal, realized_pnl: float, fee: float) -> None:
+        """Propagate a fill's cash impact to balances.
+
+        Futures/swap: credits realized PnL and debits the fee to the
+        settle-currency balance. Spot: debits the quote currency by the trade
+        cost (notional + fee) and credits the base asset by the filled amount.
+        """
+        if instrument.is_futures():
+            # TODO(account-mgmt): fee is folded into settle here (correct when
+            # settle == portfolio base currency); revisit for instruments whose
+            # settle currency differs from the portfolio base currency.
+            self._adjust_balance(state, instrument.settle, realized_pnl - fee)
+        else:
+            self._adjust_balance(state, instrument.quote, -(deal.amount * deal.price + fee))
+            self._adjust_balance(state, instrument.base, deal.amount)
+
+    def _adjust_balance(self, state, currency: str, delta: float) -> None:
+        bal = state.get_balance(currency)
+        if bal is None:
+            bal = Balance(exchange=state.exchange, currency=currency)
+        # keep free consistent with total (free == total - locked), as the funding handler does
+        bal.total += delta
+        bal.free += delta
+        state.update_balance(currency, bal)
+
+    def _handle_funding_payment(self, state, event: FundingPaymentEvent):
+        payment = event.payment
+        instrument = event.instrument
+        if instrument is None:
+            return None
+        interval_ns = payment.funding_interval_hours * 3_600_000_000_000
+        bucket = (instrument, int(payment.time) // interval_ns)
+        seen = self._applied_funding_buckets.setdefault(state.exchange, set())
+        if bucket in seen:
+            return None
+        pos = state.get_position(instrument)
+        if pos is None:
+            return None
+        # Funding cash is computed on the mark price; FundingPayment carries no
+        # amount. If the position has no mark yet (NaN), we cannot value the
+        # payment — skip WITHOUT consuming the bucket so a re-delivered event can
+        # apply once a mark exists (rather than poisoning balance/PnL with NaN).
+        mark = pos.last_update_price
+        if np.isnan(mark):
+            logger.warning(f"[{state.exchange}] funding for {instrument} skipped: no mark price yet")
+            return None
+        seen.add(bucket)
+        amount = pos.apply_funding_payment(payment, mark)  # updates cumulative_funding/pnl
+        bal = state.get_balance(instrument.settle)
+        if bal is not None:
+            bal.total += amount
+            bal.free += amount  # keep free consistent with total (free == total - locked)
+            state.update_balance(instrument.settle, bal)
+        return payment
+
+    def _total_capital_for(self, state) -> float:
+        base = self._base_currency_for(state)
+        bal = state.get_balance(base)
+        if bal is None:
+            return 0.0
+        # Fills fold realized PnL/fees into the base balance, so it already reflects
+        # closed trades. Open positions are added on top:
+        #  - futures: only the unrealized PnL (the base balance, not the position
+        #    notional, holds the cash), and
+        #  - spot: the position's market value (the base cash was debited to buy it,
+        #    so the holding's value restores total capital).
+        total = bal.total
+        for pos in state.get_positions().values():
+            if pos.instrument.is_futures():
+                total += pos.unrealized_pnl()
+            else:
+                # TODO(account-mgmt): no-double-count for spot relies on
+                # _base_currency_for selecting the quote (max-total) balance so the
+                # base-asset cash is excluded from bal.total; make base-currency
+                # selection explicit if a base-asset balance could exceed the quote
+                # balance (e.g. ETH-heavy portfolio with no USDT).
+                mv = pos.market_value_funds
+                total += 0.0 if mv != mv else float(mv)
+        return total
+
+    def _free_capital_for(self, state) -> float:
+        base = self._base_currency_for(state)
+        bal = state.get_balance(base)
+        return bal.free if bal else 0.0
+
+    def _base_currency_for(self, state) -> str:
+        balances = state.get_balances()
+        if not balances:
+            return "USDT"
+        return max(balances, key=lambda b: b.total).currency
+
+    def _notional(self, pos) -> float:
+        # notional_value is NaN for an unmarked position; treat as 0 so a single
+        # unmarked position can't poison aggregate leverage (consumed by emitters,
+        # loggers, sizers). A real position gets a mark on its first quote. Plain scalar
+        # NaN check (n != n) — far cheaper than np.nan_to_num on a single float.
+        n = pos.notional_value
+        return 0.0 if n != n else float(n)
+
+
+class SimulatedAccountManager(AccountManager):
+    """Backtest variant — no asyncio, no WS, no periodic ticks."""
+
+    def __init__(
+        self,
+        *,
+        connectors,
+        strategy,
+        time,
+        cfg: AccountManagerConfig | None = None,
+        account_id: str = "SimulatedAccountManager",
+        tcc: TransactionCostsCalculator | None = None,
+    ):
+        self._pm = None
+        self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
+        # Backtest has no asyncio/WS/periodic scheduling — no ticks registered.
+
+    def set_context(self, ctx: "StrategyContext") -> None:
+        # Backtest is synchronous: wire the ctx but NEVER register periodic ticks
+        # (no PM scheduler drives them in simulation). Overrides the base, which would
+        # otherwise pull pm from ctx and schedule.
+        self._ctx = ctx
