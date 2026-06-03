@@ -7,7 +7,7 @@ from qubx.connectors.ccxt.utils import (
     ccxt_convert_order_info,
     ccxt_restore_position_from_deals,
 )
-from qubx.core.basics import Deal, Instrument, Position
+from qubx.core.basics import Deal, Instrument, OrderOrigin, Position
 from qubx.core.lookups import lookup
 from tests.qubx.connectors.ccxt.data.ccxt_responses import (
     C1,
@@ -85,6 +85,24 @@ class TestStrats:
             "fees": [{"cost": 6.48e-06, "currency": "BNB"}],
         }
         print(ccxt_convert_deal_info(raw))
+
+    def test_deal_synthesizes_trade_id_when_venue_omits_it(self):
+        # Some venues omit a per-fill id; the converter must synthesize a deterministic
+        # one from (order_id, timestamp, qty, price) so fill dedup still works.
+        raw = {
+            "order": "ORD-1",
+            "timestamp": 1712497717270,
+            "side": "buy",
+            "takerOrMaker": "taker",
+            "price": 2.1129,
+            "amount": 2.4,
+        }
+        deal = ccxt_convert_deal_info(raw)  # must not raise KeyError on missing "id"
+        assert deal.trade_id == "ORD-1:1712497717270:2.4:2.1129"
+        # deterministic: same fill -> same id (so seen_trade_ids dedups it)
+        assert ccxt_convert_deal_info(dict(raw)).trade_id == deal.trade_id
+        # a real venue id is used verbatim when present
+        assert ccxt_convert_deal_info({**raw, "id": "T9"}).trade_id == "T9"
 
     def test_position_restoring_from_deals(self):
         deals = [
@@ -279,3 +297,47 @@ class TestStrats:
 
         pos2 = ccxt_restore_position_from_deals(pos2, vol2, deals)
         assert N(pos2.quantity, instr2.lot_size) == vol2
+
+
+def _raw_order(**overrides):
+    raw = {
+        "info": {}, "amount": 1.0, "price": 50_000.0, "status": "open",
+        "side": "buy", "type": "limit", "timestamp": 1_716_854_400_000,
+        "id": "VENUE-999", "cost": 0.0,
+    }
+    raw.update(overrides)
+    return raw
+
+
+def test_convert_order_info_without_client_order_id_falls_back_to_ext():
+    # A venue that omits clientOrderId must not KeyError; the order reads as EXTERNAL with a
+    # stable ext:<venue_id> client_order_id.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order())  # no clientOrderId
+    assert order.client_order_id == "ext:VENUE-999"
+    assert order.origin == OrderOrigin.EXTERNAL
+    assert order.venue_order_id == "VENUE-999"
+
+
+def test_convert_order_info_with_framework_client_order_id():
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(clientOrderId="qubx_BTCUSDT_1"))
+    assert order.client_order_id == "qubx_BTCUSDT_1"
+    assert order.origin == OrderOrigin.FRAMEWORK
+
+
+def test_convert_order_info_market_order_price_is_none():
+    # Market orders carry no limit price; the converter must yield None, not a fake 0.0
+    # (matches Order.price: float | None).
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market"))
+    assert order.price is None
+
+
+def test_convert_deal_info_tolerates_empty_fee_and_missing_taker():
+    # CCXT may send fee={} (or cost=None) and omit takerOrMaker — must not KeyError/TypeError.
+    raw = {"order": "O1", "timestamp": 1_716_854_400_000, "side": "buy", "price": 100.0, "amount": 1.0, "fee": {}}
+    deal = ccxt_convert_deal_info(raw)
+    assert deal.fee_amount is None
+    assert deal.fee_currency is None
+    assert deal.aggressive is False  # takerOrMaker absent -> treated as maker

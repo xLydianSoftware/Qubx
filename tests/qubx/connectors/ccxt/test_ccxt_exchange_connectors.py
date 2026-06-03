@@ -14,7 +14,7 @@ from qubx.connectors.ccxt.connector import CcxtConnector
 from qubx.connectors.ccxt.exchanges.bitfinex.connector import BitfinexCcxtConnector
 from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
 from qubx.connectors.ccxt.factory import get_ccxt_connector
-from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Instrument, MarketType, OrderStatus
 from qubx.core.events import (
     OrderAcceptedEvent,
@@ -196,7 +196,7 @@ async def test_okx_split_promotion_is_am_dedup_safe() -> None:
     assert partials[0].fill.trade_id == fills[0].fill.trade_id == "T1"
 
     strategy = Mock()
-    am = SimulationAccountManager(
+    am = SimulatedAccountManager(
         connectors={"OKX.F": object()},
         strategy=strategy,
         time=DummyTimeProvider(),

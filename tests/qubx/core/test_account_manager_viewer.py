@@ -2,7 +2,7 @@ import inspect
 
 import numpy as np
 
-from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import (
     Balance,
     Instrument,
@@ -55,8 +55,8 @@ def _order(inst, cid="cid-1", venue_id="V1") -> Order:
     )
 
 
-def _am() -> SimulationAccountManager:
-    am = SimulationAccountManager(
+def _am() -> SimulatedAccountManager:
+    am = SimulatedAccountManager(
         connectors={"binance": object()},
         strategy=None,
         time=_T(),
@@ -64,9 +64,9 @@ def _am() -> SimulationAccountManager:
     )
     state = am._states["binance"]
     inst = _instrument()
-    state._set_position(inst, Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0))
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=900.0, locked=100.0))
-    state._add_order(_order(inst))
+    state.set_position(inst, Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0))
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=900.0, locked=100.0))
+    state.add_order(_order(inst))
     return am
 
 

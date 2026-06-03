@@ -1,9 +1,7 @@
 import numpy as np
 import pytest
 
-from qubx.core.account_manager import AccountManager
-from qubx.core.account_manager_config import AccountManagerConfig
-from qubx.core.account_state import AccountState
+from qubx.core.account_manager import AccountManager, AccountManagerConfig, AccountState
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
 from qubx.core.exceptions import InvalidOrderTransition
 
@@ -37,48 +35,36 @@ def _make_order(status=OrderStatus.SUBMITTED, cid="cid-1"):
     )
 
 
+# Representative cases exercising the PUBLIC transition_order wiring (status set vs
+# raise). The exhaustive state-machine table is pinned in test_order_state_machine.py.
 LEGAL = [
     (OrderStatus.SUBMITTED, OrderStatus.ACCEPTED),
-    (OrderStatus.SUBMITTED, OrderStatus.PARTIALLY_FILLED),
     (OrderStatus.SUBMITTED, OrderStatus.PENDING_CANCEL),
-    (OrderStatus.SUBMITTED, OrderStatus.FILLED),
-    (OrderStatus.SUBMITTED, OrderStatus.CANCELED),
     (OrderStatus.SUBMITTED, OrderStatus.REJECTED),
-    (OrderStatus.SUBMITTED, OrderStatus.EXPIRED),
-    (OrderStatus.ACCEPTED, OrderStatus.PARTIALLY_FILLED),
     (OrderStatus.ACCEPTED, OrderStatus.PENDING_CANCEL),
     (OrderStatus.ACCEPTED, OrderStatus.PENDING_UPDATE),
     (OrderStatus.ACCEPTED, OrderStatus.FILLED),
-    (OrderStatus.ACCEPTED, OrderStatus.CANCELED),
-    (OrderStatus.ACCEPTED, OrderStatus.EXPIRED),
-    (OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_CANCEL),
-    (OrderStatus.PARTIALLY_FILLED, OrderStatus.PENDING_UPDATE),
-    (OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED),
-    (OrderStatus.PARTIALLY_FILLED, OrderStatus.CANCELED),
-    (OrderStatus.PENDING_CANCEL, OrderStatus.FILLED),
+    # venue can terminalize a live order from any state (liquidation / risk reject /
+    # late reject after accept).
+    (OrderStatus.ACCEPTED, OrderStatus.REJECTED),
+    (OrderStatus.PARTIALLY_FILLED, OrderStatus.EXPIRED),
     (OrderStatus.PENDING_CANCEL, OrderStatus.CANCELED),
+    (OrderStatus.PENDING_CANCEL, OrderStatus.ACCEPTED),  # revert on cancel-reject
     (OrderStatus.PENDING_UPDATE, OrderStatus.ACCEPTED),
-    (OrderStatus.PENDING_UPDATE, OrderStatus.PARTIALLY_FILLED),
-    (OrderStatus.PENDING_UPDATE, OrderStatus.PENDING_CANCEL),
-    (OrderStatus.PENDING_UPDATE, OrderStatus.CANCELED),
 ]
 
 ILLEGAL = [
-    (OrderStatus.FILLED, OrderStatus.ACCEPTED),
+    (OrderStatus.FILLED, OrderStatus.ACCEPTED),  # terminal: no outgoing edge
     (OrderStatus.CANCELED, OrderStatus.PARTIALLY_FILLED),
-    (OrderStatus.SUBMITTED, OrderStatus.PENDING_UPDATE),
-    (OrderStatus.ACCEPTED, OrderStatus.REJECTED),
+    (OrderStatus.REJECTED, OrderStatus.SUBMITTED),
+    (OrderStatus.SUBMITTED, OrderStatus.PENDING_UPDATE),  # can't modify before venue ack
 ]
-
-
-def test_legal_count_is_23():
-    assert len(LEGAL) == 23
 
 
 @pytest.mark.parametrize("frm,to", LEGAL, ids=lambda x: x.value if x else "")
 def test_legal_transitions(frm, to):
     am = _am()
-    am._states["binance"]._add_order(_make_order(status=frm))
+    am._states["binance"].add_order(_make_order(status=frm))
     am.transition_order("binance", "cid-1", to)
     assert am._states["binance"].get_order("cid-1").status is to
 
@@ -86,14 +72,14 @@ def test_legal_transitions(frm, to):
 @pytest.mark.parametrize("frm,to", ILLEGAL, ids=lambda x: x.value if x else "")
 def test_illegal_transitions(frm, to):
     am = _am()
-    am._states["binance"]._add_order(_make_order(status=frm))
+    am._states["binance"].add_order(_make_order(status=frm))
     with pytest.raises(InvalidOrderTransition):
         am.transition_order("binance", "cid-1", to)
 
 
 def test_illegal_transition_carries_context():
     am = _am()
-    am._states["binance"]._add_order(_make_order(status=OrderStatus.FILLED))
+    am._states["binance"].add_order(_make_order(status=OrderStatus.FILLED))
     with pytest.raises(InvalidOrderTransition) as exc:
         am.transition_order("binance", "cid-1", OrderStatus.ACCEPTED)
     assert exc.value.client_order_id == "cid-1"
@@ -109,21 +95,21 @@ def test_transition_unknown_order_raises_keyerror():
 
 def test_pre_pending_status_captured_for_pending_cancel():
     am = _am()
-    am._states["binance"]._add_order(_make_order(status=OrderStatus.ACCEPTED))
+    am._states["binance"].add_order(_make_order(status=OrderStatus.ACCEPTED))
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
     assert am._states["binance"].get_order("cid-1").pre_pending_status is OrderStatus.ACCEPTED
 
 
 def test_pre_pending_status_captured_for_pending_update():
     am = _am()
-    am._states["binance"]._add_order(_make_order(status=OrderStatus.PARTIALLY_FILLED))
+    am._states["binance"].add_order(_make_order(status=OrderStatus.PARTIALLY_FILLED))
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
     assert am._states["binance"].get_order("cid-1").pre_pending_status is OrderStatus.PARTIALLY_FILLED
 
 
 def test_non_pending_transition_does_not_set_pre_pending():
     am = _am()
-    am._states["binance"]._add_order(_make_order(status=OrderStatus.SUBMITTED))
+    am._states["binance"].add_order(_make_order(status=OrderStatus.SUBMITTED))
     am.transition_order("binance", "cid-1", OrderStatus.ACCEPTED)
     assert am._states["binance"].get_order("cid-1").pre_pending_status is None
 
@@ -135,16 +121,16 @@ def test_get_state_returns_state():
 
 def test_get_orders_filters_by_origin():
     am = _am()
-    am._states["binance"]._add_order(_make_order(cid="fw"))
+    am._states["binance"].add_order(_make_order(cid="fw"))
     ext = _make_order(cid="ext")
     ext.origin = OrderOrigin.EXTERNAL
-    am._states["binance"]._add_order(ext)
+    am._states["binance"].add_order(ext)
     fw_only = am.get_orders(origin=OrderOrigin.FRAMEWORK)
     assert set(fw_only) == {"fw"}
 
 
 def test_get_order_searches_all_states():
     am = _am()
-    am._states["binance"]._add_order(_make_order(cid="cid-1"))
+    am._states["binance"].add_order(_make_order(cid="cid-1"))
     assert am.get_order("cid-1") is not None
     assert am.get_order("nope") is None

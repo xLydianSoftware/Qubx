@@ -2,9 +2,16 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
+from qubx import logger
 from qubx.core.basics import Deal
-from qubx.core.events import OrderAcceptedEvent, OrderFilledEvent, QuoteEvent
-from qubx.core.mixins.processing import ProcessingManager, _CounterSink
+from qubx.core.events import (
+    OrderAcceptedEvent,
+    OrderCancelRejectedEvent,
+    OrderFilledEvent,
+    OrderUpdateRejectedEvent,
+    QuoteEvent,
+)
+from qubx.core.mixins.processing import ProcessingManager
 from qubx.core.series import Quote
 
 
@@ -13,7 +20,6 @@ def _pm() -> ProcessingManager:
     pm._is_simulation = True  # not paper: keeps _feed_simulated_connector a no-op here
     pm._strategy = MagicMock()
     pm._account_manager = MagicMock()
-    pm._metrics = _CounterSink()
     pm._context = MagicMock()
     pm._context.emitter = None
     pm._position_gathering = MagicMock()
@@ -78,22 +84,51 @@ def test_callback_exception_does_not_halt_dispatch():
     pm = _pm()
     pm._strategy.on_order_accepted.side_effect = RuntimeError("boom")
     pm._account_manager.apply.return_value = MagicMock()
+    # the bad callback is swallowed (logged, not raised); reaching here proves dispatch survived
     pm.process_event(
         OrderAcceptedEvent(
             instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
         )
     )
-    # the bad callback is swallowed and recorded as a metric, dispatch survives
-    assert pm._metrics.counts.get("strategy_callback_errors", 0) >= 1
+    pm._strategy.on_order_accepted.assert_called_once()
 
 
-def test_am_apply_error_is_recorded_and_does_not_raise():
+def test_am_apply_error_is_swallowed_and_does_not_raise():
     pm = _pm()
     pm._account_manager.apply.side_effect = RuntimeError("kaboom")
+    # AM.apply raising is logged and swallowed; the callback must not fire on a failed apply
     pm.process_event(
         OrderAcceptedEvent(
             instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
         )
     )
-    assert pm._metrics.counts.get("account_manager_apply_errors", 0) >= 1
+    pm._account_manager.apply.assert_called_once()
     pm._strategy.on_order_accepted.assert_not_called()
+
+
+def test_cancel_rejected_logs_warning_in_dispatch():
+    # The venue-rejection warning lives in the dispatch, so it fires regardless of whether a
+    # strategy overrides on_order_cancel_rejected.
+    pm = _pm()
+    pm._account_manager.apply.return_value = MagicMock(client_order_id="C-1")
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(m), level="WARNING")
+    try:
+        pm.process_event(OrderCancelRejectedEvent(instrument=MagicMock(), client_order_id="C-1", reason="nope"))
+    finally:
+        logger.remove(sink)
+    assert any("STILL ALIVE at the venue" in m for m in messages)
+    pm._strategy.on_order_cancel_rejected.assert_called_once()
+
+
+def test_update_rejected_logs_warning_in_dispatch():
+    pm = _pm()
+    pm._account_manager.apply.return_value = MagicMock(client_order_id="C-2")
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(m), level="WARNING")
+    try:
+        pm.process_event(OrderUpdateRejectedEvent(instrument=MagicMock(), client_order_id="C-2", reason="nope"))
+    finally:
+        logger.remove(sink)
+    assert any("STILL ALIVE with prior parameters" in m for m in messages)
+    pm._strategy.on_order_update_rejected.assert_called_once()

@@ -91,7 +91,8 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         # Try alternative fields for different exchanges
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
     amnt = float(amnt_raw)
-    price = raw["price"] or 0.0
+    # None for market orders (no limit price) — matches Order.price: float | None.
+    price = raw.get("price")
     status = ccxt_status_to_order_status(raw.get("status"), ri)
     side_raw = raw["side"]
     if side_raw is None:
@@ -111,12 +112,11 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
 
     tif = raw.get("timeInForce")
 
-    client_order_id = raw["clientOrderId"]
-    origin = (
-        OrderOrigin.FRAMEWORK
-        if client_order_id is not None and client_order_id.startswith("qubx_")
-        else OrderOrigin.EXTERNAL
-    )
+    # Some venues omit clientOrderId (e.g. externally-placed orders); fall back to the
+    # framework's external-order id convention (ext:<venue_id>) so it reads as EXTERNAL and
+    # still has a stable, non-null client_order_id.
+    client_order_id = raw.get("clientOrderId") or f"ext:{raw['id']}"
+    origin = OrderOrigin.FRAMEWORK if client_order_id.startswith("qubx_") else OrderOrigin.EXTERNAL
 
     return Order(
         client_order_id=client_order_id,
@@ -126,7 +126,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         instrument=instrument,
         time=recognize_time(raw["timestamp"]),
         quantity=abs(amnt) * (-1 if side == "SELL" else 1),
-        price=float(price) if price is not None else 0.0,
+        price=float(price) if price is not None else None,
         side=side,
         status=status,
         time_in_force=tif,
@@ -136,18 +136,25 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
 
 
 def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
-    fee_amount = None
-    fee_currency = None
-    if "fee" in raw:
-        fee_amount = float(raw["fee"]["cost"])
-        fee_currency = raw["fee"]["currency"]
+    # CCXT may return fee absent, an empty {}, or {"cost": None} — guard all three.
+    fee = raw.get("fee") or {}
+    _fee_cost = fee.get("cost")
+    fee_amount = float(_fee_cost) if _fee_cost is not None else None
+    fee_currency = fee.get("currency")
+    order_id = raw.get("order")
+    timestamp = raw["timestamp"]
+    amount = float(raw["amount"])
+    price = float(raw["price"])
+    # Some venues omit a per-fill id; synthesize a deterministic one from
+    # (order_id, timestamp, qty, price) so fill dedup (seen_trade_ids) still works.
+    trade_id = raw.get("id") or f"{order_id}:{timestamp}:{amount}:{price}"
     return Deal(
-        trade_id=raw["id"],
-        order_id=raw["order"],
-        time=to_timestamp(raw["timestamp"], unit="ms"),
-        amount=float(raw["amount"]) * (-1 if raw["side"] == "sell" else +1),
-        price=float(raw["price"]),
-        aggressive=raw["takerOrMaker"] == "taker",
+        trade_id=trade_id,
+        order_id=order_id,
+        time=to_timestamp(timestamp, unit="ms"),
+        amount=amount * (-1 if raw.get("side") == "sell" else +1),
+        price=price,
+        aggressive=raw.get("takerOrMaker") == "taker",  # absent -> maker (some venues omit it)
         fee_amount=fee_amount,
         fee_currency=fee_currency,
     )

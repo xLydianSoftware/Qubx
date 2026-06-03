@@ -707,27 +707,6 @@ class IBroker:
         """
         raise NotImplementedError("send_order is not implemented")
 
-    def send_order_async(self, request: OrderRequest) -> str | None:
-        """Submit order asynchronously.
-
-        The broker MAY enrich request.options with exchange-specific metadata
-        (e.g., lighter_client_order_index) before submitting. The broker MUST NOT
-        mutate request.client_id.
-
-        Order confirmation arrives via channel with status "NEW" or "OPEN".
-        request.client_id is used for matching incoming orders.
-
-        Args:
-            request: Order request to submit. The broker can add exchange-specific
-                    metadata to request.options but must preserve client_id.
-
-        Returns:
-            str | None: The client order ID used for tracking. Order updates arrive
-                        asynchronously via the channel. Returns None if client_id
-                        was not provided in the request.
-        """
-        raise NotImplementedError("send_order_async is not implemented")
-
     def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
         """Cancel an existing order synchronously.
 
@@ -739,15 +718,6 @@ class IBroker:
             bool: True if cancellation was successful, False otherwise.
         """
         raise NotImplementedError("cancel_order is not implemented")
-
-    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
-        """Cancel an existing order asynchronously (non blocking).
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-        """
-        raise NotImplementedError("cancel_order_async is not implemented")
 
     def cancel_orders(self, instrument: Instrument) -> None:
         """Cancel all orders for an instrument.
@@ -780,20 +750,6 @@ class IBroker:
             InvalidOrderParameters: If the order cannot be updated
         """
         raise NotImplementedError("update_order is not implemented")
-
-    def update_order_async(
-        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
-    ) -> str | None:
-        """Update an existing order asynchronously (non-blocking).
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-
-        Returns:
-            str | None: The client order ID if update was submitted, None otherwise.
-        """
-        raise NotImplementedError("update_order_async is not implemented")
 
     def make_client_id(self, client_id: str) -> str:
         """
@@ -1111,30 +1067,6 @@ class ITradingManager:
         """
         ...
 
-    def trade_async(
-        self,
-        instrument: Instrument,
-        amount: float,
-        price: float | None = None,
-        time_in_force="gtc",
-        client_id: str | None = None,
-        **options,
-    ) -> str | None:
-        """Place a trade order asynchronously.
-
-        Args:
-            instrument: The instrument to trade
-            amount: Amount to trade (positive for buy, negative for sell)
-            price: Optional limit price
-            time_in_force: Time in force for the order
-            client_id: Client ID for the order
-            **options: Additional order options
-
-        Returns:
-            str | None: The client order ID used for tracking, or None if not available.
-        """
-        ...
-
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         """Submit multiple orders to the exchange."""
         ...
@@ -1193,17 +1125,6 @@ class ITradingManager:
         """
         ...
 
-    def cancel_order_async(
-        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
-    ) -> None:
-        """Cancel a specific order asynchronously (non blocking).
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-        """
-        ...
-
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument.
 
@@ -1221,22 +1142,6 @@ class ITradingManager:
         exchange: str | None = None,
     ) -> Order:
         """Update an existing limit order with new price and amount.
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-        """
-        ...
-
-    def update_order_async(
-        self,
-        price: float,
-        amount: float,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
-        exchange: str | None = None,
-    ) -> str | None:
-        """Update an existing limit order asynchronously (non-blocking).
 
         Exactly one identifier must be provided:
         - order_id: Exchange/server order id
@@ -1910,16 +1815,6 @@ class IPositionGathering:
         return res
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
-
-    def on_order_update(self, ctx: IStrategyContext, order: Order) -> None:
-        """
-        Called when an order status is updated.
-
-        Args:
-            ctx: Strategy context object
-            order: The order with updated status
-        """
-        pass
 
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """
@@ -2817,26 +2712,6 @@ class IStrategy(metaclass=Mixable):
         on_market_data->signals path; does not itself generate signals."""
         ...
 
-    def on_order_update(self, ctx: IStrategyContext, order: Order) -> list[Signal] | Signal | None:
-        """
-        Called when an order update is received.
-
-        Args:
-            ctx: Strategy context.
-            order: The order update.
-        """
-        return None
-
-    def on_deals(self, ctx: IStrategyContext, instrument: Instrument, deals: list[Deal]) -> None:
-        """
-        Called when deals are received.
-
-        Args:
-            ctx: Strategy context.
-            deals: The deals.
-        """
-        return None
-
     def on_order_accepted(self, ctx: IStrategyContext, order: Order) -> None: ...
 
     def on_order_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
@@ -2851,17 +2726,11 @@ class IStrategy(metaclass=Mixable):
 
     def on_order_updated(self, ctx: IStrategyContext, order: Order) -> None: ...
 
-    def on_order_cancel_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None:
-        logger.warning(
-            f"[{order.client_order_id}] cancel rejected by venue: {reason}; "
-            f"order is STILL ALIVE at the venue"
-        )
+    # The venue-rejection warning is logged by ProcessingManager's dispatch, not here:
+    # a default-method body is silently lost if a strategy overrides without super().
+    def on_order_cancel_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
 
-    def on_order_update_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None:
-        logger.warning(
-            f"[{order.client_order_id}] update rejected by venue: {reason}; "
-            f"order is STILL ALIVE with prior parameters"
-        )
+    def on_order_update_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
 
     def on_position_update(self, ctx: IStrategyContext, position: Position) -> None: ...
 

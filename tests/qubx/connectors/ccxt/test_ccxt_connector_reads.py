@@ -13,7 +13,7 @@ import ccxt
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
-from qubx.core.account_manager import SimulationAccountManager
+from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, Instrument, MarketType, OrderRequest, OrderStatus, Position
 from qubx.core.events import (
     AccountSnapshotEvent,
@@ -314,41 +314,39 @@ async def test_request_order_status_emits_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_order_status_not_found_routes_reject_by_real_cid() -> None:
-    # I2: a venue-id-only request (cid None) must resolve the real cid from the order
-    # cache before emitting the reject — OrderRejectedEvent carries no venue id, so AM
-    # routes it by cid. Seed the cache via a prior WS open update.
+async def test_request_order_status_not_found_emits_reject_with_both_ids() -> None:
+    # A reconcile fetch that comes back OrderNotFound emits OrderRejectedEvent carrying both
+    # ids, so AM can resolve the order by client_order_id or venue_order_id and terminate it.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_order = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
     conn, sent, _ = _make_connector(exchange=exchange)
-    conn._handle_ws_order(_ws_order(status="open", cid="qubx_BTCUSDT_1", venue_id="VENUE123"))
-    sent.clear()
 
-    conn.request_order_status(venue_order_id="VENUE123")
+    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
     await _drive(conn)
 
     assert len(sent) == 1
     ev = sent[0]
     assert isinstance(ev, OrderRejectedEvent)
     assert ev.reason == "reconcile: order not present at venue"
-    # Routed by the real cid resolved from the venue->cid index, NOT None.
     assert ev.client_order_id == "qubx_BTCUSDT_1"
+    assert ev.venue_order_id == "VENUE123"
 
 
 @pytest.mark.asyncio
-async def test_request_order_status_not_found_unknown_cid_skips() -> None:
-    # I2: if the cid can't be resolved (venue id never seen), the reject would be
-    # unroutable — log and skip rather than emit an event AM silently drops.
+async def test_request_order_status_by_venue_id_only_emits_event() -> None:
+    # Reconcile a venue-id-only order (no client_order_id): fetch by venue id and surface it.
     exchange = Mock()
     exchange.has = {"editOrder": True}
-    exchange.fetch_order = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
+    exchange.fetch_order = AsyncMock(return_value=_ws_order(status="closed", trades=[_ws_trade("TX", amount=1.0)]))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(venue_order_id="VENUE_UNKNOWN")
+    conn.request_order_status(venue_order_id="VENUE123")
     await _drive(conn)
 
-    assert sent == []
+    exchange.fetch_order.assert_awaited_once_with("VENUE123", None)
+    assert isinstance(sent[0], OrderAcceptedEvent)
+    assert isinstance(sent[1], OrderFilledEvent)
 
 
 @pytest.mark.asyncio
@@ -358,16 +356,18 @@ async def test_request_order_status_network_error_leaves_inflight() -> None:
     exchange.fetch_order = AsyncMock(side_effect=ccxt.NetworkError("timeout"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(venue_order_id="VENUE123")
+    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
     await _drive(conn)
 
     assert sent == []
 
 
-def test_request_order_status_raises_on_no_ids() -> None:
+def test_request_order_status_raises_when_no_id_given() -> None:
     conn, _, _ = _make_connector()
     with pytest.raises(Exception):
         conn.request_order_status()
+    with pytest.raises(Exception):
+        conn.request_order_status(client_order_id="")
 
 
 # --------------------------------------------------------------------------- #
@@ -494,7 +494,7 @@ async def test_is_ws_ready_reflects_stream_state() -> None:
 # --------------------------------------------------------------------------- #
 # (f) connector -> AccountManager seam: a snapshot the connector emits must
 #     apply cleanly to a REAL AccountManager (the order's status must be an
-#     OrderStatus enum, or AccountState._add_order -> order.status.is_terminal()
+#     OrderStatus enum, or AccountState.add_order -> order.status.is_terminal
 #     raises AttributeError).
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
@@ -519,10 +519,10 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     assert event.snapshot.open_orders[0].status is OrderStatus.ACCEPTED
 
     # Apply the connector-emitted snapshot to a REAL AccountManager. This is the seam
-    # the unit tests skipped: AccountState._add_order calls order.status.is_terminal(),
+    # the unit tests skipped: AccountState.add_order calls order.status.is_terminal,
     # which only exists on OrderStatus (a raw string would raise AttributeError here).
     strategy = Mock()
-    am = SimulationAccountManager(
+    am = SimulatedAccountManager(
         connectors={"BINANCE.UM": object()},
         strategy=strategy,
         time=DummyTimeProvider(),

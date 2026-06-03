@@ -8,11 +8,11 @@ from qubx import QubxLogConfig, logger
 from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import SimulatedDataIterator
-from qubx.core.account_manager import SimulationAccountManager
-from qubx.core.account_manager_config import AccountManagerConfig
+from qubx.backtester.transfers import SimulationTransferManager
+from qubx.core.account_manager import AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
-from qubx.core.events import MARKET_DATA_TYPES, ScheduledEvent, event_for_data_type
+from qubx.core.events import MARKET_DATA_TYPES, CustomEvent, ScheduledEvent, event_for_data_type
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
 from qubx.core.initializer import BasicStrategyInitializer
@@ -68,7 +68,7 @@ class SimulationRunner:
     logs_writer: InMemoryLogsWriter
     notifier: IStrategyNotifier | None
 
-    account_manager: SimulationAccountManager
+    account_manager: SimulatedAccountManager
     channel: CtrlChannel
     time_provider: SimulatedTimeProvider
     scheduler: SimulatedScheduler
@@ -207,7 +207,6 @@ class SimulationRunner:
         t = np.datetime64(int(data.time), "ns")
         _exchange = self._sim_exchanges[instrument.exchange]
         _data_provider = self._get_data_provider(instrument.exchange)
-        _connector = self._connectors[instrument.exchange]
         assert isinstance(_data_provider, SimulatedDataProvider)
 
         if not is_hist:
@@ -223,7 +222,7 @@ class SimulationRunner:
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        # - drive the OME so resting orders match against this tick (emits typed events)
+        # match resting orders against this tick before the strategy sees it (see _feed_ome)
         if not is_hist:
             self._feed_ome(instrument, data)
         self._send_market_data(instrument, data_type, data, is_hist)
@@ -247,9 +246,7 @@ class SimulationRunner:
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        # - drive the OME so resting orders match against this tick (emits typed events),
-        #   then deliver the tick to the strategy. The OME's BBO must reflect this tick
-        #   before the strategy places stop/limit orders against it.
+        # match resting orders against this tick before the strategy sees it (see _feed_ome)
         if not is_hist:
             self._feed_ome(instrument, data)
         self._send_market_data(instrument, data_type, data, is_hist)
@@ -257,21 +254,27 @@ class SimulationRunner:
         return cc.control.is_set()
 
     def _send_market_data(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> None:
-        # Live market-data types with a typed event go on the channel as that event
-        # (routed to process_event). Historical batches and live types without a typed
-        # event (e.g. features/record) stay tuples on the __process_data path. The
-        # convertible set (events.MARKET_DATA_TYPES) is shared with the process_data
-        # adapter so producer and adapter agree on what becomes a typed event.
-        # TODO(account-mgmt): historical batches still ride the tuple/__process_data path;
-        # PR10 revisits converting warmup data to typed historical events.
-        if is_hist or DataType.from_str(data_type)[0] not in MARKET_DATA_TYPES:
-            self.channel.send((instrument, data_type, data, is_hist))
+        # Everything goes on the channel as a typed event (no raw tuples). Convertible
+        # market-data types become their typed event; anything else (custom storages,
+        # features, generated-signals "event") rides a CustomEvent. The is_historical flag
+        # routes warmup data to the cache-only path in process_event.
+        if DataType.from_str(data_type)[0] in MARKET_DATA_TYPES:
+            self.channel.send(
+                event_for_data_type(data_type, instrument=instrument, payload=data, is_historical=is_hist)
+            )
         else:
-            self.channel.send(event_for_data_type(data_type, instrument=instrument, payload=data))
+            self.channel.send(CustomEvent(instrument=instrument, is_historical=is_hist, name=data_type, payload=data))
 
     def _feed_ome(self, instrument: Instrument, data: Any) -> None:
-        # The connector translates non-tick data (e.g. OHLC bars) into an emulated
-        # quote before matching, so pass the raw tick straight through.
+        """Drive the OME (now behind SimulatedConnector) with this tick so resting orders match.
+
+        Before the core cut-over the deleted SimulatedBroker fed the OME from market data
+        internally. The OME now lives behind SimulatedConnector, so the runner must drive it
+        explicitly — once per tick, before the tick reaches the strategy, so the OME's BBO
+        reflects it when the strategy places stop/limit orders against it. The connector
+        translates non-tick data (e.g. OHLC bars) into an emulated quote, so pass the raw
+        tick straight through.
+        """
         self._connectors[instrument.exchange].process_market_data(instrument, data)
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:
@@ -346,8 +349,8 @@ class SimulationRunner:
     def _handle_no_data_scenario(self, stop_time):
         """Handle scenario when no data is available but scheduler might have events."""
         # Check if we have pending scheduled events
-        if hasattr(self.scheduler, "_next_nearest_time"):
-            next_scheduled_time = self.scheduler._next_nearest_time
+        if hasattr(self.scheduler, "next_expected_event_time"):
+            next_scheduled_time = self.scheduler.next_expected_event_time()
             current_time = self.time_provider.time()
 
             # Convert to int64 for numerical comparisons (avoid type issues)
@@ -439,29 +442,6 @@ class SimulationRunner:
             trading_session=self.data_config.trading_sessions_time,
             default_trading_session=self.data_config.default_trading_sessions_time,
         )
-
-        # - create time guarded aux data storage, optionally wrapped with in-memory cache.
-        # - stack (outer → inner): TimeGuardedStorage → CachedStorage → inner storage
-        # - TimeGuardedStorage clamps stop to current sim time (look-ahead guard).
-        # - CachedStorage uses prefetch_period = full sim duration so that the FIRST read
-        #   for any (dtype, symbols) fetches the entire backtest range in ONE DB query — same
-        #   behaviour as the old upfront prefetch but lazy-triggered per dtype actually used.
-        # - Subsequent reads (across all sim ticks) return from cache → zero DB queries.
-        # - NOTE: PrefetchConfig.aux_data_names / args are no longer needed — caching is
-        #   transparent and only warms dtypes the strategy actually accesses.
-        # _inner_aux = self.data_config.aux_storage or self.data_config.data_storage
-        # _pcfg = self.data_config.prefetch_config
-        # if _pcfg is not None and _pcfg.enabled:
-        #     # - use max(configured period, full sim duration) so any read grabs the full range
-        #     _sim_duration = self.stop - self.start
-        #     _effective_prefetch = max(_sim_duration, pd.Timedelta(_pcfg.prefetch_period))
-        #     _cache_size_mb = _pcfg.cache_size_mb
-        #     _inner_aux = CachedStorage(
-        #         _inner_aux,
-        #         prefetch_period=str(_effective_prefetch),
-        #         cache_factory=lambda: MemoryCache(_cache_size_mb),
-        #     )
-        # self._aux_storage = TimeGuardedStorage(_inner_aux, self.time_provider)
 
     def _wrap_storage(self, storage: IStorage, prefetch_cfg: PrefetchConfig) -> IStorage:
         # - wrap with CachedStorage only — no TimeGuardedStorage here.
@@ -559,6 +539,15 @@ class SimulationRunner:
             initializer=self.initializer,
         )
 
+        # - auto-assign the simulation transfer manager unless the strategy set its own in
+        #   on_init; context.start() then picks it up from the initializer. Wired via the
+        #   context's initializer (the runner's own initializer may be None — the context
+        #   builds a default one).
+        if self.ctx.initializer.get_transfer_manager() is None:
+            self.ctx.initializer.set_transfer_manager(
+                SimulationTransferManager(self.account_manager, self.time_provider)
+            )
+
         # - attach emmiter
         if self.emitter is not None:
             self.emitter.set_context(self.ctx)
@@ -621,7 +610,7 @@ class SimulationRunner:
         commissions: str | dict[str, str | None] | None,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
-    ) -> SimulationAccountManager:
+    ) -> SimulatedAccountManager:
         _exchange_to_tcc = self._construct_tcc(exchanges, commissions)
         for tcc in _exchange_to_tcc.values():
             if tcc is None:
@@ -647,7 +636,7 @@ class SimulationRunner:
             for exchange in self.setup.exchanges
         }
 
-        am = SimulationAccountManager(
+        am = SimulatedAccountManager(
             connectors=self._connectors,
             strategy=self.setup.generator,
             time=time_provider,
@@ -659,7 +648,7 @@ class SimulationRunner:
         # - seed initial capital per exchange into the account state
         assert isinstance(self.setup.capital, dict)
         for exchange, capital in self.setup.capital.items():
-            am._states[exchange]._update_balance(
+            am.get_state(exchange).update_balance(
                 self.setup.base_currency,
                 Balance(
                     exchange=exchange,

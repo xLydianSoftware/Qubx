@@ -37,15 +37,12 @@ from qubx.core.events import (
     CustomEvent,
     ErrorEvent,
     FundingPaymentEvent,
-    FundingRateEvent,
-    LiquidationEvent,
     MarketDataMessage,
-    OhlcEvent,
-    OpenInterestEvent,
     OrderAcceptedEvent,
     OrderBookEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
+    OrderEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
@@ -58,6 +55,7 @@ from qubx.core.events import (
     TradeEvent,
     data_type_for_event,
     event_for_data_type,
+    payload_for_event,
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
@@ -78,22 +76,7 @@ from qubx.core.interfaces import (
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.trackers.riskctrl import _InitializationStageTracker
-from qubx.utils.time import interval_to_cron, timedelta_to_str
-
-
-class _CounterSink:
-    """Minimal best-effort counter sink for dispatch-failure metrics.
-
-    Errors during event dispatch must never themselves raise; this no-op default
-    just records the counts in-process so they can be inspected/overridden without
-    coupling the processing loop to any concrete metric backend.
-    """
-
-    def __init__(self) -> None:
-        self.counts: dict[str, int] = {}
-
-    def inc(self, name: str, labels: dict | None = None) -> None:
-        self.counts[name] = self.counts.get(name, 0) + 1
+from qubx.utils.time import interval_to_cron
 
 
 class ProcessingManager(IProcessingManager):
@@ -107,7 +90,6 @@ class ProcessingManager(IProcessingManager):
     _subscription_manager: ISubscriptionManager
     _time_provider: ITimeProvider
     _account_manager: AccountManager
-    _metrics: _CounterSink
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
     _cache: IMarketDataCache
@@ -171,7 +153,6 @@ class ProcessingManager(IProcessingManager):
         self._subscription_manager = subscription_manager
         self._time_provider = time_provider
         self._account_manager = account_manager
-        self._metrics = _CounterSink()
         self._is_simulation = is_simulation
         self._position_gathering = position_gathering
         self._position_tracker = position_tracker
@@ -382,19 +363,16 @@ class ProcessingManager(IProcessingManager):
             ctx.emitter.emit(m["name"], m["value"], m["tags"])
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        base, params = DataType.from_str(d_type) if d_type else (None, {})
+        # Adapter for data sources that still emit (instrument, type, data, hist) tuples
+        # rather than typed events (Tardis, the live warmup batch). The simulator and the
+        # CCXT handlers already emit typed events straight to process_event. A live
+        # convertible market-data tuple is wrapped in its typed event (these sources carry
+        # a parameterized OHLC type already — no re-labeling needed); historical batches and
+        # control tuples stay on the legacy __process_data path.
+        base, _ = DataType.from_str(d_type) if d_type else (None, {})
         if not is_historical and base in MARKET_DATA_TYPES:
-            # OHLC arrives as the bare base type from the simulator; OhlcEvent needs a
-            # timeframe, so label it with the cache's default before wrapping. (The
-            # live OHLC cache buckets off the Bar itself, not this string — the
-            # timeframe only labels the event/series.)
-            if base == DataType.OHLC and params.get("timeframe") is None:
-                d_type = DataType.OHLC[timedelta_to_str(self._cache.default_timeframe)]
-            # process_event emits the post-data notify itself.
             self.process_event(event_for_data_type(d_type, instrument=instrument, payload=data))
         else:
-            # TODO(account-mgmt): historical data and not-yet-typed control tuples still
-            # route through __process_data; 6.5.4/PR10 convert/remove these.
             self.__process_data(instrument, d_type, data, is_historical)
             if not is_historical:
                 self._notify_after_data()
@@ -530,13 +508,6 @@ class ProcessingManager(IProcessingManager):
 
                 # - we reset failures counter when we successfully process on_event
                 self._fails_counter = 0
-
-            if isinstance(event, Order):
-                with self._health_monitor("stg.order_update"):
-                    signals.extend(self._as_list(self._strategy.on_order_update(self._context, event)))
-
-                # Notify position gatherer about order update
-                self._position_gathering.on_order_update(self._context, event)
 
             self._subscription_manager.commit()  # apply pending operations
 
@@ -1235,7 +1206,16 @@ class ProcessingManager(IProcessingManager):
             self._safe_call(self._strategy.on_error, event.error)
             return
         if isinstance(event, CustomEvent):
-            self._safe_call(self._strategy.on_event, event)
+            # Data types with no typed market-data event (custom storages, features, the
+            # generated-signals "event" stream). Same effect as the legacy tuple path:
+            # historical warms the cache; live runs the custom-event handler (which also
+            # services registered scheduled methods) through the strategy pipeline.
+            if event.is_historical:
+                self._process_hist_event(event.instrument, event.name, event.payload)
+                self._run_strategy_pipeline(None)
+            else:
+                strat_event = self._process_custom_event(event.instrument, event.name, event.payload)
+                self._run_strategy_pipeline(strat_event)
             return
         logger.warning(f"unknown event type: {type(event)}")
 
@@ -1254,7 +1234,16 @@ class ProcessingManager(IProcessingManager):
     def _dispatch_market_data(self, event: MarketDataMessage) -> None:
         instrument = event.instrument
         d_type = data_type_for_event(event)
-        payload = self._md_payload(event)
+        payload = payload_for_event(event)
+
+        if event.is_historical:
+            # Warmup: update cache/indicators only (no throttle, no OME feed, no trading) —
+            # the same effect the legacy tuple path produced via __process_data's historical
+            # branch. The pipeline runs with no strategy event so only start/warmup/fit
+            # lifecycle gating fires.
+            self._process_hist_event(instrument, d_type, payload)
+            self._run_strategy_pipeline(None)
+            return
 
         if self._data_throttler is not None and not self._data_throttler.should_send(d_type, instrument):
             return
@@ -1279,28 +1268,6 @@ class ProcessingManager(IProcessingManager):
         if connector is not None:
             connector.process_market_data(instrument, payload)
 
-    @staticmethod
-    def _md_payload(event: MarketDataMessage) -> Any:
-        match event:
-            case QuoteEvent():
-                return event.quote
-            case TradeEvent():
-                return event.trade
-            case OrderBookEvent():
-                return event.orderbook
-            case OhlcEvent():
-                return event.bar
-            case FundingRateEvent():
-                return event.funding_rate
-            case OpenInterestEvent():
-                return event.open_interest
-            case LiquidationEvent():
-                return event.liquidation
-            case FundingPaymentEvent():
-                return event.payment
-            case _:
-                raise ValueError(f"no payload for market-data event: {type(event).__name__}")
-
     def _fire_md_reaction(self, event: MarketDataMessage) -> None:
         match event:
             case QuoteEvent():
@@ -1318,7 +1285,6 @@ class ProcessingManager(IProcessingManager):
             return
         except Exception:
             logger.exception(f"AM.apply raised on {type(event).__name__}")
-            self._metrics.inc("account_manager_apply_errors", labels={"event": type(event).__name__})
             return
         self._safe_fire_account_callback(event, updated)
 
@@ -1327,9 +1293,15 @@ class ProcessingManager(IProcessingManager):
             fn(self._context, *args)
         except Exception:
             logger.exception(f"strategy callback {getattr(fn, '__name__', fn)} raised")
-            self._metrics.inc("strategy_callback_errors", labels={"callback": getattr(fn, "__name__", str(fn))})
 
     def _safe_fire_account_callback(self, event: AccountMessage, updated: Any) -> None:
+        # Order callbacks below all take the affected Order (`updated`). AM returns None when
+        # it couldn't resolve/transition the order (unknown order, unexpected state — already
+        # logged); firing on_order_*(None, ...) would break the `order: Order` contract, so
+        # skip. Non-order events (position/balance/funding/snapshot) read their own payload
+        # off `event`, not `updated`, so they are unaffected.
+        if isinstance(event, OrderEvent) and updated is None:
+            return
         match event:
             case OrderPartiallyFilledEvent():
                 self._safe_call(self._strategy.on_order_partially_filled, updated, event.fill)
@@ -1348,8 +1320,16 @@ class ProcessingManager(IProcessingManager):
             case OrderRejectedEvent():
                 self._safe_call(self._strategy.on_order_rejected, updated, event.reason)
             case OrderCancelRejectedEvent():
+                logger.warning(
+                    f"[{event.client_order_id}] cancel rejected by venue: {event.reason}; "
+                    f"order is STILL ALIVE at the venue"
+                )
                 self._safe_call(self._strategy.on_order_cancel_rejected, updated, event.reason)
             case OrderUpdateRejectedEvent():
+                logger.warning(
+                    f"[{event.client_order_id}] update rejected by venue: {event.reason}; "
+                    f"order is STILL ALIVE with prior parameters"
+                )
                 self._safe_call(self._strategy.on_order_update_rejected, updated, event.reason)
             case PositionUpdateEvent():
                 self._safe_call(self._strategy.on_position_update, event.position)
