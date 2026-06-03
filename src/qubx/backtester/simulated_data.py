@@ -483,6 +483,7 @@ class DataPump:
     _transformer: IDataTransformer
     _requested_data_type: str
     _producing_data_type: str
+    _event_data_type: str
     _warmup_period: pd.Timedelta | None
     _chunksize: int
 
@@ -570,13 +571,21 @@ class DataPump:
                 self._producing_data_type = subscription_type.lower()
                 self._transformer = TypedRecords()
 
+        # The label carried on emitted records, resolved once here. OHLC produces bare
+        # "ohlc" bars but the event/cache need the parameterized "ohlc(<tf>)" (the requested
+        # type); tick-emulated OHLC (ohlc_quotes/ohlc_trades) produces quote/trade — already
+        # the right label, same as every other subscription.
+        self._event_data_type = (
+            self._requested_data_type if self._producing_data_type == DataType.OHLC else self._producing_data_type
+        )
+
     def update_emulation_time_indent_seconds(self, time_indent_seconds: float):
         if isinstance(self._transformer, EmulatedUpdatesFromOHLC):
             self._transformer.set_emulation_adjustment_time(time_indent_seconds)
 
     @property
-    def producing_data_type(self) -> str:
-        return self._producing_data_type
+    def event_data_type(self) -> str:
+        return self._event_data_type
 
     # -----------------------------------------------------------------------
     # Instrument management
@@ -1142,7 +1151,9 @@ class SimulatedDataIterator(Iterator):
                     return None, "", v, False
 
                 instr, pump, subt = self._instruments[k]
-                data_type = pump.producing_data_type
+                # - parameterized label (ohlc -> ohlc(<tf>)) so typed events carry the
+                #   timeframe; non-OHLC types are returned unparameterized as-is.
+                data_type = pump.event_data_type
                 is_historical = False
                 if t < self._current_time:
                     is_historical = True

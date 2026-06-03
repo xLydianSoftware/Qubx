@@ -209,19 +209,18 @@ class TestBuiltinConnectors:
     """Tests for built-in connector registration."""
 
     def test_builtin_connectors_registered(self):
-        """Test that built-in connectors are registered after import."""
+        """Test that built-in data providers are registered after import."""
         import qubx.connectors  # noqa: F401
 
-        # Check that built-in connectors are registered
+        # Data providers are still registered with the registry on import.
         assert ConnectorRegistry.is_data_provider_registered("ccxt")
         assert ConnectorRegistry.is_data_provider_registered("tardis")
 
-        assert ConnectorRegistry.is_account_processor_registered("ccxt")
-
-        assert ConnectorRegistry.is_broker_registered("ccxt")
-
-        # Note: Paper trading connectors (SimulatedAccountProcessor, SimulatedBroker)
-        # are NOT registered with the registry - they are created directly by the
-        # backtester and paper trading runner
+        # Execution is no longer registry-driven: the old CcxtBroker/CcxtAccountProcessor
+        # were replaced by the CcxtConnector, which the live runner builds via
+        # get_ccxt_connector (the factory) rather than registering with the registry. So
+        # neither the ccxt nor the paper execution path registers an account/broker.
+        assert not ConnectorRegistry.is_account_processor_registered("ccxt")
+        assert not ConnectorRegistry.is_broker_registered("ccxt")
         assert not ConnectorRegistry.is_account_processor_registered("paper")
         assert not ConnectorRegistry.is_broker_registered("paper")

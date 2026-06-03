@@ -1,13 +1,12 @@
-import inspect
 from unittest.mock import Mock
 
-import numpy as np
 import pandas as pd
 import pyarrow as pa
 import pytest
 
 from qubx.backtester.simulated_data import DataPump, SimulatedDataIterator
 from qubx.core.basics import DataType, FundingPayment, Instrument, MarketEvent, MarketType
+from qubx.core.events import FundingPaymentEvent, payload_for_event
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.data.containers import RawData
 from qubx.data.storage import IReader, IStorage
@@ -176,59 +175,55 @@ class TestFundingPaymentSubscription:
     # ProcessingManager tests
     # -----------------------------------------------------------------------
 
-    def test_processing_manager_handle_funding_payment(self, mock_instrument, sample_funding_payment):
-        """ProcessingManager._handle_funding_payment books funding via AM and builds the MarketEvent."""
-        from qubx.core.events import FundingPaymentEvent
+    def test_process_event_routes_funding_payment_to_both_paths(self, mock_instrument, sample_funding_payment):
+        """process_event(FundingPaymentEvent) is a hybrid: it books funding via AM
+        (on_funding_payment) AND runs the market-data side effects."""
+
+        processor = Mock()
+        event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
+        ProcessingManager.process_event(processor, event)
+
+        # - account half: AM books the payment and fires on_funding_payment
+        processor._dispatch_account.assert_called_once_with(event)
+        # - market-data half: runs __update_base_data + MarketEvent through the pipeline
+        processor._dispatch_market_data.assert_called_once_with(event)
+
+    def test_dispatch_market_data_funding_payment_builds_market_event(
+        self, mock_instrument, sample_funding_payment
+    ):
+        """_dispatch_market_data on a FundingPaymentEvent updates base data and feeds
+        the MarketEvent into the strategy pipeline (no AM mutation on this half)."""
 
         processor = Mock()
         processor._time_provider = Mock()
         processor._time_provider.time.return_value = pd.Timestamp("2025-01-08 00:00:00").asm8
-        processor._account_manager = Mock()
+        processor._data_throttler = None
 
         # - mock the mangled private helper that determines trigger status
         processor._ProcessingManager__update_base_data = Mock(return_value=True)
 
-        result = ProcessingManager._handle_funding_payment(
-            processor, instrument=mock_instrument, event_type="funding_payment", funding_payment=sample_funding_payment
-        )
+        event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
+        ProcessingManager._dispatch_market_data(processor, event)
 
-        # - verify result shape
-        assert isinstance(result, MarketEvent)
-        assert result.type == "funding_payment"
-        assert result.instrument == mock_instrument
-        assert result.data == sample_funding_payment
-        assert result.is_trigger is True
-
-        # - the account state machine books the funding payment via a typed event
-        processor._account_manager.apply.assert_called_once()
-        applied = processor._account_manager.apply.call_args[0][0]
-        assert isinstance(applied, FundingPaymentEvent)
-        assert applied.instrument == mock_instrument
-        assert applied.payment == sample_funding_payment
-
-        # - base-data update must be called with the right args
+        # - base-data update keyed on the funding_payment data type
         processor._ProcessingManager__update_base_data.assert_called_once_with(
             mock_instrument, "funding_payment", sample_funding_payment
         )
 
-    def test_funding_payment_handler_registration(self):
-        """_handle_funding_payment exists on ProcessingManager and has the expected signature."""
-        # - direct access raises AttributeError if missing (no hasattr)
-        handler = ProcessingManager._handle_funding_payment
-        assert callable(handler)
+        # - the resulting MarketEvent flows through the strategy pipeline
+        processor._run_strategy_pipeline.assert_called_once()
+        mkt = processor._run_strategy_pipeline.call_args[0][0]
+        assert isinstance(mkt, MarketEvent)
+        assert mkt.type == "funding_payment"
+        assert mkt.instrument == mock_instrument
+        assert mkt.data == sample_funding_payment
+        assert mkt.is_trigger is True
 
-        # - naming convention: _handle_<event_type>
-        method_name = "_handle_funding_payment"
-        handler_key = method_name.split("_handle_")[1]
-        assert handler_key == "funding_payment"
+    def test_payload_for_event_extracts_funding_payment(self, mock_instrument, sample_funding_payment):
+        """payload_for_event unwraps FundingPaymentEvent to its FundingPayment payload."""
 
-        # - verify method signature
-        sig = inspect.signature(ProcessingManager._handle_funding_payment)
-        param_names = list(sig.parameters.keys())
-        assert "self" in param_names
-        assert "instrument" in param_names
-        assert "event_type" in param_names
-        assert "funding_payment" in param_names
+        event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
+        assert payload_for_event(event) is sample_funding_payment
 
     # -----------------------------------------------------------------------
     # SimulatedDataIterator tests

@@ -469,6 +469,81 @@ class TestCcxtTrading:
         exchange = "BINANCE.UM"
         await self._test_basic_exchange_functions(exchange, ["BTCUSDT"])
 
+    @pytest.mark.asyncio
+    @pytest.mark.e2e
+    @pytest.mark.skip(reason="Skip by default, run manually if needed (network, no credentials)")
+    async def test_paper_trading_binance_um(self):
+        """Paper-mode trading end-to-end (network, NO credentials).
+
+        Boots paper mode against the PUBLIC BINANCE.UM OHLC feed, submits a market
+        order via ctx.trade, and asserts it fills through the SimulatedConnector -> central
+        SimulatedAccountManager path: the order reaches FILLED, the position opens, and the
+        base-currency balance changes. Verifies the PR 7 commit-2 rewire under live market data.
+        """
+        exchange = "BINANCE.UM"
+        symbol = "BTCUSDT"
+
+        ctx = run_strategy(
+            config=StrategyConfig(
+                name="PaperTradingTest",
+                strategy=DebugStrategy,
+                live=LiveConfig(
+                    exchanges={
+                        exchange: ExchangeConfig(
+                            connector="ccxt",
+                            universe=[symbol],
+                        )
+                    },
+                    logging=LoggingConfig(
+                        logger="InMemoryLogsWriter",
+                        position_interval="10s",
+                        portfolio_interval="1m",
+                        heartbeat_interval="10m",
+                    ),
+                ),
+            ),
+            account_manager=AccountConfigurationManager(),
+            paper=True,
+            blocking=False,
+        )
+
+        assert ctx.is_paper_trading, "expected paper trading mode"
+
+        await wait(lambda: ctx.is_fitted(), timeout=30)
+        # - wait until the live OHLC feed has primed a quote (the OME needs it to match)
+        i1 = ctx.instruments[0]
+        await wait(lambda: ctx.quote(i1) is not None, timeout=60)
+
+        from qubx.core.basics import OrderStatus
+        from qubx.loggers.inmemory import InMemoryLogsWriter
+
+        pos = ctx.positions[i1]
+        assert not pos.is_open()
+
+        # - submit a market BUY; the SimulatedConnector OME matches against the live quote
+        price = ctx.quote(i1).mid_price()
+        amount = i1.round_size_up(self.MIN_NOTIONAL / price)
+        order = ctx.trade(i1, amount=amount)
+        assert order is not None
+
+        # - fill flows back through the central AM: the position opens at the requested size
+        await wait(lambda: ctx.positions[i1].is_open(), timeout=15)
+        assert self._is_size_similar(ctx.positions[i1].quantity, amount, i1)
+
+        # - the order reached FILLED (the SimulatedConnector emitted OrderFilledEvent; AM applied it).
+        #   Channel dispatch is async on the data-loop thread, so allow it to settle.
+        await wait(lambda: order.status == OrderStatus.FILLED, timeout=15)
+
+        # - the fill was recorded as an execution by the logging path
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
+        assert len(logs_writer.get_executions()) > 0
+
+        # - close out and stop
+        ctx.trade(i1, -ctx.positions[i1].quantity)
+        await wait(lambda: not ctx.positions[i1].is_open(), timeout=15)
+        ctx.stop()
+
     async def _test_basic_exchange_functions(self, exchange: str, symbols: list[str]):
         # Convert credentials format
         account_manager = AccountConfigurationManager()

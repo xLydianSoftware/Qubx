@@ -9,10 +9,10 @@ from asyncio.exceptions import CancelledError
 from typing import Set
 
 import numpy as np
-import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Instrument
+from qubx.core.events import event_for_data_type
 from qubx.utils.time import floor_t64
 
 from ..exceptions import CcxtSymbolNotRecognized
@@ -137,7 +137,11 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
                         open_interest = ccxt_convert_open_interest(symbol, oi_data)
 
                         # Send individual update per instrument
-                        channel.send((instrument, sub_type, open_interest, False))
+                        channel.send(
+                            event_for_data_type(
+                                sub_type, instrument=instrument, payload=open_interest, is_historical=False
+                            )
+                        )
 
                     except CcxtSymbolNotRecognized:
                         logger.warning(f"<yellow>{self._exchange_id}</yellow> Symbol not recognized: {symbol}")

@@ -73,7 +73,7 @@ def test_cancel_order_routes_client_order_id(trading_manager):
     )
 
 
-def test_cancel_order_async_routes_order_id(trading_manager):
+def test_cancel_order_routes_order_id(trading_manager):
     order = _order(order_id="exchange_order_2", client_order_id="cid_2")
     trading_manager._account_manager.find_order_by_id.return_value = order
     trading_manager._account_manager.find_order_by_client_id.return_value = None

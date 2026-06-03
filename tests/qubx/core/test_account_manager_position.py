@@ -1,8 +1,8 @@
+from unittest.mock import MagicMock
+
 import numpy as np
 
-from qubx.core.account_manager import AccountManager
-from qubx.core.account_manager_config import AccountManagerConfig
-from qubx.core.account_state import AccountState
+from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import (
     Balance,
     Deal,
@@ -59,19 +59,15 @@ def _spot_instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 
 def _am(exchange="binance"):
     am = AccountManager.__new__(AccountManager)
-    am._states = {exchange: AccountState(exchange=exchange)}
-    am._connectors = {}
-    am._cfg = AccountManagerConfig()
-    am._time = _T()
-    am._strategy = None
-    am._liveness_unready_since = {}
-    am._applied_funding_buckets = {}
-    am._ctx = object()
+    am._init_state(
+        connectors={exchange: MagicMock()}, strategy=MagicMock(), time=_T(),
+        cfg=AccountManagerConfig(), account_id="test", tcc=None,
+    )
     return am
 
 
-def _add_order(state, inst, cid="cid-1", status=OrderStatus.ACCEPTED, qty=1.0):
-    state._add_order(
+def add_order(state, inst, cid="cid-1", status=OrderStatus.ACCEPTED, qty=1.0):
+    state.add_order(
         Order(
             client_order_id=cid,
             venue_order_id="V1",
@@ -105,7 +101,7 @@ def test_partial_fill_updates_position_quantity_and_avg():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    _add_order(state, inst)
+    add_order(state, inst)
     am.apply(
         OrderPartiallyFilledEvent(
             instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=0.5, price=50_000.0)
@@ -123,7 +119,7 @@ def test_two_fills_average_into_position():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    _add_order(state, inst, qty=1.0)
+    add_order(state, inst, qty=1.0)
     am.apply(
         OrderPartiallyFilledEvent(
             instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.5, price=50_000.0)
@@ -146,8 +142,8 @@ def test_funding_payment_applied_once_per_bucket():
     # open a long position and mark it so funding has a mark price
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
     pos.update_market_price(am._time.time(), 50_000.0, 1.0)
-    state._set_position(inst, pos)
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    state.set_position(inst, pos)
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
     payment = FundingPayment(
         time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
@@ -167,8 +163,8 @@ def test_funding_payment_duplicate_skipped():
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
     pos.update_market_price(am._time.time(), 50_000.0, 1.0)
-    state._set_position(inst, pos)
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    state.set_position(inst, pos)
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
     payment = FundingPayment(
         time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
@@ -185,9 +181,9 @@ def test_funding_payment_duplicate_skipped():
 
 
 def test_simulation_account_manager_constructs_without_pm():
-    from qubx.core.account_manager import SimulationAccountManager
+    from qubx.core.account_manager import SimulatedAccountManager
 
-    sam = SimulationAccountManager(connectors={"binance": object()}, strategy=None, time=_T())
+    sam = SimulatedAccountManager(connectors={"binance": object()}, strategy=None, time=_T())
     assert sam._pm is None
     assert "binance" in sam._states
     # position math is inherited and works in the sim variant
@@ -208,8 +204,8 @@ def test_funding_on_unmarked_position_skipped_without_consuming_bucket():
     # position with no quote/deal -> last_update_price is NaN
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
     assert np.isnan(pos.last_update_price)
-    state._set_position(inst, pos)
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    state.set_position(inst, pos)
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
     payment = FundingPayment(
         time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
@@ -239,8 +235,8 @@ def test_funding_payment_moves_free_and_total_together():
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
     pos.update_market_price(am._time.time(), 50_000.0, 1.0)
-    state._set_position(inst, pos)
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=900.0, locked=100.0))
+    state.set_position(inst, pos)
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=900.0, locked=100.0))
 
     payment = FundingPayment(
         time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
@@ -261,8 +257,8 @@ def test_funding_payment_different_bucket_applies_again():
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
     pos.update_market_price(am._time.time(), 50_000.0, 1.0)
-    state._set_position(inst, pos)
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    state.set_position(inst, pos)
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
     base_ns = np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64)
     p1 = FundingPayment(time=base_ns, funding_rate=0.0001, funding_interval_hours=8)
@@ -280,7 +276,7 @@ def test_futures_realized_pnl_folds_into_total_capital():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=100_000.0, free=100_000.0))
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=100_000.0, free=100_000.0))
 
     # open long 1.0 @ 50k
     am._apply_deal_to_position(state, inst, _fill(trade_id="t1", amount=1.0, price=50_000.0))
@@ -302,7 +298,7 @@ def test_spot_fill_credits_base_and_debits_quote():
     am = _am()
     state = am._states["binance"]
     inst = _spot_instrument()
-    state._update_balance("USDT", Balance(exchange="binance", currency="USDT", total=100_000.0, free=100_000.0))
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=100_000.0, free=100_000.0))
 
     deal = _fill(trade_id="t1", amount=0.5, price=100_000.0)
     am._apply_deal_to_position(state, inst, deal)

@@ -132,7 +132,7 @@ class TradingManager(ITradingManager):
             instrument=instrument,
             time=self._context.time(),
             quantity=size_adj,
-            price=price or 0.0,
+            price=price,  # None for market orders
             side=side,
             status=OrderStatus.SUBMITTED,
             time_in_force=time_in_force,
@@ -158,35 +158,21 @@ class TradingManager(ITradingManager):
             options=options,
         )
 
-        # Register the order before submitting: a synchronous connector (the
-        # simulator) emits Accepted/Filled events inside submit_order, and the
-        # account state machine must already know the order to resolve them by cid
-        # instead of materializing a phantom EXTERNAL twin. A sync raise from
-        # submit_order is a framework-side rejection — mark the order REJECTED so the
-        # cache never keeps a phantom in-flight order.
-        self._account_manager.add_order(connector.exchange_name, order)
+        # Register the order BEFORE submitting. This is required for synchronous
+        # connectors (the simulator): submit_order emits Accepted/Filled events inline,
+        # so the account state machine must already hold the order to resolve them by cid
+        # rather than materialize a phantom EXTERNAL twin. For async (live) connectors the
+        # ordering is harmless — the venue events arrive later and resolve the same order.
+        self._account_manager.add_order(order)
         try:
             connector.submit_order(request)
         except Exception:
-            self._account_manager.transition_order(connector.exchange_name, cid, OrderStatus.REJECTED)
+            # A synchronous raise means the order never reached the venue (a framework-side
+            # rejection — bad params, pre-submit error). Drop it so the cache keeps no
+            # phantom in-flight order; the caller is informed by the re-raised exception.
+            self._account_manager.remove_order(connector.exchange_name, cid)
             raise
         return order
-
-    def trade_async(
-        self,
-        instrument: Instrument,
-        amount: float,
-        price: float | None = None,
-        time_in_force="gtc",
-        client_id: str | None = None,
-        **options,
-    ) -> str | None:
-        # submit_order is already non-blocking on the connector; the typed-event
-        # path makes sync/async submission identical from the caller's side.
-        order = self.trade(
-            instrument, amount, price=price, time_in_force=time_in_force, client_id=client_id, **options
-        )
-        return order.client_order_id
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         raise NotImplementedError("Not implemented yet")
@@ -301,7 +287,7 @@ class TradingManager(ITradingManager):
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Closing position {quantity} with market order for {closing_amount}"
             )
-            self.trade_async(instrument, closing_amount, reduce_only=True)
+            self.trade(instrument, closing_amount, reduce_only=True)
         else:
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Closing position {quantity} by emitting signal with 0 target"
@@ -360,7 +346,7 @@ class TradingManager(ITradingManager):
         if order is None:
             raise OrderNotFound(client_order_id or order_id or "")
 
-        if order.status.is_terminal() or order.status is OrderStatus.PENDING_CANCEL:
+        if order.status.is_terminal or order.status is OrderStatus.PENDING_CANCEL:
             return True
 
         cid = order.client_order_id
@@ -380,7 +366,7 @@ class TradingManager(ITradingManager):
 
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         for o in self._account_manager.get_orders(instrument).values():
-            if o.status.is_terminal() or o.status is OrderStatus.PENDING_CANCEL:
+            if o.status.is_terminal or o.status is OrderStatus.PENDING_CANCEL:
                 continue
             self.cancel_order(client_order_id=o.client_order_id, exchange=o.instrument.exchange)
 
@@ -402,7 +388,7 @@ class TradingManager(ITradingManager):
         if order is None:
             raise OrderNotFound(client_order_id or order_id or "")
 
-        if order.status.is_terminal():
+        if order.status.is_terminal:
             raise OrderAlreadyTerminal(order.client_order_id, order.status)
         if order.status is OrderStatus.PENDING_UPDATE:
             return
