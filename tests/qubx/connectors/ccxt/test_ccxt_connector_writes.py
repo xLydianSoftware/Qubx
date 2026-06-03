@@ -459,10 +459,10 @@ async def test_update_edit_venue_reject_emits_update_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_cancel_recreate_path_cancels_then_rejects_without_cache() -> None:
-    # Exchange without editOrder support -> cancel+recreate path. Without the order
-    # cache (read-side commit) the recreate can't be built, so it surfaces as
-    # OrderUpdateRejected after a successful cancel.
+async def test_update_cancel_recreate_path_rejects_without_touching_live_order() -> None:
+    # Exchange without editOrder support -> cancel+recreate path. The recreate can't be
+    # built yet (no original params held), so it must reject WITHOUT cancelling: cancelling
+    # first would leave the order dead at the venue while telling the strategy "still alive".
     exchange = Mock()
     exchange.has = {"editOrder": False}
     exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123"})
@@ -471,7 +471,7 @@ async def test_update_cancel_recreate_path_cancels_then_rejects_without_cache() 
     conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0, quantity=2.0)
     await _drive(conn)
 
-    exchange.cancel_order.assert_awaited_once_with("VENUE123", None)
+    exchange.cancel_order.assert_not_awaited()  # live order left untouched
     assert isinstance(sent[0], OrderUpdateRejectedEvent)
 
 
