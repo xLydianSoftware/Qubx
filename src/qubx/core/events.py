@@ -204,8 +204,13 @@ class LiquidationEvent(MarketDataMessage):
 class ScheduledEvent(ChannelMessage):
     """Scheduled/control trigger off the channel (time, fit, delisting_check,
     stale_data_check, state_snapshot, or a custom scheduled method). `kind` is the
-    scheduled event identifier the dispatcher routes on; `payload` carries the
-    trigger's (prev, exec) time tuple or custom data."""
+    scheduled event identifier the dispatcher routes on.
+
+    `payload` is intentionally `Any`: its shape is a tagged union keyed by `kind` — a
+    (prev, exec) time tuple for the built-in triggers, a dict for backtester signal
+    injection, or arbitrary data for user-registered custom schedules. The set of kinds
+    is open (strategies register their own), so one explicit type would either misrepresent
+    some kinds or force a class-per-kind that custom schedules couldn't extend."""
 
     kind: str
     payload: Any = None
@@ -237,6 +242,32 @@ MARKET_DATA_TYPES: frozenset = frozenset(
         DataType.FUNDING_PAYMENT,
     }
 )
+
+# Typed market-data event class -> the attribute holding its payload. A single O(1)
+# table, co-located with the event classes, that the dispatch reads instead of a
+# per-tick match/case (see payload_for_event).
+_PAYLOAD_ATTR: dict[type, str] = {
+    QuoteEvent: "quote",
+    TradeEvent: "trade",
+    OrderBookEvent: "orderbook",
+    OhlcEvent: "bar",
+    FundingRateEvent: "funding_rate",
+    OpenInterestEvent: "open_interest",
+    LiquidationEvent: "liquidation",
+    FundingPaymentEvent: "payment",
+}
+
+# Event class -> its (non-parameterized) data-type string. OHLC is omitted on purpose:
+# its data type carries the timeframe and is built per-event in data_type_for_event.
+_EVENT_DATA_TYPE: dict[type, str] = {
+    QuoteEvent: str(DataType.QUOTE),
+    TradeEvent: str(DataType.TRADE),
+    OrderBookEvent: str(DataType.ORDERBOOK),
+    FundingRateEvent: str(DataType.FUNDING_RATE),
+    OpenInterestEvent: str(DataType.OPEN_INTEREST),
+    LiquidationEvent: str(DataType.LIQUIDATION),
+    FundingPaymentEvent: str(DataType.FUNDING_PAYMENT),
+}
 
 
 def event_for_data_type(
@@ -277,24 +308,21 @@ def event_for_data_type(
 
 
 def data_type_for_event(event: ChannelMessage) -> str:
-    """Inverse of `event_for_data_type`: the (parameterized) data-type string for a
-    typed market-data event."""
-    match event:
-        case QuoteEvent():
-            return str(DataType.QUOTE)
-        case TradeEvent():
-            return str(DataType.TRADE)
-        case OrderBookEvent():
-            return str(DataType.ORDERBOOK)
-        case OhlcEvent():
-            return DataType.OHLC[event.timeframe]
-        case FundingRateEvent():
-            return str(DataType.FUNDING_RATE)
-        case OpenInterestEvent():
-            return str(DataType.OPEN_INTEREST)
-        case LiquidationEvent():
-            return str(DataType.LIQUIDATION)
-        case FundingPaymentEvent():
-            return str(DataType.FUNDING_PAYMENT)
-        case _:
-            raise ValueError(f"no data type for event: {type(event).__name__}")
+    """Inverse of `event_for_data_type`: the (parameterized) data-type string for a typed
+    market-data event, used by the typed dispatch to key the cache/throttler. O(1) table
+    lookup; OHLC is special-cased because its data type carries the timeframe."""
+    if isinstance(event, OhlcEvent):
+        return DataType.OHLC[event.timeframe]
+    dtype = _EVENT_DATA_TYPE.get(type(event))
+    if dtype is None:
+        raise ValueError(f"no data type for event: {type(event).__name__}")
+    return dtype
+
+
+def payload_for_event(event: ChannelMessage) -> Any:
+    """The wrapped payload (quote/trade/bar/…) carried by a typed market-data event.
+    O(1) table lookup, the counterpart to data_type_for_event for the dispatch hot path."""
+    attr = _PAYLOAD_ATTR.get(type(event))
+    if attr is None:
+        raise ValueError(f"no payload for market-data event: {type(event).__name__}")
+    return getattr(event, attr)

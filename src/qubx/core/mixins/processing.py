@@ -37,11 +37,7 @@ from qubx.core.events import (
     CustomEvent,
     ErrorEvent,
     FundingPaymentEvent,
-    FundingRateEvent,
-    LiquidationEvent,
     MarketDataMessage,
-    OhlcEvent,
-    OpenInterestEvent,
     OrderAcceptedEvent,
     OrderBookEvent,
     OrderCanceledEvent,
@@ -59,6 +55,7 @@ from qubx.core.events import (
     TradeEvent,
     data_type_for_event,
     event_for_data_type,
+    payload_for_event,
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
@@ -1237,7 +1234,7 @@ class ProcessingManager(IProcessingManager):
     def _dispatch_market_data(self, event: MarketDataMessage) -> None:
         instrument = event.instrument
         d_type = data_type_for_event(event)
-        payload = self._md_payload(event)
+        payload = payload_for_event(event)
 
         if event.is_historical:
             # Warmup: update cache/indicators only (no throttle, no OME feed, no trading) —
@@ -1270,28 +1267,6 @@ class ProcessingManager(IProcessingManager):
         connector = self._context._connectors.get(instrument.exchange)
         if connector is not None:
             connector.process_market_data(instrument, payload)
-
-    @staticmethod
-    def _md_payload(event: MarketDataMessage) -> Any:
-        match event:
-            case QuoteEvent():
-                return event.quote
-            case TradeEvent():
-                return event.trade
-            case OrderBookEvent():
-                return event.orderbook
-            case OhlcEvent():
-                return event.bar
-            case FundingRateEvent():
-                return event.funding_rate
-            case OpenInterestEvent():
-                return event.open_interest
-            case LiquidationEvent():
-                return event.liquidation
-            case FundingPaymentEvent():
-                return event.payment
-            case _:
-                raise ValueError(f"no payload for market-data event: {type(event).__name__}")
 
     def _fire_md_reaction(self, event: MarketDataMessage) -> None:
         match event:

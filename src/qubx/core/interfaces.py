@@ -2712,16 +2712,6 @@ class IStrategy(metaclass=Mixable):
         on_market_data->signals path; does not itself generate signals."""
         ...
 
-    def on_deals(self, ctx: IStrategyContext, instrument: Instrument, deals: list[Deal]) -> None:
-        """
-        Called when deals are received.
-
-        Args:
-            ctx: Strategy context.
-            deals: The deals.
-        """
-        return None
-
     def on_order_accepted(self, ctx: IStrategyContext, order: Order) -> None: ...
 
     def on_order_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
