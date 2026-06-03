@@ -16,6 +16,7 @@ from qubx.core.basics import (
     TriggerEvent,
     dt_64,
 )
+from qubx.core.events import ChannelMessage
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
@@ -144,7 +145,10 @@ class SimulatedCtrlChannel(CtrlChannel):
         self._callback = callback
 
     def send(self, data):
-        # - when data is sent, invoke callback
+        # - dispatch synchronously: typed connector events go to process_event,
+        #   legacy market-data tuples go to process_data.
+        if isinstance(data, ChannelMessage):
+            return self._callback.process_event(data)
         return self._callback.process_data(*data)
 
     def receive(self, timeout: int | None = None) -> Any:

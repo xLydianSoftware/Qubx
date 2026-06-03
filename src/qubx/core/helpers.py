@@ -12,6 +12,7 @@ from croniter import croniter
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Timestamped
+from qubx.core.events import ScheduledEvent
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.utils.time import convert_seconds_to_str, convert_tf_str_td64, interval_to_cron, to_timedelta, to_timestamp
 
@@ -274,7 +275,7 @@ class BasicScheduler:
         self._once_events.discard(event)
 
         # Send notification via channel
-        self._chan.send((None, event, (trig_time, trig_time), False))
+        self._chan.send(ScheduledEvent(instrument=None, kind=event, payload=(trig_time, trig_time)))
 
         # Clean up from tracking
         self._next_times.pop(event, None)
@@ -344,7 +345,7 @@ class BasicScheduler:
         self._scheduled_events.pop(event, None)
 
         # - send notification to channel
-        self._chan.send((None, event, (prev_time_sec, trig_time), False))
+        self._chan.send(ScheduledEvent(instrument=None, kind=event, payload=(prev_time_sec, trig_time)))
 
         # - try to arm this event again
         self._arm_schedule(event, now)
