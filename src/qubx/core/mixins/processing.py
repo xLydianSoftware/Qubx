@@ -417,8 +417,11 @@ class ProcessingManager(IProcessingManager):
         else:
             event = self._process_custom_event(instrument, d_type, data)
 
-        # TODO(account-mgmt): control/scheduled tuples still flow through here and
-        # _handlers; 6.5.3 routes them as ScheduledEvent through process_event.
+        # Scheduled/control events no longer reach this tuple path: the scheduler emits a
+        # typed ScheduledEvent (handled by process_event -> _dispatch_scheduled via _handlers).
+        # This path now serves only historical-warmup batches and live custom-data tuples
+        # from providers that still emit tuples (e.g. Tardis); the market-data hot path is
+        # typed at process_event.
         return self._run_strategy_pipeline(event)
 
     def _run_strategy_pipeline(self, event: Any, *, md_reaction: MarketDataMessage | None = None) -> bool:

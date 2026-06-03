@@ -22,6 +22,7 @@ from qubx.core.basics import (
     MarketType,
     Order,
     OrderRequest,
+    OrderTransition,
     Position,
     RestoredState,
     Signal,
@@ -630,6 +631,9 @@ class StrategyContext(IStrategyContext):
 
     def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
         return self.account.get_orders(instrument, exchange)
+
+    def get_order_history(self, client_order_id: str) -> list[OrderTransition]:
+        return self.account.get_order_history(client_order_id)
 
     def position_report(self, exchange: str | None = None) -> dict:
         return self.account.position_report(exchange)

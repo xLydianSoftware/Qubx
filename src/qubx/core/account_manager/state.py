@@ -1,9 +1,9 @@
-from collections import deque
+from collections import Counter, deque
 from dataclasses import dataclass, field
 
 import numpy as np
 
-from qubx.core.basics import Balance, Deal, Instrument, Order, OrderStatus, Position
+from qubx.core.basics import Balance, Deal, Instrument, Order, OrderStatus, OrderTransition, Position
 
 
 @dataclass
@@ -18,6 +18,9 @@ class AccountState:
     _pending_evict_index: dict[str, np.datetime64] = field(default_factory=dict)
     _terminal_history: deque = field(default_factory=lambda: deque(maxlen=10_000))
     _last_snapshot_as_of: np.datetime64 | None = None
+    # Audit counter: number of status transitions by destination status (status.value ->
+    # count). Read via AccountManager.get_metrics(); never reset within a session.
+    _transition_counts: Counter = field(default_factory=Counter)
 
     def get_orders(self) -> dict[str, Order]:
         return dict(self._active_orders)
@@ -66,6 +69,10 @@ class AccountState:
     def get_balances(self) -> list[Balance]:
         return list(self._balances.values())
 
+    def get_transition_counts(self) -> dict[str, int]:
+        """Audit counter snapshot: status.value -> number of transitions into it."""
+        return dict(self._transition_counts)
+
     def add_order(self, order: Order) -> None:
         self._active_orders[order.client_order_id] = order
         if order.venue_order_id is not None:
@@ -75,6 +82,8 @@ class AccountState:
 
     def transition_order(self, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
         order = self._active_orders[cid]
+        order.transitions.append(OrderTransition(time=now, from_status=order.status, to_status=new_status))
+        self._transition_counts[new_status.value] += 1
         order.status = new_status
         order.last_updated_at = now
         if new_status.is_terminal:

@@ -723,6 +723,15 @@ class OrderRequest:
     options: dict[str, Any] = field(default_factory=dict)
 
 
+@dataclass(frozen=True, slots=True)
+class OrderTransition:
+    """One entry in an Order's status-transition audit trail (see Order.transitions)."""
+
+    time: dt_64
+    from_status: OrderStatus
+    to_status: OrderStatus
+
+
 @dataclass
 class Order:
     client_order_id: str
@@ -751,6 +760,10 @@ class Order:
     post_only: bool = False
     cost: float = 0.0
     options: dict[str, Any] = field(default_factory=dict)
+    # Status-transition audit trail, appended on every AM-driven status change (the single
+    # writer is AccountState.transition_order). Bounded by the order's lifetime + the
+    # terminal-history ring buffer. Exposed via ctx.get_order_history(client_order_id).
+    transitions: list[OrderTransition] = field(default_factory=list)
 
     # TODO(account-mgmt): the OME / simulated-exchange / ccxt-conversion internals still
     # address orders by `order.id` and `order.client_id` (reading AND writing). These

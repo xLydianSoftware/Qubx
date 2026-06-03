@@ -33,6 +33,7 @@ from qubx.core.basics import (
     MarketType,
     Order,
     OrderRequest,
+    OrderTransition,
     Position,
     RestoredState,
     Signal,
@@ -295,6 +296,14 @@ class IAccountViewer:
 
         Returns:
             Order | None: The order object if found, None otherwise
+        """
+        ...
+
+    def get_order_history(self, client_order_id: str) -> list[OrderTransition]:
+        """Status-transition audit trail for an order (active or recently terminal).
+
+        Returns an empty list if the order is unknown or already evicted from the
+        terminal-history buffer.
         """
         ...
 

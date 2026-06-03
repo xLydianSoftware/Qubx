@@ -541,3 +541,38 @@ def test_cancel_rejected_with_no_instrument_reverts_pending_cancel():
     assert o.pre_pending_status is None
     assert result is not None
     assert result.client_order_id == "cid-pc"
+
+
+def test_get_order_history_records_transitions():
+    # B5 audit log: every AM-driven status change is appended to Order.transitions and
+    # surfaced via get_order_history (searches active orders + terminal-history buffer).
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.SUBMITTED, instrument=inst, quantity=1.0)
+    am.apply(
+        OrderAcceptedEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", accepted_at=np.datetime64("2026-05-28")
+        )
+    )
+    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.0)))
+    history = am.get_order_history("cid-1")
+    assert [(t.from_status, t.to_status) for t in history] == [
+        (OrderStatus.SUBMITTED, OrderStatus.ACCEPTED),
+        (OrderStatus.ACCEPTED, OrderStatus.FILLED),
+    ]
+    assert am.get_order_history("does-not-exist") == []
+
+
+def test_get_metrics_counts_transitions_by_status():
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.SUBMITTED, instrument=inst, quantity=1.0)
+    am.apply(
+        OrderAcceptedEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", accepted_at=np.datetime64("2026-05-28")
+        )
+    )
+    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.0)))
+    counts = am.get_metrics()["binance"]
+    assert counts[OrderStatus.ACCEPTED.value] == 1
+    assert counts[OrderStatus.FILLED.value] == 1

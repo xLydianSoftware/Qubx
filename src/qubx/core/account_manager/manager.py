@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import numpy as np
@@ -15,6 +16,7 @@ from qubx.core.basics import (
     Order,
     OrderOrigin,
     OrderStatus,
+    OrderTransition,
     Position,
     TransactionCostsCalculator,
 )
@@ -72,7 +74,12 @@ class AccountManager:
     _liveness_threshold: np.timedelta64
     _terminal_retention: np.timedelta64
     _liveness_unready_since: dict[str, np.datetime64]
-    _applied_funding_buckets: dict[str, set]
+    # Per-exchange dedup of applied funding buckets, bounded LRU-style (insertion order ≈
+    # funding-event time order): old buckets evict once the cap is hit so the set can't grow
+    # unbounded over long-running sessions. A re-delivered funding event only needs RECENT
+    # buckets to dedup against.
+    _FUNDING_BUCKET_CAP: int = 4096
+    _applied_funding_buckets: "dict[str, OrderedDict[tuple, None]]"
 
     def __init__(
         self,
@@ -205,6 +212,17 @@ class AccountManager:
 
     def find_order_by_client_id(self, client_id: str) -> Order | None:
         return self.get_order(client_id)
+
+    def get_order_history(self, client_order_id: str) -> list[OrderTransition]:
+        """The status-transition audit trail for an order — searches active orders then the
+        terminal-history ring buffer; empty if the order is unknown or already evicted."""
+        order = self.get_order(client_order_id)
+        return list(order.transitions) if order is not None else []
+
+    def get_metrics(self) -> dict[str, dict[str, int]]:
+        """Per-exchange audit counters: exchange -> {order-status: transitions into it}.
+        A pull-based hook for emitters/dashboards; never reset within a session."""
+        return {exchange: state.get_transition_counts() for exchange, state in self._states.items()}
 
     def position_report(self, exchange: str | None = None) -> dict:
         report = {}
@@ -806,7 +824,7 @@ class AccountManager:
             return None
         interval_ns = payment.funding_interval_hours * 3_600_000_000_000
         bucket = (instrument, int(payment.time) // interval_ns)
-        seen = self._applied_funding_buckets.setdefault(state.exchange, set())
+        seen = self._applied_funding_buckets.setdefault(state.exchange, OrderedDict())
         if bucket in seen:
             return None
         pos = state.get_position(instrument)
@@ -820,7 +838,9 @@ class AccountManager:
         if np.isnan(mark):
             logger.warning(f"[{state.exchange}] funding for {instrument} skipped: no mark price yet")
             return None
-        seen.add(bucket)
+        seen[bucket] = None
+        if len(seen) > self._FUNDING_BUCKET_CAP:
+            seen.popitem(last=False)  # evict the oldest bucket
         amount = pos.apply_funding_payment(payment, mark)  # updates cumulative_funding/pnl
         bal = state.get_balance(instrument.settle)
         if bal is not None:
