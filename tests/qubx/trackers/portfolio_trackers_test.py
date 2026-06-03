@@ -2,7 +2,6 @@ import numpy as np
 from pytest import approx
 
 from qubx import logger
-from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
     Deal,
     Instrument,
@@ -16,10 +15,9 @@ from qubx.core.interfaces import IPositionGathering, IStrategyContext
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.gathering.simplest import SimplePositionGatherer
-from qubx.health.dummy import DummyHealthMonitor
 from qubx.trackers.rebalancers import PortfolioRebalancerTracker
 from qubx.trackers.sizers import LongShortRatioPortfolioSizer
-from tests.qubx.core.utils_test import DummyTimeProvider
+from tests.qubx.core.utils_test import StubAccount
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
@@ -113,7 +111,7 @@ class DebugStratageyCtx(IStrategyContext):
         self._d_qts = {i: None for i in self._instruments}  # type: ignore
         self._positions = {i: Position(i) for i in self.instruments}
         self.capital = capital
-        self.acc = BasicAccountProcessor("test", DummyTimeProvider(), "USDT", DummyHealthMonitor(), "TEST")
+        self.acc = StubAccount(base_currency="USDT", exchange="TEST")
         self.acc.update_balance("USDT", capital, 0)
         self.acc.attach_positions(*self.positions.values())
 

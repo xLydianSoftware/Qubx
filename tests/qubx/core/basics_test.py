@@ -4,7 +4,7 @@ from typing import List, Union
 import pandas as pd
 from pytest import approx
 
-from qubx.core.basics import Position, TransactionCostsCalculator
+from qubx.core.basics import Order, OrderOrigin, OrderStatus, Position, TransactionCostsCalculator
 from qubx.core.lookups import FileInstrumentsLookupWithCCXT, lookup
 from qubx.core.series import Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str
@@ -194,3 +194,30 @@ class TestBasics:
         assert 355 * 5 == pos2.get_amount_released_funds_after_closing(10)
         assert 355 * 1 == pos2.get_amount_released_funds_after_closing(-4)
         assert 355 * 5 == pos2.get_amount_released_funds_after_closing()
+
+
+def _bare_order(**overrides):
+    d = dict(
+        client_order_id="o1", venue_order_id=None, origin=OrderOrigin.FRAMEWORK, type="LIMIT",
+        instrument=None, time=pd.Timestamp("2024-01-01").asm8, quantity=1.0, price=100.0,
+        side="BUY", status=OrderStatus.SUBMITTED, time_in_force="gtc",
+    )
+    d.update(overrides)
+    return Order(**d)
+
+
+def test_order_record_fill_accumulates_and_weights_avg_price():
+    o = _bare_order()
+    o.record_fill(0.5, 50_000.0)
+    assert o.filled_quantity == 0.5
+    assert o.avg_fill_price == 50_000.0  # first fill -> exact price
+    o.record_fill(0.5, 51_000.0)
+    assert o.filled_quantity == 1.0
+    assert o.avg_fill_price == 50_500.0  # size-weighted average
+
+
+def test_order_record_fill_uses_absolute_size_for_sells():
+    o = _bare_order(side="SELL")
+    o.record_fill(-0.5, 50_000.0)  # signed amount -> absolute size used
+    assert o.filled_quantity == 0.5
+    assert o.avg_fill_price == 50_000.0
