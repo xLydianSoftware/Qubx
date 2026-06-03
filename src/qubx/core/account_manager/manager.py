@@ -1,9 +1,10 @@
-from typing import TYPE_CHECKING, Literal
+from typing import TYPE_CHECKING, Any, Callable, Literal
 
 import numpy as np
+import pandas as pd
 
 from qubx import logger
-from qubx.core.account_manager.config import AccountManagerConfig, _ms_to_cron
+from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import can_transition, validate_transition
 from qubx.core.basics import (
@@ -37,7 +38,8 @@ from qubx.core.events import (
     ReconcileDiff,
 )
 from qubx.core.exceptions import InvalidOrderTransition
-from qubx.core.interfaces import IStrategy
+from qubx.core.interfaces import IProcessingManager, IStrategy
+from qubx.utils.time import timedelta_to_crontab
 
 # StrategyContext and ProcessingManager both import AccountManager (the context builds it,
 # the PM holds/schedules for it), so importing them here at runtime is a circular import —
@@ -53,6 +55,25 @@ _FRAMEWORK_CID_PREFIX = "qubx_"
 
 
 class AccountManager:
+    _pm: IProcessingManager | None
+    _connectors: dict[str, IConnector]
+    _strategy: IStrategy
+    _time: ITimeProvider
+    _cfg: AccountManagerConfig
+    account_id: str
+    _tcc: TransactionCostsCalculator | None
+    _states: dict[str, AccountState]
+    _ctx: "StrategyContext"
+    _handlers: dict[type[AccountMessage], Callable[..., Any]]
+    # Derived timedeltas, precomputed once in _init_state (config is fixed for the AM's life).
+    _snapshot_grace: np.timedelta64
+    _snapshot_interval: np.timedelta64
+    _inflight_threshold: np.timedelta64
+    _liveness_threshold: np.timedelta64
+    _terminal_retention: np.timedelta64
+    _liveness_unready_since: dict[str, np.datetime64]
+    _applied_funding_buckets: dict[str, set]
+
     def __init__(
         self,
         *,
@@ -201,40 +222,20 @@ class AccountManager:
         state = self._get_state_for_event(event)
         if state is None:
             return None
-        match event:
-            case OrderPartiallyFilledEvent():
-                return self._handle_partial_fill(state, event)
-            case OrderFilledEvent():
-                return self._handle_fill(state, event)
-            case OrderAcceptedEvent():
-                return self._handle_accepted(state, event)
-            case OrderCanceledEvent():
-                return self._handle_canceled(state, event)
-            case OrderExpiredEvent():
-                return self._handle_expired(state, event)
-            case OrderUpdatedEvent():
-                return self._handle_updated(state, event)
-            case OrderRejectedEvent():
-                return self._handle_rejected(state, event)
-            case OrderCancelRejectedEvent():
-                return self._handle_cancel_rejected(state, event)
-            case OrderUpdateRejectedEvent():
-                return self._handle_update_rejected(state, event)
-            case AccountSnapshotEvent():
-                return self._handle_snapshot(state, event)
-            case FundingPaymentEvent():
-                return self._handle_funding_payment(state, event)
-            case PositionUpdateEvent() | BalanceUpdateEvent():
-                # No connector emits these yet; positions/balances are derived from
-                # fills and corrected by snapshot reconcile. PM still fires the
-                # on_position_update/on_balance_update callback off the event payload.
-                # TODO(account-mgmt): apply venue WS position/balance to AccountState
-                # here (via set_position/update_balance) once the live connectors emit
-                # them, with the same freshness/ratchet guard as snapshot reconcile.
-                return None
-            case _:
-                logger.warning(f"unhandled AccountMessage: {type(event)}")
-                return None
+        handler = self._handlers.get(type(event))
+        if handler is None:
+            logger.warning(f"unhandled AccountMessage: {type(event)}")
+            return None
+        return handler(state, event)
+
+    def _handle_position_balance_noop(self, state: AccountState, event: AccountMessage) -> None:
+        # No connector emits PositionUpdate/BalanceUpdate yet; positions/balances are derived
+        # from fills and corrected by snapshot reconcile. PM still fires the
+        # on_position_update/on_balance_update callback off the event payload.
+        # TODO(account-mgmt): apply venue WS position/balance to AccountState here (via
+        # set_position/update_balance) once the live connectors emit them, with the same
+        # freshness/ratchet guard as snapshot reconcile.
+        return None
 
     def on_market_quote(self, instrument, quote) -> None:
         state = self._states.get(instrument.exchange)
@@ -351,20 +352,44 @@ class AccountManager:
         self._liveness_threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
         self._terminal_retention = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
         self._states = {ex: AccountState(exchange=ex) for ex in connectors}
-        self._liveness_unready_since: dict[str, np.datetime64] = {}
+        self._liveness_unready_since = {}
         # TODO(account-mgmt): this set grows unbounded over long sessions; bound it
         # (evict old buckets) in a later PR.
-        self._applied_funding_buckets: dict[str, set] = {}
+        self._applied_funding_buckets = {}
         # Deferred init: always wired via set_context before any tick/callback fires.
-        self._ctx: "StrategyContext" = None  # type: ignore[assignment]
+        self._ctx = None  # type: ignore[assignment]
+        # Event-type → handler dispatch table (consumed by apply()). All handlers in one
+        # place; dispatch is an O(1) lookup on the exact event type.
+        self._handlers = {
+            OrderPartiallyFilledEvent: self._handle_partial_fill,
+            OrderFilledEvent: self._handle_fill,
+            OrderAcceptedEvent: self._handle_accepted,
+            OrderCanceledEvent: self._handle_canceled,
+            OrderExpiredEvent: self._handle_expired,
+            OrderUpdatedEvent: self._handle_updated,
+            OrderRejectedEvent: self._handle_rejected,
+            OrderCancelRejectedEvent: self._handle_cancel_rejected,
+            OrderUpdateRejectedEvent: self._handle_update_rejected,
+            AccountSnapshotEvent: self._handle_snapshot,
+            FundingPaymentEvent: self._handle_funding_payment,
+            PositionUpdateEvent: self._handle_position_balance_noop,
+            BalanceUpdateEvent: self._handle_position_balance_noop,
+        }
 
     def _register_ticks(self) -> None:
-        if self._cfg.inflight_check_interval_ms > 0:
-            self._pm.schedule(_ms_to_cron(self._cfg.inflight_check_interval_ms), self._on_inflight_tick)
-        if self._cfg.snapshot_check_interval_ms > 0:
-            self._pm.schedule(_ms_to_cron(self._cfg.snapshot_check_interval_ms), self._on_snapshot_tick)
-        if self._cfg.liveness_check_interval_ms > 0:
-            self._pm.schedule(_ms_to_cron(self._cfg.liveness_check_interval_ms), self._on_liveness_tick)
+        cfg = self._cfg
+        if cfg.inflight_check_interval_ms > 0:
+            self._pm.schedule(
+                timedelta_to_crontab(pd.Timedelta(cfg.inflight_check_interval_ms, "ms")), self._on_inflight_tick
+            )
+        if cfg.snapshot_check_interval_ms > 0:
+            self._pm.schedule(
+                timedelta_to_crontab(pd.Timedelta(cfg.snapshot_check_interval_ms, "ms")), self._on_snapshot_tick
+            )
+        if cfg.liveness_check_interval_ms > 0:
+            self._pm.schedule(
+                timedelta_to_crontab(pd.Timedelta(cfg.liveness_check_interval_ms, "ms")), self._on_liveness_tick
+            )
 
     def _transition(self, state: AccountState, cid: str, new_status: OrderStatus) -> Order:
         """Single validating chokepoint for every AM-driven status change.
@@ -816,7 +841,8 @@ class AccountManager:
                 # base-asset cash is excluded from bal.total; make base-currency
                 # selection explicit if a base-asset balance could exceed the quote
                 # balance (e.g. ETH-heavy portfolio with no USDT).
-                total += float(np.nan_to_num(pos.market_value_funds))
+                mv = pos.market_value_funds
+                total += 0.0 if mv != mv else float(mv)
         return total
 
     def _free_capital_for(self, state) -> float:
@@ -833,8 +859,10 @@ class AccountManager:
     def _notional(self, pos) -> float:
         # notional_value is NaN for an unmarked position; treat as 0 so a single
         # unmarked position can't poison aggregate leverage (consumed by emitters,
-        # loggers, sizers). A real position gets a mark on its first quote.
-        return float(np.nan_to_num(pos.notional_value))
+        # loggers, sizers). A real position gets a mark on its first quote. Plain scalar
+        # NaN check (n != n) — far cheaper than np.nan_to_num on a single float.
+        n = pos.notional_value
+        return 0.0 if n != n else float(n)
 
 
 class SimulatedAccountManager(AccountManager):

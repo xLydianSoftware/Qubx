@@ -1,6 +1,8 @@
+from unittest.mock import MagicMock
+
 import numpy as np
 
-from qubx.core.account_manager import AccountManager, AccountState
+from qubx.core.account_manager import AccountManager
 from qubx.core.basics import Deal, Instrument, MarketType, Order, OrderOrigin, OrderStatus
 from qubx.core.events import (
     OrderAcceptedEvent,
@@ -38,9 +40,10 @@ def _Inst() -> Instrument:
 
 def _am():
     am = AccountManager.__new__(AccountManager)
-    am._states = {"binance": AccountState(exchange="binance")}
-    am._time = _T()
-    am._applied_funding_buckets = {}
+    am._init_state(
+        connectors={"binance": MagicMock()}, strategy=MagicMock(), time=_T(),
+        cfg=None, account_id="test", tcc=None,
+    )
     return am
 
 

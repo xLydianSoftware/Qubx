@@ -1,6 +1,8 @@
+from unittest.mock import MagicMock
+
 import numpy as np
 
-from qubx.core.account_manager import AccountManager, AccountManagerConfig, AccountState
+from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import (
     Balance,
     Deal,
@@ -57,14 +59,10 @@ def _spot_instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 
 def _am(exchange="binance"):
     am = AccountManager.__new__(AccountManager)
-    am._states = {exchange: AccountState(exchange=exchange)}
-    am._connectors = {}
-    am._cfg = AccountManagerConfig()
-    am._time = _T()
-    am._strategy = None
-    am._liveness_unready_since = {}
-    am._applied_funding_buckets = {}
-    am._ctx = object()
+    am._init_state(
+        connectors={exchange: MagicMock()}, strategy=MagicMock(), time=_T(),
+        cfg=AccountManagerConfig(), account_id="test", tcc=None,
+    )
     return am
 
 
