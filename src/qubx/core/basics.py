@@ -1,9 +1,9 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import StrEnum
+from enum import Enum, StrEnum
 from functools import cache
-from queue import Empty, Queue
+from queue import Empty, Full, Queue
 from threading import Event, Lock
 from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, Union
 
@@ -647,7 +647,7 @@ class MarketEvent:
 
 @dataclass
 class Deal:
-    id: str  # trade id
+    trade_id: str  # trade id
     order_id: str  # order's id
     time: dt_64  # time of trade
     amount: float  # signed traded amount: positive for buy and negative for selling
@@ -656,10 +656,41 @@ class Deal:
     fee_amount: float | None = None
     fee_currency: str | None = None
 
+    # TODO(account-mgmt): remove this legacy id alias once old read sites are gone.
+    @property
+    def id(self) -> str:
+        return self.trade_id
+
 
 OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
 OrderSide = Literal["BUY", "SELL"]
-OrderStatus = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
+
+
+class OrderStatus(str, Enum):
+    INITIALIZED = "initialized"
+    SUBMITTED = "submitted"
+    ACCEPTED = "accepted"
+    PARTIALLY_FILLED = "partially_filled"
+    PENDING_CANCEL = "pending_cancel"
+    PENDING_UPDATE = "pending_update"
+    FILLED = "filled"
+    CANCELED = "canceled"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED)
+
+    @property
+    def is_pending(self) -> bool:
+        return self in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
+
+
+class OrderOrigin(str, Enum):
+    FRAMEWORK = "framework"
+    RECOVERED = "recovered"
+    EXTERNAL = "external"
 
 
 @dataclass
@@ -694,25 +725,87 @@ class OrderRequest:
 
 @dataclass
 class Order:
-    id: str
+    client_order_id: str
+    venue_order_id: str | None
     type: OrderType
     instrument: Instrument
-    time: dt_64
+    time: dt_64                       # submission timestamp; grace-window reconcile
+                                      # measures order age from this field
     quantity: float
-    price: float
+    price: float | None               # None for market orders (no limit price)
     side: OrderSide
     status: OrderStatus
     time_in_force: str
-    client_id: str | None = None
+    # Defaults to FRAMEWORK (the common case); the snapshot/external materialization
+    # paths set EXTERNAL / RECOVERED explicitly.
+    origin: OrderOrigin = OrderOrigin.FRAMEWORK
+    filled_quantity: float = 0.0
+    avg_fill_price: float | None = None
+    accepted_at: dt_64 | None = None
+    rejected_reason: str | None = None
+    last_updated_at: dt_64 | None = None
+    retry_count: int = 0
+    pre_pending_status: OrderStatus | None = None
+    seen_trade_ids: set[str] = field(default_factory=set)
+    reduce_only: bool = False
+    post_only: bool = False
     cost: float = 0.0
     options: dict[str, Any] = field(default_factory=dict)
 
+    # TODO(account-mgmt): remove these legacy id/client_id aliases once the old
+    # IBroker/IAccountProcessor/broker paths that read+write them are deleted.
+    # Old code (BasicAccountProcessor, brokers, trading mixin) reads AND writes
+    # `order.id` and `order.client_id`. These read/write properties let that code
+    # keep working UNCHANGED during coexistence — only Order *construction* sites
+    # migrate to the new kwargs (you cannot pass a property as a constructor
+    # argument). Canonical field is client_order_id.
+    @property
+    def id(self) -> str:
+        return self.venue_order_id if self.venue_order_id is not None else self.client_order_id
+
+    @id.setter
+    def id(self, value: str) -> None:
+        self.venue_order_id = value
+
+    @property
+    def client_id(self) -> str | None:
+        return self.client_order_id
+
+    @client_id.setter
+    def client_id(self, value: str) -> None:
+        self.client_order_id = value
+
+    def require_venue_id(self) -> str:
+        if self.venue_order_id is None:
+            raise ValueError(
+                f"Order {self.client_order_id} has no venue_order_id "
+                f"(status={self.status})"
+            )
+        return self.venue_order_id
+
+    def record_fill(self, quantity: float, price: float) -> None:
+        """Accumulate one fill into filled_quantity and the running average fill price.
+
+        ``quantity`` is the fill size (sign-agnostic — absolute size is used for the
+        weighted average). filled_quantity mirrors real, irreversible fills and so is only
+        ever increased. The caller owns dedup (apply a given fill at most once) and any
+        position/balance side effects; this only maintains the order's own fill totals.
+        """
+        qty = abs(quantity)
+        if self.avg_fill_price is None:
+            self.avg_fill_price = price
+        else:
+            self.avg_fill_price = (self.avg_fill_price * self.filled_quantity + price * qty) / (
+                self.filled_quantity + qty
+            )
+        self.filled_quantity += qty
+
     def __str__(self) -> str:
-        return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price > 0 else ''} ({self.time_in_force}) [{self.status}]"
+        return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price else ''} ({self.time_in_force}) [{self.status}]"
 
 
 @dataclass
-class AssetBalance:
+class Balance:
     exchange: str
     currency: str
     free: float = 0.0
@@ -726,12 +819,19 @@ class AssetBalance:
         self.locked += lock_amount
         self.free = self.total - self.locked
 
-    def __add__(self, amount: float) -> "AssetBalance":
+    def reset_by_balance(self, balance: "Balance") -> None:
+        # In-place value copy (exchange/currency are identity) so holders of this
+        # Balance keep a live reference. Mirrors Position.reset_by_position.
+        self.free = balance.free
+        self.locked = balance.locked
+        self.total = balance.total
+
+    def __add__(self, amount: float) -> "Balance":
         self.total += amount
         self.free += amount
         return self
 
-    def __sub__(self, amount: float) -> "AssetBalance":
+    def __sub__(self, amount: float) -> "Balance":
         self.total -= amount
         self.free -= amount
         return self
@@ -1131,21 +1231,30 @@ class Position:
 
 
 class CtrlChannel:
-    """
-    Controlled data communication channel
+    """Bounded control channel.
+
+    Under overflow, the OLDEST event is dropped so freshest data wins.
+    This prevents the connector loop from blocking on a slow strategy
+    thread in live trading.
     """
 
     control: Event
     _queue: Queue  # we need something like disruptor here (Queue is temporary)
     name: str
     lock: Lock
+    capacity: int
+    dropped_count: int
+    dropped_by_type: dict[str, int]
 
-    def __init__(self, name: str, sentinel=(None, None, None, None)):
+    def __init__(self, name: str, capacity: int = 10_000, sentinel=(None, None, None, None)):
         self.name = name
+        self.capacity = capacity
+        self.dropped_count = 0
+        self.dropped_by_type = {}
         self.control = Event()
         self.lock = Lock()
         self._sent = sentinel
-        self._queue = Queue()
+        self._queue = Queue(maxsize=capacity)
         self.start()
 
     def register(self, callback):
@@ -1154,14 +1263,46 @@ class CtrlChannel:
     def stop(self):
         if self.control.is_set():
             self.control.clear()
-            self._queue.put(self._sent)  # send sentinel
+            # non-blocking: a full bounded queue must not deadlock shutdown
+            try:
+                self._queue.put_nowait(self._sent)  # send sentinel
+            except Full:
+                pass
 
     def start(self):
         self.control.set()
 
     def send(self, data):
-        if self.control.is_set():
-            self._queue.put(data)
+        if not self.control.is_set():
+            return
+        try:
+            self._queue.put_nowait(data)   # fast path: lock-free, Queue is internally synchronized
+        except Full:
+            # Overflow is a non-atomic compound op (get → record → put) and there
+            # are many concurrent producers, so serialize it under self.lock —
+            # otherwise concurrent drops lose counter increments and the
+            # drop-and-retry can evict two items when only one drop was intended.
+            with self.lock:
+                try:
+                    dropped = self._queue.get_nowait()
+                    self._record_drop(dropped)
+                except Empty:
+                    pass
+                try:
+                    self._queue.put_nowait(data)
+                except Full:
+                    self._record_drop(data)
+
+    def _record_drop(self, item) -> None:
+        # Label drops by event class so the metric layer reads dropped_by_type to
+        # emit channel_overflow_drops{event=...}, letting operators tell a dropped
+        # OrderFilledEvent (market-risk; warn) from a dropped QuoteEvent
+        # (tolerable). Called only while holding self.lock.
+        # TODO(account-mgmt): once connectors emit typed events instead of tuples,
+        # the only observed key today ("tuple") becomes per-event-class.
+        self.dropped_count += 1
+        key = type(item).__name__
+        self.dropped_by_type[key] = self.dropped_by_type.get(key, 0) + 1
 
     def receive(self, timeout: int | None = None) -> Any:
         try:
@@ -1377,7 +1518,7 @@ class RestoredState:
     """
 
     time: np.datetime64
-    balances: list[AssetBalance]
+    balances: list[Balance]
     instrument_to_signal_positions: dict[Instrument, list[Signal]]
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]

@@ -1,3 +1,4 @@
+import asyncio
 import atexit
 import signal
 import traceback
@@ -11,9 +12,9 @@ import pandas as pd
 from qubx import logger
 from qubx.control.executor import CommandEvent
 from qubx.control.types import ActionResult
-from qubx.core.account import CompositeAccountProcessor
+from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     CtrlChannel,
     DataType,
     Instrument,
@@ -28,8 +29,10 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.connector import IConnector
 from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
+from qubx.core.events import ChannelMessage
 from qubx.core.exceptions import QueueTimeout, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
     BasicScheduler,
@@ -37,8 +40,6 @@ from qubx.core.helpers import (
 )
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
-    IAccountProcessor,
-    IBroker,
     IDataProvider,
     IHealthMonitor,
     IMarketDataCache,
@@ -106,7 +107,8 @@ class StrategyContext(IStrategyContext):
     _trading_manager: ITradingManager
     _processing_manager: IProcessingManager
 
-    _brokers: list[IBroker]  # service for exchange API: orders managemewnt
+    _connectors: dict[str, IConnector]  # exchange adapters: order management + account events
+    _account_manager: AccountManager  # central account state machine (also the IAccountViewer)
     _data_providers: list[IDataProvider]  # market data provider
     _logging: StrategyLogging  # recording all activities for the strat: execs, positions, portfolio
     _scheduler: BasicScheduler
@@ -138,9 +140,9 @@ class StrategyContext(IStrategyContext):
     def __init__(
         self,
         strategy: IStrategy,
-        brokers: list[IBroker],
+        connectors: dict[str, IConnector],
         data_providers: list[IDataProvider],
-        account: IAccountProcessor,
+        account_manager: AccountManager,
         scheduler: BasicScheduler,
         time_provider: ITimeProvider,
         instruments: list[Instrument],
@@ -160,9 +162,17 @@ class StrategyContext(IStrategyContext):
         state_persistence: IStatePersistence | None = None,
         state_snapshot_interval: str | None = None,
         rate_limiting_config: Any | None = None,
-        event_loop: "asyncio.AbstractEventLoop | None" = None,
+        event_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
-        self.account = account
+        self._account_manager = account_manager
+        # self.account exposes the read-only IAccountViewer surface (the strategy and
+        # mixins read positions/balances/capital through it); self._account_manager is
+        # the same object kept under its concrete type for the state-machine operations
+        # (apply/add_order/transition_order/set_context) that are not on the viewer.
+        # TODO(account-mgmt): IStrategyContext.account is still typed IAccountProcessor;
+        # drop the public attribute (callers use ctx.get_position/get_balance/...) or
+        # retype it to IAccountViewer in the cleanup pass.
+        self.account = account_manager
         self.strategy = self.__instantiate_strategy(strategy, config)
         self.emitter = emitter if emitter is not None else IMetricEmitter()
         self.initializer = (
@@ -176,7 +186,7 @@ class StrategyContext(IStrategyContext):
             raise ValueError("Live or simulation mode must be defined in strategy initializer !")
 
         self._time_provider = time_provider
-        self._brokers = brokers
+        self._connectors = connectors
         self._data_providers = data_providers
         self._logging = logging
         self._scheduler = scheduler
@@ -217,7 +227,6 @@ class StrategyContext(IStrategyContext):
             if not self._data_providers[0].is_simulation
             else DataType.NONE,
         )
-        self.account.set_subscription_manager(self._subscription_manager)
 
         self._market_data_provider = MarketManager(
             time_provider=self._time_provider,
@@ -246,8 +255,8 @@ class StrategyContext(IStrategyContext):
         )
         self._trading_manager = TradingManager(
             context=self,
-            brokers=self._brokers,
-            account=self.account,
+            connectors=self._connectors,
+            account_manager=self._account_manager,
             health_monitor=self._health_monitor,
             strategy_name=self._strategy_name,
         )
@@ -258,7 +267,7 @@ class StrategyContext(IStrategyContext):
             market_data=self,
             subscription_manager=self,
             time_provider=self,
-            account=self.account,
+            account_manager=self._account_manager,
             position_tracker=__position_tracker,
             position_gathering=__position_gathering,
             universe_manager=self._universe_manager,
@@ -269,6 +278,11 @@ class StrategyContext(IStrategyContext):
             delisting_detector=self._delisting_detector,
             data_throttler=data_throttler,
         )
+
+        # Wire the context into the account manager so AM-fired callbacks
+        # (reconcile, inflight-exhaustion) receive a real ctx, never None.
+        self._account_manager.set_context(self)
+
         self.__post_init__()
 
     def __post_init__(self) -> None:
@@ -316,17 +330,10 @@ class StrategyContext(IStrategyContext):
         _rl_metrics_interval = self._rate_limiting_config.metrics_interval if self._rate_limiting_config else None
         self._processing_manager.configure_rate_limit_metrics(_rl_metrics_interval)
 
-        if self.is_simulation and isinstance(self.account, CompositeAccountProcessor):
-            # Auto-assign simulation transfer manager
-            from qubx.backtester.transfers import SimulationTransferManager
-
-            self._transfer_manager = SimulationTransferManager(self.account, self._time_provider)
-            logger.debug("[StrategyContext] :: Auto-assigned SimulationTransferManager")
-        else:
-            # In live mode, check if strategy set one via initializer
-            self._transfer_manager = self.initializer.get_transfer_manager()
-            if self._transfer_manager is not None:
-                logger.info(f"[StrategyContext] :: Using transfer manager: {type(self._transfer_manager).__name__}")
+        # Transfer manager (if any) is supplied by the strategy via the initializer.
+        self._transfer_manager = self.initializer.get_transfer_manager()
+        if self._transfer_manager is not None:
+            logger.info(f"[StrategyContext] :: Using transfer manager: {type(self._transfer_manager).__name__}")
 
         # - notify mkt data provider on base subscription update (used for cache default timeframe)
         self._market_data_provider.update_base_subscription(self.get_base_subscription())
@@ -365,8 +372,9 @@ class StrategyContext(IStrategyContext):
         databus = self._data_providers[0].channel
         databus.register(self)
 
-        # - start account processing
-        self.account.start()
+        # - bring up exchange connectors (no-op in simulation)
+        for connector in self._connectors.values():
+            connector.connect()
 
         # - start health metrics monitor
         self._health_monitor.start()
@@ -505,12 +513,13 @@ class StrategyContext(IStrategyContext):
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to close aux data storage: {e}")
 
-        # PRIORITY 3: Stop account processing
-        try:
-            self.account.stop()
-        except Exception as e:
-            logger.error(f"[StrategyContext] :: Failed to stop account processor: {e}")
-            logger.opt(colors=False).error(traceback.format_exc())
+        # PRIORITY 3: Tear down exchange connectors (no-op in simulation)
+        for connector in self._connectors.values():
+            try:
+                connector.disconnect()
+            except Exception as e:
+                logger.error(f"[StrategyContext] :: Failed to disconnect connector {connector.exchange_name}: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
 
         # PRIORITY 4: Stop health metrics monitor
         try:
@@ -571,7 +580,7 @@ class StrategyContext(IStrategyContext):
 
     @property
     def is_paper_trading(self) -> bool:
-        return self._brokers[0].is_simulated_trading
+        return next(iter(self._connectors.values())).is_simulated_trading
 
     @property
     def notifier(self) -> IStrategyNotifier:
@@ -605,10 +614,10 @@ class StrategyContext(IStrategyContext):
         return self.account.get_base_currency(exchange)
 
     # balance and position information
-    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[Balance]:
         return self.account.get_balances(exchange)
 
-    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+    def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
         return self.account.get_balance(currency, exchange)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
@@ -690,11 +699,6 @@ class StrategyContext(IStrategyContext):
         # - one of the options is to have multiple entry levels in TargetPosition class
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
 
-    def trade_async(
-        self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options
-    ) -> str | None:
-        return self._trading_manager.trade_async(instrument, amount, price, time_in_force, **options)
-
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         return self._trading_manager.submit_orders(order_requests)
 
@@ -720,12 +724,6 @@ class StrategyContext(IStrategyContext):
         """Cancel a specific order synchronously."""
         return self._trading_manager.cancel_order(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
-    def cancel_order_async(
-        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
-    ) -> None:
-        """Cancel a specific order asynchronously (non blocking)."""
-        self._trading_manager.cancel_order_async(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
-
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument."""
         return self._trading_manager.cancel_orders(instrument)
@@ -737,22 +735,9 @@ class StrategyContext(IStrategyContext):
         order_id: str | None = None,
         client_order_id: str | None = None,
         exchange: str | None = None,
-    ) -> Order:
+    ) -> None:
         """Update an existing limit order with new price and amount."""
         return self._trading_manager.update_order(
-            order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
-        )
-
-    def update_order_async(
-        self,
-        price: float,
-        amount: float,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
-        exchange: str | None = None,
-    ) -> str | None:
-        """Update an existing limit order asynchronously (non-blocking)."""
-        return self._trading_manager.update_order_async(
             order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
         )
 
@@ -830,6 +815,9 @@ class StrategyContext(IStrategyContext):
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool):
         return self._processing_manager.process_data(instrument, d_type, data, is_historical)
 
+    def process_event(self, event: ChannelMessage) -> None:
+        return self._processing_manager.process_event(event)
+
     def set_fit_schedule(self, schedule: str):
         return self._processing_manager.set_fit_schedule(schedule)
 
@@ -903,8 +891,17 @@ class StrategyContext(IStrategyContext):
             self._drain_command_queue()
 
             try:
-                # - waiting for incoming market data (with timeout so commands are checked regularly)
-                instrument, d_type, data, hist = channel.receive(timeout=1)
+                # - waiting for incoming data (with timeout so commands are checked regularly).
+                #   The channel carries two payload shapes: typed ChannelMessages (order/account
+                #   events from connectors) and market-data tuples (instrument, d_type, data, hist).
+                msg = channel.receive(timeout=1)
+
+                if isinstance(msg, ChannelMessage):
+                    with self._health_monitor(type(msg).__name__):
+                        self._processing_manager.process_event(msg)
+                    continue
+
+                instrument, d_type, data, hist = msg
 
                 # - notify error if error level is medium or higher
                 if self._notifier and isinstance(data, BaseErrorEvent) and data.level.value >= ErrorLevel.MEDIUM.value:

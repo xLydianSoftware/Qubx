@@ -107,11 +107,6 @@ class OrdersManagementEngine:
     def get_open_orders(self) -> list[Order]:
         return list(self.active_orders.values()) + list(self.stop_orders.values())
 
-    def __remove_pending_status(self, exec: SimulatedExecutionReport) -> SimulatedExecutionReport:
-        if exec.order.status == "PENDING":
-            exec.order.status = "CLOSED"
-        return exec
-
     def process_market_data(self, mdata: Quote | OrderBook | Trade | TradeArray) -> list[SimulatedExecutionReport]:
         """
         Processes the new market data (quote, trade or trades array) and simulates the execution of pending orders.
@@ -121,7 +116,7 @@ class OrdersManagementEngine:
 
         # - process deferred exec reports: spit out deferred exec reports in first place
         if self._deferred_exec_reports:
-            _exec_report = [self.__remove_pending_status(i) for i in self._deferred_exec_reports]
+            _exec_report = list(self._deferred_exec_reports)
             self._deferred_exec_reports.clear()
 
         # - pass through data if it's older than previous update
@@ -170,7 +165,9 @@ class OrdersManagementEngine:
             for level in _asks_to_execute:
                 for order_id in self.asks[level]:
                     order = self.active_orders.pop(order_id)
-                    _exec_report.append(self._execute_order(timestamp, order.price, order, False, _mkt_state))
+                    # resting limit orders are bucketed by their price, so the book level IS
+                    # the order's limit price (and is a plain float, never None)
+                    _exec_report.append(self._execute_order(timestamp, level, order, False, _mkt_state))
                 self.asks.pop(level)
 
         # - when new quote ask is lower than the highest bid order execute all affected orders
@@ -179,7 +176,9 @@ class OrdersManagementEngine:
             for level in _bids_to_execute:
                 for order_id in self.bids[level]:
                     order = self.active_orders.pop(order_id)
-                    _exec_report.append(self._execute_order(timestamp, order.price, order, False, _mkt_state))
+                    # resting limit orders are bucketed by their price, so the book level IS
+                    # the order's limit price (and is a plain float, never None)
+                    _exec_report.append(self._execute_order(timestamp, level, order, False, _mkt_state))
                 self.bids.pop(level)
 
         # - processing stop orders
@@ -220,16 +219,16 @@ class OrdersManagementEngine:
 
         timestamp = self.time_service.time()
         order = Order(
-            self._generate_order_id(),
-            order_type,
-            self.instrument,
-            timestamp,
-            amount,
-            price if price is not None else 0,
-            order_side,
-            "NEW",
-            time_in_force,
-            client_id,
+            client_order_id=client_id,
+            venue_order_id=self._generate_order_id(),
+            type=order_type,
+            instrument=self.instrument,
+            time=timestamp,
+            quantity=amount,
+            price=price,  # None for market orders (matched at BBO, never read as a limit)
+            side=order_side,
+            status=OrderStatus.SUBMITTED,
+            time_in_force=time_in_force,
             options=options,
         )
 
@@ -239,7 +238,7 @@ class OrdersManagementEngine:
         logger.debug(f"    [<y>OME</y>(<g>{self.instrument}</g>)] :: {message}", **kwargs)
 
     def _process_order(self, timestamp: dt_64, order: Order) -> SimulatedExecutionReport:
-        if order.status in ["CLOSED", "CANCELED"]:
+        if order.status in (OrderStatus.FILLED, OrderStatus.CANCELED):
             raise InvalidOrder(f"Order {order.id} is already closed or canceled.")
 
         _buy_side = order.side == "BUY"
@@ -281,13 +280,15 @@ class OrdersManagementEngine:
 
             case "LIMIT":
                 _need_update_book = True
+                assert order.price is not None  # LIMIT always carries a price (validated)
                 if (_buy_side and order.price >= _c_ask) or (not _buy_side and order.price <= _c_bid):
                     _exec_price = _c_ask if _buy_side else _c_bid
 
             case "STOP_MARKET":
                 # - it processes stop orders separately without adding to orderbook (as on real exchanges)
-                order.status = "OPEN"
+                order.status = OrderStatus.ACCEPTED
                 _stp_order = order
+                assert _stp_order.price is not None  # STOP always carries a price (validated)
                 _emulate_price_exec = self._fill_stops_at_price or _stp_order.options.get(
                     OPTION_FILL_AT_SIGNAL_PRICE, False
                 )
@@ -301,7 +302,6 @@ class OrdersManagementEngine:
                             order,
                             True,
                             "BBO: " + str(self.bbo),
-                            "PENDING",
                         )
                     )
 
@@ -314,7 +314,6 @@ class OrdersManagementEngine:
                             order,
                             True,
                             "BBO: " + str(self.bbo),
-                            "PENDING",
                         )
                     )
 
@@ -334,12 +333,13 @@ class OrdersManagementEngine:
 
         # - processing limit orders
         if _need_update_book:
+            assert order.price is not None  # only LIMIT sets _need_update_book
             if _buy_side:
                 self.bids.setdefault(order.price, list()).append(order.id)
             else:
                 self.asks.setdefault(order.price, list()).append(order.id)
 
-            order.status = "OPEN"
+            order.status = OrderStatus.ACCEPTED
             self.active_orders[order.id] = order
 
         self._dbg(f"registered {order.id} {order.type} {order.side} {order.quantity} {order.price}")
@@ -352,7 +352,7 @@ class OrdersManagementEngine:
         order: Order,
         taker: bool,
         market_state: str,
-        status: OrderStatus = "CLOSED",
+        status: OrderStatus = OrderStatus.FILLED,
     ) -> SimulatedExecutionReport:
         order.status = status
         self._dbg(
@@ -363,7 +363,7 @@ class OrdersManagementEngine:
             timestamp,
             order,
             Deal(
-                id=self._generate_trade_id(),
+                trade_id=self._generate_trade_id(),
                 order_id=order.id,
                 time=timestamp,
                 amount=order.quantity if order.side == "BUY" else -order.quantity,
@@ -412,6 +412,7 @@ class OrdersManagementEngine:
         # - check limit orders
         if order_id in self.active_orders:
             order = self.active_orders.pop(order_id)
+            assert order.price is not None  # active_orders holds only resting limit orders
             if order.side == "BUY":
                 oids = self.bids[order.price]
                 oids.remove(order_id)
@@ -430,7 +431,7 @@ class OrdersManagementEngine:
             logger.error(f"Can't cancel order {order_id} for {self.instrument.symbol} because it's not found in OME !")
             return None
 
-        order.status = "CANCELED"
+        order.status = OrderStatus.CANCELED
         self._dbg(f"{order.id} {order.type} {order.side} {order.quantity} canceled")
         return SimulatedExecutionReport(self.instrument, self.time_service.time(), order, None)
 

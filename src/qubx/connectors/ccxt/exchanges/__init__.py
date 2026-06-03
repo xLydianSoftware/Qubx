@@ -2,26 +2,22 @@
 This module contains the CCXT connectors for the exchanges.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import ccxt.pro as cxp
 
-from ..broker import CcxtBroker
-from .binance.broker import BinanceCcxtBroker
+from ..connector import CcxtConnector
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
+from .bitfinex.connector import BitfinexCcxtConnector
 from .gateio.gateio import GateioFutures
-from .hyperliquid.account import HyperliquidAccountProcessor
-from .hyperliquid.broker import HyperliquidCcxtBroker
 from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
-from .okx.account import OkxAccountProcessor
-from .okx.broker import OkxCcxtBroker
+from .okx.connector import OkxCcxtConnector
 from .okx.okx import OkxFutures
 
 # Bitfinex requires optional qubx-bitfinex-api package
 try:
     from .bitfinex.bitfinex import BitfinexF
-    from .bitfinex.bitfinex_account import BitfinexAccountProcessor
 
     _HAS_BITFINEX = True
 except ImportError:
@@ -53,36 +49,18 @@ EXCHANGE_ALIASES = {
     "okx.f": "okx_futures",
 }
 
-@dataclass(frozen=True)
-class BrokerConfig:
-    """Exchange-specific broker class and default kwargs."""
-
-    cls: type
-    kwargs: dict = field(default_factory=dict)
-
-
-CUSTOM_BROKERS: dict[str, BrokerConfig] = {
-    "binance": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": False}),
-    "binance.um": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": True}),
-    "binance.cm": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": False}),
-    "binance.pm": BrokerConfig(BinanceCcxtBroker, {"enable_create_order_ws": False, "enable_cancel_order_ws": False}),
-    **({"bitfinex.f": BrokerConfig(CcxtBroker, {"enable_create_order_ws": True, "enable_cancel_order_ws": True})} if _HAS_BITFINEX else {}),
-    "hyperliquid": BrokerConfig(
-        HyperliquidCcxtBroker,
-        {"enable_create_order_ws": True, "enable_cancel_order_ws": False, "enable_edit_order_ws": True},
-    ),
-    "hyperliquid.f": BrokerConfig(
-        HyperliquidCcxtBroker,
-        {"enable_create_order_ws": True, "enable_cancel_order_ws": False, "enable_edit_order_ws": True},
-    ),
-    "okx.f": BrokerConfig(OkxCcxtBroker, {}),
-}
-
-CUSTOM_ACCOUNTS = {
-    **({"bitfinex.f": BitfinexAccountProcessor} if _HAS_BITFINEX else {}),
-    "hyperliquid": HyperliquidAccountProcessor,
-    "hyperliquid.f": HyperliquidAccountProcessor,
-    "okx.f": OkxAccountProcessor,
+# CcxtConnector subclasses per exchange. Unlisted exchanges (Binance,
+# Hyperliquid, ...) use the base CcxtConnector via the factory fallback. OKX/Bitfinex
+# need the split orders/fills streams; OKX additionally overrides balance/clOrdId.
+# Keyed by the normalized framework exchange names, plus
+# the bare ``okx``/``bitfinex`` aliases the factory may receive. Bitfinex's connector
+# subclass has NO dependency on the optional qubx-bitfinex-api package (it only needs
+# the base connector + shared mixin), so it is registered unconditionally.
+CUSTOM_CONNECTORS: dict[str, type[CcxtConnector]] = {
+    "okx": OkxCcxtConnector,
+    "okx.f": OkxCcxtConnector,
+    "bitfinex": BitfinexCcxtConnector,
+    "bitfinex.f": BitfinexCcxtConnector,
 }
 
 READER_CAPABILITIES = {

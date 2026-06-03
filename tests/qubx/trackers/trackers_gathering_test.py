@@ -7,12 +7,12 @@ from pytest import approx
 
 from qubx import logger
 from qubx.backtester.simulator import simulate
-from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
     DataType,
     Deal,
     Instrument,
     Order,
+    OrderOrigin,
     Position,
     Signal,
     TargetPosition,
@@ -30,13 +30,12 @@ from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.data import CsvStorage
 from qubx.gathering.simplest import SimplePositionGatherer
-from qubx.health.dummy import DummyHealthMonitor
 from qubx.ta.indicators import sma
 from qubx.trackers.advanced import TimeExpirationTracker
 from qubx.trackers.composite import CompositeTracker, CompositeTrackerPerSide, LongTracker
 from qubx.trackers.riskctrl import AtrRiskTracker, StopTakePositionTracker, TrailingStopPositionTracker
 from qubx.trackers.sizers import FixedLeverageSizer, FixedRiskSizer, FixedSizer
-from tests.qubx.core.utils_test import DummyTimeProvider
+from tests.qubx.core.utils_test import StubAccount
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)  # noqa: E731
 
@@ -75,9 +74,7 @@ class DebugStratageyCtx(IStrategyContext):
         self.capital = capital
 
         positions = {i: Position(i) for i in instrs}
-        self.account = BasicAccountProcessor(
-            "test", DummyTimeProvider(), "USDT", DummyHealthMonitor(), "TEST"
-        )  # , initial_capital=10000.0)
+        self.account = StubAccount(base_currency="USDT", exchange="TEST")
         self.account.update_balance("USDT", capital, 0)
         self.account.attach_positions(*positions.values())
         self._n_orders = 0
@@ -123,8 +120,8 @@ class DebugStratageyCtx(IStrategyContext):
         if amount > 0: self._n_orders_buy += 1
         if amount < 0: self._n_orders_sell += 1
         return Order(
-            "test", "MARKET", instrument,
-            np.datetime64(0, "ns"), amount, price if price is not None else 0, "BUY" if amount > 0 else "SELL", "CLOSED", "gtc", "test1")
+            client_order_id="test1", venue_order_id="test", origin=OrderOrigin.FRAMEWORK, type="MARKET", instrument=instrument,
+            time=np.datetime64(0, "ns"), quantity=amount, price=price if price is not None else 0, side="BUY" if amount > 0 else "SELL", status="CLOSED", time_in_force="gtc")
         # fmt: on
 
 

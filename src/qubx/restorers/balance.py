@@ -14,7 +14,7 @@ from psycopg import Connection, sql
 from pymongo import MongoClient
 
 from qubx import logger
-from qubx.core.basics import AssetBalance
+from qubx.core.basics import Balance
 from qubx.restorers.interfaces import IBalanceRestorer
 from qubx.restorers.utils import find_latest_run_folder
 
@@ -52,13 +52,13 @@ class CsvBalanceRestorer(IBalanceRestorer):
         if strategy_name:
             self.file_pattern = f"{strategy_name}*_balance.csv"
 
-    def restore_balances(self) -> list[AssetBalance]:
+    def restore_balances(self) -> list[Balance]:
         """
         Restore account balances from the most recent run folder.
 
         Returns:
-            A list of AssetBalance objects.
-            Example: [AssetBalance(exchange="BINANCE", currency="USDT", total=100000.0, locked=0.0)]
+            A list of Balance objects.
+            Example: [Balance(exchange="BINANCE", currency="USDT", total=100000.0, locked=0.0)]
         """
         # Find the latest run folder
         latest_run = find_latest_run_folder(self.base_dir)
@@ -91,7 +91,7 @@ class CsvBalanceRestorer(IBalanceRestorer):
             logger.error(f"Error restoring balances from {file_path}: {e}")
             return []
 
-    def _restore_balances_from_df(self, df: pd.DataFrame) -> list[AssetBalance]:
+    def _restore_balances_from_df(self, df: pd.DataFrame) -> list[Balance]:
         """
         Process balances from a DataFrame.
 
@@ -99,7 +99,7 @@ class CsvBalanceRestorer(IBalanceRestorer):
             df: The DataFrame containing balance data.
 
         Returns:
-            A list of AssetBalance objects.
+            A list of Balance objects.
         """
         balances = []
 
@@ -113,7 +113,7 @@ class CsvBalanceRestorer(IBalanceRestorer):
             locked = float(row["locked"])
 
             # Create a balance entry
-            balance = AssetBalance(
+            balance = Balance(
                 exchange=exchange,
                 currency=currency,
                 total=total,
@@ -147,13 +147,13 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
 
         self.collection = self.mongo_client[db_name][collection_name]
 
-    def restore_balances(self) -> list[AssetBalance]:
+    def restore_balances(self) -> list[Balance]:
         """
         Restore account balances from the most recent run.
 
         Returns:
-            A list of AssetBalance objects.
-            Example: [AssetBalance(exchange="BINANCE", currency="USDT", total=100000.0, locked=0.0)]
+            A list of Balance objects.
+            Example: [Balance(exchange="BINANCE", currency="USDT", total=100000.0, locked=0.0)]
         """
         try:
             now = datetime.utcnow()
@@ -184,7 +184,7 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
             ]
 
             cursor = self.collection.aggregate(pipeline)
-            balances: list[AssetBalance] = []
+            balances: list[Balance] = []
 
             for entry in cursor:
                 log = entry["doc"]
@@ -195,7 +195,7 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
                 total = log.get("total", 0.0)
                 locked = log.get("locked", 0.0)
 
-                balance = AssetBalance(
+                balance = Balance(
                     exchange=exchange,
                     currency=currency,
                     total=total,
@@ -226,7 +226,7 @@ class PostgresBalanceRestorer(IBalanceRestorer):
         self.connection = connection
         self.table_name = table_name
 
-    def restore_balances(self) -> list[AssetBalance]:
+    def restore_balances(self) -> list[Balance]:
         try:
             now = datetime.now(timezone.utc)
             lookup_range = now - timedelta(days=7)
@@ -260,14 +260,14 @@ class PostgresBalanceRestorer(IBalanceRestorer):
                     (self.strategy_name, latest_run_id, lookup_range),
                 )
 
-                balances: list[AssetBalance] = []
+                balances: list[Balance] = []
                 for exchange, currency, total, locked in cur.fetchall():
                     if not currency:
                         continue
                     total = total or 0.0
                     locked = locked or 0.0
                     balances.append(
-                        AssetBalance(
+                        Balance(
                             exchange=exchange,
                             currency=currency,
                             total=total,

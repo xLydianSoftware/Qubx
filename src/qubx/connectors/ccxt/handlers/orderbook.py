@@ -10,6 +10,7 @@ from typing import Set
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
+from qubx.core.events import event_for_data_type
 
 from ..subscription_config import SubscriptionConfiguration
 from ..utils import (
@@ -69,7 +70,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             quote = ob.to_quote()
             self._data_provider._last_quotes[instrument] = quote
 
-        channel.send((instrument, DataType.ORDERBOOK, ob, False))
+        channel.send(event_for_data_type(DataType.ORDERBOOK, instrument=instrument, payload=ob, is_historical=False))
 
         return True
 

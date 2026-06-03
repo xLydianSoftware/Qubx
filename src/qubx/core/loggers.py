@@ -7,7 +7,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     Deal,
     Instrument,
     MarketType,
@@ -302,14 +302,14 @@ class BalanceLogger(_BaseIntervalDumper):
     """
 
     _writer: LogsWriter
-    _balance: list[AssetBalance]
+    _balance: list[Balance]
 
     def __init__(self, writer: LogsWriter, interval: str) -> None:
         super().__init__(interval)
         self._writer = writer
         self._balance = []
 
-    def record_balance(self, timestamp: np.datetime64, balance: list[AssetBalance]):
+    def record_balance(self, timestamp: np.datetime64, balance: list[Balance]):
         if balance:
             self._balance = balance
             self.dump(timestamp, timestamp)
@@ -391,7 +391,7 @@ class StrategyLogging:
         self,
         timestamp: np.datetime64,
         positions: dict[Instrument, Position],
-        balances: list[AssetBalance],
+        balances: list[Balance],
         account: IAccountViewer,
     ) -> None:
         self._account = account
