@@ -73,11 +73,11 @@ class SimulatedConnector(ChannelEmitter):
             return
         self._emit_from_report(report)
 
-    def cancel_order(self, client_order_id: str, venue_order_id: str | None = None) -> None:
-        if not client_order_id:
-            raise ValueError("cancel_order: client_order_id is required")
+    def cancel_order(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         # Prefer the venue id (the OME keys orders by it); fall back to the cid before the ack.
         oid = venue_order_id or client_order_id
+        if not oid:
+            raise ValueError("cancel_order: client_order_id or venue_order_id is required")
         try:
             report = self._exchange.cancel_order(oid)
         except OrderNotFound:
@@ -86,19 +86,22 @@ class SimulatedConnector(ChannelEmitter):
 
     def update_order(
         self,
-        client_order_id: str,
+        client_order_id: str | None = None,
         venue_order_id: str | None = None,
         price: float | None = None,
         quantity: float | None = None,
     ) -> None:
         oid = venue_order_id or client_order_id
+        if not oid:
+            raise ValueError("update_order: client_order_id or venue_order_id is required")
         try:
             old = self._exchange.cancel_order(oid)
         except OrderNotFound:
             self.send(
                 OrderUpdateRejectedEvent(
                     instrument=None,
-                    client_order_id=client_order_id,
+                    client_order_id=client_order_id or oid,  # cid if known, else the venue id
+                    venue_order_id=venue_order_id,
                     reason="update_order: order not found",
                 )
             )
@@ -126,8 +129,10 @@ class SimulatedConnector(ChannelEmitter):
             )
         )
 
-    def request_order_status(self, client_order_id: str, venue_order_id: str | None = None) -> None:
+    def request_order_status(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         oid = venue_order_id or client_order_id
+        if not oid:
+            raise ValueError("request_order_status: client_order_id or venue_order_id is required")
         for order in self._exchange.get_open_orders().values():
             if order.id == oid or order.client_id == oid:
                 self.send(
@@ -142,7 +147,8 @@ class SimulatedConnector(ChannelEmitter):
         self.send(
             OrderRejectedEvent(
                 instrument=None,
-                client_order_id=client_order_id or oid,  # type: ignore[arg-type]
+                client_order_id=client_order_id or oid,  # cid if known, else the venue id
+                venue_order_id=venue_order_id,
                 reason="reconcile: order not present at venue",
             )
         )

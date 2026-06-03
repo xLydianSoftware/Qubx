@@ -274,6 +274,19 @@ def test_rejected_for_unknown_order_returns_none():
     assert result is None
 
 
+def test_rejected_resolves_by_venue_id_when_cid_unknown():
+    # A reject addressed by venue id only (the connector filled client_order_id with the
+    # venue id because the real cid was unknown) must still resolve via the venue-id index.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.SUBMITTED, instrument=inst)
+    am.get_state("binance").set_venue_id("cid-1", "V1")
+    am.apply(OrderRejectedEvent(instrument=inst, client_order_id="V1", venue_order_id="V1", reason="rejected"))
+    o = am.get_state("binance").get_order("cid-1")
+    assert o.status is OrderStatus.REJECTED
+    assert o.rejected_reason == "rejected"
+
+
 def test_updated_in_place_modifies_fields_no_transition():
     am = _am()
     inst = _Inst()
@@ -339,6 +352,19 @@ def test_cancel_rejected_unexpected_state_returns_none():
     result = am.apply(OrderCancelRejectedEvent(instrument=inst, client_order_id="cid-1", reason="x"))
     assert result is None
     assert am.get_state("binance").get_order("cid-1").status is OrderStatus.ACCEPTED
+
+
+def test_cancel_rejected_resolves_by_venue_id_when_cid_unknown():
+    # Venue-id-only cancel that the venue refused: the cancel-reject (addressed by venue id)
+    # must resolve the PENDING_CANCEL order via the venue-id index and revert it.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    am.get_state("binance").set_venue_id("cid-1", "V1")
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
+    am.apply(OrderCancelRejectedEvent(instrument=inst, client_order_id="V1", venue_order_id="V1", reason="too late"))
+    o = am.get_state("binance").get_order("cid-1")
+    assert o.status is OrderStatus.ACCEPTED
 
 
 def test_update_rejected_reverts_to_pre_pending_status():

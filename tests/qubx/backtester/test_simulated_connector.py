@@ -185,6 +185,35 @@ def test_cancel_emits_canceled(setup):
     assert events[0].venue_order_id == accepted.venue_order_id
 
 
+def test_cancel_by_venue_id_only_emits_canceled(setup):
+    # A caller that only knows the venue id (e.g. an externally-placed order) must still
+    # be able to cancel — cancel_order accepts either id.
+    conn, collector, _exchange, instr, _time = setup
+    request = OrderRequest(
+        client_id="qubx-3v",
+        instrument=instr,
+        quantity=0.1,
+        price=31000.0,
+        side="BUY",
+        order_type="LIMIT",
+        time_in_force="gtc",
+    )
+    conn.submit_order(request)
+    accepted = _drain(collector)[0]
+    conn.cancel_order(venue_order_id=accepted.venue_order_id)  # no client_order_id
+    events = _drain(collector)
+    assert len(events) == 1
+    assert isinstance(events[0], OrderCanceledEvent)
+    assert events[0].venue_order_id == accepted.venue_order_id
+
+
+def test_cancel_without_any_id_raises(setup):
+    # At least one id is required — neither given is a caller bug, raised synchronously.
+    conn, _collector, _exchange, _instr, _time = setup
+    with pytest.raises(ValueError):
+        conn.cancel_order()
+
+
 def test_update_emits_single_updated_event_with_stable_cid(setup):
     conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
@@ -207,6 +236,29 @@ def test_update_emits_single_updated_event_with_stable_cid(setup):
     assert events[0].client_order_id == "qubx-4"
     assert events[0].new_price == 30500.0
     assert events[0].new_quantity == 0.2
+
+
+def test_update_by_venue_id_only_emits_updated(setup):
+    # update_order by venue id alone resolves the order via the OME and re-emits with both ids.
+    conn, collector, _exchange, instr, _time = setup
+    request = OrderRequest(
+        client_id="qubx-4v",
+        instrument=instr,
+        quantity=0.1,
+        price=31000.0,
+        side="BUY",
+        order_type="LIMIT",
+        time_in_force="gtc",
+    )
+    conn.submit_order(request)
+    accepted = _drain(collector)[0]
+    conn.update_order(venue_order_id=accepted.venue_order_id, price=30500.0, quantity=0.2)  # no client_order_id
+    events = _drain(collector)
+    assert len(events) == 1
+    assert isinstance(events[0], OrderUpdatedEvent)
+    # cancel+recreate preserves the original client id, recovered from the OME order.
+    assert events[0].client_order_id == "qubx-4v"
+    assert events[0].new_price == 30500.0
 
 
 def test_process_market_data_translates_fill(setup):
@@ -267,6 +319,26 @@ def test_request_order_status_open_emits_accepted(setup):
     conn.submit_order(request)
     accepted = _drain(collector)[0]
     conn.request_order_status(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
+    events = _drain(collector)
+    assert len(events) == 1
+    assert isinstance(events[0], OrderAcceptedEvent)
+    assert events[0].venue_order_id == accepted.venue_order_id
+
+
+def test_request_order_status_by_venue_id_only_open_emits_accepted(setup):
+    conn, collector, _exchange, instr, _time = setup
+    request = OrderRequest(
+        client_id="qubx-7v",
+        instrument=instr,
+        quantity=0.1,
+        price=31000.0,
+        side="BUY",
+        order_type="LIMIT",
+        time_in_force="gtc",
+    )
+    conn.submit_order(request)
+    accepted = _drain(collector)[0]
+    conn.request_order_status(venue_order_id=accepted.venue_order_id)  # no client_order_id
     events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderAcceptedEvent)

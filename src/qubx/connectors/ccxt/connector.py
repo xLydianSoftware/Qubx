@@ -387,14 +387,14 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Write side — cancel
     # ------------------------------------------------------------------ #
-    def cancel_order(self, client_order_id: str, venue_order_id: str | None = None) -> None:
+    def cancel_order(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         if self._read_only:
             raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
-        if not client_order_id:
-            raise InvalidOrderParameters("cancel_order: client_order_id is required")
+        if not client_order_id and not venue_order_id:
+            raise InvalidOrderParameters("cancel_order: client_order_id or venue_order_id is required")
         self._spawn(self._cancel_async(client_order_id, venue_order_id))
 
-    async def _cancel_async(self, client_order_id: str, venue_order_id: str | None) -> None:
+    async def _cancel_async(self, client_order_id: str | None, venue_order_id: str | None) -> None:
         """Cancel with retry/backoff. Prefers venue_order_id; falls back to cloid.
 
         A successful REST cancel ack emits OrderCanceledEvent immediately; the WS
@@ -416,13 +416,14 @@ class CcxtConnector(ChannelEmitter):
         else:
             self._emit_cancel_rejected(client_order_id, venue_order_id)
 
-    def _emit_cancel_rejected(self, client_order_id: str, venue_order_id: str | None) -> None:
-        # Route by the real client_order_id (always present): AM's reject handler resolves
-        # the order by cid, so the order can revert out of PENDING_CANCEL.
+    def _emit_cancel_rejected(self, client_order_id: str | None, venue_order_id: str | None) -> None:
+        # Carry both ids: AM's reject handler resolves the order by cid first, then venue id,
+        # so the order can revert out of PENDING_CANCEL regardless of which id the caller had.
         self.send(
             OrderCancelRejectedEvent(
                 instrument=None,
-                client_order_id=client_order_id,
+                client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]  # cid if known, else venue id
+                venue_order_id=venue_order_id,
                 reason=f"venue rejected cancel for {venue_order_id or client_order_id}",
             )
         )
@@ -537,19 +538,19 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     def update_order(
         self,
-        client_order_id: str,
+        client_order_id: str | None = None,
         venue_order_id: str | None = None,
         price: float | None = None,
         quantity: float | None = None,
     ) -> None:
         if self._read_only:
             raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
-        if not client_order_id:
-            raise InvalidOrderParameters("update_order: client_order_id is required")
+        if not client_order_id and not venue_order_id:
+            raise InvalidOrderParameters("update_order: client_order_id or venue_order_id is required")
         self._spawn(self._update_async(client_order_id, venue_order_id, price, quantity))
 
     async def _update_async(
-        self, client_order_id: str, venue_order_id: str | None, price: float | None, quantity: float | None
+        self, client_order_id: str | None, venue_order_id: str | None, price: float | None, quantity: float | None
     ) -> None:
         """Direct editOrder where the venue supports it, else cancel+recreate.
 
@@ -564,7 +565,7 @@ class CcxtConnector(ChannelEmitter):
                 r = await self._update_via_cancel_recreate(client_order_id, venue_order_id, price, quantity)
         except _VENUE_VERDICT_ERRORS as e:
             # Venue verdict — must precede the bare NetworkError catch (see _submit_async).
-            self._emit_update_rejected(client_order_id, e)
+            self._emit_update_rejected(client_order_id, venue_order_id, e)
             return
         except ccxt.NetworkError as e:
             # Transient: UNKNOWN whether the edit landed. Leave the order PENDING_UPDATE
@@ -573,19 +574,19 @@ class CcxtConnector(ChannelEmitter):
             return
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] Unexpected error updating order {client_order_id}: {e}")
-            self._emit_update_rejected(client_order_id, e)
+            self._emit_update_rejected(client_order_id, venue_order_id, e)
             return
 
         # The venue echoes the edited order; recover the venue id from the response
         # when we don't already have one. Instrument is left None on the event — AM
-        # resolves it from its own cached order by client_order_id.
+        # resolves it from its own cached order by client_order_id (or venue id).
         vid = venue_order_id
         if isinstance(r, dict) and r.get("id") is not None:
             vid = vid or str(r.get("id"))
         self.send(
             OrderUpdatedEvent(
                 instrument=None,
-                client_order_id=client_order_id,  # type: ignore[arg-type]
+                client_order_id=client_order_id or vid,  # type: ignore[arg-type]  # cid if known, else venue id
                 venue_order_id=vid,  # str | None — never coerce to "" (AM would index a bogus id)
                 new_price=price,
                 new_quantity=quantity,
@@ -620,12 +621,15 @@ class CcxtConnector(ChannelEmitter):
         # reject without touching the live order. TODO(account-mgmt): wire the recreate.
         raise ccxt.NotSupported("cancel+recreate update requires the original order parameters")
 
-    def _emit_update_rejected(self, client_order_id: str | None, error: Exception) -> None:
-        logger.warning(f"[{self.exchange_name}] Update for {client_order_id} rejected: {error}")
+    def _emit_update_rejected(
+        self, client_order_id: str | None, venue_order_id: str | None, error: Exception
+    ) -> None:
+        logger.warning(f"[{self.exchange_name}] Update for {client_order_id or venue_order_id} rejected: {error}")
         self.send(
             OrderUpdateRejectedEvent(
                 instrument=None,
-                client_order_id=client_order_id,  # type: ignore[arg-type]
+                client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]  # cid if known, else venue id
+                venue_order_id=venue_order_id,
                 reason=str(error),
                 code=type(error).__name__,
             )
@@ -892,12 +896,12 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Reconciliation primitives — READ side
     # ------------------------------------------------------------------ #
-    def request_order_status(self, client_order_id: str, venue_order_id: str | None = None) -> None:
-        if not client_order_id:
-            raise InvalidOrderParameters("request_order_status: client_order_id is required")
+    def request_order_status(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+        if not client_order_id and not venue_order_id:
+            raise InvalidOrderParameters("request_order_status: client_order_id or venue_order_id is required")
         self._spawn(self._order_status_async(client_order_id, venue_order_id))
 
-    async def _order_status_async(self, client_order_id: str, venue_order_id: str | None) -> None:
+    async def _order_status_async(self, client_order_id: str | None, venue_order_id: str | None) -> None:
         cached = self._resolve_cached(client_order_id, venue_order_id)
         symbol = cached.ccxt_symbol if cached is not None else None
         # Prefer the venue id (more reliable across venues); fall back to the cloid.
@@ -919,12 +923,13 @@ class CcxtConnector(ChannelEmitter):
         self._handle_ws_order(raw)
 
     def _emit_order_status_not_found(
-        self, client_order_id: str, venue_order_id: str | None, cached: _CachedOrder | None
+        self, client_order_id: str | None, venue_order_id: str | None, cached: _CachedOrder | None
     ) -> None:
-        """Emit the reconcile not-found reject, routed by the client_order_id (always present)."""
+        """Emit the reconcile not-found reject, carrying both ids so AM routes by either."""
         self.send(OrderRejectedEvent(
             instrument=cached.instrument if cached is not None else None,
-            client_order_id=client_order_id,
+            client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]  # cid if known, else venue id
+            venue_order_id=venue_order_id,
             reason="reconcile: order not present at venue",
             code="OrderNotFound",
         ))

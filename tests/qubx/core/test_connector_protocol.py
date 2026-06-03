@@ -15,11 +15,10 @@ def test_iconnector_has_required_methods():
     assert required <= actual, f"missing: {required - actual}"
 
 
-def test_cancel_order_requires_client_order_id():
-    # client_order_id is always present (synthesized as ext:<venue_id> for external
-    # orders), so it is a required positional; venue_order_id stays optional.
-    sig = inspect.signature(IConnector.cancel_order)
-    cid = sig.parameters["client_order_id"]
-    assert cid.kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
-    assert cid.default is inspect.Parameter.empty
-    assert sig.parameters["venue_order_id"].default is None
+def test_cancel_order_accepts_either_id():
+    # cancel/update/request_order_status address an order by EITHER id; both params default
+    # to None and the connector requires at least one (enforced at call time, not by the sig).
+    for name in ("cancel_order", "update_order", "request_order_status"):
+        sig = inspect.signature(getattr(IConnector, name))
+        for id_param in ("client_order_id", "venue_order_id"):
+            assert sig.parameters[id_param].default is None, f"{name}.{id_param}"

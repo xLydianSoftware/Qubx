@@ -314,9 +314,9 @@ async def test_request_order_status_emits_event() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_order_status_not_found_emits_reject_by_cid() -> None:
-    # A reconcile fetch that comes back OrderNotFound emits OrderRejectedEvent routed by
-    # the client_order_id (always present), so AM can resolve and terminate the order.
+async def test_request_order_status_not_found_emits_reject_with_both_ids() -> None:
+    # A reconcile fetch that comes back OrderNotFound emits OrderRejectedEvent carrying both
+    # ids, so AM can resolve the order by client_order_id or venue_order_id and terminate it.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_order = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
@@ -330,6 +330,23 @@ async def test_request_order_status_not_found_emits_reject_by_cid() -> None:
     assert isinstance(ev, OrderRejectedEvent)
     assert ev.reason == "reconcile: order not present at venue"
     assert ev.client_order_id == "qubx_BTCUSDT_1"
+    assert ev.venue_order_id == "VENUE123"
+
+
+@pytest.mark.asyncio
+async def test_request_order_status_by_venue_id_only_emits_event() -> None:
+    # Reconcile a venue-id-only order (no client_order_id): fetch by venue id and surface it.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_order = AsyncMock(return_value=_ws_order(status="closed", trades=[_ws_trade("TX", amount=1.0)]))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_order_status(venue_order_id="VENUE123")
+    await _drive(conn)
+
+    exchange.fetch_order.assert_awaited_once_with("VENUE123", None)
+    assert isinstance(sent[0], OrderAcceptedEvent)
+    assert isinstance(sent[1], OrderFilledEvent)
 
 
 @pytest.mark.asyncio
@@ -345,8 +362,10 @@ async def test_request_order_status_network_error_leaves_inflight() -> None:
     assert sent == []
 
 
-def test_request_order_status_raises_on_empty_cid() -> None:
+def test_request_order_status_raises_when_no_id_given() -> None:
     conn, _, _ = _make_connector()
+    with pytest.raises(Exception):
+        conn.request_order_status()
     with pytest.raises(Exception):
         conn.request_order_status(client_order_id="")
 

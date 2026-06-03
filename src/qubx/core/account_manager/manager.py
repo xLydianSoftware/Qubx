@@ -537,8 +537,17 @@ class AccountManager:
             return order
         return self._transition(state, order.client_order_id, OrderStatus.EXPIRED)
 
-    def _handle_rejected(self, state: AccountState, event: OrderRejectedEvent) -> Order | None:
+    def _active_order_for(self, state: AccountState, event: OrderEvent) -> Order | None:
+        # Resolve an ACTIVE order by client id, then by venue id — so a reject addressed by
+        # venue id alone (a venue-id-only cancel/update) still routes. Active-only (no
+        # materialize): a reject has no order to create.
         order = state.get_active_order(event.client_order_id)
+        if order is None and event.venue_order_id is not None:
+            order = state.get_order_by_venue_id(event.venue_order_id)
+        return order
+
+    def _handle_rejected(self, state: AccountState, event: OrderRejectedEvent) -> Order | None:
+        order = self._active_order_for(state, event)
         if order is None:
             logger.warning(f"reject for unknown order {event.client_order_id}")
             return None
@@ -566,14 +575,14 @@ class AccountManager:
         return order
 
     def _handle_cancel_rejected(self, state, event):
-        order = state.get_active_order(event.client_order_id)
+        order = self._active_order_for(state, event)
         if order is None or order.status != OrderStatus.PENDING_CANCEL:
             logger.warning(f"cancel-rejected for unexpected state: {order}")
             return None
         return self._revert_from_pending(state, order)
 
     def _handle_update_rejected(self, state, event):
-        order = state.get_active_order(event.client_order_id)
+        order = self._active_order_for(state, event)
         if order is None or order.status != OrderStatus.PENDING_UPDATE:
             logger.warning(f"update-rejected for unexpected state: {order}")
             return None
