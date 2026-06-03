@@ -678,9 +678,11 @@ class OrderStatus(str, Enum):
     REJECTED = "rejected"
     EXPIRED = "expired"
 
+    @property
     def is_terminal(self) -> bool:
         return self in (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED)
 
+    @property
     def is_pending(self) -> bool:
         return self in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
 
@@ -725,16 +727,18 @@ class OrderRequest:
 class Order:
     client_order_id: str
     venue_order_id: str | None
-    origin: OrderOrigin
     type: OrderType
     instrument: Instrument
     time: dt_64                       # submission timestamp; grace-window reconcile
                                       # measures order age from this field
     quantity: float
-    price: float
+    price: float | None               # None for market orders (no limit price)
     side: OrderSide
     status: OrderStatus
     time_in_force: str
+    # Defaults to FRAMEWORK (the common case); the snapshot/external materialization
+    # paths set EXTERNAL / RECOVERED explicitly.
+    origin: OrderOrigin = OrderOrigin.FRAMEWORK
     filled_quantity: float = 0.0
     avg_fill_price: float | None = None
     accepted_at: dt_64 | None = None
@@ -779,8 +783,25 @@ class Order:
             )
         return self.venue_order_id
 
+    def record_fill(self, quantity: float, price: float) -> None:
+        """Accumulate one fill into filled_quantity and the running average fill price.
+
+        ``quantity`` is the fill size (sign-agnostic — absolute size is used for the
+        weighted average). filled_quantity mirrors real, irreversible fills and so is only
+        ever increased. The caller owns dedup (apply a given fill at most once) and any
+        position/balance side effects; this only maintains the order's own fill totals.
+        """
+        qty = abs(quantity)
+        if self.avg_fill_price is None:
+            self.avg_fill_price = price
+        else:
+            self.avg_fill_price = (self.avg_fill_price * self.filled_quantity + price * qty) / (
+                self.filled_quantity + qty
+            )
+        self.filled_quantity += qty
+
     def __str__(self) -> str:
-        return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price > 0 else ''} ({self.time_in_force}) [{self.status}]"
+        return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price else ''} ({self.time_in_force}) [{self.status}]"
 
 
 @dataclass
@@ -797,6 +818,13 @@ class Balance:
     def lock(self, lock_amount: float) -> None:
         self.locked += lock_amount
         self.free = self.total - self.locked
+
+    def reset_by_balance(self, balance: "Balance") -> None:
+        # In-place value copy (exchange/currency are identity) so holders of this
+        # Balance keep a live reference. Mirrors Position.reset_by_position.
+        self.free = balance.free
+        self.locked = balance.locked
+        self.total = balance.total
 
     def __add__(self, amount: float) -> "Balance":
         self.total += amount

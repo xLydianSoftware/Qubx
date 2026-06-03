@@ -120,7 +120,7 @@ class ActiveInstrument:
         return ctx.trade(self._instrument, qty, price, tif, **options)
 
     def trade_a(self, qty: float, price=None, tif='gtc', **options):
-        return ctx.trade_async(self._instrument, qty, price, tif, **options)
+        return ctx.trade(self._instrument, qty, price, tif, **options)
 
     def signal(self, s: float, price: float | None = None, 
                stop: float | None = None,
@@ -188,7 +188,7 @@ def trade(instrument: Instrument | ActiveInstrument, qty: float, price=None, tif
 
 
 def trade_a(instrument: Instrument | ActiveInstrument, qty: float, price=None, tif='gtc'):
-    return ctx.trade_async(instrument if isinstance(instrument, Instrument) else instrument._instrument, qty, price, tif)
+    return ctx.trade(instrument if isinstance(instrument, Instrument) else instrument._instrument, qty, price, tif)
 
 # - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -
 def portfolio(all=True):

@@ -194,6 +194,73 @@ class TestRunStrategyYaml:
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
+    def test_paper_context_wires_simulated_connector_and_account_manager(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """Network-free wiring assertion: paper=True builds SimulatedConnectors + a central
+        SimulatedAccountManager seeded with the configured initial capital, exposed through
+        ctx.account."""
+        from qubx.backtester.connector import SimulatedConnector
+        from qubx.core.account_manager import SimulatedAccountManager
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        # - no warmup: focus the test on construction-time wiring (warmup is exercised elsewhere)
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions=None, testnet=False
+        )
+
+        with (
+            patch(
+                "qubx.utils.runner.runner.class_import",
+                side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+            ),
+            patch("qubx.utils.runner.runner._create_tcc", return_value=lookup.find_fees("BINANCE.UM", None)),
+        ):
+            ctx = create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="paper_wiring_test",
+            )
+
+        assert isinstance(ctx, StrategyContext)
+
+        # - connectors are per-exchange SimulatedConnectors
+        assert set(ctx._connectors.keys()) == {"BINANCE.UM"}
+        assert isinstance(ctx._connectors["BINANCE.UM"], SimulatedConnector)
+        assert ctx.is_paper_trading
+
+        # - central account manager is the simulation variant, seeded with configured capital
+        assert isinstance(ctx._account_manager, SimulatedAccountManager)
+        assert ctx.account is ctx._account_manager
+        balance = ctx.account.get_balance("USDT", exchange="BINANCE.UM")
+        assert balance is not None
+        assert balance.total == 100_000.0
+        assert balance.free == 100_000.0
+
+        # - the resolved strategy instance is wired into the AM for AM-fired callbacks
+        assert ctx._account_manager._strategy is ctx.strategy
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner._create_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
     @patch("qubx.utils.runner.runner._restore_state")
     def test_run_strategy_yaml_with_restored_positions(
@@ -244,9 +311,7 @@ class TestRunStrategyYaml:
                 initializer.set_state_resolver(StateResolver.SYNC_STATE)
 
             def on_start(self, ctx: IStrategyContext) -> None:
-                instr = btc_instrument
-                # logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                # ctx.emit_signal(instr.signal(ctx, 1.0))
+                pass
 
         # Run the function under test
         with patch(
@@ -360,3 +425,38 @@ class TestRunStrategyYaml:
         pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
         assert pos.quantity == 1
         assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
+
+
+def test_inject_restored_state_preserves_accounting_fields():
+    # Regression guard: _inject_restored_state seeds the whole persisted Position, so the
+    # accounting fields (r_pnl, commissions, cumulative_funding) survive a restart — not
+    # just quantity. This lost dedicated coverage when merge_restored_accounting was removed.
+    from qubx.core.account_manager import AccountManager, AccountState
+    from qubx.utils.runner.runner import _inject_restored_state
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=2.0, pos_average_price=50_000.0)
+    pos.r_pnl = 123.0
+    pos.commissions = 4.5
+    pos.cumulative_funding = -7.0
+
+    am = AccountManager.__new__(AccountManager)
+    am._states = {inst.exchange: AccountState(exchange=inst.exchange)}
+
+    restored = RestoredState(
+        time=np.datetime64("now"),
+        balances=[Balance(exchange=inst.exchange, currency="USDT", free=1000.0, locked=0.0, total=1000.0)],
+        instrument_to_target_positions={},
+        instrument_to_signal_positions={},
+        positions={inst: pos},
+    )
+    _inject_restored_state(am, restored)
+
+    restored_pos = am.get_position(inst)
+    assert restored_pos.quantity == 2.0
+    assert restored_pos.r_pnl == 123.0
+    assert restored_pos.commissions == 4.5
+    assert restored_pos.cumulative_funding == -7.0
+    balances = am.get_balances(inst.exchange)
+    assert any(b.currency == "USDT" and b.total == 1000.0 for b in balances)

@@ -1,12 +1,10 @@
-import asyncio
-
 from qubx.backtester.ome import SimulatedExecutionReport
 from qubx.backtester.simulated_exchange import ISimulatedExchange
-from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest
+from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest, OrderStatus, Timestamped
+from qubx.core.connector import ChannelEmitter
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
-    ChannelMessage,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderFilledEvent,
@@ -15,11 +13,11 @@ from qubx.core.events import (
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
 )
-from qubx.core.exceptions import OrderNotFound
+from qubx.core.exceptions import ExchangeError, InvalidOrder, InvalidOrderParameters, OrderNotFound
 from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 
 
-class SimulatedConnector:
+class SimulatedConnector(ChannelEmitter):
     """IConnector implementation wrapping the simulator's OME via ISimulatedExchange.
 
     submit/cancel/update route through the exchange and translate the resulting
@@ -37,58 +35,73 @@ class SimulatedConnector:
         channel: CtrlChannel,
         exchange: ISimulatedExchange,
         time_provider: ITimeProvider,
-        # Accepted for IConnector construction parity with live connectors; simulation has no event loop.
-        loop: asyncio.AbstractEventLoop | None = None,
+        # Absorb extra construction kwargs (e.g. live connectors' loop=...) for parity;
+        # simulation has no event loop, so they're ignored.
+        **_kwargs,
     ):
         self.channel = channel
         self.exchange_name = exchange.exchange_id
         self._exchange = exchange
         self._time = time_provider
 
-    def send(self, event: ChannelMessage) -> None:
-        self.channel.send(event)
-
     def submit_order(self, request: OrderRequest) -> None:
-        report = self._exchange.place_order(
-            instrument=request.instrument,
-            order_side=request.side,
-            order_type=request.order_type,
-            amount=request.quantity,
-            price=request.price,
-            client_id=request.client_id,
-            time_in_force=request.time_in_force,
-        )
+        try:
+            report = self._exchange.place_order(
+                instrument=request.instrument,
+                order_side=request.side,
+                order_type=request.order_type,
+                amount=request.quantity,
+                price=request.price,
+                client_id=request.client_id,
+                time_in_force=request.time_in_force,
+                **(request.options or {}),
+            )
+        except (InvalidOrder, InvalidOrderParameters):
+            # Framework-side rejection (bad side/type/amount/price/TIF) — surface
+            # synchronously so the caller fixes it; never rides the channel.
+            raise
+        except ExchangeError as e:
+            # Venue verdict (e.g. a stop that would trigger immediately) — rides the
+            # channel as OrderRejectedEvent rather than raising. This is the connector
+            # rejection boundary: the same logical failure must take the same path
+            # everywhere, so venue refusals are always async events, not exceptions.
+            self.send(
+                OrderRejectedEvent(
+                    instrument=request.instrument, client_order_id=request.client_id, reason=str(e)
+                )
+            )
+            return
         self._emit_from_report(report)
 
-    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def cancel_order(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+        # Prefer the venue id (the OME keys orders by it); fall back to the cid before the ack.
         oid = venue_order_id or client_order_id
-        if oid is None:
-            raise ValueError("cancel_order: missing identifier")
+        if not oid:
+            raise ValueError("cancel_order: client_order_id or venue_order_id is required")
         try:
             report = self._exchange.cancel_order(oid)
         except OrderNotFound:
-            report = None
-        if report is not None:
-            self._emit_from_report(report)
+            return  # already gone at the venue (filled/canceled) — nothing to emit
+        self._emit_from_report(report)
 
     def update_order(
         self,
-        *,
         client_order_id: str | None = None,
         venue_order_id: str | None = None,
         price: float | None = None,
         quantity: float | None = None,
     ) -> None:
         oid = venue_order_id or client_order_id
+        if not oid:
+            raise ValueError("update_order: client_order_id or venue_order_id is required")
         try:
-            old = self._exchange.cancel_order(oid)  # type: ignore[arg-type]
+            old = self._exchange.cancel_order(oid)
         except OrderNotFound:
-            old = None
-        if old is None:
             self.send(
                 OrderUpdateRejectedEvent(
                     instrument=None,
-                    client_order_id=client_order_id or oid,  # type: ignore[arg-type]
+                    client_order_id=client_order_id or oid,  # cid if known, else the venue id
+                    venue_order_id=venue_order_id,
                     reason="update_order: order not found",
                 )
             )
@@ -104,6 +117,7 @@ class SimulatedConnector:
             price=price if price is not None else old_order.price,
             client_id=old_order.client_id,
             time_in_force=old_order.time_in_force,
+            **(old_order.options or {}),
         )
         self.send(
             OrderUpdatedEvent(
@@ -115,8 +129,10 @@ class SimulatedConnector:
             )
         )
 
-    def request_order_status(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def request_order_status(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         oid = venue_order_id or client_order_id
+        if not oid:
+            raise ValueError("request_order_status: client_order_id or venue_order_id is required")
         for order in self._exchange.get_open_orders().values():
             if order.id == oid or order.client_id == oid:
                 self.send(
@@ -131,7 +147,8 @@ class SimulatedConnector:
         self.send(
             OrderRejectedEvent(
                 instrument=None,
-                client_order_id=client_order_id or oid,  # type: ignore[arg-type]
+                client_order_id=client_order_id or oid,  # cid if known, else the venue id
+                venue_order_id=venue_order_id,
                 reason="reconcile: order not present at venue",
             )
         )
@@ -145,17 +162,29 @@ class SimulatedConnector:
         )
         self.send(AccountSnapshotEvent(instrument=None, snapshot=snapshot))
 
-    def process_market_data(self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray) -> None:
-        for report in self._exchange.process_market_data(instrument, data):
+    def process_market_data(self, instrument: Instrument, data: Timestamped) -> None:
+        # Single entry point that drives the OME (runner._feed_ome in backtest,
+        # _feed_simulated_connector in paper) with whatever a subscription produces. The OME
+        # matches resting orders against Quote/OrderBook/Trade/TradeArray, so those pass
+        # through unchanged — full book depth / trade-array fidelity. Anything else (an OHLC
+        # Bar, a bare price) isn't matchable, so emulate a tradeable quote from it. Note we
+        # can't just always emulate: emulate_quote_from_data has no TradeArray case and
+        # collapses an OrderBook to a single quote.
+        if isinstance(data, (Quote, OrderBook, Trade, TradeArray)):
+            feed: Quote | OrderBook | Trade | TradeArray | None = data
+        else:
+            feed = self._exchange.emulate_quote_from_data(instrument, self._time.time(), data)
+        if feed is None:
+            return
+        for report in self._exchange.process_market_data(instrument, feed):
             self._emit_from_report(report)
 
     def _emit_from_report(self, report: SimulatedExecutionReport) -> None:
         order = report.order
         status = order.status
-        # Raw UPPERCASE status strings from the OME (not the lowercase OrderStatus enum used elsewhere
-        # in core). The OME emits "OPEN", "CLOSED", and "CANCELED" in practice; "NEW" and "FILLED"
-        # are accepted defensively for forward-compatibility with other exchange adapters.
-        if status in ("OPEN", "NEW"):
+        # The OME emits ACCEPTED (resting / just-placed) and CANCELED on the order; a fill
+        # carries the deal in report.exec with status FILLED.
+        if status in (OrderStatus.ACCEPTED, OrderStatus.SUBMITTED):
             self.send(
                 OrderAcceptedEvent(
                     instrument=report.instrument,
@@ -164,7 +193,7 @@ class SimulatedConnector:
                     accepted_at=report.timestamp,
                 )
             )
-        elif status == "CANCELED":
+        elif status == OrderStatus.CANCELED:
             self.send(
                 OrderCanceledEvent(
                     instrument=report.instrument,
@@ -173,9 +202,9 @@ class SimulatedConnector:
                 )
             )
         if report.exec is not None:
-            # OME marks a fully-filled order CLOSED; a still-OPEN order with an exec
-            # is a partial fill (resting remainder stays in the book).
-            if status in ("CLOSED", "FILLED"):
+            # A FILLED order is fully filled; a still-live order with an exec is a partial
+            # fill (resting remainder stays in the book).
+            if status == OrderStatus.FILLED:
                 self.send(
                     OrderFilledEvent(
                         instrument=report.instrument,
@@ -200,7 +229,7 @@ class SimulatedConnector:
     def is_ws_ready(self) -> bool:
         return True
 
-    def force_ws_reconnect_sync(self) -> bool:
+    def reconnect(self) -> bool:
         return True
 
     def connect(self) -> None:
