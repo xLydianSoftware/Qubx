@@ -783,6 +783,23 @@ class Order:
             )
         return self.venue_order_id
 
+    def record_fill(self, quantity: float, price: float) -> None:
+        """Accumulate one fill into filled_quantity and the running average fill price.
+
+        ``quantity`` is the fill size (sign-agnostic — absolute size is used for the
+        weighted average). filled_quantity mirrors real, irreversible fills and so is only
+        ever increased. The caller owns dedup (apply a given fill at most once) and any
+        position/balance side effects; this only maintains the order's own fill totals.
+        """
+        qty = abs(quantity)
+        if self.avg_fill_price is None:
+            self.avg_fill_price = price
+        else:
+            self.avg_fill_price = (self.avg_fill_price * self.filled_quantity + price * qty) / (
+                self.filled_quantity + qty
+            )
+        self.filled_quantity += qty
+
     def __str__(self) -> str:
         return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price else ''} ({self.time_in_force}) [{self.status}]"
 

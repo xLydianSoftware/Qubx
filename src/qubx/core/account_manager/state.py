@@ -99,13 +99,7 @@ class AccountState:
         if fill.trade_id in order.seen_trade_ids:
             return order
         order.seen_trade_ids.add(fill.trade_id)
-        order.filled_quantity += abs(fill.amount)
-        if order.avg_fill_price is None:
-            order.avg_fill_price = fill.price
-        else:
-            total = order.filled_quantity
-            prev = total - abs(fill.amount)
-            order.avg_fill_price = (order.avg_fill_price * prev + fill.price * abs(fill.amount)) / total
+        order.record_fill(fill.amount, fill.price)  # filled_quantity + avg-price math lives on Order
         order.last_updated_at = now
         return order
 
