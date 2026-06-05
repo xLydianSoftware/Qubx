@@ -5,7 +5,7 @@ from enum import StrEnum
 from functools import cache
 from queue import Empty, Queue
 from threading import Event, Lock
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, Union
+from typing import TYPE_CHECKING, Any, Optional, TypeAlias, Union
 
 import numpy as np
 import pandas as pd
@@ -680,6 +680,27 @@ class OrderStatus(StrEnum):
     CANCELED = "CANCELED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in _TERMINAL_ORDER_STATUSES
+
+    @property
+    def is_inflight(self) -> bool:
+        return self in _INFLIGHT_ORDER_STATUSES
+
+
+_TERMINAL_ORDER_STATUSES = frozenset({
+    OrderStatus.FILLED,
+    OrderStatus.CANCELED,
+    OrderStatus.REJECTED,
+    OrderStatus.EXPIRED,
+})
+_INFLIGHT_ORDER_STATUSES = frozenset({
+    OrderStatus.SUBMITTED,
+    OrderStatus.PENDING_CANCEL,
+    OrderStatus.PENDING_UPDATE,
+})
 
 
 class OrderOrigin(StrEnum):
