@@ -657,9 +657,35 @@ class Deal:
     fee_currency: str | None = None
 
 
-OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
-OrderSide = Literal["BUY", "SELL"]
-OrderStatus = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
+class OrderType(StrEnum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP_MARKET = "STOP_MARKET"
+    STOP_LIMIT = "STOP_LIMIT"
+
+
+class OrderSide(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderStatus(StrEnum):
+    INITIALIZED = "INITIALIZED"
+    SUBMITTED = "SUBMITTED"
+    ACCEPTED = "ACCEPTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    PENDING_CANCEL = "PENDING_CANCEL"
+    PENDING_UPDATE = "PENDING_UPDATE"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+
+class OrderOrigin(StrEnum):
+    FRAMEWORK = "FRAMEWORK"
+    RECOVERED = "RECOVERED"
+    EXTERNAL = "EXTERNAL"
 
 
 @dataclass
@@ -685,30 +711,39 @@ class OrderRequest:
     instrument: Instrument
     quantity: float
     price: float | None = None
-    order_type: OrderType = "LIMIT"
-    side: OrderSide = "BUY"
+    order_type: OrderType = OrderType.LIMIT
+    side: OrderSide = OrderSide.BUY
     time_in_force: str = "gtc"
     client_id: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(slots=True, kw_only=True)
 class Order:
-    id: str
+    client_id: str
     type: OrderType
     instrument: Instrument
-    time: dt_64
     quantity: float
-    price: float
     side: OrderSide
-    status: OrderStatus
     time_in_force: str
-    client_id: str | None = None
-    cost: float = 0.0
+    status: OrderStatus = OrderStatus.INITIALIZED
+    venue_id: str | None = None
+    price: float | None = None
+    filled_quantity: float = 0.0
+    avg_fill_price: float | None = None
+    submitted_at: dt_64 | None = None
+    accepted_at: dt_64 | None = None
+    last_updated_at: dt_64 | None = None
+    rejected_reason: str | None = None
+    error_code: str | None = None
+    reduce_only: bool = False
+    post_only: bool = False
+    origin: OrderOrigin = OrderOrigin.FRAMEWORK
+
     options: dict[str, Any] = field(default_factory=dict)
 
     def __str__(self) -> str:
-        return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price > 0 else ''} ({self.time_in_force}) [{self.status}]"
+        return f"[{self.client_id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price > 0 else ''} ({self.time_in_force}) [{self.status}]"
 
 
 @dataclass
@@ -735,6 +770,11 @@ class AssetBalance:
         self.total -= amount
         self.free -= amount
         return self
+
+    def set(self, other: "AssetBalance") -> None:
+        self.free = other.free
+        self.locked = other.locked
+        self.total = other.total
 
 
 DEFAULT_MAINTENANCE_MARGIN = 0.05
@@ -1054,19 +1094,17 @@ class Position:
         )
 
     def __str__(self):
-        return " ".join(
-            [
-                f"{self._t2s(self.last_update_time)}",
-                f"[{self.instrument}]",
-                f"qty={self.quantity:.{self.instrument.size_precision}f}",
-                f"entryPrice={self.position_avg_price:.{self.instrument.price_precision}f}",
-                f"price={self.last_update_price:.{self.instrument.price_precision}f}",
-                f"PNL: (unrealized={self.unrealized_pnl():.2f}",
-                f"realized={self.r_pnl:.2f}",
-                f"pnl={self.pnl:.2f})",
-                f"value={self.market_value_funds:.2f}",
-            ]
-        )
+        return " ".join([
+            f"{self._t2s(self.last_update_time)}",
+            f"[{self.instrument}]",
+            f"qty={self.quantity:.{self.instrument.size_precision}f}",
+            f"entryPrice={self.position_avg_price:.{self.instrument.price_precision}f}",
+            f"price={self.last_update_price:.{self.instrument.price_precision}f}",
+            f"PNL: (unrealized={self.unrealized_pnl():.2f}",
+            f"realized={self.r_pnl:.2f}",
+            f"pnl={self.pnl:.2f})",
+            f"value={self.market_value_funds:.2f}",
+        ])
 
     def __repr__(self):
         return self.__str__()
