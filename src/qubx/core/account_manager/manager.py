@@ -13,6 +13,7 @@ from qubx.core.account_manager.events import AccountMessage, AccountSnapshotEven
 from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.account_manager.state import AccountState
 from qubx.core.basics import AssetBalance, Instrument, ITimeProvider, Order, Position
+from qubx.core.series import Quote
 
 
 class AccountManager:
@@ -46,6 +47,17 @@ class AccountManager:
             return next(iter(self._states.values()))
         logger.debug(f"cannot route {type(event).__name__} (no instrument/identifiers); dropped")
         return None
+
+    # ---- market data --------------------------------------------------- #
+
+    def on_market_quote(self, instrument: Instrument, quote: Quote) -> None:
+        state = self._states.get(instrument.exchange)
+        if state is None:
+            return
+        pos = state.get_position(instrument)
+        if pos is None:  # only mark positions we hold; never create one per quote
+            return
+        pos.update_market_price(self._time.time(), quote.mid_price(), state.conversion_rate(instrument))
 
     # ---- reads (cross-exchange) ---------------------------------------- #
 

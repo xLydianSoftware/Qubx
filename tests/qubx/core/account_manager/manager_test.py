@@ -16,6 +16,7 @@ from qubx.core.basics import (
     OrderType,
 )
 from qubx.core.lookups import lookup
+from qubx.core.series import Quote
 
 T0 = np.datetime64("2026-05-28T00:00:00", "ns")
 T1 = np.datetime64("2026-05-28T00:01:00", "ns")
@@ -116,6 +117,26 @@ def test_total_capital_aggregates_across_exchanges():
 
 def test_margin_ratio_no_maint_is_100():
     assert _am().get_margin_ratio() == 100.0
+
+
+def test_on_market_quote_marks_existing_position():
+    am = _am()
+    pos = am.get_state(EX)._ensure_position(BTC)
+    pos.update_position_by_deal(_fill("t1", 0.5, 50_000.0), 1.0)  # long 0.5 @ 50000
+    am.on_market_quote(BTC, Quote(time=T1, bid=50_999.0, ask=51_001.0, bid_size=1.0, ask_size=1.0))  # mid 51000
+    assert pos.last_update_price == 51_000.0
+    assert pos.unrealized_pnl() == 500.0  # 0.5 * (51000 - 50000)
+
+
+def test_on_market_quote_noop_without_position():
+    am = _am()
+    am.on_market_quote(BTC, Quote(time=T1, bid=49_999.0, ask=50_001.0, bid_size=1.0, ask_size=1.0))
+    assert am.get_position(BTC) is None  # not created
+
+
+def test_on_market_quote_unknown_exchange_is_noop():
+    am = AccountManager({"OTHER": "USDT"}, _Time())  # BTC's exchange not present
+    am.on_market_quote(BTC, Quote(time=T1, bid=1.0, ask=2.0, bid_size=1.0, ask_size=1.0))  # must not raise
 
 
 def test_get_order_by_exchange_and_shortcuts():
