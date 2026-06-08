@@ -353,3 +353,40 @@ def test_update_rejected_reverts_to_pre_pending():
     r = apply(state, OrderUpdateRejectedEvent(timestamp=T0, client_order_id="c1", reason="x"), T1)
     assert r.order is not None and r.order.status is OrderStatus.PARTIALLY_FILLED
     assert r.order_change is OrderChange.UPDATE_REJECTED
+
+
+# --------------------------------------------------------------------------- #
+# 4.5 — external-order materialization
+# --------------------------------------------------------------------------- #
+
+
+def test_external_fill_materializes_books_and_fires_all():
+    state = _state()
+    _seed_usdt(state, 1000.0)
+    # order unknown to us -> external
+    r = apply(
+        state,
+        OrderFilledEvent(timestamp=T0, instrument=BTC, client_order_id="x", venue_order_id="EXT1", fill=_fill("t1", 0.5, 50_000.0)),
+        T1,
+    )
+    assert r.order is not None
+    assert r.order.origin is OrderOrigin.EXTERNAL
+    assert r.order.client_id == "ext:EXT1"
+    assert r.order.status is OrderStatus.FILLED
+    assert r.deal is not None
+    assert r.position is not None and r.position.quantity == 0.5
+
+
+def test_materialize_skipped_without_instrument():
+    state = _state()
+    r = apply(state, OrderFilledEvent(timestamp=T0, client_order_id="x", venue_order_id="EXT1", fill=_fill()), T1)
+    assert r.order is None and r.deal is None and r.position is None
+
+
+def test_external_order_resolves_same_on_second_event():
+    state = _state()
+    apply(state, DealEvent(timestamp=T0, instrument=BTC, client_order_id="x", venue_order_id="EXT1", deal=_fill("t1", 0.3)), T1)
+    apply(state, DealEvent(timestamp=T0, instrument=BTC, client_order_id="x", venue_order_id="EXT1", deal=_fill("t2", 0.2)), T1)
+    order = state.get_order_by_venue_id("EXT1")
+    assert order is not None and order.client_id == "ext:EXT1"
+    assert _present(state.get_position(BTC)).quantity == 0.5  # accumulated on one external order

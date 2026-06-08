@@ -27,7 +27,17 @@ from qubx.core.account_manager.events import (
 )
 from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import can_transition, validate_transition
-from qubx.core.basics import Deal, Instrument, Order, OrderChange, OrderStatus, Position
+from qubx.core.basics import (
+    Deal,
+    Instrument,
+    Order,
+    OrderChange,
+    OrderOrigin,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+)
 
 
 @dataclass
@@ -59,6 +69,33 @@ def _active_order_for(state: AccountState, event: OrderEvent) -> Order | None:
     if order is None and event.venue_order_id is not None:
         order = state.get_order_by_venue_id(event.venue_order_id)
     return order
+
+
+def _materialize_external(state: AccountState, event: OrderEvent, instrument: Instrument, now: np.datetime64) -> Order:
+    venue_id = event.venue_order_id
+    order = Order(
+        client_id=f"ext:{venue_id or event.client_order_id}",
+        type=OrderType.LIMIT,
+        instrument=instrument,
+        quantity=0.0,
+        side=OrderSide.BUY,
+        time_in_force="gtc",
+        status=OrderStatus.ACCEPTED,  # it exists at the venue
+        venue_id=venue_id,
+        price=0.0,
+        last_updated_at=now,
+        origin=OrderOrigin.EXTERNAL,
+    )
+    state._add_order(order)
+    return order
+
+
+def _resolve_or_materialize(state: AccountState, event: OrderEvent, now: np.datetime64) -> Order | None:
+    if (order := _resolve(state, event)) is not None:
+        return order
+    if event.instrument is None:  # can't track a position without an instrument
+        return None
+    return _materialize_external(state, event, event.instrument, now)
 
 
 def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.datetime64) -> ApplyResult:
@@ -111,7 +148,7 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
 
 
 def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime64) -> ApplyResult:
-    order = _resolve(state, event)
+    order = _resolve_or_materialize(state, event, now)
     if order is None or order.status.is_terminal:
         return ApplyResult()
     if event.venue_order_id is not None:
@@ -124,7 +161,7 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
 
 
 def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, now: np.datetime64) -> ApplyResult:
-    order = _resolve(state, event)
+    order = _resolve_or_materialize(state, event, now)
     if order is None or order.status.is_terminal:
         return ApplyResult()
     if event.venue_order_id is not None:
@@ -141,7 +178,7 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
 
 
 def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> ApplyResult:
-    order = _resolve(state, event)
+    order = _resolve_or_materialize(state, event, now)
     if order is None or order.status.is_terminal:
         return ApplyResult()
     if event.venue_order_id is not None:
@@ -153,7 +190,7 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
 
 
 def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datetime64) -> ApplyResult:
-    order = _resolve(state, event)
+    order = _resolve_or_materialize(state, event, now)
     if order is None or order.status.is_terminal:
         return ApplyResult()
     if event.venue_order_id is not None and order.venue_id != event.venue_order_id:

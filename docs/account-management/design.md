@@ -149,10 +149,26 @@ class ApplyResult:
 - `order_change` is set by the **reducer** (it knows the from-status, so it can be more
   precise than an event-type lookup — e.g. an accept that confirms a `PENDING_UPDATE`).
 
+## Reconciler (planned)
+
+"The reconciler" splits across three places along the logic-vs-orchestration line:
+
+- **`reconcile.py`** (new module) — the reconciliation *logic*: `reconcile_snapshot(state,
+  snapshot, now) -> ReconcileDiff` (terminate orders missing from the snapshot, materialize
+  new, update existing, apply position/balance snapshots, with the ratchet + freshness
+  guards) plus the sweep *decision* helpers (which inflight orders are stuck, give-up after N
+  retries, liveness). Imports `state` + `state_machine` only — never `reducer` — so there is
+  no import cycle. Justified as its own file by size + cohesion, not reflex.
+- **Reducer** routes the snapshot *event*: a thin `_handle_snapshot` delegates to
+  `reconcile.reconcile_snapshot` and returns the diff. This is where `ApplyResult` widens
+  with a `reconcile_diff` field -> `on_reconcile_complete`.
+- **AccountManager** *drives* the ticks: schedules them via `pm.schedule` and makes the
+  connector calls (`request_order_status` / `request_snapshot` / `reconnect` /
+  `is_ws_ready`). The ticks are thin — call the `reconcile.py` decision helpers, then fire
+  the connector requests; the periodic prune sweep reclaims `seen_trade_ids`.
+
 ## Deferred / open
 
-- External-order materialization (reducer).
-- Reconciler: snapshot reconcile, two-tier in-flight sweep, liveness/reconnect ticks.
 - Wiring venue figures from the connector/reconciler.
 - Real `conversion_rate` (multi-currency).
 - Bounded channel with **account-event drop protection** (account events must not be
@@ -164,6 +180,9 @@ class ApplyResult:
 
 - **Done:** typed events, `OrderStatus` properties, `InvalidOrderTransition`, `state_machine`,
   `AccountState` (data + indices + side-tables + snapshot ratchet + prune + venue figures +
-  derived metrics), reducer skeleton + pure-status handlers (accepted/canceled/expired/rejected).
-- **Next:** reducer fills/deals, deal→position/balance, update + cancel/update-rejected,
-  external materialization; then `AccountManager`, reconciler, PM wiring, connectors.
+  derived metrics), and the **full order-lifecycle reducer** — status handlers, fills/deals
+  (hybrid-B trade-id dedup), deal→position/balance ledger, update + cancel/update-rejected,
+  and external-order materialization.
+- **Next:** `AccountManager` (route + apply, cross-exchange read facade + metric aggregation,
+  MTM, periodic ticks); then `reconcile.py` + snapshot handler, PM callback wiring, the
+  TradingManager write path, connectors, and the `IStrategy` surface change.
