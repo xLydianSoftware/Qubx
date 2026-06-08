@@ -60,7 +60,7 @@ class TestOrderManagementEngineSimulation:
 
         r5 = ome.place_order("SELL", "LIMIT", 0.14, q0.ask + 50, "Test5")
         assert r5.order.status == OrderStatus.ACCEPTED
-        assert r5.order.client_id == "Test5"
+        assert r5.order.client_order_id == "Test5"
         assert r5.exec is None
 
         r6 = ome.place_order("SELL", "LIMIT", 0.3, q0.ask, "Test6")
@@ -73,18 +73,18 @@ class TestOrderManagementEngineSimulation:
 
         assert len(ome.get_open_orders()) == 6
 
-        ome.cancel_order(r6.order.id)
+        ome.cancel_order(r6.order.venue_order_id)
         assert len(ome.get_open_orders()) == 5
 
         # Should return None when order not found (OME level behavior)
-        result = ome.cancel_order(r6.order.id)
+        result = ome.cancel_order(r6.order.venue_order_id)
         assert result is None
 
-        ome.cancel_order(r7.order.id)
-        ome.cancel_order(r5.order.id)
-        ome.cancel_order(r4.order.id)
-        ome.cancel_order(r3.order.id)
-        rc2 = ome.cancel_order(r2.order.id)
+        ome.cancel_order(r7.order.venue_order_id)
+        ome.cancel_order(r5.order.venue_order_id)
+        ome.cancel_order(r4.order.venue_order_id)
+        ome.cancel_order(r3.order.venue_order_id)
+        rc2 = ome.cancel_order(r2.order.venue_order_id)
         assert rc2.order.status == OrderStatus.CANCELED
         assert len(ome.get_open_orders()) == 0
 
@@ -183,7 +183,7 @@ class TestOrderManagementEngineSimulation:
             )
         )
         for i in x1:
-            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+            print(f"  - {i.order.client_order_id} {i.order.status} {str(i.exec)}")
 
         x2 = ome.process_market_data(
             Trade(
@@ -194,7 +194,7 @@ class TestOrderManagementEngineSimulation:
             )
         )
         for i in x2:
-            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+            print(f"  - {i.order.client_order_id} {i.order.status} {str(i.exec)}")
 
         # - quote
         qr = ome.process_market_data(t.g(Q("2020-01-01 10:05", 50.0, 51.0)))
@@ -239,7 +239,7 @@ class TestOrderManagementEngineSimulation:
         # - step 1
         x1 = ome.process_market_data(ta1)
         for i in x1:
-            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+            print(f"  - {i.order.client_order_id} {i.order.status} {str(i.exec)}")
 
         # - quote
         qr = ome.process_market_data(t.g(Q("2020-01-01 10:05", 50.0, 51.0)))

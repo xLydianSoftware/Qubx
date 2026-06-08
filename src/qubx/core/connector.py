@@ -31,15 +31,15 @@ class IConnector(Protocol):
     # id (the only id known before the venue acks). The caller passes whatever it has and the
     # connector picks the id the venue accepts, so the id choice stays in the connector (which
     # knows the venue). Resulting events carry both ids, so the AM routes by either.
-    def cancel_order(self, client_order_id: str | None = None,
+    def cancel_order(self, *, client_order_id: str | None = None,
                      venue_order_id: str | None = None) -> None: ...
 
-    def update_order(self, client_order_id: str | None = None,
+    def update_order(self, *, client_order_id: str | None = None,
                      venue_order_id: str | None = None,
                      price: float | None = None,
                      quantity: float | None = None) -> None: ...
 
-    def request_order_status(self, client_order_id: str | None = None,
+    def request_order_status(self, *, client_order_id: str | None = None,
                              venue_order_id: str | None = None) -> None: ...
 
     def request_snapshot(self) -> None: ...

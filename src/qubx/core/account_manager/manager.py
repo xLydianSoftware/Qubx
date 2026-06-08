@@ -11,6 +11,7 @@ from qubx.core.account_manager.state_machine import can_transition, validate_tra
 from qubx.core.basics import (
     ZERO_COSTS,
     Balance,
+    Deal,
     Instrument,
     ITimeProvider,
     Order,
@@ -54,6 +55,9 @@ if TYPE_CHECKING:
 # ClientIdStore._create_id produces in qubx.core.mixins.trading ("qubx_<symbol>_<n>");
 # a snapshot order carrying it is a RECOVERED framework order, anything else is EXTERNAL.
 _FRAMEWORK_CID_PREFIX = "qubx_"
+
+# Fallback portfolio-base currency when no balance exists yet to infer one from.
+_DEFAULT_BASE_CURRENCY = "USDT"
 
 
 class AccountManager:
@@ -200,6 +204,8 @@ class AccountManager:
         return [b for s in self._states.values() for b in s.get_balances()]
 
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        # `exchange` is accepted for IStrategyContext symmetry but unused: the AM models a
+        # single TCC that applies to every exchange (no per-exchange fee modeling).
         # No TCC configured => zero-fee calculator (rather than raising), so callers that
         # only need fee arithmetic still work in fee-agnostic setups.
         return self._tcc if self._tcc is not None else ZERO_COSTS
@@ -278,7 +284,7 @@ class AccountManager:
 
     def get_base_currency(self, exchange: str | None = None) -> str:
         state = self._states[exchange] if exchange is not None else next(iter(self._states.values()), None)
-        return self._base_currency_for(state) if state is not None else "USDT"
+        return self._base_currency_for(state) if state is not None else _DEFAULT_BASE_CURRENCY
 
     def get_leverage(self, instrument) -> float:
         state = self._states.get(instrument.exchange)
@@ -371,8 +377,8 @@ class AccountManager:
         self._terminal_retention = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
         self._states = {ex: AccountState(exchange=ex) for ex in connectors}
         self._liveness_unready_since = {}
-        # TODO(account-mgmt): this set grows unbounded over long sessions; bound it
-        # (evict old buckets) in a later PR.
+        # Bounded per-exchange funding-bucket dedup (see _FUNDING_BUCKET_CAP); old
+        # buckets evict in _handle_funding_payment so this can't grow unbounded.
         self._applied_funding_buckets = {}
         # Deferred init: always wired via set_context before any tick/callback fires.
         self._ctx = None  # type: ignore[assignment]
@@ -592,21 +598,21 @@ class AccountManager:
             return self._transition(state, order.client_order_id, OrderStatus.ACCEPTED)
         return order
 
-    def _handle_cancel_rejected(self, state, event):
+    def _handle_cancel_rejected(self, state: AccountState, event: OrderCancelRejectedEvent) -> Order | None:
         order = self._active_order_for(state, event)
         if order is None or order.status != OrderStatus.PENDING_CANCEL:
             logger.warning(f"cancel-rejected for unexpected state: {order}")
             return None
         return self._revert_from_pending(state, order)
 
-    def _handle_update_rejected(self, state, event):
+    def _handle_update_rejected(self, state: AccountState, event: OrderUpdateRejectedEvent) -> Order | None:
         order = self._active_order_for(state, event)
         if order is None or order.status != OrderStatus.PENDING_UPDATE:
             logger.warning(f"update-rejected for unexpected state: {order}")
             return None
         return self._revert_from_pending(state, order)
 
-    def _revert_from_pending(self, state, order):
+    def _revert_from_pending(self, state: AccountState, order: Order) -> Order:
         # Revert to the status captured on entry to PENDING_* — never inferred from
         # filled_quantity/venue_id (brittle when venues roll back partial fills). ACCEPTED
         # is the safe default for the rare order with no captured status.
@@ -614,7 +620,7 @@ class AccountManager:
         order.pre_pending_status = None
         return self._transition(state, order.client_order_id, target)
 
-    def _handle_snapshot(self, state, event: AccountSnapshotEvent):
+    def _handle_snapshot(self, state: AccountState, event: AccountSnapshotEvent) -> None:
         snapshot = event.snapshot
         if state.is_snapshot_stale(snapshot.as_of):
             return None
@@ -675,7 +681,7 @@ class AccountManager:
             logger.exception("on_reconcile_complete raised")
         return None
 
-    def _materialize_from_snapshot(self, state, snap_order, as_of):
+    def _materialize_from_snapshot(self, state: AccountState, snap_order: Order, as_of: np.datetime64) -> None:
         # cid prefix classifies origin: our prefix → a recovered framework order;
         # anything else → external. Keep an already-synthesized ext: cid as-is,
         # otherwise synthesize one from the venue id.
@@ -707,7 +713,9 @@ class AccountManager:
             )
         )
 
-    def _update_from_snapshot(self, state, existing, snap_order, as_of):
+    def _update_from_snapshot(
+        self, state: AccountState, existing: Order, snap_order: Order, as_of: np.datetime64
+    ) -> None:
         existing.status = snap_order.status
         existing.filled_quantity = snap_order.filled_quantity
         existing.avg_fill_price = snap_order.avg_fill_price
@@ -781,7 +789,7 @@ class AccountManager:
                     logger.exception(f"reconnect failed for {exchange}")
                 self._liveness_unready_since.pop(exchange, None)
 
-    def _apply_deal_to_position(self, state, instrument, deal):
+    def _apply_deal_to_position(self, state: AccountState, instrument: Instrument, deal: Deal) -> Position:
         pos = state.get_position(instrument)
         if pos is None:
             pos = Position(instrument=instrument)
@@ -792,7 +800,9 @@ class AccountManager:
         self._apply_deal_to_balances(state, instrument, deal, realized_pnl, fee)
         return pos
 
-    def _apply_deal_to_balances(self, state, instrument, deal, realized_pnl: float, fee: float) -> None:
+    def _apply_deal_to_balances(
+        self, state: AccountState, instrument: Instrument, deal: Deal, realized_pnl: float, fee: float
+    ) -> None:
         """Propagate a fill's cash impact to balances.
 
         Futures/swap: credits realized PnL and debits the fee to the
@@ -808,7 +818,7 @@ class AccountManager:
             self._adjust_balance(state, instrument.quote, -(deal.amount * deal.price + fee))
             self._adjust_balance(state, instrument.base, deal.amount)
 
-    def _adjust_balance(self, state, currency: str, delta: float) -> None:
+    def _adjust_balance(self, state: AccountState, currency: str, delta: float) -> None:
         bal = state.get_balance(currency)
         if bal is None:
             bal = Balance(exchange=state.exchange, currency=currency)
@@ -879,10 +889,10 @@ class AccountManager:
         bal = state.get_balance(base)
         return bal.free if bal else 0.0
 
-    def _base_currency_for(self, state) -> str:
+    def _base_currency_for(self, state: AccountState) -> str:
         balances = state.get_balances()
         if not balances:
-            return "USDT"
+            return _DEFAULT_BASE_CURRENCY
         return max(balances, key=lambda b: b.total).currency
 
     def _notional(self, pos) -> float:

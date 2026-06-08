@@ -182,7 +182,7 @@ class DebugStratageyCtx(IStrategyContext):
         self._o_id += 1
         q = self.quote(instrument)
         assert q is not None
-        d = Deal(str(self.time()), order.id, self.time(), amount, q.mid_price(), True)
+        d = Deal(str(self.time()), order.venue_order_id or order.client_order_id, self.time(), amount, q.mid_price(), True)
         self.acc.process_deals(instrument, [d])
         return order
 

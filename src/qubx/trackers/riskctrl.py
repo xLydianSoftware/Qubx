@@ -458,7 +458,7 @@ class BrokerSideRiskController(RiskController):
                             f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: sending <g>take limit</g> order at {_waiting.target.take}"
                         )
                         order = ctx.trade(instrument, -pos, _waiting.target.take)
-                        _waiting.take_order_id = order.id
+                        _waiting.take_order_id = order.venue_order_id or order.client_order_id
 
                         # - if order was executed immediately we don't need to send stop order
                         if order.status == "CLOSED":
@@ -487,7 +487,7 @@ class BrokerSideRiskController(RiskController):
                             fill_at_signal_price=True,
                             avoid_stop_order_price_validation=True,
                         )
-                        _waiting.stop_order_id = order.id
+                        _waiting.stop_order_id = order.venue_order_id or order.client_order_id
                     except Exception as e:
                         logger.error(
                             f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send stop order: {str(e)}"
@@ -574,7 +574,7 @@ class BrokerSideRiskController(RiskController):
                 fill_at_signal_price=True,
                 avoid_stop_order_price_validation=True,
             )
-            _tracked.stop_order_id = order.id
+            _tracked.stop_order_id = order.venue_order_id or order.client_order_id
         except Exception as e:
             logger.error(f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send stop order: {str(e)}")
 
@@ -606,7 +606,7 @@ class BrokerSideRiskController(RiskController):
             )
             # - for simulation purposes we assume that stop order will be executed at stop price
             order = ctx.trade(instrument, -pos, new_take_level)
-            _tracked.take_order_id = order.id
+            _tracked.take_order_id = order.venue_order_id or order.client_order_id
         except Exception as e:
             logger.error(f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send take order: {str(e)}")
 

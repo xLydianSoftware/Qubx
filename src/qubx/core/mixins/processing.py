@@ -1117,7 +1117,7 @@ class ProcessingManager(IProcessingManager):
             for order in orders.values():
                 orders_by_symbol[order.instrument.symbol].append(
                     {
-                        "id": order.id,
+                        "id": order.venue_order_id or order.client_order_id,
                         "type": order.type,
                         "side": order.side,
                         "quantity": order.quantity,
@@ -1292,14 +1292,25 @@ class ProcessingManager(IProcessingManager):
             return
         except Exception:
             logger.exception(f"AM.apply raised on {type(event).__name__}")
+            self._emit_error_metric("account_manager_apply_errors", event=type(event).__name__)
             return
         self._safe_fire_account_callback(event, updated)
+
+    def _emit_error_metric(self, name: str, **tags: str) -> None:
+        """Best-effort error-counter emission; no-op when no emitter is configured."""
+        emitter = self._context.emitter
+        if emitter is not None:
+            try:
+                emitter.emit(name, 1.0, tags)
+            except Exception:
+                logger.exception("metric emitter raised while recording error metric")
 
     def _safe_call(self, fn: Callable, *args) -> None:
         try:
             fn(self._context, *args)
         except Exception:
             logger.exception(f"strategy callback {getattr(fn, '__name__', fn)} raised")
+            self._emit_error_metric("strategy_callback_errors", callback=getattr(fn, "__name__", "unknown"))
 
     def _safe_fire_account_callback(self, event: AccountMessage, updated: Any) -> None:
         # Order callbacks below all take the affected Order (`updated`). AM returns None when

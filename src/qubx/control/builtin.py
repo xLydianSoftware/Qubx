@@ -332,14 +332,14 @@ def _get_orders(ctx: IStrategyContext, symbol: str | None = None, exchange: str 
     for order_id, order in orders.items():
         orders_data.append(
             {
-                "id": order.id,
+                "id": order.venue_order_id or order.client_order_id,
                 "instrument": str(order.instrument),
                 "type": order.type,
                 "side": order.side,
                 "quantity": order.quantity,
                 "price": order.price,
                 "status": order.status,
-                "client_id": order.client_id,
+                "client_id": order.client_order_id,
             }
         )
     return ActionResult(status="ok", data={"orders": orders_data})
@@ -407,7 +407,7 @@ def _get_state(ctx: IStrategyContext, **kwargs) -> ActionResult:
         for order in orders.values():
             orders_by_symbol[order.instrument.symbol].append(
                 {
-                    "id": order.id,
+                    "id": order.venue_order_id or order.client_order_id,
                     "type": order.type,
                     "side": order.side,
                     "quantity": order.quantity,
@@ -541,7 +541,11 @@ def _trade(ctx: IStrategyContext, symbol: str, amount: float, price: float | Non
         order = ctx.trade(instr, amount, price=price, time_in_force=time_in_force)
         return ActionResult(
             status="ok",
-            data={"order_id": order.id if order else None, "instrument": str(instr), "amount": amount},
+            data={
+                "order_id": (order.venue_order_id or order.client_order_id) if order else None,
+                "instrument": str(instr),
+                "amount": amount,
+            },
         )
     except Exception as e:
         return ActionResult(status="error", error=str(e))

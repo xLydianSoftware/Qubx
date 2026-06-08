@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict, List, Set
+from typing import Any, Awaitable, Callable
 
 import ccxt.pro as cxp
 import numpy as np
@@ -135,7 +135,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
     )
 
 
-def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
+def ccxt_convert_deal_info(raw: dict[str, Any]) -> Deal:
     # CCXT may return fee absent, an empty {}, or {"cost": None} — guard all three.
     fee = raw.get("fee") or {}
     _fee_cost = fee.get("cost")
@@ -160,7 +160,7 @@ def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
     )
 
 
-def ccxt_extract_deals_from_exec(report: Dict[str, Any]) -> List[Deal]:
+def ccxt_extract_deals_from_exec(report: dict[str, Any]) -> list[Deal]:
     """
     Small helper for extracting deals (trades) from CCXT execution report
     """
@@ -172,7 +172,7 @@ def ccxt_extract_deals_from_exec(report: Dict[str, Any]) -> List[Deal]:
 
 
 def ccxt_restore_position_from_deals(
-    pos: Position, current_volume: float, deals: List[Deal], reserved_amount: float = 0.0
+    pos: Position, current_volume: float, deals: list[Deal], reserved_amount: float = 0.0
 ) -> Position:
     if current_volume != 0:
         instr = pos.instrument
@@ -416,7 +416,7 @@ def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInteres
     )
 
 
-def find_instrument_for_exch_symbol(exch_symbol: str, symbol_to_instrument: Dict[str, Instrument]) -> Instrument:
+def find_instrument_for_exch_symbol(exch_symbol: str, symbol_to_instrument: dict[str, Instrument]) -> Instrument:
     match = EXCH_SYMBOL_PATTERN.match(exch_symbol)
     if not match:
         raise CcxtSymbolNotRecognized(f"Invalid exchange symbol {exch_symbol}")
@@ -514,7 +514,7 @@ def prepare_ccxt_order_payload(
 
 
 def ccxt_find_instrument(
-    symbol: str, exchange: cxp.Exchange, symbol_to_instrument: Dict[str, Instrument] | None = None
+    symbol: str, exchange: cxp.Exchange, symbol_to_instrument: dict[str, Instrument] | None = None
 ) -> Instrument:
     instrument = None
     if symbol_to_instrument is not None:
@@ -539,7 +539,7 @@ def ccxt_find_instrument(
 
 
 def create_market_type_batched_subscriber(
-    subscriber: Callable[[List[Instrument]], Awaitable[None]], instruments: Set[Instrument]
+    subscriber: Callable[[list[Instrument]], Awaitable[None]], instruments: set[Instrument]
 ) -> Callable[[], Awaitable[None]]:
     """
     Create a batched subscriber that calls the original subscriber for each market type group.
@@ -556,7 +556,7 @@ def create_market_type_batched_subscriber(
         Async function that will call subscriber for each market type group
     """
     # Group instruments by market type
-    instr_by_type: Dict[str, List[Instrument]] = defaultdict(list)
+    instr_by_type: dict[str, list[Instrument]] = defaultdict(list)
     for instr in instruments:
         instr_by_type[instr.market_type].append(instr)
 

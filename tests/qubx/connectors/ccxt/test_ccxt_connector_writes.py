@@ -605,3 +605,25 @@ def test_read_only_raises_on_update() -> None:
     conn, _, _ = _make_connector(read_only=True)
     with pytest.raises(ReadOnlyConnector):
         conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=1.0)
+
+
+def test_read_only_raises_on_set_leverage() -> None:
+    # Leverage is a write to the venue and must be guarded like submit/cancel/update:
+    # the venue must NOT be touched.
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange, read_only=True)
+    with pytest.raises(ReadOnlyConnector):
+        conn.set_instrument_leverage(_instrument(), 5.0)
+    exchange.set_leverage.assert_not_awaited()
+
+
+def test_read_only_raises_on_set_margin_mode() -> None:
+    exchange = Mock()
+    exchange.set_margin_mode = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange, read_only=True)
+    with pytest.raises(ReadOnlyConnector):
+        conn.set_margin_mode(_instrument(), "isolated")
+    exchange.set_margin_mode.assert_not_awaited()

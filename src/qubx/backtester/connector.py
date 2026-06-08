@@ -73,7 +73,7 @@ class SimulatedConnector(ChannelEmitter):
             return
         self._emit_from_report(report)
 
-    def cancel_order(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         # Prefer the venue id (the OME keys orders by it); fall back to the cid before the ack.
         oid = venue_order_id or client_order_id
         if not oid:
@@ -86,6 +86,7 @@ class SimulatedConnector(ChannelEmitter):
 
     def update_order(
         self,
+        *,
         client_order_id: str | None = None,
         venue_order_id: str | None = None,
         price: float | None = None,
@@ -115,31 +116,57 @@ class SimulatedConnector(ChannelEmitter):
             order_type=old_order.type,
             amount=quantity if quantity is not None else old_order.quantity,
             price=price if price is not None else old_order.price,
-            client_id=old_order.client_id,
+            client_id=old_order.client_order_id,
             time_in_force=old_order.time_in_force,
             **(old_order.options or {}),
         )
         self.send(
             OrderUpdatedEvent(
                 instrument=new.order.instrument,
-                client_order_id=new.order.client_id,
-                venue_order_id=new.order.id,
+                client_order_id=new.order.client_order_id,
+                venue_order_id=new.order.venue_order_id,
                 new_price=price,
                 new_quantity=quantity,
             )
         )
+        # If the re-placed (modified) order immediately crossed the book, the OME's report
+        # carries a Deal — surface it so AM applies the fill (it otherwise only re-ACCEPTs on
+        # the Updated, diverging order/position state). We emit ONLY the fill, not a full
+        # _emit_from_report(new): the OrderUpdatedEvent above already covers the resting
+        # (non-crossed) case, so feeding the report through would emit a redundant
+        # OrderAcceptedEvent on the already-ACCEPTED order. A FILLED/PARTIALLY_FILLED report
+        # carries report.exec; a still-resting one does not.
+        if new.exec is not None:
+            if new.order.status == OrderStatus.FILLED:
+                self.send(
+                    OrderFilledEvent(
+                        instrument=new.instrument,
+                        client_order_id=new.order.client_order_id,
+                        venue_order_id=new.order.venue_order_id,
+                        fill=new.exec,
+                    )
+                )
+            else:
+                self.send(
+                    OrderPartiallyFilledEvent(
+                        instrument=new.instrument,
+                        client_order_id=new.order.client_order_id,
+                        venue_order_id=new.order.venue_order_id,
+                        fill=new.exec,
+                    )
+                )
 
-    def request_order_status(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def request_order_status(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         oid = venue_order_id or client_order_id
         if not oid:
             raise ValueError("request_order_status: client_order_id or venue_order_id is required")
         for order in self._exchange.get_open_orders().values():
-            if order.id == oid or order.client_id == oid:
+            if order.venue_order_id == oid or order.client_order_id == oid:
                 self.send(
                     OrderAcceptedEvent(
                         instrument=order.instrument,
-                        client_order_id=order.client_id,
-                        venue_order_id=order.id,
+                        client_order_id=order.client_order_id,
+                        venue_order_id=order.venue_order_id,
                         accepted_at=self._time.time(),
                     )
                 )
@@ -188,8 +215,8 @@ class SimulatedConnector(ChannelEmitter):
             self.send(
                 OrderAcceptedEvent(
                     instrument=report.instrument,
-                    client_order_id=order.client_id,
-                    venue_order_id=order.id,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
                     accepted_at=report.timestamp,
                 )
             )
@@ -197,8 +224,8 @@ class SimulatedConnector(ChannelEmitter):
             self.send(
                 OrderCanceledEvent(
                     instrument=report.instrument,
-                    client_order_id=order.client_id,
-                    venue_order_id=order.id,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
                 )
             )
         if report.exec is not None:
@@ -208,8 +235,8 @@ class SimulatedConnector(ChannelEmitter):
                 self.send(
                     OrderFilledEvent(
                         instrument=report.instrument,
-                        client_order_id=order.client_id,
-                        venue_order_id=order.id,
+                        client_order_id=order.client_order_id,
+                        venue_order_id=order.venue_order_id,
                         fill=report.exec,
                     )
                 )
@@ -220,8 +247,8 @@ class SimulatedConnector(ChannelEmitter):
                 self.send(
                     OrderPartiallyFilledEvent(
                         instrument=report.instrument,
-                        client_order_id=order.client_id,
-                        venue_order_id=order.id,
+                        client_order_id=order.client_order_id,
+                        venue_order_id=order.venue_order_id,
                         fill=report.exec,
                     )
                 )

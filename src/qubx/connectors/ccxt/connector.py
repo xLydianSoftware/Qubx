@@ -179,6 +179,11 @@ class CcxtConnector(ChannelEmitter):
         self._ws_ready = False
         self._executions_future: Any = None
 
+        # Re-subscribe the account WS stream + resync against venue truth after the
+        # ExchangeManager swaps in a fresh exchange (the running _subscribe_executions
+        # loop is bound to the PREVIOUS exchange object — see _handle_exchange_recreation).
+        self._em.register_recreation_callback(self._handle_exchange_recreation)
+
     # ------------------------------------------------------------------ #
     # Async plumbing
     # ------------------------------------------------------------------ #
@@ -387,7 +392,7 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Write side — cancel
     # ------------------------------------------------------------------ #
-    def cancel_order(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         if self._read_only:
             raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         if not client_order_id and not venue_order_id:
@@ -538,6 +543,7 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     def update_order(
         self,
+        *,
         client_order_id: str | None = None,
         venue_order_id: str | None = None,
         price: float | None = None,
@@ -654,6 +660,8 @@ class CcxtConnector(ChannelEmitter):
     # Leverage / margin
     # ------------------------------------------------------------------ #
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        if self._read_only:
+            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
             self._run_sync(self._em.exchange.set_leverage(leverage, symbol))
@@ -663,6 +671,8 @@ class CcxtConnector(ChannelEmitter):
             return False
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
+        if self._read_only:
+            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
             ex = self._em.exchange
@@ -896,7 +906,7 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Reconciliation primitives — READ side
     # ------------------------------------------------------------------ #
-    def request_order_status(self, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def request_order_status(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         if not client_order_id and not venue_order_id:
             raise InvalidOrderParameters("request_order_status: client_order_id or venue_order_id is required")
         self._spawn(self._order_status_async(client_order_id, venue_order_id))
@@ -1010,10 +1020,40 @@ class CcxtConnector(ChannelEmitter):
         constructed). Read-only connectors keep this read surface alive (account events +
         snapshots flow, but write methods raise ReadOnlyConnector).
         """
+        self._start_executions_stream()
+        # Initial snapshot (design connect() contract case 1).
+        self.request_snapshot()
+
+    def _start_executions_stream(self) -> None:
+        """Submit the _subscribe_executions loop on the exchange loop if not running.
+
+        Factored out of connect() so the recreation handler can restart the stream
+        against a freshly-recreated exchange without re-issuing the initial-snapshot
+        side effect.
+        """
         if self._executions_future is None or self._executions_future.done():
             self._executions_future = self._loop.submit(self._subscribe_executions())
             self._executions_future.add_done_callback(self._log_spawn_error)
-        # Initial snapshot (design connect() contract case 1).
+
+    def _handle_exchange_recreation(self) -> None:
+        """Re-subscribe the account WS stream against the freshly-recreated exchange and
+        pull a snapshot.
+
+        The running _subscribe_executions loop captured watch_orders bound to the
+        *previous* exchange; after recreation that stream is dead, so restart it (the
+        loop re-reads self._em.exchange.watch_orders) and resync AM against venue truth
+        (design IConnector.connect contract case 2).
+        """
+        if self._executions_future is None:
+            return  # never connected; nothing to resubscribe
+        self._ws_ready = False
+        if not self._executions_future.done():
+            self._executions_future.cancel()
+        # Drop the old (now-cancelled) future so _start_executions_stream submits a
+        # fresh one — a just-cancelled future may not report done() synchronously, and
+        # the start helper skips resubmission while the old future looks live.
+        self._executions_future = None
+        self._start_executions_stream()
         self.request_snapshot()
 
     def disconnect(self) -> None:

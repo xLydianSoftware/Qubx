@@ -162,7 +162,7 @@ class BasicSimulatedExchange(ISimulatedExchange):
             # - if not found in active orders, check in each OME
             for o in self._ome.values():
                 for order in o.get_open_orders():
-                    if order.id == order_id:
+                    if order.venue_order_id == order_id:
                         if (result := self._process_ome_response(o.cancel_order(order_id))) is not None:
                             return result
 
@@ -189,19 +189,19 @@ class BasicSimulatedExchange(ISimulatedExchange):
             _closed = _order.status == OrderStatus.FILLED
 
             if _new or _open:
-                self._order_to_instrument[_order.id] = _order.instrument
+                self._order_to_instrument[_order.venue_order_id] = _order.instrument
 
-            if (_cancel or _closed) and _order.id in self._order_to_instrument:
-                self._order_to_instrument.pop(_order.id)
+            if (_cancel or _closed) and _order.venue_order_id in self._order_to_instrument:
+                self._order_to_instrument.pop(_order.venue_order_id)
 
         return report
 
     def get_open_orders(self, instrument: Instrument | None = None) -> dict[str, Order]:
         if instrument is not None:
             ome = self._get_ome(instrument)
-            return {o.id: o for o in ome.get_open_orders()}
+            return {o.venue_order_id: o for o in ome.get_open_orders()}
 
-        return {o.id: o for ome in self._ome.values() for o in ome.get_open_orders()}
+        return {o.venue_order_id: o for ome in self._ome.values() for o in ome.get_open_orders()}
 
     def on_unsubscribe(self, instrument: Instrument) -> None:
         """
@@ -241,8 +241,8 @@ class BasicSimulatedExchange(ISimulatedExchange):
 
         for r in ome.process_market_data(data):
             if r.exec is not None:
-                if r.order.id in self._order_to_instrument:
-                    self._order_to_instrument.pop(r.order.id)
+                if r.order.venue_order_id in self._order_to_instrument:
+                    self._order_to_instrument.pop(r.order.venue_order_id)
                 yield r
 
 

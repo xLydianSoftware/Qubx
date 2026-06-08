@@ -27,6 +27,29 @@ from .utils import (
 )
 
 
+def _collect_transfers_log(transfer_manager) -> pd.DataFrame | None:
+    """Build the transfers-log DataFrame from a simulation transfer manager.
+
+    The rewritten SimulationTransferManager exposes ``get_transfers() -> dict[tid, record]``
+    (the old ``get_transfers_dataframe()`` is gone). We reproduce the legacy frame shape:
+    one row per transfer, ``timestamp`` as the index, and the remaining record fields as
+    columns. With no transfers we return an empty frame with the legacy schema (matching
+    the original behavior), and None for a manager that doesn't expose the transfers API.
+    """
+    if transfer_manager is None or not hasattr(transfer_manager, "get_transfers"):
+        return None
+    try:
+        records = list(transfer_manager.get_transfers().values())
+        if not records:
+            return pd.DataFrame(
+                columns=["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]
+            )
+        return pd.DataFrame(records).set_index("timestamp")
+    except Exception as e:
+        logger.error(f"Failed to get transfers log: {e}")
+        return None
+
+
 def simulate(
     strategies: StrategiesDecls_t,
     data: IStorage,
@@ -314,18 +337,12 @@ def _run_setup(
         if enable_inmemory_emitter and emitter is not None:
             emitter_data = emitter.get_dataframe()
 
-        # - get transfers log: nothing currently wires a transfer manager in simulation,
-        #   so there is normally no transfers log to collect.
-        #   TODO(account-mgmt): reintroduce inter-exchange transfers on the AccountManager
-        #   if/when multi-exchange capital movement is modelled again.
-        transfers_log = None
+        # - get transfers log: runner.py wires a SimulationTransferManager by default, so a
+        #   backtest that executes inter-exchange transfers has a log to collect. The manager
+        #   exposes get_transfers() (no get_transfers_dataframe()); _collect_transfers_log
+        #   builds the frame from it, returning an empty frame when no transfers ran.
         transfer_manager = getattr(runner.ctx, "_transfer_manager", None)
-        if transfer_manager is not None and hasattr(transfer_manager, "get_transfers_dataframe"):
-            try:
-                transfers_log = transfer_manager.get_transfers_dataframe()
-            except Exception as e:
-                logger.error(f"Failed to get transfers log: {e}")
-                transfers_log = None
+        transfers_log = _collect_transfers_log(transfer_manager)
 
         return TradingSessionResult(
             setup_id,

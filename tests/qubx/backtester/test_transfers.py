@@ -1,8 +1,10 @@
 from unittest.mock import MagicMock
 
 import numpy as np
+import pandas as pd
 import pytest
 
+from qubx.backtester.simulator import _collect_transfers_log
 from qubx.backtester.transfers import SimulationTransferManager
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, ITimeProvider
@@ -73,3 +75,44 @@ def test_unknown_transfer_status_raises():
     tm = SimulationTransferManager(am, _T())
     with pytest.raises(ValueError, match="Transfer not found"):
         tm.get_transfer_status("nope")
+
+
+def test_collect_transfers_log_populated_after_transfer():
+    # The simulator must collect a non-None, populated transfers log from a
+    # SimulationTransferManager (which only exposes get_transfers(), not the old
+    # get_transfers_dataframe()). Today the simulator gates on get_transfers_dataframe
+    # and always yields None — this asserts the corrected collection.
+    am = _am()
+    tm = SimulationTransferManager(am, _T())
+    txid = tm.transfer_funds("E1", "E2", "USDT", 250.0)
+
+    log = _collect_transfers_log(tm)
+
+    assert log is not None
+    assert isinstance(log, pd.DataFrame)
+    assert len(log) == 1
+    assert txid in log["transaction_id"].values
+    row = log[log["transaction_id"] == txid].iloc[0]
+    assert row["from_exchange"] == "E1"
+    assert row["to_exchange"] == "E2"
+    assert row["currency"] == "USDT"
+    assert row["amount"] == 250.0
+    assert row["status"] == "completed"
+
+
+def test_collect_transfers_log_empty_when_no_transfers():
+    am = _am()
+    tm = SimulationTransferManager(am, _T())
+
+    log = _collect_transfers_log(tm)
+
+    # No transfers recorded -> empty frame (mirrors the legacy empty-schema behavior),
+    # never the stale always-None result.
+    assert log is not None
+    assert isinstance(log, pd.DataFrame)
+    assert len(log) == 0
+
+
+def test_collect_transfers_log_none_for_unsupported_manager():
+    # A manager without the transfers API yields None rather than raising.
+    assert _collect_transfers_log(object()) is None

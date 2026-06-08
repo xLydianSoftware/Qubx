@@ -239,7 +239,7 @@ class OrdersManagementEngine:
 
     def _process_order(self, timestamp: dt_64, order: Order) -> SimulatedExecutionReport:
         if order.status in (OrderStatus.FILLED, OrderStatus.CANCELED):
-            raise InvalidOrder(f"Order {order.id} is already closed or canceled.")
+            raise InvalidOrder(f"Order {order.venue_order_id} is already closed or canceled.")
 
         _buy_side = order.side == "BUY"
         _c_ask = self.bbo.ask  # type: ignore
@@ -275,7 +275,7 @@ class OrdersManagementEngine:
                         _exec_price = _desired_fill_price
                     else:
                         raise SimulationError(
-                            f"Special execution price at {_desired_fill_price} for market order {order.id} cannot be filled because market didn't cross this price on last update !"
+                            f"Special execution price at {_desired_fill_price} for market order {order.venue_order_id} cannot be filled because market didn't cross this price on last update !"
                         )
 
             case "LIMIT":
@@ -318,7 +318,7 @@ class OrdersManagementEngine:
                     )
 
                 else:
-                    self.stop_orders[order.id] = order
+                    self.stop_orders[order.venue_order_id] = order
 
             case "STOP_LIMIT":
                 # TODO: (OME) check trigger conditions in options etc
@@ -335,14 +335,14 @@ class OrdersManagementEngine:
         if _need_update_book:
             assert order.price is not None  # only LIMIT sets _need_update_book
             if _buy_side:
-                self.bids.setdefault(order.price, list()).append(order.id)
+                self.bids.setdefault(order.price, list()).append(order.venue_order_id)
             else:
-                self.asks.setdefault(order.price, list()).append(order.id)
+                self.asks.setdefault(order.price, list()).append(order.venue_order_id)
 
             order.status = OrderStatus.ACCEPTED
-            self.active_orders[order.id] = order
+            self.active_orders[order.venue_order_id] = order
 
-        self._dbg(f"registered {order.id} {order.type} {order.side} {order.quantity} {order.price}")
+        self._dbg(f"registered {order.venue_order_id} {order.type} {order.side} {order.quantity} {order.price}")
         return SimulatedExecutionReport(self.instrument, timestamp, order, None)
 
     def _execute_order(
@@ -356,7 +356,7 @@ class OrdersManagementEngine:
     ) -> SimulatedExecutionReport:
         order.status = status
         self._dbg(
-            f"<red>{order.id}</red> {order.type} {order.side} {order.quantity} executed at {exec_price} ::: {market_state} [{status}]"
+            f"<red>{order.venue_order_id}</red> {order.type} {order.side} {order.quantity} executed at {exec_price} ::: {market_state} [{status}]"
         )
         return SimulatedExecutionReport(
             self.instrument,
@@ -364,7 +364,7 @@ class OrdersManagementEngine:
             order,
             Deal(
                 trade_id=self._generate_trade_id(),
-                order_id=order.id,
+                order_id=order.venue_order_id,
                 time=timestamp,
                 amount=order.quantity if order.side == "BUY" else -order.quantity,
                 price=exec_price,
@@ -432,7 +432,7 @@ class OrdersManagementEngine:
             return None
 
         order.status = OrderStatus.CANCELED
-        self._dbg(f"{order.id} {order.type} {order.side} {order.quantity} canceled")
+        self._dbg(f"{order.venue_order_id} {order.type} {order.side} {order.quantity} canceled")
         return SimulatedExecutionReport(self.instrument, self.time_service.time(), order, None)
 
     def __str__(self) -> str:

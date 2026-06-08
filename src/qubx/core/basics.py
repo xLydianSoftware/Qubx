@@ -765,27 +765,6 @@ class Order:
     # terminal-history ring buffer. Exposed via ctx.get_order_history(client_order_id).
     transitions: list[OrderTransition] = field(default_factory=list)
 
-    # TODO(account-mgmt): the OME / simulated-exchange / ccxt-conversion internals still
-    # address orders by `order.id` and `order.client_id` (reading AND writing). These
-    # read/write aliases keep that code working against the canonical client_order_id /
-    # venue_order_id fields; migrating those call sites to the canonical names and dropping
-    # the aliases is a separate cleanup. Canonical field is client_order_id.
-    @property
-    def id(self) -> str:
-        return self.venue_order_id if self.venue_order_id is not None else self.client_order_id
-
-    @id.setter
-    def id(self, value: str) -> None:
-        self.venue_order_id = value
-
-    @property
-    def client_id(self) -> str | None:
-        return self.client_order_id
-
-    @client_id.setter
-    def client_id(self, value: str) -> None:
-        self.client_order_id = value
-
     def require_venue_id(self) -> str:
         if self.venue_order_id is None:
             raise ValueError(
@@ -812,7 +791,8 @@ class Order:
         self.filled_quantity += qty
 
     def __str__(self) -> str:
-        return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price else ''} ({self.time_in_force}) [{self.status}]"
+        _id = self.venue_order_id or self.client_order_id
+        return f"[{_id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price else ''} ({self.time_in_force}) [{self.status}]"
 
 
 @dataclass

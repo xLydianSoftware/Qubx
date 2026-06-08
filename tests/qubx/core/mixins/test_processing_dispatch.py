@@ -106,6 +106,52 @@ def test_am_apply_error_is_swallowed_and_does_not_raise():
     pm._strategy.on_order_accepted.assert_not_called()
 
 
+class _FakeEmitter:
+    """Minimal IMetricEmitter stand-in that records emit() calls."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, float, dict | None]] = []
+
+    def emit(self, name, value, tags=None, timestamp=None, instrument=None) -> None:
+        self.calls.append((name, value, tags))
+
+
+def test_am_apply_error_emits_error_metric():
+    pm = _pm()
+    emitter = _FakeEmitter()
+    pm._context.emitter = emitter
+    pm._account_manager.apply.side_effect = RuntimeError("kaboom")
+    pm.process_event(
+        OrderAcceptedEvent(
+            instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
+        )
+    )
+    matches = [c for c in emitter.calls if c[0] == "account_manager_apply_errors"]
+    assert len(matches) == 1
+    name, value, tags = matches[0]
+    assert value == 1.0
+    assert tags == {"event": "OrderAcceptedEvent"}
+
+
+def test_strategy_callback_exception_emits_error_metric():
+    pm = _pm()
+    emitter = _FakeEmitter()
+    pm._context.emitter = emitter
+    pm._strategy.on_order_accepted.side_effect = RuntimeError("boom")
+    pm._strategy.on_order_accepted.__name__ = "on_order_accepted"
+    pm._account_manager.apply.return_value = MagicMock()
+    pm.process_event(
+        OrderAcceptedEvent(
+            instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
+        )
+    )
+    matches = [c for c in emitter.calls if c[0] == "strategy_callback_errors"]
+    assert len(matches) == 1
+    name, value, tags = matches[0]
+    assert value == 1.0
+    assert tags == {"callback": "on_order_accepted"}
+
+
 def test_cancel_rejected_logs_warning_in_dispatch():
     # The venue-rejection warning lives in the dispatch, so it fires regardless of whether a
     # strategy overrides on_order_cancel_rejected.

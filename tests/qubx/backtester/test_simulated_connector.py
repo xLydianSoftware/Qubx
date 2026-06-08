@@ -95,8 +95,8 @@ def test_submit_limit_emits_accepted_event():
     exchange.exchange_id = "binance.um"
     report = MagicMock()
     report.order.status = OrderStatus.ACCEPTED
-    report.order.id = "V1"
-    report.order.client_id = "qubx-1"
+    report.order.venue_order_id = "V1"
+    report.order.client_order_id = "qubx-1"
     report.exec = None
     report.instrument = MagicMock()
     exchange.place_order.return_value = report
@@ -259,6 +259,44 @@ def test_update_by_venue_id_only_emits_updated(setup):
     # cancel+recreate preserves the original client id, recovered from the OME order.
     assert events[0].client_order_id == "qubx-4v"
     assert events[0].new_price == 30500.0
+
+
+def test_update_to_crossing_price_emits_fill(setup):
+    # A modify that re-prices a resting order to a level that immediately crosses the book
+    # must surface the resulting fill: the OME's re-placed order comes back FILLED carrying
+    # a Deal, and the connector must emit an OrderFilledEvent (in addition to the Updated),
+    # not silently drop it. Without the fix only an OrderUpdatedEvent is emitted, leaving
+    # AM's order/position state diverged.
+    conn, collector, _exchange, instr, _time = setup
+    request = OrderRequest(
+        client_id="qubx-cross-update",
+        instrument=instr,
+        quantity=0.1,
+        price=31000.0,  # below bid 32000: rests in book
+        side="BUY",
+        order_type="LIMIT",
+        time_in_force="gtc",
+    )
+    conn.submit_order(request)
+    accepted = _drain(collector)[0]
+    assert isinstance(accepted, OrderAcceptedEvent)
+
+    # Re-price above the ask (32001) so the modified order crosses and fills immediately.
+    conn.update_order(
+        client_order_id=accepted.client_order_id,
+        venue_order_id=accepted.venue_order_id,
+        price=33000.0,
+    )
+    events = _drain(collector)
+    assert any(isinstance(e, OrderUpdatedEvent) for e in events), events
+    fills = [e for e in events if isinstance(e, OrderFilledEvent)]
+    assert len(fills) == 1, f"expected a fill from the crossing modify, got {events}"
+    assert fills[0].client_order_id == "qubx-cross-update"
+    assert fills[0].fill.amount == 0.1
+    # The Updated must precede the Fill so the strategy sees the modify acknowledged first.
+    updated_idx = next(i for i, e in enumerate(events) if isinstance(e, OrderUpdatedEvent))
+    fill_idx = next(i for i, e in enumerate(events) if isinstance(e, OrderFilledEvent))
+    assert updated_idx < fill_idx, events
 
 
 def test_process_market_data_translates_fill(setup):
