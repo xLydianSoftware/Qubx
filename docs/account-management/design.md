@@ -167,6 +167,29 @@ class ApplyResult:
   `is_ws_ready`). The ticks are thin — call the `reconcile.py` decision helpers, then fire
   the connector requests; the periodic prune sweep reclaims `seen_trade_ids`.
 
+Built in three sub-steps so each stays testable without the full system:
+
+- **5.3a — snapshot reconcile** (no connectors/scheduler). Extend `AccountSnapshotEvent`
+  with optional venue figures (feeds option-2) + a flat `open_orders` list; use the event
+  `timestamp` as `as_of`. Add `ReconcileDiff`. `reconcile_snapshot(state, event, now, grace)`:
+  ratchet (the stale-check rule, kept out of `AccountState`) → terminate orders missing from
+  the snapshot past `grace` → materialize new (`RECOVERED` if the cid has the framework
+  prefix, else `EXTERNAL`) → update existing under a freshness guard (`as_of >
+  last_updated_at`, so a fresh live fill isn't clobbered) → apply positions/balances → set
+  venue figures. Reducer `_handle_snapshot` delegates to it; `ApplyResult` gains
+  `reconcile_diff` → `on_reconcile_complete`.
+- **5.3b — `IConnector` + tick logic** (fake connectors, no scheduler). `IConnector`
+  (`request_order_status` / `request_snapshot` / `reconnect` / `is_ws_ready`),
+  `AccountManagerConfig` (intervals/thresholds/retries/retention), and the tick logic:
+  in-flight sweep (poll stuck orders, give up after N → `REJECTED` or revert via
+  `pre_pending`), snapshot-needed check, liveness/reconnect, prune.
+- **5.3c — scheduling wiring** (thin). AM gains `dict[exchange → IConnector]` + config and
+  registers the ticks via `set_context`/`pm.schedule`, handling the AM↔PM construction order.
+
+Decisions: `reconcile.py` duplicates the tiny `validate_transition + _transition_order`
+helper (cannot import `reducer` — cycle); the framework cid prefix (`qubx_`) is a shared
+constant defined now (the TradingManager that emits it comes later).
+
 ## Deferred / open
 
 - Wiring venue figures from the connector/reconciler.
@@ -180,9 +203,10 @@ class ApplyResult:
 
 - **Done:** typed events, `OrderStatus` properties, `InvalidOrderTransition`, `state_machine`,
   `AccountState` (data + indices + side-tables + snapshot ratchet + prune + venue figures +
-  derived metrics), and the **full order-lifecycle reducer** — status handlers, fills/deals
-  (hybrid-B trade-id dedup), deal→position/balance ledger, update + cancel/update-rejected,
-  and external-order materialization.
-- **Next:** `AccountManager` (route + apply, cross-exchange read facade + metric aggregation,
-  MTM, periodic ticks); then `reconcile.py` + snapshot handler, PM callback wiring, the
-  TradingManager write path, connectors, and the `IStrategy` surface change.
+  derived metrics), the **full order-lifecycle reducer** (status, fills/deals with hybrid-B
+  trade-id dedup, deal→position/balance ledger, update + cancel/update-rejected, external
+  materialization), and the **`AccountManager` core** — route + apply on the AM clock,
+  cross-exchange read facade + aggregated metrics, and mark-to-market (`on_market_quote`).
+- **Next:** the reconciler (5.3a snapshot reconcile → 5.3b `IConnector` + tick logic → 5.3c
+  scheduling); then PM callback wiring, the TradingManager write path, connectors, and the
+  `IStrategy` surface change.
