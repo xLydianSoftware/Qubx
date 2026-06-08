@@ -17,7 +17,6 @@ from qubx.core.events import (
     data_type_for_event,
     event_for_data_type,
 )
-from qubx.core.interfaces import IStrategy
 from qubx.core.series import Bar, Quote
 
 
@@ -90,8 +89,3 @@ def test_funding_payment_is_account_message_hybrid():
 def test_unknown_data_type_raises():
     with pytest.raises(ValueError):
         event_for_data_type(DataType.FUNDAMENTAL, instrument=None, payload=object())
-
-
-def test_istrategy_has_typed_market_data_callbacks():
-    for name in ("on_quote", "on_trade", "on_orderbook"):
-        assert hasattr(IStrategy, name), f"IStrategy missing {name}"

@@ -26,7 +26,6 @@ from qubx.core.basics import (
     Balance,
     CtrlChannel,
     Deal,
-    FundingPayment,
     Instrument,
     ITimeProvider,
     MarketEvent,
@@ -45,9 +44,9 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.errors import BaseErrorEvent
-from qubx.core.events import ReconcileDiff
+from qubx.core.events import AccountMessage, OrderEvent
 from qubx.core.helpers import set_parameters_to_object
-from qubx.core.series import OHLCV, Bar, GenericSeries, OrderBook, Quote, Trade
+from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
@@ -2429,49 +2428,31 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
-    def on_quote(self, ctx: IStrategyContext, quote: Quote) -> None:
-        """Called on a new quote. Typed reaction callback fired alongside the
-        on_market_data->signals path; does not itself generate signals. Override
-        to react to raw quotes."""
+    def on_order_update(self, ctx: IStrategyContext, order: Order, event: OrderEvent) -> None:
+        """Called on any order-lifecycle event for one order.
+
+        ``order`` is the affected order in its post-event state; ``event`` is the concrete
+        ``OrderEvent`` subclass (OrderAcceptedEvent / OrderFilledEvent / OrderRejectedEvent /
+        OrderCanceledEvent / OrderUpdatedEvent / OrderCancelRejectedEvent / ...). Inspect it to
+        react to a specific kind, e.g.::
+
+            if isinstance(event, OrderFilledEvent):
+                deal = event.fill
+            elif isinstance(event, OrderRejectedEvent):
+                reason = event.reason
+
+        Single entry point for the whole order lifecycle — no per-event callbacks.
+        """
         ...
 
-    def on_trade(self, ctx: IStrategyContext, trade: Trade) -> None:
-        """Called on a new trade. Typed reaction callback fired alongside the
-        on_market_data->signals path; does not itself generate signals."""
+    def on_account_update(self, ctx: IStrategyContext, event: AccountMessage) -> None:
+        """Called on any non-order account event: position / balance / funding / snapshot.
+
+        Inspect ``event`` to react to a specific kind, e.g. ``PositionUpdateEvent.position``,
+        ``BalanceUpdateEvent.balance``, ``FundingPaymentEvent.payment``,
+        ``AccountSnapshotEvent.snapshot``.
+        """
         ...
-
-    def on_orderbook(self, ctx: IStrategyContext, orderbook: OrderBook) -> None:
-        """Called on a new order book. Typed reaction callback fired alongside the
-        on_market_data->signals path; does not itself generate signals."""
-        ...
-
-    def on_order_accepted(self, ctx: IStrategyContext, order: Order) -> None: ...
-
-    def on_order_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
-
-    def on_order_partially_filled(self, ctx: IStrategyContext, order: Order, fill: Deal) -> None: ...
-
-    def on_order_filled(self, ctx: IStrategyContext, order: Order, fill: Deal) -> None: ...
-
-    def on_order_canceled(self, ctx: IStrategyContext, order: Order) -> None: ...
-
-    def on_order_expired(self, ctx: IStrategyContext, order: Order) -> None: ...
-
-    def on_order_updated(self, ctx: IStrategyContext, order: Order) -> None: ...
-
-    # The venue-rejection warning is logged by ProcessingManager's dispatch, not here:
-    # a default-method body is silently lost if a strategy overrides without super().
-    def on_order_cancel_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
-
-    def on_order_update_rejected(self, ctx: IStrategyContext, order: Order, reason: str) -> None: ...
-
-    def on_position_update(self, ctx: IStrategyContext, position: Position) -> None: ...
-
-    def on_balance_update(self, ctx: IStrategyContext, balance: Balance) -> None: ...
-
-    def on_funding_payment(self, ctx: IStrategyContext, payment: FundingPayment) -> None: ...
-
-    def on_reconcile_complete(self, ctx: IStrategyContext, exchange: str, diff: ReconcileDiff) -> None: ...
 
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """

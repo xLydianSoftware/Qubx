@@ -1,14 +1,13 @@
-"""Typed isinstance-based market-data dispatch (commit 6.5.2).
+"""Typed isinstance-based market-data dispatch.
 
 Two layers of coverage:
 
-* focused unit tests drive ProcessingManager._dispatch_market_data / _fire_md_reaction /
-  _md_payload / process_data directly with a mocked manager, asserting the dispatch
-  wiring (base-data update, MarketEvent into the pipeline, reaction-callback routing,
-  the throttle gate, and the tuple->typed-event adapter).
+* focused unit tests drive ProcessingManager._dispatch_market_data / payload_for_event /
+  process_data directly with a mocked manager, asserting the dispatch wiring (base-data
+  update, MarketEvent into the pipeline, the throttle gate, and the tuple->typed-event adapter).
 * an end-to-end simulation drives the full ProcessingManager so we can assert that
-  on_market_data and the on_quote/on_trade reaction callbacks fire together while the
-  OHLC cache (and therefore AM mark-to-market off the quote mid) is exercised.
+  on_market_data fires on both the quote and trade paths while the OHLC cache (and therefore
+  AM mark-to-market off the quote mid) is exercised.
 """
 
 from collections import defaultdict
@@ -81,9 +80,6 @@ def test_dispatch_market_data_quote_updates_cache_and_runs_pipeline():
     assert mkt.data is quote
     assert mkt.is_trigger is True
 
-    # (c) the typed event rides along as the reaction-callback source
-    assert isinstance(pm._run_strategy_pipeline.call_args.kwargs["md_reaction"], QuoteEvent)
-
 
 def test_dispatch_market_data_ohlc_uses_parameterized_type():
     instr = _instrument()
@@ -110,27 +106,6 @@ def test_dispatch_market_data_throttle_gate_skips():
     pm._data_throttler.should_send.assert_called_once_with(DataType.QUOTE, instr)
     pm._ProcessingManager__update_base_data.assert_not_called()
     pm._run_strategy_pipeline.assert_not_called()
-
-
-def test_fire_md_reaction_routes_to_typed_callbacks():
-    instr = _instrument()
-    quote = Quote(0, 100.0, 101.0, 1.0, 1.0)
-    trade = Trade(0, 100.0, 1.0)
-    ob = OrderBook(0, 100.0, 0.01, 1, np.array([1.0]), np.array([1.0]))
-
-    pm = Mock()
-    pm._strategy = Mock()
-
-    ProcessingManager._fire_md_reaction(pm, QuoteEvent(instrument=instr, quote=quote))
-    pm._safe_call.assert_called_once_with(pm._strategy.on_quote, quote)
-
-    pm._safe_call.reset_mock()
-    ProcessingManager._fire_md_reaction(pm, TradeEvent(instrument=instr, trade=trade))
-    pm._safe_call.assert_called_once_with(pm._strategy.on_trade, trade)
-
-    pm._safe_call.reset_mock()
-    ProcessingManager._fire_md_reaction(pm, OrderBookEvent(instrument=instr, orderbook=ob))
-    pm._safe_call.assert_called_once_with(pm._strategy.on_orderbook, ob)
 
 
 def test_dispatch_scheduled_routes_to_control_handler():
@@ -237,8 +212,6 @@ class _ReactionStrategy(IStrategy):
         initializer.set_base_subscription("ohlc_quotes(1h)")
         initializer.subscribe("ohlc_trades(1h)")
         self._md_hits: dict[str, int] = defaultdict(int)
-        self._quotes = 0
-        self._trades = 0
         self._ohlc_len = 0
 
     def on_market_data(self, ctx: IStrategyContext, data: MarketEvent) -> list[Signal] | Signal | None:
@@ -246,12 +219,6 @@ class _ReactionStrategy(IStrategy):
         # cache must be populated by the time market data is delivered
         series = ctx.ohlc(ctx.instruments[0], "1h")
         self._ohlc_len = max(self._ohlc_len, len(series))
-
-    def on_quote(self, ctx: IStrategyContext, quote: Quote) -> None:
-        self._quotes += 1
-
-    def on_trade(self, ctx: IStrategyContext, trade: Trade) -> None:
-        self._trades += 1
 
 
 def test_simulated_typed_dispatch_fires_callbacks_and_populates_cache():
@@ -270,10 +237,6 @@ def test_simulated_typed_dispatch_fires_callbacks_and_populates_cache():
     # on_market_data is reached on both the quote and trade paths
     assert s._md_hits["quote"] > 0, f"no quote market events, got {dict(s._md_hits)}"
     assert s._md_hits["trade"] > 0, f"no trade market events, got {dict(s._md_hits)}"
-
-    # the reaction callbacks fire alongside on_market_data, once per matching event
-    assert s._quotes == s._md_hits["quote"], (s._quotes, s._md_hits["quote"])
-    assert s._trades == s._md_hits["trade"], (s._trades, s._md_hits["trade"])
 
     # the OHLC cache was populated through the typed dispatch
     assert s._ohlc_len > 0

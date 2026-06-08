@@ -174,7 +174,7 @@ def test_ws_partial_fill_first_emits_accepted_then_partially_filled() -> None:
     raw["info"] = {"status": "PARTIALLY_FILLED"}
     conn._handle_ws_order(raw)
     # A fill seen with no prior venue ack synthesizes ACCEPTED first, so the strategy's
-    # on_order_accepted fires before the fill and the order lifecycle stays ordered.
+    # on_order_update sees ACCEPTED before the fill and the order lifecycle stays ordered.
     assert len(sent) == 2
     assert isinstance(sent[0], OrderAcceptedEvent)
     ev = sent[1]

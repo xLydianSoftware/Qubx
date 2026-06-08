@@ -64,7 +64,9 @@ def test_filled_event_routes_through_am_then_strategy():
         OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=fill)
     )
     pm._account_manager.apply.assert_called_once()
-    pm._strategy.on_order_filled.assert_called_once()
+    # unified callback receives (ctx, order, event)
+    pm._strategy.on_order_update.assert_called_once()
+    assert isinstance(pm._strategy.on_order_update.call_args.args[2], OrderFilledEvent)
     # downstream per-fill notification ran
     pm._position_gathering.on_execution_report.assert_called_once()
 
@@ -77,12 +79,12 @@ def test_accepted_event_routes_through_am_then_strategy():
             instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
         )
     )
-    pm._strategy.on_order_accepted.assert_called_once()
+    pm._strategy.on_order_update.assert_called_once()
 
 
 def test_callback_exception_does_not_halt_dispatch():
     pm = _pm()
-    pm._strategy.on_order_accepted.side_effect = RuntimeError("boom")
+    pm._strategy.on_order_update.side_effect = RuntimeError("boom")
     pm._account_manager.apply.return_value = MagicMock()
     # the bad callback is swallowed (logged, not raised); reaching here proves dispatch survived
     pm.process_event(
@@ -90,7 +92,7 @@ def test_callback_exception_does_not_halt_dispatch():
             instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
         )
     )
-    pm._strategy.on_order_accepted.assert_called_once()
+    pm._strategy.on_order_update.assert_called_once()
 
 
 def test_am_apply_error_is_swallowed_and_does_not_raise():
@@ -103,7 +105,7 @@ def test_am_apply_error_is_swallowed_and_does_not_raise():
         )
     )
     pm._account_manager.apply.assert_called_once()
-    pm._strategy.on_order_accepted.assert_not_called()
+    pm._strategy.on_order_update.assert_not_called()
 
 
 class _FakeEmitter:
@@ -137,8 +139,8 @@ def test_strategy_callback_exception_emits_error_metric():
     pm = _pm()
     emitter = _FakeEmitter()
     pm._context.emitter = emitter
-    pm._strategy.on_order_accepted.side_effect = RuntimeError("boom")
-    pm._strategy.on_order_accepted.__name__ = "on_order_accepted"
+    pm._strategy.on_order_update.side_effect = RuntimeError("boom")
+    pm._strategy.on_order_update.__name__ = "on_order_update"
     pm._account_manager.apply.return_value = MagicMock()
     pm.process_event(
         OrderAcceptedEvent(
@@ -149,12 +151,12 @@ def test_strategy_callback_exception_emits_error_metric():
     assert len(matches) == 1
     name, value, tags = matches[0]
     assert value == 1.0
-    assert tags == {"callback": "on_order_accepted"}
+    assert tags == {"callback": "on_order_update"}
 
 
 def test_cancel_rejected_logs_warning_in_dispatch():
-    # The venue-rejection warning lives in the dispatch, so it fires regardless of whether a
-    # strategy overrides on_order_cancel_rejected.
+    # The venue-rejection warning lives in the dispatch, so it fires regardless of whether the
+    # strategy reacts in on_order_update.
     pm = _pm()
     pm._account_manager.apply.return_value = MagicMock(client_order_id="C-1")
     messages: list[str] = []
@@ -164,7 +166,8 @@ def test_cancel_rejected_logs_warning_in_dispatch():
     finally:
         logger.remove(sink)
     assert any("STILL ALIVE at the venue" in m for m in messages)
-    pm._strategy.on_order_cancel_rejected.assert_called_once()
+    pm._strategy.on_order_update.assert_called_once()
+    assert isinstance(pm._strategy.on_order_update.call_args.args[2], OrderCancelRejectedEvent)
 
 
 def test_update_rejected_logs_warning_in_dispatch():
@@ -177,4 +180,5 @@ def test_update_rejected_logs_warning_in_dispatch():
     finally:
         logger.remove(sink)
     assert any("STILL ALIVE with prior parameters" in m for m in messages)
-    pm._strategy.on_order_update_rejected.assert_called_once()
+    pm._strategy.on_order_update.assert_called_once()
+    assert isinstance(pm._strategy.on_order_update.call_args.args[2], OrderUpdateRejectedEvent)

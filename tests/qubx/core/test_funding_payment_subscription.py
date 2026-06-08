@@ -177,13 +177,13 @@ class TestFundingPaymentSubscription:
 
     def test_process_event_routes_funding_payment_to_both_paths(self, mock_instrument, sample_funding_payment):
         """process_event(FundingPaymentEvent) is a hybrid: it books funding via AM
-        (on_funding_payment) AND runs the market-data side effects."""
+        (surfaced to the strategy through on_account_update) AND runs the market-data side effects."""
 
         processor = Mock()
         event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
         ProcessingManager.process_event(processor, event)
 
-        # - account half: AM books the payment and fires on_funding_payment
+        # - account half: AM books the payment and fires on_account_update
         processor._dispatch_account.assert_called_once_with(event)
         # - market-data half: runs __update_base_data + MarketEvent through the pipeline
         processor._dispatch_market_data.assert_called_once_with(event)

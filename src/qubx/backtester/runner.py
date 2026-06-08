@@ -512,7 +512,7 @@ class SimulationRunner:
 
         # - the account manager is built before the strategy is resolved (signal setups
         #   wrap the generator in a SignalsProxy); wire the resolved strategy now so its
-        #   AM-fired callbacks (e.g. on_reconcile_complete) target the real instance.
+        #   AM-fired callbacks (e.g. on_order_update on inflight-exhaustion) target the real instance.
         self.account_manager._strategy = strat
 
         # - it will store simulation results into memory

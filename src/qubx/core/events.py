@@ -1,4 +1,4 @@
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import numpy as np
@@ -132,34 +132,6 @@ class AccountSnapshot:
 @dataclass(frozen=True, slots=True, kw_only=True)
 class AccountSnapshotEvent(AccountMessage):
     snapshot: AccountSnapshot
-
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class ReconcileDiff:
-    exchange: str
-    as_of: np.datetime64
-    orders_newly_terminal: list[Order] = field(default_factory=list)
-    orders_materialized: list[Order] = field(default_factory=list)
-    orders_updated: list[Order] = field(default_factory=list)
-    positions_updated: list[Position] = field(default_factory=list)
-    balances_updated: list[Balance] = field(default_factory=list)
-
-    # Write API: the lists are populated through these so callers never append directly.
-    # (frozen blocks rebinding the fields, not mutating the lists they hold.)
-    def record_order_terminal(self, order: Order) -> None:
-        self.orders_newly_terminal.append(order)
-
-    def record_order_materialized(self, order: Order) -> None:
-        self.orders_materialized.append(order)
-
-    def record_order_updated(self, order: Order) -> None:
-        self.orders_updated.append(order)
-
-    def record_position_updated(self, position: Position) -> None:
-        self.positions_updated.append(position)
-
-    def record_balance_updated(self, balance: Balance) -> None:
-        self.balances_updated.append(balance)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

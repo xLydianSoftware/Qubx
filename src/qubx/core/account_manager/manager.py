@@ -38,7 +38,6 @@ from qubx.core.events import (
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
     PositionUpdateEvent,
-    ReconcileDiff,
 )
 from qubx.core.exceptions import InvalidOrderTransition
 from qubx.core.interfaces import IProcessingManager, IStrategy
@@ -254,8 +253,8 @@ class AccountManager:
 
     def _handle_position_balance_noop(self, state: AccountState, event: AccountMessage) -> None:
         # No connector emits PositionUpdate/BalanceUpdate yet; positions/balances are derived
-        # from fills and corrected by snapshot reconcile. PM still fires the
-        # on_position_update/on_balance_update callback off the event payload.
+        # from fills and corrected by snapshot reconcile. PM still fires on_account_update
+        # off the event payload.
         # TODO(account-mgmt): apply venue WS position/balance to AccountState here (via
         # set_position/update_balance) once the live connectors emit them, with the same
         # freshness/ratchet guard as snapshot reconcile.
@@ -626,7 +625,10 @@ class AccountManager:
             return None
         state.mark_snapshot_applied(snapshot.as_of)
 
-        diff = ReconcileDiff(exchange=snapshot.exchange, as_of=snapshot.as_of)
+        # Reconcile mutates state silently; the strategy is notified once via on_account_update
+        # (PM routes the AccountSnapshotEvent there) rather than per applied change. We keep a
+        # debug-log tally for observability instead of a per-event callback.
+        n_terminal = n_materialized = n_updated = n_positions = n_balances = 0
 
         if snapshot.open_orders is not None:
             snap_by_vid = {o.venue_order_id: o for o in snapshot.open_orders if o.venue_order_id}
@@ -645,17 +647,17 @@ class AccountManager:
                 cached.pre_pending_status = None
                 try:
                     self._transition(state, cid, terminal)
-                    diff.record_order_terminal(cached)
+                    n_terminal += 1
                 except InvalidOrderTransition:
                     logger.warning(f"reconcile: cannot terminate {cid} from {cached.status}")
             for snap_order in snapshot.open_orders:
                 existing = state.get_order_by_venue_id(snap_order.venue_order_id) if snap_order.venue_order_id else None
                 if existing is None:
                     self._materialize_from_snapshot(state, snap_order, snapshot.as_of)
-                    diff.record_order_materialized(snap_order)
+                    n_materialized += 1
                 elif existing.last_updated_at is None or snapshot.as_of > existing.last_updated_at:
                     self._update_from_snapshot(state, existing, snap_order, snapshot.as_of)
-                    diff.record_order_updated(existing)
+                    n_updated += 1
 
         # Positions and balances: the snapshot is the venue's authoritative full
         # truth for size/amount, and stale snapshots are already rejected wholesale
@@ -668,17 +670,19 @@ class AccountManager:
         if snapshot.positions is not None:
             for snap_pos in snapshot.positions:
                 if state.apply_position_snapshot(snap_pos):
-                    diff.record_position_updated(state.get_position(snap_pos.instrument))
+                    n_positions += 1
 
         if snapshot.balances is not None:
             for snap_bal in snapshot.balances:
                 if state.apply_balance_snapshot(snap_bal):
-                    diff.record_balance_updated(state.get_balance(snap_bal.currency))
+                    n_balances += 1
 
-        try:
-            self._strategy.on_reconcile_complete(self._ctx, snapshot.exchange, diff)
-        except Exception:
-            logger.exception("on_reconcile_complete raised")
+        if n_terminal or n_materialized or n_updated or n_positions or n_balances:
+            logger.debug(
+                f"[{snapshot.exchange}] reconcile applied: {n_terminal} terminated, "
+                f"{n_materialized} materialized, {n_updated} updated, "
+                f"{n_positions} positions, {n_balances} balances"
+            )
         return None
 
     def _materialize_from_snapshot(self, state: AccountState, snap_order: Order, as_of: np.datetime64) -> None:
@@ -762,10 +766,23 @@ class AccountManager:
         order.pre_pending_status = None
         was = order.status
         self._transition(state, order.client_order_id, target)
+        # Surface the failed cancel/update to the strategy as a synthesized reject event
+        # through the unified on_order_update callback (the order is back to a live state).
         if was == OrderStatus.PENDING_CANCEL:
-            self._strategy.on_order_cancel_rejected(self._ctx, order, reason)
+            event = OrderCancelRejectedEvent(
+                instrument=order.instrument,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                reason=reason,
+            )
         else:
-            self._strategy.on_order_update_rejected(self._ctx, order, reason)
+            event = OrderUpdateRejectedEvent(
+                instrument=order.instrument,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                reason=reason,
+            )
+        self._strategy.on_order_update(self._ctx, order, event)
 
     def _on_snapshot_tick(self, ctx) -> None:
         now = self._time.time()

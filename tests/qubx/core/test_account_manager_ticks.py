@@ -4,6 +4,7 @@ import numpy as np
 
 from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
+from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
 
 
 class _T:
@@ -150,8 +151,9 @@ def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
     assert o.pre_pending_status is None
-    am._strategy.on_order_cancel_rejected.assert_called_once()
-    assert am._strategy.on_order_cancel_rejected.call_args.args[0] is am._ctx
+    am._strategy.on_order_update.assert_called_once()
+    assert am._strategy.on_order_update.call_args.args[0] is am._ctx
+    assert isinstance(am._strategy.on_order_update.call_args.args[2], OrderCancelRejectedEvent)
 
 
 def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
@@ -177,8 +179,9 @@ def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
     am._on_inflight_tick(None)
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.PARTIALLY_FILLED
-    am._strategy.on_order_update_rejected.assert_called_once()
-    assert am._strategy.on_order_update_rejected.call_args.args[0] is am._ctx
+    am._strategy.on_order_update.assert_called_once()
+    assert am._strategy.on_order_update.call_args.args[0] is am._ctx
+    assert isinstance(am._strategy.on_order_update.call_args.args[2], OrderUpdateRejectedEvent)
 
 
 def test_snapshot_tick_calls_request_snapshot_when_stale():
@@ -267,7 +270,7 @@ def test_inflight_sweep_isolates_raising_callback():
     # rest of the sweep — design §1260 "one bad callback never blocks the next".
     conn = MagicMock()
     am = _am({"binance": conn})
-    am._strategy.on_order_cancel_rejected.side_effect = RuntimeError("boom")
+    am._strategy.on_order_update.side_effect = RuntimeError("boom")
     state = am._states["binance"]
 
     a = _mk_order("cid-a", OrderStatus.PENDING_CANCEL, "VA")

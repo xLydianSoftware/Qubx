@@ -32,28 +32,17 @@ from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
     MARKET_DATA_TYPES,
     AccountMessage,
-    AccountSnapshotEvent,
-    BalanceUpdateEvent,
     ChannelMessage,
     CustomEvent,
     ErrorEvent,
     FundingPaymentEvent,
     MarketDataMessage,
-    OrderAcceptedEvent,
-    OrderBookEvent,
-    OrderCanceledEvent,
     OrderCancelRejectedEvent,
     OrderEvent,
-    OrderExpiredEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
-    OrderRejectedEvent,
-    OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
-    QuoteEvent,
     ScheduledEvent,
-    TradeEvent,
     data_type_for_event,
     event_for_data_type,
     payload_for_event,
@@ -424,12 +413,10 @@ class ProcessingManager(IProcessingManager):
         # typed at process_event.
         return self._run_strategy_pipeline(event)
 
-    def _run_strategy_pipeline(self, event: Any, *, md_reaction: MarketDataMessage | None = None) -> bool:
+    def _run_strategy_pipeline(self, event: Any) -> bool:
         """Warmup/fit gating, strategy callback firing and signal processing — the
         shared tail for both the tuple path (__process_data) and the typed
-        market-data path (_dispatch_market_data). `md_reaction`, when set, is the
-        typed market-data event whose reaction callback (on_quote/on_trade/
-        on_orderbook) fires under the same eligibility as on_market_data."""
+        market-data path (_dispatch_market_data)."""
         if not self._context._strategy_state.is_on_start_called:
             self._handle_start()
 
@@ -485,11 +472,6 @@ class ProcessingManager(IProcessingManager):
             if _is_market_ev:
                 with self._health_monitor("stg.market_event"):
                     signals.extend(self._as_list(self._strategy.on_market_data(self._context, event)))
-
-                # - reaction callbacks fire alongside on_market_data; they return None
-                #   and never contribute to signals
-                if md_reaction is not None:
-                    self._fire_md_reaction(md_reaction)
 
             # TODO: remove the is_trigger logic from market events, only trigger on_event when event schedule is provided
             # if _is_trigger_ev or (_is_market_ev and event.is_trigger):
@@ -1188,7 +1170,7 @@ class ProcessingManager(IProcessingManager):
 
     def process_event(self, event: ChannelMessage) -> None:
         # FundingPaymentEvent is an AccountMessage that ALSO feeds the market-data
-        # path: it books the payment into balances (and fires on_funding_payment)
+        # path: it books the payment into balances (and fires on_account_update)
         # AND runs the market-data side effects. Checked before the generic
         # AccountMessage branch so both halves run.
         if isinstance(event, FundingPaymentEvent):
@@ -1262,7 +1244,7 @@ class ProcessingManager(IProcessingManager):
 
         base_update = self.__update_base_data(instrument, d_type, payload)
         mkt = MarketEvent(self._time_provider.time(), d_type, instrument, payload, is_trigger=base_update)
-        self._run_strategy_pipeline(mkt, md_reaction=event)
+        self._run_strategy_pipeline(mkt)
 
     def _feed_simulated_connector(self, instrument: Instrument, payload: Any) -> None:
         # Paper only. is_paper_trading is also True in the backtester (it too uses a
@@ -1274,15 +1256,6 @@ class ProcessingManager(IProcessingManager):
         connector = self._connectors.get(instrument.exchange)
         if connector is not None:
             connector.process_market_data(instrument, payload)
-
-    def _fire_md_reaction(self, event: MarketDataMessage) -> None:
-        match event:
-            case QuoteEvent():
-                self._safe_call(self._strategy.on_quote, event.quote)
-            case TradeEvent():
-                self._safe_call(self._strategy.on_trade, event.trade)
-            case OrderBookEvent():
-                self._safe_call(self._strategy.on_orderbook, event.orderbook)
 
     def _dispatch_account(self, event: AccountMessage) -> None:
         try:
@@ -1313,52 +1286,33 @@ class ProcessingManager(IProcessingManager):
             self._emit_error_metric("strategy_callback_errors", callback=getattr(fn, "__name__", "unknown"))
 
     def _safe_fire_account_callback(self, event: AccountMessage, updated: Any) -> None:
-        # Order callbacks below all take the affected Order (`updated`). AM returns None when
-        # it couldn't resolve/transition the order (unknown order, unexpected state — already
-        # logged); firing on_order_*(None, ...) would break the `order: Order` contract, so
-        # skip. Non-order events (position/balance/funding/snapshot) read their own payload
-        # off `event`, not `updated`, so they are unaffected.
-        if isinstance(event, OrderEvent) and updated is None:
-            return
-        match event:
-            case OrderPartiallyFilledEvent():
-                self._safe_call(self._strategy.on_order_partially_filled, updated, event.fill)
-                self._notify_downstream_fill(event.instrument, updated, event.fill)
-            case OrderFilledEvent():
-                self._safe_call(self._strategy.on_order_filled, updated, event.fill)
-                self._notify_downstream_fill(event.instrument, updated, event.fill)
-            case OrderAcceptedEvent():
-                self._safe_call(self._strategy.on_order_accepted, updated)
-            case OrderCanceledEvent():
-                self._safe_call(self._strategy.on_order_canceled, updated)
-            case OrderExpiredEvent():
-                self._safe_call(self._strategy.on_order_expired, updated)
-            case OrderUpdatedEvent():
-                self._safe_call(self._strategy.on_order_updated, updated)
-            case OrderRejectedEvent():
-                self._safe_call(self._strategy.on_order_rejected, updated, event.reason)
-            case OrderCancelRejectedEvent():
+        # Two unified strategy callbacks: on_order_update for OrderEvents, on_account_update
+        # for everything else (position/balance/funding/snapshot). The strategy inspects the
+        # concrete event type itself.
+        if isinstance(event, OrderEvent):
+            # AM returns None when it couldn't resolve/transition the order (unknown order,
+            # unexpected state — already logged); on_order_update needs a real Order, so skip.
+            if updated is None:
+                return
+            # Cancel/update rejections are dangerous-but-recoverable (order still alive at the
+            # venue): surface loudly here so they aren't lost if the strategy ignores them.
+            if isinstance(event, OrderCancelRejectedEvent):
                 logger.warning(
                     f"[{event.client_order_id}] cancel rejected by venue: {event.reason}; "
                     f"order is STILL ALIVE at the venue"
                 )
-                self._safe_call(self._strategy.on_order_cancel_rejected, updated, event.reason)
-            case OrderUpdateRejectedEvent():
+            elif isinstance(event, OrderUpdateRejectedEvent):
                 logger.warning(
                     f"[{event.client_order_id}] update rejected by venue: {event.reason}; "
                     f"order is STILL ALIVE with prior parameters"
                 )
-                self._safe_call(self._strategy.on_order_update_rejected, updated, event.reason)
-            case PositionUpdateEvent():
-                self._safe_call(self._strategy.on_position_update, event.position)
-            case BalanceUpdateEvent():
-                self._safe_call(self._strategy.on_balance_update, event.balance)
-            case FundingPaymentEvent():
-                self._safe_call(self._strategy.on_funding_payment, event.payment)
-            case AccountSnapshotEvent():
-                pass
-            case _:
-                logger.warning(f"unhandled AccountMessage callback: {type(event)}")
+            self._safe_call(self._strategy.on_order_update, updated, event)
+            # Fills also drive framework-internal downstream consumers (trackers, gatherers,
+            # logging, export) — independent of whatever the strategy callback did.
+            if isinstance(event, (OrderPartiallyFilledEvent, OrderFilledEvent)):
+                self._notify_downstream_fill(event.instrument, updated, event.fill)
+        else:
+            self._safe_call(self._strategy.on_account_update, event)
 
     def _notify_downstream_fill(self, instrument: Instrument | None, order: Order, fill: Deal) -> None:
         if instrument is None:

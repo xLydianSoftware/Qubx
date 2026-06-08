@@ -234,11 +234,13 @@ def test_snapshot_updates_existing_position_and_balance_in_place():
     assert state.get_balance("USDT").total == 500.0
 
 
-def test_reconcile_diff_emitted():
+def test_reconcile_applies_to_state():
+    # Reconcile mutates AccountState silently (no per-event callback) — the strategy is
+    # notified once via on_account_update at the PM layer. Here we assert the state effects.
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    # one missing (terminal), one materialized, plus position and balance
+    # one missing (-> terminal), one unknown (-> materialized), plus position and balance
     state.add_order(_order("cid-gone", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="VG", instrument=inst))
     snap_order = _order("manual-9", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VNEW", instrument=inst)
     snap_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
@@ -252,21 +254,10 @@ def test_reconcile_diff_emitted():
             balances=[snap_bal],
         )
     )
-    am._strategy.on_reconcile_complete.assert_called_once()
-    call = am._strategy.on_reconcile_complete.call_args
-    ctx_arg, exchange_arg, diff = call.args
-    assert ctx_arg is am._ctx  # NOT None
-    assert exchange_arg == "binance"
-    assert [o.client_order_id for o in diff.orders_newly_terminal] == ["cid-gone"]
-    assert [o.venue_order_id for o in diff.orders_materialized] == ["VNEW"]
-    assert snap_pos in diff.positions_updated
-    assert snap_bal in diff.balances_updated
-
-
-def test_on_reconcile_complete_receives_real_ctx_not_none():
-    am = _am()
-    am._time.t = np.datetime64("2026-05-28T01:00:00")
-    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
-    ctx_arg = am._strategy.on_reconcile_complete.call_args.args[0]
-    assert ctx_arg is am._ctx
-    assert ctx_arg is not None
+    # missing from snapshot + older than the grace window -> terminal (REJECTED, was SUBMITTED)
+    assert state.get_order("cid-gone").status is OrderStatus.REJECTED
+    # unknown venue id in the snapshot -> materialized into the cache
+    assert state.get_order_by_venue_id("VNEW") is not None
+    # position / balance overwritten from the snapshot
+    assert state.get_position(inst).quantity == 1.0
+    assert state.get_balance("USDT").total == 1000.0
