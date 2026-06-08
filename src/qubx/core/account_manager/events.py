@@ -29,12 +29,17 @@ class OrderRejectedEvent(OrderEvent):
 
 @msg
 class OrderPartiallyFilledEvent(OrderEvent):
-    fill: Deal
+    fill: Deal | None = None
 
 
 @msg
 class OrderFilledEvent(OrderEvent):
-    fill: Deal
+    fill: Deal | None = None
+
+
+@msg
+class DealEvent(OrderEvent):
+    deal: Deal
 
 
 @msg

@@ -14,6 +14,7 @@ use must copy.copy() it first.
 """
 
 from collections import deque
+from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Mapping
 
@@ -33,6 +34,21 @@ _TERMINAL_STATUSES: frozenset[OrderStatus] = frozenset({
     OrderStatus.REJECTED,
     OrderStatus.EXPIRED,
 })
+_PENDING_STATUSES: frozenset[OrderStatus] = frozenset({
+    OrderStatus.PENDING_CANCEL,
+    OrderStatus.PENDING_UPDATE,
+})
+
+
+@dataclass
+class VenueAccountFigures:
+    """Account-level figures reported by the exchange. Preferred over derived
+    metrics in live; each is optional since a venue may report only some."""
+
+    as_of: np.datetime64
+    equity: float | None = None
+    available_margin: float | None = None
+    margin_ratio: float | None = None
 
 
 def _recompute_avg(order: Order, fill: Deal) -> float:
@@ -52,9 +68,16 @@ def _recompute_avg(order: Order, fill: Deal) -> float:
     return (prev_avg * prev_qty + fill.price * fill_qty) / new_qty
 
 
+def _notional(position: Position) -> float:
+    # NaN for an unmarked position -> 0.0, so one unmarked position can't poison aggregates
+    n = position.notional_value
+    return 0.0 if n != n else float(n)
+
+
 class AccountState:
     __slots__ = (
         "exchange",
+        "base_currency",
         "_active_orders",
         "_positions",
         "_balances",
@@ -63,11 +86,15 @@ class AccountState:
         "_pending_evict_index",
         "_seen_trade_ids",
         "_terminal_history",
+        "_retry_count",
+        "_pre_pending_status",
         "_last_snapshot_as_of",
+        "_venue_figures",
     )
 
-    def __init__(self, exchange: str, *, terminal_history_size: int = 10_000):
+    def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
         self.exchange: str = exchange
+        self.base_currency: str = base_currency.upper()
 
         # ---- primary data ------------------------------------------------
         self._active_orders: dict[str, Order] = {}  # client_id -> Order
@@ -87,9 +114,15 @@ class AccountState:
         self._seen_trade_ids: dict[str, set[str]] = {}
         # bounded ring buffer of evicted terminals (FIFO); slow-path lookups
         self._terminal_history: deque[Order] = deque(maxlen=terminal_history_size)
+        # cid -> in-flight sweep poll count; reset on any status change
+        self._retry_count: dict[str, int] = {}
+        # cid -> status captured on entry to PENDING_*; revert target on reject/give-up
+        self._pre_pending_status: dict[str, OrderStatus] = {}
 
         # ratchet for out-of-order snapshot rejection (written by AM reconcile)
         self._last_snapshot_as_of: np.datetime64 | None = None
+        # exchange-reported account figures; None in sim, set from venue events in live
+        self._venue_figures: VenueAccountFigures | None = None
 
     def __repr__(self) -> str:
         return (
@@ -111,9 +144,15 @@ class AccountState:
                 return o
         return None
 
+    def get_active_order(self, client_order_id: str) -> Order | None:
+        return self._active_orders.get(client_order_id)
+
     def get_order_by_venue_id(self, venue_order_id: str) -> Order | None:
         cid = self._venue_id_index.get(venue_order_id)
         return self._active_orders.get(cid) if cid is not None else None
+
+    def get_inflight_orders(self) -> list[Order]:
+        return [self._active_orders[cid] for cid in self._inflight_index]
 
     def get_positions(self) -> Mapping[Instrument, Position]:
         return MappingProxyType(self._positions)
@@ -126,6 +165,69 @@ class AccountState:
 
     def get_balance(self, currency: str) -> AssetBalance | None:
         return self._balances.get(currency)
+
+    def get_pre_pending(self, cid: str) -> OrderStatus | None:
+        return self._pre_pending_status.get(cid)
+
+    def get_retry(self, cid: str) -> int:
+        return self._retry_count.get(cid, 0)
+
+    def get_last_snapshot_as_of(self) -> np.datetime64 | None:
+        return self._last_snapshot_as_of
+
+    def get_venue_figures(self) -> VenueAccountFigures | None:
+        return self._venue_figures
+
+    # ================================================================== #
+    # Derived metrics — single exchange. In live, exchange-reported      #
+    # figures are preferred over the derived value, per metric.          #
+    # ================================================================== #
+
+    def total_capital(self) -> float:
+        venue = self._venue_figures
+        if venue is not None and venue.equity is not None:
+            return venue.equity
+        base = self._balances.get(self.base_currency)
+        cash = base.total if base is not None else 0.0
+        return cash + sum(p.market_value_funds for p in self._positions.values())
+
+    def total_initial_margin(self) -> float:
+        return sum(p.initial_margin for p in self._positions.values())
+
+    def total_maint_margin(self) -> float:
+        return sum(p.maint_margin for p in self._positions.values())
+
+    def available_margin(self) -> float:
+        venue = self._venue_figures
+        if venue is not None and venue.available_margin is not None:
+            return venue.available_margin
+        return self.total_capital() - self.total_initial_margin()
+
+    def margin_ratio(self) -> float:
+        venue = self._venue_figures
+        if venue is not None and venue.margin_ratio is not None:
+            return venue.margin_ratio
+        maint = self.total_maint_margin()
+        return 100.0 if maint == 0 else min(100.0, self.total_capital() / maint)
+
+    def leverage(self, instrument: Instrument) -> float:
+        pos = self._positions.get(instrument)
+        if pos is None:
+            return 0.0
+        capital = self.total_capital()
+        return _notional(pos) / capital if capital > 0 else 0.0
+
+    def net_leverage(self) -> float:
+        capital = self.total_capital()
+        if capital <= 0:
+            return 0.0
+        return sum(_notional(p) for p in self._positions.values()) / capital
+
+    def gross_leverage(self) -> float:
+        capital = self.total_capital()
+        if capital <= 0:
+            return 0.0
+        return sum(abs(_notional(p)) for p in self._positions.values()) / capital
 
     # ================================================================== #
     # Mutators — framework-internal; only AccountManager calls these,    #
@@ -147,11 +249,12 @@ class AccountState:
             self._pending_evict_index[cid] = order.last_updated_at
 
     def _transition_order(self, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
-        """Low-level status setter. Sole populate/drain point for the in-flight
-        and pending-evict indices — add on entry to an in-flight/terminal state,
-        discard on exit.
+        """Low-level status setter and the sole maintainer of every status-derived
+        structure: the in-flight and pending-evict indices, the retry counter, and
+        the pre-pending status capture.
         """
         order = self._active_orders[cid]
+        old_status = order.status
         order.status = new_status
         order.last_updated_at = now
 
@@ -165,7 +268,20 @@ class AccountState:
         else:
             self._pending_evict_index.pop(cid, None)
 
+        if new_status in _PENDING_STATUSES:
+            # capture only on first entry, so PENDING_UPDATE -> PENDING_CANCEL keeps the original
+            if old_status not in _PENDING_STATUSES:
+                self._pre_pending_status[cid] = old_status
+        else:
+            self._pre_pending_status.pop(cid, None)
+
+        self._retry_count.pop(cid, None)
         return order
+
+    def _bump_retry(self, cid: str) -> int:
+        count = self._retry_count.get(cid, 0) + 1
+        self._retry_count[cid] = count
+        return count
 
     def _set_venue_id(self, cid: str, venue_order_id: str) -> None:
         order = self._active_orders[cid]
@@ -175,19 +291,20 @@ class AccountState:
         order.venue_id = venue_order_id
         self._venue_id_index[venue_order_id] = cid
 
-    def _apply_fill(self, cid: str, fill: Deal, now: np.datetime64) -> Order:
+    def _apply_fill(self, cid: str, fill: Deal, now: np.datetime64) -> bool:
+        """Apply a fill, deduped by trade id. Returns True if newly applied, False if duplicate."""
         order = self._active_orders[cid]
         seen = self._seen_trade_ids.setdefault(cid, set())
         if fill.id in seen:
             logger.debug(f"duplicate fill {fill.id} on {cid}; skipping")
-            return order
+            return False
         seen.add(fill.id)
         order.avg_fill_price = _recompute_avg(order, fill)
         # filled_quantity is unsigned magnitude (direction lives in order.side),
         # matching Order.quantity; Deal.amount is signed, so take its magnitude.
         order.filled_quantity += abs(fill.amount)
         order.last_updated_at = now
-        return order
+        return True
 
     def _remove_order(self, cid: str) -> None:
         """Evict a terminal order from active state into the history ring buffer,
@@ -202,7 +319,20 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
+        self._retry_count.pop(cid, None)
+        self._pre_pending_status.pop(cid, None)
         self._terminal_history.append(order)
+
+    def _prune_terminal_orders(self, now: np.datetime64, retention: np.timedelta64) -> None:
+        due = [cid for cid, terminal_at in self._pending_evict_index.items() if (now - terminal_at) >= retention]
+        for cid in due:
+            self._remove_order(cid)
+
+    def _mark_snapshot_applied(self, as_of: np.datetime64) -> None:
+        self._last_snapshot_as_of = as_of
+
+    def _set_venue_figures(self, figures: VenueAccountFigures) -> None:
+        self._venue_figures = figures
 
     def _update_balance(self, currency: str, balance: AssetBalance) -> None:
         if currency not in self._balances:

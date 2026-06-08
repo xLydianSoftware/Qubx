@@ -709,6 +709,22 @@ class OrderOrigin(StrEnum):
     EXTERNAL = "EXTERNAL"
 
 
+class OrderChange(StrEnum):
+    """What happened to an order, passed to on_order. Covers the cases order.status
+    can't express on its own: UPDATED (status unchanged), CANCEL_REJECTED/UPDATE_REJECTED
+    (status reverts)."""
+
+    ACCEPTED = "ACCEPTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    EXPIRED = "EXPIRED"
+    REJECTED = "REJECTED"
+    UPDATED = "UPDATED"
+    CANCEL_REJECTED = "CANCEL_REJECTED"
+    UPDATE_REJECTED = "UPDATE_REJECTED"
+
+
 @dataclass
 class OrderRequest:
     """
