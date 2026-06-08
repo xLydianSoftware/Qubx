@@ -6,15 +6,29 @@ from qubx.core.account_manager.events import (
     DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
+    OrderCancelRejectedEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
+    OrderUpdatedEvent,
+    OrderUpdateRejectedEvent,
     PositionUpdateEvent,
 )
 from qubx.core.account_manager.reducer import apply
 from qubx.core.account_manager.state import AccountState
-from qubx.core.basics import Deal, Order, OrderChange, OrderOrigin, OrderSide, OrderStatus, OrderType, Position
+from qubx.core.basics import (
+    AssetBalance,
+    Deal,
+    Instrument,
+    Order,
+    OrderChange,
+    OrderOrigin,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+)
 from qubx.core.lookups import lookup
 
 T0 = np.datetime64("2026-05-28T00:00:00", "ns")
@@ -26,6 +40,11 @@ _T = TypeVar("_T")
 def _present(value: _T | None) -> _T:
     assert value is not None
     return value
+
+
+_btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+assert _btc is not None
+BTC: Instrument = _btc
 
 
 def _state() -> AccountState:
@@ -40,7 +59,7 @@ def _order(state: AccountState, cid: str = "c1", status: OrderStatus = OrderStat
     order = Order(
         client_id=cid,
         type=OrderType.LIMIT,
-        instrument=None,  # type: ignore[arg-type]
+        instrument=BTC,
         quantity=1.0,
         side=OrderSide.BUY,
         time_in_force="gtc",
@@ -219,7 +238,118 @@ def test_dedup_across_deal_and_order_stream():
 
 
 def test_unhandled_event_type_is_noop():
-    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
-    assert inst is not None
-    r = apply(_state(), PositionUpdateEvent(timestamp=T0, position=Position(inst)), T1)
+    r = apply(_state(), PositionUpdateEvent(timestamp=T0, position=Position(BTC)), T1)
     assert r.order is None and r.deal is None and r.position is None
+
+
+# --------------------------------------------------------------------------- #
+# 4.3 — deal -> position / balance ledger
+# --------------------------------------------------------------------------- #
+
+
+def _seed_usdt(state: AccountState, amount: float = 1000.0) -> None:
+    state._update_balance("USDT", AssetBalance(exchange="binance", currency="USDT", free=amount, locked=0.0, total=amount))
+
+
+def test_fill_books_position_and_sets_result_position():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    r = apply(state, OrderFilledEvent(timestamp=T0, client_order_id="c1", fill=_fill("t1", 0.5, 50_000.0)), T1)
+    assert r.position is not None
+    assert r.position.quantity == 0.5
+    assert _present(state.get_position(BTC)).quantity == 0.5
+
+
+def test_partial_fills_accumulate_position():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    apply(state, OrderPartiallyFilledEvent(timestamp=T0, client_order_id="c1", fill=_fill("t1", 0.3, 50_000.0)), T1)
+    apply(state, OrderPartiallyFilledEvent(timestamp=T0, client_order_id="c1", fill=_fill("t2", 0.2, 50_000.0)), T1)
+    assert _present(state.get_position(BTC)).quantity == 0.5
+
+
+def test_duplicate_deal_not_double_booked():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    f = _fill("t1", 0.5, 50_000.0)
+    apply(state, DealEvent(timestamp=T0, client_order_id="c1", deal=f), T1)
+    r = apply(state, DealEvent(timestamp=T0, client_order_id="c1", deal=f), T1)
+    assert r.position is None  # deduped -> no second booking
+    assert _present(state.get_position(BTC)).quantity == 0.5
+
+
+def test_deal_event_books_position():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    r = apply(state, DealEvent(timestamp=T0, client_order_id="c1", deal=_fill("t1", 0.4, 50_000.0)), T1)
+    assert r.position is not None and r.position.quantity == 0.4
+
+
+def test_futures_fee_debits_settle_balance():
+    state = _state()
+    _seed_usdt(state, 1000.0)
+    _order(state, status=OrderStatus.ACCEPTED)
+    deal = Deal(id="t1", order_id="v1", time=T0, amount=0.5, price=50_000.0, aggressive=True, fee_amount=2.0)
+    apply(state, OrderFilledEvent(timestamp=T0, client_order_id="c1", fill=deal), T1)
+    # futures: settle (USDT) += realized_pnl - fee = 0 - 2
+    assert _present(state.get_balance("USDT")).total == 998.0
+
+
+# --------------------------------------------------------------------------- #
+# 4.4 — update / cancel-rejected / update-rejected
+# --------------------------------------------------------------------------- #
+
+
+def test_update_applies_params_and_confirms_pending_update():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    state._transition_order("c1", OrderStatus.PENDING_UPDATE, T0)  # captures pre_pending=ACCEPTED
+    r = apply(state, OrderUpdatedEvent(timestamp=T0, client_order_id="c1", new_price=110.0, new_quantity=2.0), T1)
+    assert r.order is not None
+    assert r.order.status is OrderStatus.ACCEPTED  # reverted to pre-pending
+    assert r.order.price == 110.0 and r.order.quantity == 2.0
+    assert r.order_change is OrderChange.UPDATED
+    assert state.get_pre_pending("c1") is None  # cleared on leaving pending
+
+
+def test_update_confirms_back_to_partially_filled():
+    state = _state()
+    _order(state, status=OrderStatus.PARTIALLY_FILLED)
+    state._transition_order("c1", OrderStatus.PENDING_UPDATE, T0)  # pre_pending = PARTIALLY_FILLED
+    r = apply(state, OrderUpdatedEvent(timestamp=T0, client_order_id="c1", new_price=110.0, new_quantity=None), T1)
+    assert r.order is not None and r.order.status is OrderStatus.PARTIALLY_FILLED
+
+
+def test_update_on_non_pending_applies_params_without_status_change():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    r = apply(state, OrderUpdatedEvent(timestamp=T0, client_order_id="c1", new_price=120.0, new_quantity=None), T1)
+    assert r.order is not None
+    assert r.order.status is OrderStatus.ACCEPTED  # unchanged
+    assert r.order.price == 120.0
+    assert r.order_change is OrderChange.UPDATED  # fires on_order despite no status change
+
+
+def test_cancel_rejected_reverts_to_pre_pending():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    state._transition_order("c1", OrderStatus.PENDING_CANCEL, T0)
+    r = apply(state, OrderCancelRejectedEvent(timestamp=T0, client_order_id="c1", reason="too late"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.ACCEPTED
+    assert r.order_change is OrderChange.CANCEL_REJECTED
+
+
+def test_cancel_rejected_wrong_state_is_noop():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)  # not PENDING_CANCEL
+    r = apply(state, OrderCancelRejectedEvent(timestamp=T0, client_order_id="c1", reason="x"), T1)
+    assert r.order is None
+
+
+def test_update_rejected_reverts_to_pre_pending():
+    state = _state()
+    _order(state, status=OrderStatus.PARTIALLY_FILLED)
+    state._transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+    r = apply(state, OrderUpdateRejectedEvent(timestamp=T0, client_order_id="c1", reason="x"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.PARTIALLY_FILLED
+    assert r.order_change is OrderChange.UPDATE_REJECTED

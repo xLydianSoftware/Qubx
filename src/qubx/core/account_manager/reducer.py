@@ -16,15 +16,18 @@ from qubx.core.account_manager.events import (
     DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
+    OrderCancelRejectedEvent,
     OrderEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
+    OrderUpdatedEvent,
+    OrderUpdateRejectedEvent,
 )
 from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import can_transition, validate_transition
-from qubx.core.basics import Deal, Order, OrderChange, OrderStatus, Position
+from qubx.core.basics import Deal, Instrument, Order, OrderChange, OrderStatus, Position
 
 
 @dataclass
@@ -95,6 +98,18 @@ def _handle_rejected(state: AccountState, event: OrderRejectedEvent, now: np.dat
     return ApplyResult(order=order, order_change=OrderChange.REJECTED)
 
 
+def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Position:
+    """Apply a deal's effect to the position and balances. Caller dedups first."""
+    pos = state._ensure_position(instrument)
+    realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
+    if instrument.is_futures():
+        state._adjust_balance(instrument.settle, realized_pnl - fee)
+    else:
+        state._adjust_balance(instrument.quote, -(deal.amount * deal.price + fee))
+        state._adjust_balance(instrument.base, deal.amount)
+    return pos
+
+
 def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime64) -> ApplyResult:
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
@@ -102,8 +117,10 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
     if event.venue_order_id is not None:
         state._set_venue_id(order.client_id, event.venue_order_id)
     new_deal = event.fill is not None and state._apply_fill(order.client_id, event.fill, now)
+    deal = event.fill if new_deal else None
+    position = _book_deal(state, order.instrument, deal) if deal is not None else None
     order = _transition(state, order.client_id, OrderStatus.FILLED, now)
-    return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=event.fill if new_deal else None)
+    return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
 
 
 def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, now: np.datetime64) -> ApplyResult:
@@ -114,12 +131,13 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
         state._set_venue_id(order.client_id, event.venue_order_id)
     new_deal = event.fill is not None and state._apply_fill(order.client_id, event.fill, now)
     deal = event.fill if new_deal else None
+    position = _book_deal(state, order.instrument, deal) if deal is not None else None
     # a pending cancel/update is resolved by the venue separately — don't disturb its status
     pending = order.status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
     if not pending and can_transition(order.status, OrderStatus.PARTIALLY_FILLED):
         order = _transition(state, order.client_id, OrderStatus.PARTIALLY_FILLED, now)
-        return ApplyResult(order=order, order_change=OrderChange.PARTIALLY_FILLED, deal=deal)
-    return ApplyResult(deal=deal)  # no status change -> on_execution only
+        return ApplyResult(order=order, order_change=OrderChange.PARTIALLY_FILLED, deal=deal, position=position)
+    return ApplyResult(deal=deal, position=position)  # no status change -> on_execution (+ position)
 
 
 def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> ApplyResult:
@@ -130,7 +148,45 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
         state._set_venue_id(order.client_id, event.venue_order_id)
     if not state._apply_fill(order.client_id, event.deal, now):
         return ApplyResult()
-    return ApplyResult(deal=event.deal)  # status comes from order events; on_execution only
+    position = _book_deal(state, order.instrument, event.deal)
+    return ApplyResult(deal=event.deal, position=position)  # status comes from order events
+
+
+def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datetime64) -> ApplyResult:
+    order = _resolve(state, event)
+    if order is None or order.status.is_terminal:
+        return ApplyResult()
+    if event.venue_order_id is not None and order.venue_id != event.venue_order_id:
+        state._set_venue_id(order.client_id, event.venue_order_id)
+    if event.new_price is not None:
+        order.price = event.new_price
+    if event.new_quantity is not None:
+        order.quantity = event.new_quantity
+    order.last_updated_at = now
+    if order.status == OrderStatus.PENDING_UPDATE:
+        target = state.get_pre_pending(order.client_id) or OrderStatus.ACCEPTED
+        order = _transition(state, order.client_id, target, now)
+    return ApplyResult(order=order, order_change=OrderChange.UPDATED)
+
+
+def _revert_from_pending(state: AccountState, order: Order, change: OrderChange, now: np.datetime64) -> ApplyResult:
+    target = state.get_pre_pending(order.client_id) or OrderStatus.ACCEPTED
+    order = _transition(state, order.client_id, target, now)
+    return ApplyResult(order=order, order_change=change)
+
+
+def _handle_cancel_rejected(state: AccountState, event: OrderCancelRejectedEvent, now: np.datetime64) -> ApplyResult:
+    order = _active_order_for(state, event)
+    if order is None or order.status != OrderStatus.PENDING_CANCEL:
+        return ApplyResult()
+    return _revert_from_pending(state, order, OrderChange.CANCEL_REJECTED, now)
+
+
+def _handle_update_rejected(state: AccountState, event: OrderUpdateRejectedEvent, now: np.datetime64) -> ApplyResult:
+    order = _active_order_for(state, event)
+    if order is None or order.status != OrderStatus.PENDING_UPDATE:
+        return ApplyResult()
+    return _revert_from_pending(state, order, OrderChange.UPDATE_REJECTED, now)
 
 
 _HANDLERS = {
@@ -138,9 +194,12 @@ _HANDLERS = {
     OrderPartiallyFilledEvent: _handle_partial_fill,
     OrderFilledEvent: _handle_fill,
     DealEvent: _handle_deal,
+    OrderUpdatedEvent: _handle_updated,
     OrderCanceledEvent: _handle_canceled,
     OrderExpiredEvent: _handle_expired,
     OrderRejectedEvent: _handle_rejected,
+    OrderCancelRejectedEvent: _handle_cancel_rejected,
+    OrderUpdateRejectedEvent: _handle_update_rejected,
 }
 
 

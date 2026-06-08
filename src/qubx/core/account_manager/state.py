@@ -229,6 +229,10 @@ class AccountState:
             return 0.0
         return sum(abs(_notional(p)) for p in self._positions.values()) / capital
 
+    def conversion_rate(self, instrument: Instrument) -> float:
+        del instrument  # TODO(account-mgmt): convert settle/quote -> base_currency via marks
+        return 1.0
+
     # ================================================================== #
     # Mutators — framework-internal; only AccountManager calls these,    #
     # on the strategy thread. No legality checks here: the transition    #
@@ -346,3 +350,18 @@ class AccountState:
             self._positions[instrument] = position
         else:
             self._positions[instrument].reset_by_position(position)
+
+    def _ensure_position(self, instrument: Instrument) -> Position:
+        pos = self._positions.get(instrument)
+        if pos is None:
+            pos = Position(instrument)
+            self._positions[instrument] = pos
+        return pos
+
+    def _adjust_balance(self, currency: str, delta: float) -> None:
+        bal = self._balances.get(currency)
+        if bal is None:
+            bal = AssetBalance(exchange=self.exchange, currency=currency)
+            self._balances[currency] = bal
+        bal.total += delta
+        bal.free = bal.total - bal.locked
