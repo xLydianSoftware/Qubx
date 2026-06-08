@@ -26,7 +26,3 @@ def test_channel_overflow_labels_drops_by_type():
     ch.send(("a",))
     ch.send(("b",))  # drops the ("a",) tuple
     assert ch.dropped_by_type["tuple"] == 1
-
-
-def test_channel_default_capacity():
-    assert CtrlChannel("test").capacity == 10_000

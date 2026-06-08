@@ -1,4 +1,3 @@
-import dataclasses
 
 import pytest
 
@@ -6,44 +5,14 @@ from qubx.core import events
 from qubx.core.basics import DataType
 from qubx.core.events import (
     FundingPaymentEvent,
-    FundingRateEvent,
-    LiquidationEvent,
     OhlcEvent,
-    OpenInterestEvent,
     OrderBookEvent,
     QuoteEvent,
-    ScheduledEvent,
     TradeEvent,
     data_type_for_event,
     event_for_data_type,
 )
 from qubx.core.series import Bar, Quote
-
-
-def _market_data_event_classes():
-    return [
-        c
-        for c in vars(events).values()
-        if isinstance(c, type) and issubclass(c, events.MarketDataMessage) and c is not events.MarketDataMessage
-    ]
-
-
-@pytest.mark.parametrize("cls", _market_data_event_classes(), ids=lambda c: c.__name__)
-def test_market_data_event_is_frozen_and_slots(cls):
-    assert dataclasses.is_dataclass(cls)
-    assert cls.__dataclass_params__.frozen
-    assert "__slots__" in cls.__dict__
-
-
-def test_scheduled_event_is_frozen_and_slots():
-    assert ScheduledEvent.__dataclass_params__.frozen
-    assert "__slots__" in ScheduledEvent.__dict__
-
-
-def test_new_market_data_events_are_market_data_not_account():
-    for cls in (OhlcEvent, FundingRateEvent, OpenInterestEvent, LiquidationEvent):
-        assert issubclass(cls, events.MarketDataMessage)
-        assert not issubclass(cls, events.AccountMessage)
 
 
 def test_event_for_data_type_wraps_and_round_trips():

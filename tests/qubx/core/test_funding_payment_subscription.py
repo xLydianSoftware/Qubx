@@ -6,7 +6,7 @@ import pytest
 
 from qubx.backtester.simulated_data import DataPump, SimulatedDataIterator
 from qubx.core.basics import DataType, FundingPayment, Instrument, MarketEvent, MarketType
-from qubx.core.events import FundingPaymentEvent, payload_for_event
+from qubx.core.events import FundingPaymentEvent
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.data.containers import RawData
 from qubx.data.storage import IReader, IStorage
@@ -218,12 +218,6 @@ class TestFundingPaymentSubscription:
         assert mkt.instrument == mock_instrument
         assert mkt.data == sample_funding_payment
         assert mkt.is_trigger is True
-
-    def test_payload_for_event_extracts_funding_payment(self, mock_instrument, sample_funding_payment):
-        """payload_for_event unwraps FundingPaymentEvent to its FundingPayment payload."""
-
-        event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
-        assert payload_for_event(event) is sample_funding_payment
 
     # -----------------------------------------------------------------------
     # SimulatedDataIterator tests

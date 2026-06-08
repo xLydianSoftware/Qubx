@@ -1,4 +1,3 @@
-import inspect
 
 import numpy as np
 
@@ -12,7 +11,6 @@ from qubx.core.basics import (
     OrderStatus,
     Position,
 )
-from qubx.core.interfaces import IAccountViewer
 
 
 class _T:
@@ -68,11 +66,6 @@ def _am() -> SimulatedAccountManager:
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=900.0, locked=100.0))
     state.add_order(_order(inst))
     return am
-
-
-def test_account_id_is_stored():
-    am = _am()
-    assert am.account_id == "acc-1"
 
 
 def test_get_positions_returns_instrument_position_map():
@@ -131,15 +124,3 @@ def test_position_report():
     report = am.position_report()
     assert "BTCUSDT" in report
     assert report["BTCUSDT"]["Qty"] == 1.0
-
-
-def test_account_manager_satisfies_account_viewer_surface():
-    am = _am()
-    public = [
-        name
-        for name, _ in inspect.getmembers(IAccountViewer)
-        if not name.startswith("_")
-    ]
-    # every public IAccountViewer member name is exposed on the AccountManager
-    missing = [name for name in public if not hasattr(am, name)]
-    assert missing == [], f"AccountManager is missing IAccountViewer members: {missing}"

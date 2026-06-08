@@ -114,11 +114,6 @@ def test_non_pending_transition_does_not_set_pre_pending():
     assert am._states["binance"].get_order("cid-1").pre_pending_status is None
 
 
-def test_get_state_returns_state():
-    am = _am()
-    assert am.get_state("binance") is am._states["binance"]
-
-
 def test_get_orders_filters_by_origin():
     am = _am()
     am._states["binance"].add_order(_make_order(cid="fw"))

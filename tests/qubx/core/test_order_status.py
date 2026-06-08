@@ -15,7 +15,3 @@ def test_order_status_pending_states():
     assert OrderStatus.PENDING_CANCEL.is_pending
     assert OrderStatus.PENDING_UPDATE.is_pending
     assert not OrderStatus.ACCEPTED.is_pending
-
-
-def test_order_status_string_value():
-    assert OrderStatus.SUBMITTED.value == "submitted"

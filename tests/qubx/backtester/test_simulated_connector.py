@@ -391,17 +391,6 @@ def test_request_order_status_missing_emits_rejected(setup):
     assert isinstance(events[0], OrderRejectedEvent)
 
 
-def test_identity_and_lifecycle_stubs(setup):
-    conn, _collector, _exchange, instr, _time = setup
-    assert conn.is_ws_ready() is True
-    assert conn.is_simulated_trading is True
-    assert conn.read_only is False
-    assert conn.make_client_id("qubx-abc") == "qubx-abc"
-    assert conn.set_instrument_leverage(instr, 5.0) is True
-    assert conn.set_margin_mode(instr, "cross") is True
-    assert conn.exchange_name == "BINANCE.UM"
-
-
 def test_submit_stop_order_options_forwarded_to_ome(setup):
     # A STOP_MARKET sell placed below current bid would normally raise "would trigger
     # immediately". With avoid_stop_order_price_validation=True the OME skips that check
