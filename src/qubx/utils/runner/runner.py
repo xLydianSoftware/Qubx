@@ -555,8 +555,12 @@ def create_strategy_context(
                 exchange_name, time_provider=_time, channel=_chan, tcc=tcc
             )
         else:
-            _connectors[exchange_name] = _create_live_connector(
-                exchange_name,
+            # Live execution connector resolved from the registry by the config's connector
+            # name (same as the data provider above) — no hardcoded venue. The registered
+            # factory builds the venue's authenticated client and picks any per-exchange subclass.
+            _connectors[exchange_name] = ConnectorRegistry.get_connector(
+                exchange_config.connector.lower(),
+                exchange_name=exchange_name,
                 time_provider=_time,
                 channel=_chan,
                 account_manager=account_manager,
@@ -795,49 +799,6 @@ def _create_paper_connector(
         channel=channel,
         exchange=get_simulated_exchange(exchange_name, time_provider, tcc),
         time_provider=time_provider,
-    )
-
-
-def _create_live_connector(
-    exchange_name: str,
-    time_provider: ITimeProvider,
-    channel: CtrlChannel,
-    account_manager: AccountConfigurationManager,
-    data_provider: IDataProvider,
-    health_monitor: IHealthMonitor,
-    read_only: bool,
-    loop: asyncio.AbstractEventLoop | None = None,
-) -> IConnector:
-    """Build a live execution connector: the real CcxtConnector for the exchange.
-
-    The connector needs an authenticated ccxt ExchangeManager (to place/cancel/edit orders
-    and watch the execution stream), so it is built from the venue credentials — a separate
-    cached manager from the unauthenticated one the CcxtDataProvider uses for market data
-    (the manager cache keys on api_key/secret).
-    """
-    # Lazy: importing the ccxt factory pulls in ccxt.pro; only the live path needs it,
-    # so paper/backtest runs don't pay that import cost.
-    from qubx.connectors.ccxt.factory import get_ccxt_connector, get_ccxt_exchange_manager
-
-    creds = account_manager.get_exchange_credentials(exchange_name)
-    exchange_manager = get_ccxt_exchange_manager(
-        exchange=exchange_name,
-        use_testnet=creds.testnet,
-        api_key=creds.api_key,
-        secret=creds.secret,
-        health_monitor=health_monitor,
-        time_provider=time_provider,
-        loop=loop,
-        **(creds.model_extra or {}),
-    )
-    return get_ccxt_connector(
-        exchange_name,
-        channel=channel,
-        time_provider=time_provider,
-        exchange_manager=exchange_manager,
-        data_provider=data_provider,
-        read_only=read_only,
-        loop=loop,
     )
 
 

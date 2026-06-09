@@ -165,13 +165,13 @@ class TestBuiltinConnectors:
     """Tests for built-in connector registration."""
 
     def test_builtin_connectors_registered(self):
-        """Test that built-in data providers are registered after import."""
+        """Built-in data providers and the ccxt execution connector register on import."""
         import qubx.connectors  # noqa: F401
 
-        # Data providers are still registered with the registry on import. Execution is no
-        # longer registry-driven: the old CcxtBroker/CcxtAccountProcessor were replaced by
-        # the CcxtConnector, which the live runner builds via get_ccxt_connector (the
-        # factory) rather than registering with the registry — the registry now only holds
-        # data providers.
+        # Market-data providers register via @data_provider.
         assert ConnectorRegistry.is_data_provider_registered("ccxt")
         assert ConnectorRegistry.is_data_provider_registered("tardis")
+        # The live execution connector registers via @connector — the runner resolves it by
+        # the config's connector name (no hardcoded venue). Paper's SimulatedConnector is the
+        # built-in simulator and is intentionally NOT registered.
+        assert ConnectorRegistry.is_connector_registered("ccxt")

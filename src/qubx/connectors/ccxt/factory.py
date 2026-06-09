@@ -1,14 +1,19 @@
 import asyncio
 from threading import Thread
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import ccxt.pro as cxp
 
-from qubx.core.interfaces import IHealthMonitor, ITimeProvider
+from qubx.connectors.registry import connector
+from qubx.core.basics import CtrlChannel
+from qubx.core.interfaces import IDataProvider, IHealthMonitor, ITimeProvider
 
 from .connector import CcxtConnector
 from .exchange_manager import ExchangeManager
 from .exchanges import CUSTOM_CONNECTORS, EXCHANGE_ALIASES
+
+if TYPE_CHECKING:
+    from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
 def get_ccxt_exchange(
@@ -150,6 +155,47 @@ def get_ccxt_connector(
     """
     connector_cls = CUSTOM_CONNECTORS.get(exchange_name.lower(), CcxtConnector)
     return connector_cls(exchange_name=exchange_name, **kwargs)
+
+
+@connector("ccxt")
+def create_ccxt_connector(
+    exchange_name: str,
+    time_provider: ITimeProvider,
+    channel: CtrlChannel,
+    account_manager: "AccountConfigurationManager",
+    data_provider: IDataProvider,
+    health_monitor: IHealthMonitor,
+    read_only: bool = False,
+    loop: asyncio.AbstractEventLoop | None = None,
+    **kwargs,
+) -> CcxtConnector:
+    """Registered ``IConnector`` factory for ccxt venues (``ConnectorRegistry.get_connector('ccxt')``).
+
+    Builds the authenticated ccxt ExchangeManager from the venue credentials — a separate
+    cached manager from the unauthenticated one ``CcxtDataProvider`` uses for market data
+    (the manager cache keys on api_key/secret) — and resolves the per-exchange
+    ``CcxtConnector`` subclass via ``get_ccxt_connector``.
+    """
+    creds = account_manager.get_exchange_credentials(exchange_name)
+    exchange_manager = get_ccxt_exchange_manager(
+        exchange=exchange_name,
+        use_testnet=creds.testnet,
+        api_key=creds.api_key,
+        secret=creds.secret,
+        health_monitor=health_monitor,
+        time_provider=time_provider,
+        loop=loop,
+        **(creds.model_extra or {}),
+    )
+    return get_ccxt_connector(
+        exchange_name,
+        channel=channel,
+        time_provider=time_provider,
+        exchange_manager=exchange_manager,
+        data_provider=data_provider,
+        read_only=read_only,
+        loop=loop,
+    )
 
 
 def _get_api_credentials(

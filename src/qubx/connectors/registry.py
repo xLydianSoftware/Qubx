@@ -1,13 +1,15 @@
 """
-Registry for data providers.
+Registry for data providers and execution connectors.
 
 This module provides a registry pattern for connectors, allowing plugins
-to register custom data providers using decorators (like readers and storages).
+to register custom data providers and ``IConnector`` execution connectors using
+decorators (like readers and storages).
 """
 
 from typing import Any, Callable, Type, TypeVar
 
 from qubx import logger
+from qubx.core.connector import IConnector
 from qubx.core.interfaces import IDataProvider
 
 T = TypeVar("T")
@@ -15,18 +17,21 @@ T = TypeVar("T")
 
 class ConnectorRegistry:
     """
-    Registry for data-provider classes.
+    Registry for data-provider classes and ``IConnector`` execution-connector factories.
 
-    This registry allows plugins to register their own data-provider implementations
-    using decorators, making them available for use in strategy configurations.
-    Order execution and account state are handled by ``IConnector`` (see
-    ``qubx.core.connector``), which is constructed directly by the runner rather than
-    looked up here.
+    Plugins register their own market-data providers (``@data_provider``) and live
+    execution connectors (``@connector``) by name, so the runner resolves both from the
+    config's ``connector`` field rather than hardcoding a venue. The paper/backtest
+    ``SimulatedConnector`` is NOT registered — it is the framework's built-in simulator,
+    constructed directly by the runner.
 
-    Classes are registered and instantiated with standardized constructor arguments.
+    Data providers register the class (instantiated with standardized constructor args);
+    connectors register a factory callable (so a venue can build its own auth/exchange
+    plumbing and resolve per-exchange subclasses behind a uniform signature).
     """
 
     _data_providers: dict[str, Type[IDataProvider]] = {}
+    _connectors: dict[str, Callable[..., IConnector]] = {}
     _rate_limit_configs: dict[str, Callable] = {}
 
     @classmethod
@@ -70,6 +75,50 @@ class ConnectorRegistry:
                 f"Available: {list(cls._data_providers.keys())}"
             )
         return provider_cls(**kwargs)
+
+    @classmethod
+    def register_connector(cls, name: str) -> Callable[[T], T]:
+        """
+        Decorator to register an ``IConnector`` factory under a connector name.
+
+        The registered object is a callable (factory) — not necessarily a class — so a
+        venue can build its own auth/exchange plumbing and pick a per-exchange subclass
+        behind the uniform ``get_connector(name, **kwargs)`` signature.
+
+        Args:
+            name: The connector name to register under (e.g., "ccxt").
+        """
+
+        def decorator(factory: T) -> T:
+            cls._connectors[name.lower()] = factory  # type: ignore[assignment]
+            logger.debug(f"Registered connector: {name}")
+            return factory
+
+        return decorator
+
+    @classmethod
+    def get_connector(cls, name: str, **kwargs: Any) -> IConnector:
+        """
+        Build an ``IConnector`` instance by connector name.
+
+        Args:
+            name: The connector name (the config's ``connector`` field).
+            **kwargs: Arguments forwarded to the registered factory.
+
+        Raises:
+            ValueError: If the connector is not registered.
+        """
+        factory = cls._connectors.get(name.lower())
+        if factory is None:
+            raise ValueError(
+                f"Connector '{name}' is not registered. Available: {list(cls._connectors.keys())}"
+            )
+        return factory(**kwargs)
+
+    @classmethod
+    def is_connector_registered(cls, name: str) -> bool:
+        """Check if an execution connector is registered."""
+        return name.lower() in cls._connectors
 
     @classmethod
     def register_rate_limit_config(cls, name: str) -> Callable:
@@ -120,6 +169,18 @@ def data_provider(name: str) -> Callable[[Type[T]], Type[T]]:
                 ...
     """
     return ConnectorRegistry.register_data_provider(name)
+
+
+def connector(name: str) -> Callable[[T], T]:
+    """
+    Decorator for registering an IConnector factory.
+
+    Usage:
+        @connector("my_exchange")
+        def create_my_exchange_connector(exchange_name, time_provider, channel, ...) -> IConnector:
+            ...
+    """
+    return ConnectorRegistry.register_connector(name)
 
 
 def rate_limit_config(name: str) -> Callable:

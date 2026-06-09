@@ -8,11 +8,13 @@ it is created directly by the backtester and paper trading runner.
 """
 
 # Re-export the registry for convenience, and import connector modules to trigger
-# decorator registration.
+# decorator registration (@data_provider / @connector).
 from qubx.connectors.ccxt.data import CcxtDataProvider  # noqa: F401
+from qubx.connectors.ccxt.factory import create_ccxt_connector  # noqa: F401 - registers @connector("ccxt")
 from qubx.connectors.ccxt.rate_limits import create_ccxt_rate_limit_config  # noqa: F401
 from qubx.connectors.registry import (  # noqa: F401
     ConnectorRegistry,
+    connector,
     data_provider,
 )
 from qubx.connectors.tardis.data import TardisDataProvider  # noqa: F401
