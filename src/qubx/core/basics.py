@@ -3,8 +3,8 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum, StrEnum
 from functools import cache
-from queue import Empty, Full, Queue
-from threading import Event, Lock
+from queue import Empty, Queue
+from threading import Event
 from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, Union
 
 import numpy as np
@@ -1222,30 +1222,22 @@ class Position:
 
 
 class CtrlChannel:
-    """Bounded control channel.
+    """Unbounded control channel: producers push events on, the strategy thread drains.
 
-    Under overflow, the OLDEST event is dropped so freshest data wins.
-    This prevents the connector loop from blocking on a slow strategy
-    thread in live trading.
+    Sends are non-blocking and never drop — the queue is normally near-empty (events are
+    consumed as fast as they arrive). If the consumer stalls, the queue grows rather than
+    blocking the producer (the connector loop).
     """
 
     control: Event
     _queue: Queue  # we need something like disruptor here (Queue is temporary)
     name: str
-    lock: Lock
-    capacity: int
-    dropped_count: int
-    dropped_by_type: dict[str, int]
 
-    def __init__(self, name: str, capacity: int = 10_000, sentinel=(None, None, None, None)):
+    def __init__(self, name: str, sentinel=(None, None, None, None)):
         self.name = name
-        self.capacity = capacity
-        self.dropped_count = 0
-        self.dropped_by_type = {}
         self.control = Event()
-        self.lock = Lock()
         self._sent = sentinel
-        self._queue = Queue(maxsize=capacity)
+        self._queue = Queue()
         self.start()
 
     def register(self, callback):
@@ -1254,11 +1246,7 @@ class CtrlChannel:
     def stop(self):
         if self.control.is_set():
             self.control.clear()
-            # non-blocking: a full bounded queue must not deadlock shutdown
-            try:
-                self._queue.put_nowait(self._sent)  # send sentinel
-            except Full:
-                pass
+            self._queue.put_nowait(self._sent)  # wake the consumer with the sentinel
 
     def start(self):
         self.control.set()
@@ -1266,34 +1254,7 @@ class CtrlChannel:
     def send(self, data):
         if not self.control.is_set():
             return
-        try:
-            self._queue.put_nowait(data)   # fast path: lock-free, Queue is internally synchronized
-        except Full:
-            # Overflow is a non-atomic compound op (get → record → put) and there
-            # are many concurrent producers, so serialize it under self.lock —
-            # otherwise concurrent drops lose counter increments and the
-            # drop-and-retry can evict two items when only one drop was intended.
-            with self.lock:
-                try:
-                    dropped = self._queue.get_nowait()
-                    self._record_drop(dropped)
-                except Empty:
-                    pass
-                try:
-                    self._queue.put_nowait(data)
-                except Full:
-                    self._record_drop(data)
-
-    def _record_drop(self, item) -> None:
-        # Label drops by event class so the metric layer reads dropped_by_type to
-        # emit channel_overflow_drops{event=...}, letting operators tell a dropped
-        # OrderFilledEvent (market-risk; warn) from a dropped QuoteEvent
-        # (tolerable). Called only while holding self.lock.
-        # TODO(account-mgmt): once connectors emit typed events instead of tuples,
-        # the only observed key today ("tuple") becomes per-event-class.
-        self.dropped_count += 1
-        key = type(item).__name__
-        self.dropped_by_type[key] = self.dropped_by_type.get(key, 0) + 1
+        self._queue.put_nowait(data)  # unbounded: never blocks, never drops
 
     def receive(self, timeout: int | None = None) -> Any:
         try:
