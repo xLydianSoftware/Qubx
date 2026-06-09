@@ -7,7 +7,7 @@ import pandas as pd
 from qubx import logger
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.reducer import ApplyResult
-from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state import AccountState, VenueAccountFigures
 from qubx.core.account_manager.state_machine import can_transition, validate_transition
 from qubx.core.basics import (
     ZERO_COSTS,
@@ -57,9 +57,6 @@ if TYPE_CHECKING:
 # a snapshot order carrying it is a RECOVERED framework order, anything else is EXTERNAL.
 _FRAMEWORK_CID_PREFIX = "qubx_"
 
-# Fallback portfolio-base currency when no balance exists yet to infer one from.
-_DEFAULT_BASE_CURRENCY = "USDT"
-
 
 class AccountManager:
     _pm: IProcessingManager | None
@@ -91,6 +88,7 @@ class AccountManager:
         *,
         pm: "ProcessingManager | None" = None,
         connectors: dict[str, IConnector],
+        base_currencies: dict[str, str],
         strategy: IStrategy,
         time: ITimeProvider,
         cfg: AccountManagerConfig | None = None,
@@ -98,7 +96,15 @@ class AccountManager:
         tcc: TransactionCostsCalculator | None = None,
     ):
         self._pm = pm
-        self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
+        self._init_state(
+            connectors=connectors,
+            base_currencies=base_currencies,
+            strategy=strategy,
+            time=time,
+            cfg=cfg,
+            account_id=account_id,
+            tcc=tcc,
+        )
         # The live runner builds the AM before the ProcessingManager (which lives inside
         # StrategyContext and needs the AM), so pm is None there — ticks register later in
         # set_context once ctx._processing_manager exists. Direct-construction callers
@@ -269,43 +275,65 @@ class AccountManager:
             return
         # Position.update_market_price expects (timestamp, price, conversion_rate);
         # mark-to-market uses the quote mid.
-        pos.update_market_price(self._time.time(), quote.mid_price(), 1.0)
+        pos.update_market_price(self._time.time(), quote.mid_price(), state.conversion_rate(instrument))
+
+    # ---- metrics (aggregated) ------------------------------------------ #
+    # Per-exchange math lives on AccountState; the manager only aggregates
+    # across exchanges.
+
+    def _sum(self, metric: Callable[[AccountState], float], exchange: str | None) -> float:
+        if exchange is not None:
+            return metric(self._states[exchange])
+        return sum(metric(s) for s in self._states.values())
+
+    def _states_for(self, exchange: str | None) -> list[AccountState]:
+        return [self._states[exchange]] if exchange is not None else list(self._states.values())
 
     def get_total_capital(self, exchange: str | None = None) -> float:
-        if exchange is not None:
-            return self._total_capital_for(self._states[exchange])
-        return sum(self._total_capital_for(s) for s in self._states.values())
+        return self._sum(AccountState.total_capital, exchange)
 
-    def get_capital(self, exchange: str | None = None) -> float:
-        if exchange is not None:
-            return self._free_capital_for(self._states[exchange])
-        return sum(self._free_capital_for(s) for s in self._states.values())
+    def get_available_margin(self, exchange: str | None = None) -> float:
+        return self._sum(AccountState.available_margin, exchange)
+
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        return self._sum(AccountState.total_initial_margin, exchange)
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        return self._sum(AccountState.total_maint_margin, exchange)
+
+    def get_margin_ratio(self, exchange: str | None = None) -> float:
+        states = self._states_for(exchange)
+        if len(states) == 1:
+            # single state: state.margin_ratio() so the venue-reported ratio is preferred
+            return states[0].margin_ratio()
+        # cross-exchange: no venue reports a combined ratio — derive from the sums
+        # (total_capital still prefers venue equity per state)
+        maint = sum(s.total_maint_margin() for s in states)
+        if maint == 0:
+            return 100.0
+        return min(100.0, sum(s.total_capital() for s in states) / maint)
 
     def get_base_currency(self, exchange: str | None = None) -> str:
-        state = self._states[exchange] if exchange is not None else next(iter(self._states.values()), None)
-        return self._base_currency_for(state) if state is not None else _DEFAULT_BASE_CURRENCY
+        state = self._states[exchange] if exchange is not None else next(iter(self._states.values()))
+        return state.base_currency
 
-    def get_leverage(self, instrument) -> float:
+    def get_leverage(self, instrument: Instrument) -> float:
         state = self._states.get(instrument.exchange)
-        if state is None:
-            return 0.0
-        pos = state.get_position(instrument)
-        if pos is None:
-            return 0.0
-        total = self._total_capital_for(state)
-        return abs(self._notional(pos)) / total if total > 0 else 0.0
+        return state.leverage(instrument) if state is not None else 0.0
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
-        states = [self._states[exchange]] if exchange else list(self._states.values())
-        net = sum(self._notional(p) for s in states for p in s.get_positions().values())
-        total = sum(self._total_capital_for(s) for s in states)
-        return abs(net) / total if total > 0 else 0.0
+        return self._aggregate_leverage(exchange, AccountState.net_leverage)
 
     def get_gross_leverage(self, exchange: str | None = None) -> float:
-        states = [self._states[exchange]] if exchange else list(self._states.values())
-        gross = sum(abs(self._notional(p)) for s in states for p in s.get_positions().values())
-        total = sum(self._total_capital_for(s) for s in states)
-        return gross / total if total > 0 else 0.0
+        return self._aggregate_leverage(exchange, AccountState.gross_leverage)
+
+    def _aggregate_leverage(self, exchange: str | None, per_state: Callable[[AccountState], float]) -> float:
+        # capital-weighted: leverage is notional/capital, so recover Σnotional = Σ(lev * capital)
+        states = self._states_for(exchange)
+        total_capital = sum(s.total_capital() for s in states)
+        if total_capital <= 0:
+            return 0.0
+        return sum(per_state(s) * s.total_capital() for s in states) / total_capital
 
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
         return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
@@ -327,21 +355,6 @@ class AccountManager:
     def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
         return None
 
-    def get_total_initial_margin(self, exchange: str | None = None) -> float:
-        return sum(p.initial_margin for p in self.get_positions(exchange).values())
-
-    def get_total_maint_margin(self, exchange: str | None = None) -> float:
-        return sum(p.maint_margin for p in self.get_positions(exchange).values())
-
-    def get_available_margin(self, exchange: str | None = None) -> float:
-        return self.get_total_capital(exchange) - self.get_total_initial_margin(exchange)
-
-    def get_margin_ratio(self, exchange: str | None = None) -> float:
-        maint = self.get_total_maint_margin(exchange)
-        if maint == 0:
-            return 100.0
-        return min(100.0, self.get_total_capital(exchange) / maint)
-
     def get_adl_level(self, instrument: Instrument) -> int | None:
         pos = self.get_position(instrument)
         return pos.adl_level if pos is not None else None
@@ -353,6 +366,7 @@ class AccountManager:
         self,
         *,
         connectors: dict[str, IConnector],
+        base_currencies: dict[str, str],
         strategy: IStrategy,
         time: ITimeProvider,
         cfg: AccountManagerConfig | None,
@@ -374,8 +388,14 @@ class AccountManager:
         self._inflight_threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
         self._liveness_threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
         self._terminal_retention = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
+        # base_currency is explicit, per exchange — resolved from config at the runner
+        # boundary, never inferred from balances inside the AM.
         self._states = {
-            ex: AccountState(exchange=ex, terminal_history_size=self._cfg.terminal_order_history_size)
+            ex: AccountState(
+                exchange=ex,
+                base_currency=base_currencies[ex],
+                terminal_history_size=self._cfg.terminal_order_history_size,
+            )
             for ex in connectors
         }
         self._liveness_unready_since = {}
@@ -693,6 +713,19 @@ class AccountManager:
                 if state.apply_balance_snapshot(snap_bal):
                     n_balances += 1
 
+        # Venue-reported account figures: prefer-venue-else-derive happens per metric in
+        # AccountState. A snapshot with no figures (sim, or a failed balance leg) keeps the
+        # previous capture rather than clearing — absence means "not observed", not "gone".
+        if snapshot.equity is not None or snapshot.available_margin is not None or snapshot.margin_ratio is not None:
+            state.set_venue_figures(
+                VenueAccountFigures(
+                    as_of=snapshot.as_of,
+                    equity=snapshot.equity,
+                    available_margin=snapshot.available_margin,
+                    margin_ratio=snapshot.margin_ratio,
+                )
+            )
+
         if n_terminal or n_materialized or n_updated or n_positions or n_balances:
             logger.debug(
                 f"[{snapshot.exchange}] reconcile applied: {n_terminal} terminated, "
@@ -892,50 +925,6 @@ class AccountManager:
             state.update_balance(instrument.settle, bal)
         return ApplyResult(position=pos)
 
-    def _total_capital_for(self, state) -> float:
-        base = self._base_currency_for(state)
-        bal = state.get_balance(base)
-        if bal is None:
-            return 0.0
-        # Fills fold realized PnL/fees into the base balance, so it already reflects
-        # closed trades. Open positions are added on top:
-        #  - futures: only the unrealized PnL (the base balance, not the position
-        #    notional, holds the cash), and
-        #  - spot: the position's market value (the base cash was debited to buy it,
-        #    so the holding's value restores total capital).
-        total = bal.total
-        for pos in state.get_positions().values():
-            if pos.instrument.is_futures():
-                total += pos.unrealized_pnl()
-            else:
-                # TODO(account-mgmt): no-double-count for spot relies on
-                # _base_currency_for selecting the quote (max-total) balance so the
-                # base-asset cash is excluded from bal.total; make base-currency
-                # selection explicit if a base-asset balance could exceed the quote
-                # balance (e.g. ETH-heavy portfolio with no USDT).
-                mv = pos.market_value_funds
-                total += 0.0 if mv != mv else float(mv)
-        return total
-
-    def _free_capital_for(self, state) -> float:
-        base = self._base_currency_for(state)
-        bal = state.get_balance(base)
-        return bal.free if bal else 0.0
-
-    def _base_currency_for(self, state: AccountState) -> str:
-        balances = state.get_balances()
-        if not balances:
-            return _DEFAULT_BASE_CURRENCY
-        return max(balances, key=lambda b: b.total).currency
-
-    def _notional(self, pos) -> float:
-        # notional_value is NaN for an unmarked position; treat as 0 so a single
-        # unmarked position can't poison aggregate leverage (consumed by emitters,
-        # loggers, sizers). A real position gets a mark on its first quote. Plain scalar
-        # NaN check (n != n) — far cheaper than np.nan_to_num on a single float.
-        n = pos.notional_value
-        return 0.0 if n != n else float(n)
-
 
 class SimulatedAccountManager(AccountManager):
     """Backtest variant — no asyncio, no WS, no periodic ticks."""
@@ -944,6 +933,7 @@ class SimulatedAccountManager(AccountManager):
         self,
         *,
         connectors,
+        base_currencies: dict[str, str],
         strategy,
         time,
         cfg: AccountManagerConfig | None = None,
@@ -951,7 +941,15 @@ class SimulatedAccountManager(AccountManager):
         tcc: TransactionCostsCalculator | None = None,
     ):
         self._pm = None
-        self._init_state(connectors=connectors, strategy=strategy, time=time, cfg=cfg, account_id=account_id, tcc=tcc)
+        self._init_state(
+            connectors=connectors,
+            base_currencies=base_currencies,
+            strategy=strategy,
+            time=time,
+            cfg=cfg,
+            account_id=account_id,
+            tcc=tcc,
+        )
         # Backtest has no asyncio/WS/periodic scheduling — no ticks registered.
 
     def set_context(self, ctx: "StrategyContext") -> None:

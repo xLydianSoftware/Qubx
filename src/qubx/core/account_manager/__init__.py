@@ -14,7 +14,7 @@ import AccountManager`` without reaching into submodules.
 
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.manager import AccountManager, SimulatedAccountManager
-from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state import AccountState, VenueAccountFigures
 from qubx.core.account_manager.state_machine import (
     LEGAL_TRANSITIONS,
     can_transition,
@@ -26,6 +26,7 @@ __all__ = [
     "SimulatedAccountManager",
     "AccountManagerConfig",
     "AccountState",
+    "VenueAccountFigures",
     "LEGAL_TRANSITIONS",
     "can_transition",
     "validate_transition",

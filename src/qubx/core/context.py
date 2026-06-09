@@ -603,9 +603,6 @@ class StrategyContext(IStrategyContext):
     # IAccountViewer delegation
 
     # capital information
-    def get_capital(self, exchange: str | None = None) -> float:
-        return self.account.get_capital(exchange)
-
     def get_total_capital(self, exchange: str | None = None) -> float:
         return self.account.get_total_capital(exchange)
 

@@ -49,6 +49,7 @@ def _am():
     am = AccountManager.__new__(AccountManager)
     am._init_state(
         connectors={"binance": MagicMock()},
+        base_currencies={"binance": "USDT"},
         strategy=MagicMock(),
         time=_T(),
         cfg=None,

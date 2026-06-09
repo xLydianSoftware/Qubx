@@ -38,6 +38,7 @@ def _am(cfg=None):
     am = AccountManager.__new__(AccountManager)
     am._init_state(
         connectors={"binance": MagicMock()},
+        base_currencies={"binance": "USDT"},
         strategy=MagicMock(),
         time=_T(),
         cfg=cfg or AccountManagerConfig(terminal_order_retention_ms=30_000),

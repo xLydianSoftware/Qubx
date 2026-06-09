@@ -13,7 +13,7 @@ class _T:
 
 def _am():
     am = AccountManager.__new__(AccountManager)
-    am._states = {"binance": AccountState(exchange="binance")}
+    am._states = {"binance": AccountState(exchange="binance", base_currency="USDT")}
     am._cfg = AccountManagerConfig()
     am._time = _T()
     return am

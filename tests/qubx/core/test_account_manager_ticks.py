@@ -22,6 +22,7 @@ def _am(connectors, cfg=None):
     am = AccountManager.__new__(AccountManager)
     am._init_state(
         connectors=connectors,
+        base_currencies={ex: "USDT" for ex in connectors},
         strategy=MagicMock(),
         time=_T(),
         cfg=cfg or AccountManagerConfig(inflight_check_threshold_ms=5_000, inflight_check_retries=3),
@@ -252,7 +253,9 @@ def test_init_registers_three_ticks_via_pm_schedule():
     pm = MagicMock()
     conn = MagicMock()
     strategy = MagicMock()
-    am = AccountManager(pm=pm, connectors={"binance": conn}, strategy=strategy, time=_T())
+    am = AccountManager(
+        pm=pm, connectors={"binance": conn}, base_currencies={"binance": "USDT"}, strategy=strategy, time=_T()
+    )
     # one schedule call per enabled tick (inflight, snapshot, liveness)
     assert pm.schedule.call_count == 3
     scheduled = {call.args[1] for call in pm.schedule.call_args_list}
@@ -270,7 +273,9 @@ def test_init_skips_disabled_ticks():
         snapshot_check_interval_ms=0,
         liveness_check_interval_ms=5_000,
     )
-    AccountManager(pm=pm, connectors={"binance": conn}, strategy=strategy, time=_T(), cfg=cfg)
+    AccountManager(
+        pm=pm, connectors={"binance": conn}, base_currencies={"binance": "USDT"}, strategy=strategy, time=_T(), cfg=cfg
+    )
     assert pm.schedule.call_count == 1
 
 

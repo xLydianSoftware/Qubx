@@ -56,6 +56,7 @@ def _order(inst, cid="cid-1", venue_id="V1") -> Order:
 def _am() -> SimulatedAccountManager:
     am = SimulatedAccountManager(
         connectors={"binance": object()},
+        base_currencies={"binance": "USDT"},
         strategy=None,
         time=_T(),
         account_id="acc-1",

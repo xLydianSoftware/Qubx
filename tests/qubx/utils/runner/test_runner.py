@@ -442,7 +442,7 @@ def test_inject_restored_state_preserves_accounting_fields():
     pos.cumulative_funding = -7.0
 
     am = AccountManager.__new__(AccountManager)
-    am._states = {inst.exchange: AccountState(exchange=inst.exchange)}
+    am._states = {inst.exchange: AccountState(exchange=inst.exchange, base_currency="USDT")}
 
     restored = RestoredState(
         time=np.datetime64("now"),

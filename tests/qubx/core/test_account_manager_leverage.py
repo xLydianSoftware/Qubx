@@ -27,7 +27,7 @@ def _instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 
 def _am(exchanges=("binance",)):
     am = AccountManager.__new__(AccountManager)
-    am._states = {ex: AccountState(exchange=ex) for ex in exchanges}
+    am._states = {ex: AccountState(exchange=ex, base_currency="USDT") for ex in exchanges}
     am._connectors = {}
     am._cfg = AccountManagerConfig()
     am._time = _T()
@@ -70,13 +70,6 @@ def test_total_capital_aggregates_across_exchanges():
     assert am.get_total_capital() == 1500.0
 
 
-def test_free_capital_returns_balance_free():
-    am = _am()
-    state = am._states["binance"]
-    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=750.0))
-    assert am.get_capital("binance") == 750.0
-
-
 def test_gross_leverage_two_positions():
     am = _am()
     state = am._states["binance"]
@@ -102,14 +95,53 @@ def test_net_leverage_cancels_long_short():
     assert abs(am.get_net_leverage("binance") - 2.0) < 1e-6
 
 
+def test_net_leverage_negative_for_short_book():
+    # Regression for I7: leverage is signed (merge-base + PR #302 behavior) — a
+    # net-short book must report NEGATIVE net leverage, not its absolute value.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument("BTCUSDT")
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=10_000.0))
+    # short 1 BTC @ 50k marked 50k -> notional -50k -> net -5.0, gross +5.0
+    state.set_position(inst, _marked_position(inst, -1.0, 50_000.0, 50_000.0))
+    assert abs(am.get_net_leverage("binance") - (-5.0)) < 1e-6
+    assert abs(am.get_gross_leverage("binance") - 5.0) < 1e-6
+
+
 def test_instrument_leverage():
     am = _am()
     state = am._states["binance"]
     inst = _instrument("BTCUSDT")
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=10_000.0))
     state.set_position(inst, _marked_position(inst, 1.0, 50_000.0, 50_000.0))
-    # |50k| / 10k = 5.0
+    # 50k / 10k = 5.0
     assert abs(am.get_leverage(inst) - 5.0) < 1e-6
+
+
+def test_instrument_leverage_signed_for_short():
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument("BTCUSDT")
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=10_000.0))
+    state.set_position(inst, _marked_position(inst, -1.0, 50_000.0, 50_000.0))
+    # -50k / 10k = -5.0 (sign preserved per position direction)
+    assert abs(am.get_leverage(inst) - (-5.0)) < 1e-6
+
+
+def test_leverage_aggregation_capital_weighted():
+    # Cross-exchange aggregation is capital-weighted: Σ(lev * capital) / Σcapital
+    # recovers Σnotional / Σcapital, not a naive average of per-exchange leverages.
+    am = _am(exchanges=("binance", "bybit"))
+    inst_a = _instrument("BTCUSDT", exchange="binance")
+    inst_b = _instrument("ETHUSDT", exchange="bybit")
+    am._states["binance"].update_balance("USDT", Balance(exchange="binance", currency="USDT", total=10_000.0))
+    am._states["bybit"].update_balance("USDT", Balance(exchange="bybit", currency="USDT", total=30_000.0))
+    # binance: 50k notional / 10k capital = 5.0; bybit: 30k notional / 30k capital = 1.0
+    am._states["binance"].set_position(inst_a, _marked_position(inst_a, 1.0, 50_000.0, 50_000.0))
+    am._states["bybit"].set_position(inst_b, _marked_position(inst_b, 10.0, 3_000.0, 3_000.0))
+    # total notional 80k / total capital 40k = 2.0
+    assert abs(am.get_net_leverage() - 2.0) < 1e-6
+    assert abs(am.get_gross_leverage() - 2.0) < 1e-6
 
 
 def test_leverage_finite_for_unmarked_position():

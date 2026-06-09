@@ -122,7 +122,7 @@ class FixedRiskSizer(IPositionSizer):
                         continue
 
                     # - hey, we can't trade using negative balance ;)
-                    _cap = max(ctx.get_total_capital() if self.reinvest_profit else ctx.get_capital(), 0)
+                    _cap = max(ctx.get_total_capital() if self.reinvest_profit else ctx.get_available_margin(), 0)
                     _scale = abs(signal.signal) if self.scale_by_signal else 1
 
                     # fmt: off

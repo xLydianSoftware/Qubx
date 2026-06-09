@@ -28,7 +28,7 @@ def _instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 
 def _am(exchange="binance"):
     am = AccountManager.__new__(AccountManager)
-    am._states = {exchange: AccountState(exchange=exchange)}
+    am._states = {exchange: AccountState(exchange=exchange, base_currency="USDT")}
     am._connectors = {}
     am._cfg = AccountManagerConfig()
     am._time = _T()

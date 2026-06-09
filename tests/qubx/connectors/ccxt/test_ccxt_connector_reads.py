@@ -524,6 +524,7 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     strategy = Mock()
     am = SimulatedAccountManager(
         connectors={"BINANCE.UM": object()},
+        base_currencies={"BINANCE.UM": "USDT"},
         strategy=strategy,
         time=DummyTimeProvider(),
     )

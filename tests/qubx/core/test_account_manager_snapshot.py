@@ -46,6 +46,7 @@ def _am(exchange="binance", cfg=None):
     am = AccountManager.__new__(AccountManager)
     am._init_state(
         connectors={exchange: MagicMock()},
+        base_currencies={exchange: "USDT"},
         strategy=MagicMock(),
         time=_T(),
         cfg=cfg or AccountManagerConfig(snapshot_check_threshold_ms=5_000),
@@ -72,7 +73,16 @@ def _order(cid, status, time, vid=None, origin=OrderOrigin.FRAMEWORK, instrument
     )
 
 
-def _snap_event(exchange="binance", as_of="2026-05-28T01:00:00", open_orders=None, positions=None, balances=None):
+def _snap_event(
+    exchange="binance",
+    as_of="2026-05-28T01:00:00",
+    open_orders=None,
+    positions=None,
+    balances=None,
+    equity=None,
+    available_margin=None,
+    margin_ratio=None,
+):
     return AccountSnapshotEvent(
         instrument=None,
         snapshot=AccountSnapshot(
@@ -81,6 +91,9 @@ def _snap_event(exchange="binance", as_of="2026-05-28T01:00:00", open_orders=Non
             open_orders=open_orders,
             positions=positions,
             balances=balances,
+            equity=equity,
+            available_margin=available_margin,
+            margin_ratio=margin_ratio,
         ),
     )
 
@@ -261,3 +274,45 @@ def test_reconcile_applies_to_state():
     # position / balance overwritten from the snapshot
     assert state.get_position(inst).quantity == 1.0
     assert state.get_balance("USDT").total == 1000.0
+
+
+def test_snapshot_sets_venue_figures_and_metrics_prefer_them():
+    am = _am()
+    state = am._states["binance"]
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    am.apply(_snap_event(equity=5000.0, available_margin=4000.0, margin_ratio=42.0))
+    figures = state.get_venue_figures()
+    assert figures is not None
+    assert figures.equity == 5000.0
+    assert figures.available_margin == 4000.0
+    assert figures.margin_ratio == 42.0
+    assert figures.as_of == np.datetime64("2026-05-28T01:00:00")
+    # per-metric prefer-venue over the derived values
+    assert am.get_total_capital("binance") == 5000.0
+    assert am.get_available_margin("binance") == 4000.0
+    assert am.get_margin_ratio("binance") == 42.0
+
+
+def test_snapshot_without_figures_keeps_previous_capture():
+    # Absence means "not observed" (failed balance leg / venue lacking them),
+    # not "gone" — a later figure-less snapshot must not clear the capture.
+    am = _am()
+    state = am._states["binance"]
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", equity=5000.0))
+    am.apply(_snap_event(as_of="2026-05-28T02:00:00"))
+    figures = state.get_venue_figures()
+    assert figures is not None
+    assert figures.equity == 5000.0
+    assert figures.as_of == np.datetime64("2026-05-28T01:00:00")
+
+
+def test_sim_snapshot_never_sets_venue_figures():
+    # SimulatedConnector builds AccountSnapshot(exchange, as_of, open_orders) only —
+    # no figure fields — so backtests always derive every metric from state.
+    am = _am()
+    state = am._states["binance"]
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    am.apply(_snap_event(open_orders=[]))
+    assert state.get_venue_figures() is None
+    assert am.get_total_capital("binance") == 1000.0
+    assert am.get_margin_ratio("binance") == 100.0

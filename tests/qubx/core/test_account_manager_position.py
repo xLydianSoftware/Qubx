@@ -60,7 +60,7 @@ def _spot_instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 def _am(exchange="binance"):
     am = AccountManager.__new__(AccountManager)
     am._init_state(
-        connectors={exchange: MagicMock()}, strategy=MagicMock(), time=_T(),
+        connectors={exchange: MagicMock()}, base_currencies={exchange: "USDT"}, strategy=MagicMock(), time=_T(),
         cfg=AccountManagerConfig(), account_id="test", tcc=None,
     )
     return am
@@ -183,7 +183,9 @@ def test_funding_payment_duplicate_skipped():
 def test_simulation_account_manager_constructs_without_pm():
     from qubx.core.account_manager import SimulatedAccountManager
 
-    sam = SimulatedAccountManager(connectors={"binance": object()}, strategy=None, time=_T())
+    sam = SimulatedAccountManager(
+        connectors={"binance": object()}, base_currencies={"binance": "USDT"}, strategy=None, time=_T()
+    )
     assert sam._pm is None
     assert "binance" in sam._states
     # position math is inherited and works in the sim variant

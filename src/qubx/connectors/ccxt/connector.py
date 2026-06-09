@@ -109,6 +109,17 @@ _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
 _CLIENT_ID_PREFIX = "qubx_"
 
 
+def _info_float(info: dict[str, Any], key: str) -> float | None:
+    """Parse an optional numeric field from a raw venue payload; None when absent/malformed."""
+    value = info.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 @dataclass
 class _CachedOrder:
     """Connector-local venue-call metadata for one order — NOT account state.
@@ -984,10 +995,12 @@ class CcxtConnector(ChannelEmitter):
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
 
         balances: list[Balance] | None = None
+        equity = available_margin = margin_ratio = None
         if isinstance(raw_balance, BaseException):
             logger.warning(f"[{self.exchange_name}] snapshot: fetch_balance failed: {raw_balance}")
         else:
             balances = self._convert_balances(raw_balance)
+            equity, available_margin, margin_ratio = self._extract_venue_figures(raw_balance)
 
         self.send(AccountSnapshotEvent(
             instrument=None,
@@ -997,6 +1010,9 @@ class CcxtConnector(ChannelEmitter):
                 open_orders=open_orders,
                 positions=positions,
                 balances=balances,
+                equity=equity,
+                available_margin=available_margin,
+                margin_ratio=margin_ratio,
             ),
         ))
 
@@ -1009,6 +1025,22 @@ class CcxtConnector(ChannelEmitter):
         ``frozenBal`` straight from the raw ``info.data[0].details``.
         """
         return ccxt_convert_balance(raw_balance, self.exchange_name)
+
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+        """(equity, available_margin, margin_ratio) from the venue's raw account payload.
+
+        ccxt has no unified account-figures schema, so the base impl reads the
+        Binance-futures account fields carried through in ``info``:
+        ``totalMarginBalance`` (wallet + unrealized PnL = account equity) and
+        ``availableBalance`` (margin available for new positions). Binance reports
+        no direct margin ratio — left None so AM derives it. Venues whose payload
+        lacks these keys yield all-None and AM derives every metric; subclasses
+        override for venue-specific payloads.
+        """
+        info = raw_balance.get("info")
+        if not isinstance(info, dict):
+            return None, None, None
+        return _info_float(info, "totalMarginBalance"), _info_float(info, "availableBalance"), None
 
     # ------------------------------------------------------------------ #
     # Lifecycle / health

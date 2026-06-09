@@ -54,7 +54,7 @@ def _make_mock_ctx():
     account.get_orders.return_value = {}
     account.get_leverage.return_value = 0.34
     account.get_total_capital.return_value = 10000.0
-    account.get_capital.return_value = 9500.0
+    account.get_available_margin.return_value = 9500.0
     account.get_net_leverage.return_value = 0.15
     account.get_gross_leverage.return_value = 0.15
     account.get_base_currency.return_value = "USDT"

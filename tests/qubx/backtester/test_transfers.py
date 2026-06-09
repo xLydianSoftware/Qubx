@@ -18,6 +18,7 @@ class _T(ITimeProvider):
 def _am():
     am = SimulatedAccountManager(
         connectors={"E1": MagicMock(), "E2": MagicMock()},
+        base_currencies={"E1": "USDT", "E2": "USDT"},
         strategy=MagicMock(),
         time=_T(),
     )

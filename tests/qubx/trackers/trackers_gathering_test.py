@@ -93,7 +93,7 @@ class DebugStratageyCtx(IStrategyContext):
     def quote(self, symbol: str) -> Quote | None:
         return Q("2020-01-01", 1000.0, 1000.5)
 
-    def get_capital(self) -> float:
+    def get_available_margin(self) -> float:
         return self.capital
 
     def get_total_capital(self) -> float:

@@ -126,7 +126,7 @@ class DebugStratageyCtx(IStrategyContext):
     def quote(self, instrument: Instrument) -> Quote | None:
         return self._d_qts.get(instrument)
 
-    def get_capital(self) -> float:
+    def get_available_margin(self) -> float:
         return self.capital
 
     def get_total_capital(self) -> float:

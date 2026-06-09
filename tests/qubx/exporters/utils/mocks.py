@@ -28,10 +28,6 @@ class MockAccountViewer(IAccountViewer):
         """Get the base currency of the account."""
         return "USD"
 
-    def get_capital(self, exchange: str | None = None):
-        """Get the capital of the account."""
-        return 10000.0
-
     def get_total_capital(self, exchange: str | None = None):
         """Get the total capital of the account."""
         return 12000.0

@@ -57,7 +57,7 @@ class PortfolioRebalancerTracker(PositionsTracker):
         if instr_to_close is not None:
             released_capital, closed_positions = self.calculate_released_capital(ctx, instr_to_close)
 
-        cap_to_invest = ctx.get_capital() + released_capital
+        cap_to_invest = ctx.get_available_margin() + released_capital
         if self.capital_invested > 0:
             cap_to_invest = min(self.capital_invested, cap_to_invest)
 

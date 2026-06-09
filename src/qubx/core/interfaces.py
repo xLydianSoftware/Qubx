@@ -196,14 +196,6 @@ class IAccountViewer:
     ########################################################
     # Capital information
     ########################################################
-    def get_capital(self, exchange: str | None = None) -> float:
-        """Get the available free capital in the account.
-
-        Returns:
-            float: The amount of free capital available for trading
-        """
-        ...
-
     def get_total_capital(self, exchange: str | None = None) -> float:
         """Get the total capital in the account including positions value.
 
@@ -334,7 +326,7 @@ class IAccountViewer:
             instrument: The instrument to check
 
         Returns:
-            float: Current leverage ratio for the instrument
+            float: Current leverage ratio for the instrument (signed: negative for shorts)
         """
         ...
 
@@ -350,7 +342,7 @@ class IAccountViewer:
         """Get the net leverage across all positions.
 
         Returns:
-            float: Net leverage ratio
+            float: Net leverage ratio (signed: negative for a net-short book)
         """
         ...
 

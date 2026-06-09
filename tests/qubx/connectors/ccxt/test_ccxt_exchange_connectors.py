@@ -198,6 +198,7 @@ async def test_okx_split_promotion_is_am_dedup_safe() -> None:
     strategy = Mock()
     am = SimulatedAccountManager(
         connectors={"OKX.F": object()},
+        base_currencies={"OKX.F": "USDT"},
         strategy=strategy,
         time=DummyTimeProvider(),
     )

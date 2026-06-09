@@ -444,7 +444,7 @@ def _get_state(ctx: IStrategyContext, **kwargs) -> ActionResult:
             "base_currency": account.get_base_currency(exchange),
             "capital": {
                 "total": _rm(account.get_total_capital(exchange)),
-                "available": _rm(account.get_capital(exchange)),
+                "available": _rm(account.get_available_margin(exchange)),
             },
             "net_leverage": _rl(account.get_net_leverage(exchange)),
             "gross_leverage": _rl(account.get_gross_leverage(exchange)),

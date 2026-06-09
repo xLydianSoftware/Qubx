@@ -12,10 +12,12 @@ Adds the OKX-specific behavior on top of the generic ``CcxtConnector``:
 - **make_client_id**: OKX clOrdId is case-sensitive alphanumeric only, 1-32 chars.
 
 Account Manager derives total capital and margin ratio itself from per-currency
-balances + position PnL (``_total_capital_for`` / ``get_margin_ratio``), so no
-account-level equity figure (``totalEq`` / ``mgnRatio``) is extracted here;
-supplying the correct per-currency ``cashBal`` balances is what AM needs. There is
-no real-time ``watch_balance`` stream — AM's snapshot cadence covers balance refresh.
+balances + position PnL (``AccountState.total_capital`` / ``margin_ratio``), so no
+account-level equity figure (``totalEq`` / ``mgnRatio``) is extracted into venue
+figures here (the base ``_extract_venue_figures`` reads Binance-style keys, absent
+from OKX payloads → all-None → AM derives); supplying the correct per-currency
+``cashBal`` balances is what AM needs. There is no real-time ``watch_balance``
+stream — AM's snapshot cadence covers balance refresh.
 """
 
 import re

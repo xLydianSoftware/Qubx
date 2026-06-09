@@ -608,8 +608,13 @@ def create_strategy_context(
     #   once ctx._processing_manager exists. The function param `account_manager` is the
     #   credentials manager — keep them distinct (`_am`).
     _am_cls = SimulatedAccountManager if paper else AccountManager
+    _base_currencies = {
+        exchange_name: _resolve_base_currency(exchange_name, exchange_config, config.live, account_manager)
+        for exchange_name, exchange_config in config.live.exchanges.items()
+    }
     _am = _am_cls(
         connectors=_connectors,
+        base_currencies=_base_currencies,
         strategy=_strategy_class,  # type: ignore
         time=_time,
         cfg=AccountManagerConfig(),
@@ -620,8 +625,8 @@ def create_strategy_context(
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions
     # + balances persisted across restarts) is injected into the AM for both modes.
     if paper:
-        for exchange_name, exchange_config in config.live.exchanges.items():
-            _seed_paper_capital(_am, exchange_name, exchange_config, config.live, account_manager)
+        for exchange_name in config.live.exchanges:
+            _seed_paper_capital(_am, exchange_name, account_manager)
     if restored_state is not None:
         _inject_restored_state(_am, restored_state)
 
@@ -823,14 +828,16 @@ def _inject_restored_state(account_manager: AccountManager, restored_state: Rest
 def _seed_paper_capital(
     account_manager: SimulatedAccountManager,
     exchange_name: str,
-    exchange_config: ExchangeConfig,
-    live_config: LiveConfig,
     credentials_manager: AccountConfigurationManager,
 ) -> None:
-    """Seed the per-exchange account state with the configured initial capital (paper mode)."""
-    base_currency = _resolve_base_currency(exchange_name, exchange_config, live_config, credentials_manager)
+    """Seed the per-exchange account state with the configured initial capital (paper mode).
+
+    The base currency comes from the AM's state — already resolved from config at
+    construction — so seeding can't drift from the AM's own base-currency view.
+    """
+    base_currency = account_manager.get_state(exchange_name).base_currency
     capital = credentials_manager.get_exchange_settings(exchange_name).initial_capital
-    account_manager._states[exchange_name].update_balance(
+    account_manager.get_state(exchange_name).update_balance(
         base_currency,
         Balance(exchange=exchange_name, currency=base_currency, total=capital, free=capital, locked=0.0),
     )

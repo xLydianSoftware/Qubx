@@ -637,6 +637,7 @@ class SimulationRunner:
 
         am = SimulatedAccountManager(
             connectors=self._connectors,
+            base_currencies={exchange: self.setup.base_currency for exchange in self.setup.exchanges},
             strategy=self.setup.generator,
             time=time_provider,
             cfg=AccountManagerConfig(),

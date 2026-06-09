@@ -1132,7 +1132,7 @@ class ProcessingManager(IProcessingManager):
             exchanges_snapshot[exchange] = {
                 "capital": {
                     "total": account.get_total_capital(exchange),
-                    "available": account.get_capital(exchange),
+                    "available": account.get_available_margin(exchange),
                 },
                 "balances": balances_snapshot,
                 "net_leverage": account.get_net_leverage(exchange),

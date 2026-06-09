@@ -126,6 +126,11 @@ class AccountSnapshot:
     open_orders: list[Order] | None = None
     positions: list[Position] | None = None
     balances: list[Balance] | None = None
+    # Venue-reported account figures (see VenueAccountFigures): None when the venue
+    # payload lacks them. Sim never sets them, so backtests always derive.
+    equity: float | None = None
+    available_margin: float | None = None
+    margin_ratio: float | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
