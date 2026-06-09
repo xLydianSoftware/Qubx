@@ -42,12 +42,12 @@ from qubx.core.events import (
     PositionUpdateEvent,
 )
 from qubx.core.exceptions import InvalidOrderTransition
-from qubx.core.interfaces import IProcessingManager, IStrategy
+from qubx.core.interfaces import IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
 
 # StrategyContext and ProcessingManager both import AccountManager (the context builds it,
 # the PM holds/schedules for it), so importing them here at runtime is a circular import —
-# they're type-only forward refs. IStrategy has no such cycle and is imported normally above.
+# they're type-only forward refs.
 if TYPE_CHECKING:
     from qubx.core.context import StrategyContext
     from qubx.core.mixins.processing import ProcessingManager
@@ -61,13 +61,11 @@ _FRAMEWORK_CID_PREFIX = "qubx_"
 class AccountManager:
     _pm: IProcessingManager | None
     _connectors: dict[str, IConnector]
-    _strategy: IStrategy
     _time: ITimeProvider
     _cfg: AccountManagerConfig
     account_id: str
     _tcc: TransactionCostsCalculator | None
     _states: dict[str, AccountState]
-    _ctx: "StrategyContext"
     _handlers: dict[type[AccountMessage], Callable[..., ApplyResult]]
     # Derived timedeltas, precomputed once in _init_state (config is fixed for the AM's life).
     _snapshot_grace: np.timedelta64
@@ -89,7 +87,6 @@ class AccountManager:
         pm: "ProcessingManager | None" = None,
         connectors: dict[str, IConnector],
         base_currencies: dict[str, str],
-        strategy: IStrategy,
         time: ITimeProvider,
         cfg: AccountManagerConfig | None = None,
         account_id: str = "AccountManager",
@@ -99,7 +96,6 @@ class AccountManager:
         self._init_state(
             connectors=connectors,
             base_currencies=base_currencies,
-            strategy=strategy,
             time=time,
             cfg=cfg,
             account_id=account_id,
@@ -113,16 +109,12 @@ class AccountManager:
             self._register_ticks()
 
     def set_context(self, ctx: "StrategyContext") -> None:
-        """Wire the IStrategyContext after construction.
-
-        AM-fired callbacks (reconcile, inflight-exhaustion) pass this ctx so their
-        signature matches PM-fired callbacks — no None placeholder.
+        """Late wiring hook, called by StrategyContext once it exists.
 
         Live: the AM is built before the ProcessingManager (the AM↔pm cycle — pm lives
         inside StrategyContext, which takes the AM), so pm is None at construction and
         the periodic ticks register HERE, once ctx._processing_manager exists.
         """
-        self._ctx = ctx
         if self._pm is None:
             self._pm = ctx._processing_manager
             self._register_ticks()
@@ -367,7 +359,6 @@ class AccountManager:
         *,
         connectors: dict[str, IConnector],
         base_currencies: dict[str, str],
-        strategy: IStrategy,
         time: ITimeProvider,
         cfg: AccountManagerConfig | None,
         account_id: str,
@@ -376,7 +367,6 @@ class AccountManager:
         # Shared field init for both the live and simulation managers, so the
         # subclass can't silently drift from the parent's field set.
         self._connectors = connectors
-        self._strategy = strategy
         self._time = time
         self._cfg = cfg or AccountManagerConfig()
         self.account_id = account_id
@@ -402,8 +392,6 @@ class AccountManager:
         # Bounded per-exchange funding-bucket dedup (see _FUNDING_BUCKET_CAP); old
         # buckets evict in _handle_funding_payment so this can't grow unbounded.
         self._applied_funding_buckets = {}
-        # Deferred init: always wired via set_context before any tick/callback fires.
-        self._ctx = None  # type: ignore[assignment]
         # Event-type → handler dispatch table (consumed by apply()). All handlers in one
         # place; dispatch is an O(1) lookup on the exact event type.
         self._handlers = {
@@ -769,12 +757,35 @@ class AccountManager:
     def _update_from_snapshot(
         self, state: AccountState, existing: Order, snap_order: Order, as_of: np.datetime64
     ) -> None:
-        existing.status = snap_order.status
+        if snap_order.status != existing.status:
+            self._reconcile_status_from_snapshot(state, existing, snap_order.status)
         existing.filled_quantity = snap_order.filled_quantity
         existing.avg_fill_price = snap_order.avg_fill_price
         existing.price = snap_order.price
         existing.quantity = snap_order.quantity
         existing.last_updated_at = as_of
+
+    def _reconcile_status_from_snapshot(self, state: AccountState, existing: Order, venue_status: OrderStatus) -> None:
+        # Status reconciliation goes through state.transition_order — the sole maintainer of
+        # the transitions audit, the counters and the inflight/pending-evict indices — never
+        # a bare ``existing.status =`` write, which left snapshot-terminalized orders as
+        # permanent hidden residents of active state with a stale inflight entry.
+        cid = existing.client_order_id
+        if existing.status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE) and not venue_status.is_terminal:
+            # The snapshot is a poll of venue state: our cancel/update request may still be
+            # in flight, so a live venue status must not wipe the pending marker (same
+            # rationale as the accept-during-PENDING_CANCEL guard). The venue resolves the
+            # race itself — and a terminal status IS that resolution, so it falls through.
+            return
+        if not can_transition(existing.status, venue_status):
+            # Venue-authoritative weirdness (e.g. resurrecting a locally-terminal order, or
+            # PARTIALLY_FILLED back to ACCEPTED): the snapshot wins, but loudly — and still
+            # via transition_order so the audit and indices stay consistent.
+            logger.warning(
+                f"[{state.exchange}] reconcile: forcing illegal transition {cid}: "
+                f"{existing.status} -> {venue_status} (snapshot is authoritative)"
+            )
+        state.transition_order(cid, venue_status, self._time.time())
 
     def _sweep_terminal_evictions(self) -> None:
         now = self._time.time()
@@ -791,7 +802,7 @@ class AccountManager:
                     if (now - last) < self._inflight_threshold:
                         continue
                     if state.get_retry(cid) >= self._cfg.inflight_check_retries:
-                        self._resolve_exhausted_inflight(state, exchange, order)
+                        self._resolve_exhausted_inflight(state, order)
                     else:
                         self._connectors[exchange].request_order_status(
                             client_order_id=cid,
@@ -800,23 +811,28 @@ class AccountManager:
                         state.bump_retry(cid)
                         order.last_updated_at = now
                 except Exception:
-                    # One bad order / raising strategy callback / connector error must not
-                    # abort the rest of the sweep or skip terminal eviction (design §1260).
+                    # One bad order / connector error must not abort the rest of the sweep
+                    # or skip terminal eviction (design §1260). Strategy-callback errors are
+                    # already isolated inside the PM dispatch the give-up path routes through.
                     logger.exception(f"[{exchange}] inflight sweep failed for {cid}")
         self._sweep_terminal_evictions()
 
-    def _resolve_exhausted_inflight(self, state: AccountState, exchange, order):
+    def _resolve_exhausted_inflight(self, state: AccountState, order: Order) -> None:
+        # Give-up after the retry budget: synthesize the reject the venue never sent and
+        # route it through pm.process_event — the same path venue events take — so the
+        # normal handlers do the transition/revert and the PM fires the strategy callback
+        # error-isolated (with metrics). The AM never calls the strategy directly. The
+        # tick runs on the strategy thread (PM-scheduled), so apply stays single-mutator.
+        assert self._pm is not None  # ticks only register with a pm
         reason = f"reconcile: no venue ack after {state.get_retry(order.client_order_id)} retries"
         if order.status == OrderStatus.SUBMITTED:
-            order.rejected_reason = reason
-            self._transition(state, order.client_order_id, OrderStatus.REJECTED)
-            return
-        target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
-        was = order.status
-        self._transition(state, order.client_order_id, target)
-        # Surface the failed cancel/update to the strategy as a synthesized reject event
-        # through the unified on_order_update callback (the order is back to a live state).
-        if was == OrderStatus.PENDING_CANCEL:
+            event: OrderEvent = OrderRejectedEvent(
+                instrument=order.instrument,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                reason=reason,
+            )
+        elif order.status == OrderStatus.PENDING_CANCEL:
             event = OrderCancelRejectedEvent(
                 instrument=order.instrument,
                 client_order_id=order.client_order_id,
@@ -830,7 +846,7 @@ class AccountManager:
                 venue_order_id=order.venue_order_id,
                 reason=reason,
             )
-        self._strategy.on_order_update(self._ctx, order, event)
+        self._pm.process_event(event)
 
     def _on_snapshot_tick(self, ctx) -> None:
         now = self._time.time()
@@ -934,7 +950,6 @@ class SimulatedAccountManager(AccountManager):
         *,
         connectors,
         base_currencies: dict[str, str],
-        strategy,
         time,
         cfg: AccountManagerConfig | None = None,
         account_id: str = "SimulatedAccountManager",
@@ -944,7 +959,6 @@ class SimulatedAccountManager(AccountManager):
         self._init_state(
             connectors=connectors,
             base_currencies=base_currencies,
-            strategy=strategy,
             time=time,
             cfg=cfg,
             account_id=account_id,
@@ -953,7 +967,7 @@ class SimulatedAccountManager(AccountManager):
         # Backtest has no asyncio/WS/periodic scheduling — no ticks registered.
 
     def set_context(self, ctx: "StrategyContext") -> None:
-        # Backtest is synchronous: wire the ctx but NEVER register periodic ticks
-        # (no PM scheduler drives them in simulation). Overrides the base, which would
-        # otherwise pull pm from ctx and schedule.
-        self._ctx = ctx
+        # Backtest is synchronous: NEVER register periodic ticks (no PM scheduler drives
+        # them in simulation). Overrides the base, which would otherwise pull pm from ctx
+        # and schedule.
+        pass

@@ -1,4 +1,3 @@
-
 import numpy as np
 
 from qubx.core.account_manager import SimulatedAccountManager
@@ -57,7 +56,6 @@ def _am() -> SimulatedAccountManager:
     am = SimulatedAccountManager(
         connectors={"binance": object()},
         base_currencies={"binance": "USDT"},
-        strategy=None,
         time=_T(),
         account_id="acc-1",
     )

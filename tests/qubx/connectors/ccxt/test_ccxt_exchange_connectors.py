@@ -95,7 +95,9 @@ def _ws_order(*, status: str, cid: str = "qubxBTCUSDT1", venue_id: str = "VENUE1
     }
 
 
-def _ws_trade(trade_id: str = "T1", amount: float = 0.5, price: float = 100.0, venue_order_id: str = "VENUE123") -> dict:
+def _ws_trade(
+    trade_id: str = "T1", amount: float = 0.5, price: float = 100.0, venue_order_id: str = "VENUE123"
+) -> dict:
     return {
         "id": trade_id,
         "order": venue_order_id,
@@ -195,11 +197,9 @@ async def test_okx_split_promotion_is_am_dedup_safe() -> None:
     # Same trade_id across both -> AM's seen_trade_ids dedups the fill amount.
     assert partials[0].fill.trade_id == fills[0].fill.trade_id == "T1"
 
-    strategy = Mock()
     am = SimulatedAccountManager(
         connectors={"OKX.F": object()},
         base_currencies={"OKX.F": "USDT"},
-        strategy=strategy,
         time=DummyTimeProvider(),
     )
     # Order must exist for the events to land on it: accepted events are resolve-only
@@ -219,12 +219,14 @@ async def test_okx_split_promotion_is_am_dedup_safe() -> None:
             time_in_force="gtc",
         )
     )
-    am.apply(OrderAcceptedEvent(
-        instrument=_instrument(),
-        client_order_id="qubxBTCUSDT1",
-        venue_order_id="VENUE123",
-        accepted_at=DummyTimeProvider().time(),
-    ))
+    am.apply(
+        OrderAcceptedEvent(
+            instrument=_instrument(),
+            client_order_id="qubxBTCUSDT1",
+            venue_order_id="VENUE123",
+            accepted_at=DummyTimeProvider().time(),
+        )
+    )
     am.apply(partials[0])
     am.apply(fills[0])
 
@@ -276,17 +278,23 @@ async def test_okx_snapshot_extracts_cashbal_balances() -> None:
     exchange.fetch_open_orders = AsyncMock(return_value=[])
     exchange.fetch_positions = AsyncMock(return_value=[])
     # ccxt maps OKX eq -> total (1234), but cashBal (1000) is the cash leg we want.
-    exchange.fetch_balance = AsyncMock(return_value={
-        "total": {"USDT": 1234.0},
-        "used": {"USDT": 100.0},
-        "info": {"data": [{
-            "totalEq": "1234.0",
-            "details": [
-                {"ccy": "USDT", "cashBal": "1000.0", "frozenBal": "100.0"},
-                {"ccy": "BTC", "cashBal": "0", "frozenBal": "0"},  # zero -> skipped
-            ],
-        }]},
-    })
+    exchange.fetch_balance = AsyncMock(
+        return_value={
+            "total": {"USDT": 1234.0},
+            "used": {"USDT": 100.0},
+            "info": {
+                "data": [
+                    {
+                        "totalEq": "1234.0",
+                        "details": [
+                            {"ccy": "USDT", "cashBal": "1000.0", "frozenBal": "100.0"},
+                            {"ccy": "BTC", "cashBal": "0", "frozenBal": "0"},  # zero -> skipped
+                        ],
+                    }
+                ]
+            },
+        }
+    )
     exchange.markets = {}
     conn, sent, _ = _make_connector(OkxCcxtConnector, exchange=exchange)
 

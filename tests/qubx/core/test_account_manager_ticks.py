@@ -4,7 +4,8 @@ import numpy as np
 
 from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
-from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
+from qubx.core.events import OrderCancelRejectedEvent, OrderRejectedEvent, OrderUpdateRejectedEvent
+from qubx.core.mixins.processing import ProcessingManager
 
 
 class _T:
@@ -18,18 +19,29 @@ class _T:
         self.t = self.t + np.timedelta64(ms, "ms")
 
 
+def _real_pm(am: AccountManager) -> ProcessingManager:
+    # A REAL ProcessingManager wired to the real AM — the give-up path must exercise the
+    # genuine process_event -> apply -> _safe_call dispatch (error isolation included),
+    # not a mock that would skip the apply.
+    pm = ProcessingManager.__new__(ProcessingManager)
+    pm._account_manager = am
+    pm._strategy = MagicMock()
+    pm._context = MagicMock()
+    pm._context.emitter = None
+    return pm
+
+
 def _am(connectors, cfg=None):
     am = AccountManager.__new__(AccountManager)
     am._init_state(
         connectors=connectors,
         base_currencies={ex: "USDT" for ex in connectors},
-        strategy=MagicMock(),
         time=_T(),
         cfg=cfg or AccountManagerConfig(inflight_check_threshold_ms=5_000, inflight_check_retries=3),
         account_id="test",
         tcc=None,
     )
-    am._ctx = object()
+    am._pm = _real_pm(am)
     return am
 
 
@@ -130,7 +142,12 @@ def test_inflight_exhausted_submitted_transitions_rejected():
     _exhaust_retries(am._states["binance"], "cid-1")
     am._time.adv(6_000)
     am._on_inflight_tick(None)
-    assert am._states["binance"].get_order("cid-1").status is OrderStatus.REJECTED
+    o = am._states["binance"].get_order("cid-1")
+    assert o.status is OrderStatus.REJECTED
+    assert o.rejected_reason == "reconcile: no venue ack after 3 retries"
+    # the synthetic reject reaches the strategy through the PM dispatch
+    am._pm._strategy.on_order_update.assert_called_once()
+    assert isinstance(am._pm._strategy.on_order_update.call_args.args[2], OrderRejectedEvent)
 
 
 def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
@@ -157,9 +174,12 @@ def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
     assert am._states["binance"].get_pre_pending("cid-1") is None
-    am._strategy.on_order_update.assert_called_once()
-    assert am._strategy.on_order_update.call_args.args[0] is am._ctx
-    assert isinstance(am._strategy.on_order_update.call_args.args[2], OrderCancelRejectedEvent)
+    # callback fired through the PM dispatch (ctx-first signature), not by the AM directly
+    am._pm._strategy.on_order_update.assert_called_once()
+    assert am._pm._strategy.on_order_update.call_args.args[0] is am._pm._context
+    event = am._pm._strategy.on_order_update.call_args.args[2]
+    assert isinstance(event, OrderCancelRejectedEvent)
+    assert event.reason == "reconcile: no venue ack after 3 retries"
 
 
 def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
@@ -185,9 +205,9 @@ def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
     am._on_inflight_tick(None)
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.PARTIALLY_FILLED
-    am._strategy.on_order_update.assert_called_once()
-    assert am._strategy.on_order_update.call_args.args[0] is am._ctx
-    assert isinstance(am._strategy.on_order_update.call_args.args[2], OrderUpdateRejectedEvent)
+    am._pm._strategy.on_order_update.assert_called_once()
+    assert am._pm._strategy.on_order_update.call_args.args[0] is am._pm._context
+    assert isinstance(am._pm._strategy.on_order_update.call_args.args[2], OrderUpdateRejectedEvent)
 
 
 def test_retry_budget_resets_on_status_change():
@@ -252,10 +272,7 @@ def test_liveness_tick_resets_when_ws_recovers():
 def test_init_registers_three_ticks_via_pm_schedule():
     pm = MagicMock()
     conn = MagicMock()
-    strategy = MagicMock()
-    am = AccountManager(
-        pm=pm, connectors={"binance": conn}, base_currencies={"binance": "USDT"}, strategy=strategy, time=_T()
-    )
+    am = AccountManager(pm=pm, connectors={"binance": conn}, base_currencies={"binance": "USDT"}, time=_T())
     # one schedule call per enabled tick (inflight, snapshot, liveness)
     assert pm.schedule.call_count == 3
     scheduled = {call.args[1] for call in pm.schedule.call_args_list}
@@ -267,16 +284,22 @@ def test_init_registers_three_ticks_via_pm_schedule():
 def test_init_skips_disabled_ticks():
     pm = MagicMock()
     conn = MagicMock()
-    strategy = MagicMock()
     cfg = AccountManagerConfig(
         inflight_check_interval_ms=0,
         snapshot_check_interval_ms=0,
         liveness_check_interval_ms=5_000,
     )
-    AccountManager(
-        pm=pm, connectors={"binance": conn}, base_currencies={"binance": "USDT"}, strategy=strategy, time=_T(), cfg=cfg
-    )
+    AccountManager(pm=pm, connectors={"binance": conn}, base_currencies={"binance": "USDT"}, time=_T(), cfg=cfg)
     assert pm.schedule.call_count == 1
+
+
+def test_am_holds_no_strategy_reference():
+    # I2 regression: the AM must never hold a strategy — all callbacks route through the PM.
+    am = AccountManager(
+        pm=MagicMock(), connectors={"binance": MagicMock()}, base_currencies={"binance": "USDT"}, time=_T()
+    )
+    assert not hasattr(am, "_strategy")
+    assert not hasattr(am, "_ctx")
 
 
 def _mk_order(cid, status, vid):
@@ -297,10 +320,11 @@ def _mk_order(cid, status, vid):
 
 def test_inflight_sweep_isolates_raising_callback():
     # A raising strategy callback (or connector error) on one order must not abort the
-    # rest of the sweep — design §1260 "one bad callback never blocks the next".
+    # rest of the sweep — design §1260 "one bad callback never blocks the next". The
+    # isolation now lives in the PM's _safe_call, which the give-up path routes through.
     conn = MagicMock()
     am = _am({"binance": conn})
-    am._strategy.on_order_update.side_effect = RuntimeError("boom")
+    am._pm._strategy.on_order_update.side_effect = RuntimeError("boom")
     state = am._states["binance"]
 
     a = _mk_order("cid-a", OrderStatus.ACCEPTED, "VA")

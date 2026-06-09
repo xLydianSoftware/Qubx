@@ -615,7 +615,6 @@ def create_strategy_context(
     _am = _am_cls(
         connectors=_connectors,
         base_currencies=_base_currencies,
-        strategy=_strategy_class,  # type: ignore
         time=_time,
         cfg=AccountManagerConfig(),
         account_id=stg_name,
@@ -674,10 +673,6 @@ def create_strategy_context(
         rate_limiting_config=_rate_limiting_config,
         event_loop=loop,
     )
-
-    # - the AM is built before StrategyContext resolves the strategy instance; wire the
-    #   resolved instance now so AM-fired callbacks target the real strategy.
-    _am._strategy = ctx.strategy
 
     # Set context for metric emitters to enable is_live tag and time access
     if _metric_emitter is not None:

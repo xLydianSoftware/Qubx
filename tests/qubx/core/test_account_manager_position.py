@@ -60,8 +60,12 @@ def _spot_instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 def _am(exchange="binance"):
     am = AccountManager.__new__(AccountManager)
     am._init_state(
-        connectors={exchange: MagicMock()}, base_currencies={exchange: "USDT"}, strategy=MagicMock(), time=_T(),
-        cfg=AccountManagerConfig(), account_id="test", tcc=None,
+        connectors={exchange: MagicMock()},
+        base_currencies={exchange: "USDT"},
+        time=_T(),
+        cfg=AccountManagerConfig(),
+        account_id="test",
+        tcc=None,
     )
     return am
 
@@ -122,12 +126,18 @@ def test_two_fills_average_into_position():
     add_order(state, inst, qty=1.0)
     am.apply(
         OrderPartiallyFilledEvent(
-            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.5, price=50_000.0)
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            fill=_fill(trade_id="t1", amount=0.5, price=50_000.0),
         )
     )
     am.apply(
         OrderFilledEvent(
-            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t2", amount=0.5, price=51_000.0)
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            fill=_fill(trade_id="t2", amount=0.5, price=51_000.0),
         )
     )
     pos = state.get_position(inst)
@@ -183,9 +193,7 @@ def test_funding_payment_duplicate_skipped():
 def test_simulation_account_manager_constructs_without_pm():
     from qubx.core.account_manager import SimulatedAccountManager
 
-    sam = SimulatedAccountManager(
-        connectors={"binance": object()}, base_currencies={"binance": "USDT"}, strategy=None, time=_T()
-    )
+    sam = SimulatedAccountManager(connectors={"binance": object()}, base_currencies={"binance": "USDT"}, time=_T())
     assert sam._pm is None
     assert "binance" in sam._states
     # position math is inherited and works in the sim variant

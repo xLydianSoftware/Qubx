@@ -47,13 +47,11 @@ def _am(exchange="binance", cfg=None):
     am._init_state(
         connectors={exchange: MagicMock()},
         base_currencies={exchange: "USDT"},
-        strategy=MagicMock(),
         time=_T(),
         cfg=cfg or AccountManagerConfig(snapshot_check_threshold_ms=5_000),
         account_id="test",
         tcc=None,
     )
-    am._ctx = object()
     return am
 
 
@@ -198,6 +196,114 @@ def test_existing_order_updated_from_fresh_snapshot():
     assert updated.filled_quantity == 0.4
     assert updated.avg_fill_price == 49_900.0
     assert updated.last_updated_at == np.datetime64("2026-05-28T01:00:00")
+
+
+def test_snapshot_terminalization_runs_full_transition_machinery():
+    # D8 regression: a snapshot that terminalizes an active order must go through
+    # transition_order — audit trail, counters, inflight cleared, eviction registered —
+    # not a bare status write that left the order a permanent hidden resident polled
+    # forever by the inflight sweep.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    assert len(state.get_inflight_orders()) == 1
+    snap_order = _order("cid-1", OrderStatus.FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 1.0
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    order = state.get_order("cid-1")
+    assert order.status is OrderStatus.FILLED
+    # the stale inflight entry is gone -> no pointless venue polling on the next tick
+    assert state.get_inflight_orders() == []
+    # audit trail + counters recorded the transition
+    assert [(t.from_status, t.to_status) for t in order.transitions] == [(OrderStatus.SUBMITTED, OrderStatus.FILLED)]
+    assert state.get_transition_counts()["filled"] == 1
+    # eviction registered: the retention sweep moves it to history instead of leaking it
+    am._time.adv(31_000)
+    am._sweep_terminal_evictions()
+    assert state.get_active_order("cid-1") is None
+    assert state.get_order("cid-1") is not None  # findable in the terminal-history ring
+
+
+def test_snapshot_does_not_wipe_pending_marker_with_live_status():
+    # The snapshot is a poll of venue state; an outstanding cancel may still be in flight.
+    # A live venue status (ACCEPTED) must NOT clear PENDING_CANCEL — the venue resolves
+    # the race itself (canceled, or cancel-rejected which reverts via pre_pending).
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
+    snap_order = _order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 0.3
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    order = state.get_order("cid-1")
+    assert order.status is OrderStatus.PENDING_CANCEL
+    assert state.get_pre_pending("cid-1") is OrderStatus.ACCEPTED  # revert target intact
+    assert len(state.get_inflight_orders()) == 1  # sweep keeps polling the cancel
+    # non-status property drift still reconciled
+    assert order.filled_quantity == 0.3
+    assert order.last_updated_at == np.datetime64("2026-05-28T01:00:00")
+
+
+def test_snapshot_terminal_status_resolves_pending_marker():
+    # A terminal snapshot status IS the venue's resolution of the outstanding request —
+    # it falls through the pending guard and terminalizes via the machinery.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
+    snap_order = _order("cid-1", OrderStatus.CANCELED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    assert state.get_order("cid-1").status is OrderStatus.CANCELED
+    assert state.get_pre_pending("cid-1") is None
+    assert state.get_inflight_orders() == []
+
+
+def test_snapshot_illegal_edge_forced_with_indices_fixed():
+    # can_transition(PARTIALLY_FILLED, ACCEPTED) is False, but the snapshot is venue-
+    # authoritative: the write is forced (logged) and STILL routed through
+    # transition_order so the audit and indices stay consistent.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    snap_order = _order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    order = state.get_order("cid-1")
+    assert order.status is OrderStatus.ACCEPTED
+    assert [(t.from_status, t.to_status) for t in order.transitions] == [
+        (OrderStatus.PARTIALLY_FILLED, OrderStatus.ACCEPTED)
+    ]
+    assert state.get_inflight_orders() == []
+
+
+def test_snapshot_resurrects_locally_terminal_order_and_unregisters_eviction():
+    # We locally terminalized (e.g. sweep give-up REJECTED) but the venue still shows the
+    # order open: the forced resurrect must pop the pending-evict entry, or the retention
+    # sweep would evict a live order to history.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    am.transition_order("binance", "cid-1", OrderStatus.REJECTED)
+    snap_order = _order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    assert state.get_order("cid-1").status is OrderStatus.ACCEPTED
+    am._time.adv(31_000)
+    am._sweep_terminal_evictions()
+    assert state.get_active_order("cid-1") is not None  # NOT evicted — it is live again
 
 
 def test_position_updated_from_snapshot():

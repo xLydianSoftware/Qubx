@@ -256,8 +256,8 @@ class TestRunStrategyYaml:
         assert balance.total == 100_000.0
         assert balance.free == 100_000.0
 
-        # - the resolved strategy instance is wired into the AM for AM-fired callbacks
-        assert ctx._account_manager._strategy is ctx.strategy
+        # - the AM holds no strategy reference: every callback routes through the PM
+        assert not hasattr(ctx._account_manager, "_strategy")
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")

@@ -39,13 +39,11 @@ def _am(cfg=None):
     am._init_state(
         connectors={"binance": MagicMock()},
         base_currencies={"binance": "USDT"},
-        strategy=MagicMock(),
         time=_T(),
         cfg=cfg or AccountManagerConfig(terminal_order_retention_ms=30_000),
         account_id="test",
         tcc=None,
     )
-    am._ctx = object()
     return am
 
 

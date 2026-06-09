@@ -50,7 +50,6 @@ def _am():
     am._init_state(
         connectors={"binance": MagicMock()},
         base_currencies={"binance": "USDT"},
-        strategy=MagicMock(),
         time=_T(),
         cfg=None,
         account_id="test",

@@ -242,16 +242,12 @@ async def test_request_snapshot_emits_account_snapshot() -> None:
     exchange.has = {"editOrder": True}
     exchange.fetch_open_orders = AsyncMock(return_value=[_ws_order(status="open", cid="qubx_x", venue_id="V1")])
     exchange.fetch_positions = AsyncMock(return_value=[{"raw": "pos"}])
-    exchange.fetch_balance = AsyncMock(
-        return_value={"total": {"USDT": 1000.0}, "used": {"USDT": 100.0}}
-    )
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1000.0}, "used": {"USDT": 100.0}})
     exchange.markets = {}
     conn, sent, _ = _make_connector(exchange=exchange)
 
     pos = Position(instrument=_instrument())
-    with patch(
-        "qubx.connectors.ccxt.connector.ccxt_convert_positions", return_value=[pos]
-    ) as conv_pos:
+    with patch("qubx.connectors.ccxt.connector.ccxt_convert_positions", return_value=[pos]) as conv_pos:
         conn.request_snapshot()
         await _drive(conn)
         conv_pos.assert_called_once()
@@ -501,9 +497,7 @@ async def test_is_ws_ready_reflects_stream_state() -> None:
 async def test_snapshot_applies_to_real_account_manager() -> None:
     exchange = Mock()
     exchange.has = {"editOrder": True}
-    exchange.fetch_open_orders = AsyncMock(
-        return_value=[_ws_order(status="open", cid="qubx_BTCUSDT_1", venue_id="V1")]
-    )
+    exchange.fetch_open_orders = AsyncMock(return_value=[_ws_order(status="open", cid="qubx_BTCUSDT_1", venue_id="V1")])
     exchange.fetch_positions = AsyncMock(return_value=[])
     exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1000.0}, "used": {"USDT": 100.0}})
     exchange.markets = {}
@@ -521,11 +515,9 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     # Apply the connector-emitted snapshot to a REAL AccountManager. This is the seam
     # the unit tests skipped: AccountState.add_order calls order.status.is_terminal,
     # which only exists on OrderStatus (a raw string would raise AttributeError here).
-    strategy = Mock()
     am = SimulatedAccountManager(
         connectors={"BINANCE.UM": object()},
         base_currencies={"BINANCE.UM": "USDT"},
-        strategy=strategy,
         time=DummyTimeProvider(),
     )
     am.apply(event)  # must NOT raise

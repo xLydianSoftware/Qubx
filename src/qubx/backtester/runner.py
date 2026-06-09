@@ -509,11 +509,6 @@ class SimulationRunner:
         if not isinstance(strat, IStrategy):
             raise SimulationConfigError(f"Strategy should be an instance of IStrategy, but got {strat} !")
 
-        # - the account manager is built before the strategy is resolved (signal setups
-        #   wrap the generator in a SignalsProxy); wire the resolved strategy now so its
-        #   AM-fired callbacks (e.g. on_order_update on inflight-exhaustion) target the real instance.
-        self.account_manager._strategy = strat
-
         # - it will store simulation results into memory
         self.logs_writer = InMemoryLogsWriter(self.account_id, self.setup.name, "0")
 
@@ -638,7 +633,6 @@ class SimulationRunner:
         am = SimulatedAccountManager(
             connectors=self._connectors,
             base_currencies={exchange: self.setup.base_currency for exchange in self.setup.exchanges},
-            strategy=self.setup.generator,
             time=time_provider,
             cfg=AccountManagerConfig(),
             account_id=self.account_id,
