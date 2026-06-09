@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from typing import dataclass_transform
 
 import numpy as np
 
@@ -19,17 +20,22 @@ from qubx.core.basics import (
 )
 
 
-# kw_only=True is REQUIRED, not stylistic: the base carries a defaulted field
+# kw_only is REQUIRED, not stylistic: the base carries a defaulted field
 # (is_historical) and subclasses add required fields, so positional ordering
 # would raise "non-default argument follows default argument" at class
 # definition. kw_only sidesteps the ordering entirely.
-@dataclass(frozen=True, slots=True, kw_only=True)
+@dataclass_transform(frozen_default=True, kw_only_default=True)
+def msg[T](cls: type[T]) -> type[T]:
+    return dataclass(frozen=True, slots=True, kw_only=True)(cls)
+
+
+@msg
 class ChannelMessage:
     instrument: Instrument | None
     is_historical: bool = False
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class AccountMessage(ChannelMessage):
     """Marker base class (no fields of its own) for anything that mutates
     AccountState. AM.apply() is typed to accept only these, and ProcessingManager
@@ -37,7 +43,7 @@ class AccountMessage(ChannelMessage):
     into the state machine."""
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class MarketDataMessage(ChannelMessage):
     """Marker base class (no fields of its own) for market-data events. DORMANT: market data
     currently rides (instrument, d_type, data, is_historical) tuples through
@@ -45,7 +51,7 @@ class MarketDataMessage(ChannelMessage):
     kept as the foundation for a future, separate market-data typing refactor."""
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderEvent(AccountMessage):
     """Base for order-lifecycle events, addressed by ``client_order_id`` (always present —
     synthesized ``ext:<venue_id>`` for external orders). ``venue_order_id`` is None until
@@ -55,28 +61,28 @@ class OrderEvent(AccountMessage):
     venue_order_id: str | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderAcceptedEvent(OrderEvent):
     accepted_at: np.datetime64
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderPartiallyFilledEvent(OrderEvent):
     fill: Deal | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderFilledEvent(OrderEvent):
     fill: Deal | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class DealEvent(OrderEvent):
     """A trade (execution) addressed to an order — the ledger leg of the hybrid event model.
 
@@ -89,50 +95,50 @@ class DealEvent(OrderEvent):
     deal: Deal
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderCanceledEvent(OrderEvent):
     pass
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderExpiredEvent(OrderEvent):
     pass
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderUpdatedEvent(OrderEvent):
     new_price: float | None
     new_quantity: float | None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderCancelRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderUpdateRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class PositionUpdateEvent(AccountMessage):
     position: Position
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class BalanceUpdateEvent(AccountMessage):
     balance: Balance
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class FundingPaymentEvent(AccountMessage):
     payment: FundingPayment
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class AccountSnapshot:
     exchange: str
     as_of: np.datetime64
@@ -146,27 +152,27 @@ class AccountSnapshot:
     margin_ratio: float | None = None
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class AccountSnapshotEvent(AccountMessage):
     snapshot: AccountSnapshot
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class QuoteEvent(MarketDataMessage):
     quote: Quote
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class TradeEvent(MarketDataMessage):
     trade: Trade
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OrderBookEvent(MarketDataMessage):
     orderbook: OrderBook
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OhlcEvent(MarketDataMessage):
     bar: Bar
     # The timeframe lives in the data-type string (ohlc(1h)), not on the Bar, and
@@ -174,16 +180,16 @@ class OhlcEvent(MarketDataMessage):
     timeframe: str
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class FundingRateEvent(MarketDataMessage):
     funding_rate: FundingRate
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class OpenInterestEvent(MarketDataMessage):
     open_interest: OpenInterest
 
 
-@dataclass(frozen=True, slots=True, kw_only=True)
+@msg
 class LiquidationEvent(MarketDataMessage):
     liquidation: Liquidation

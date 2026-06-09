@@ -1,7 +1,7 @@
 """Exhaustive tests for the pure order state machine.
 
 The expected non-terminal edges below are written out INDEPENDENTLY of the module's
-own table, so this acts as a true oracle: a silent change to LEGAL_TRANSITIONS fails
+own table, so this acts as a true oracle: a silent change to TRANSITIONS fails
 here. Terminalization is checked by rule (any live state may terminalize; terminal
 states never transition).
 """

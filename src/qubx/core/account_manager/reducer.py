@@ -1,22 +1,387 @@
-"""The apply contract for typed AccountMessage application.
+"""Applies a typed AccountMessage to one AccountState, driving the order state machine.
 
-Pure state mutation: applying an event never fires callbacks or touches connectors.
-AccountManager.apply mutates one AccountState and returns an ApplyResult; the
-ProcessingManager fires strategy callbacks from the returned result, error-isolated.
-None fields are the suppress signal — deduped duplicate fills, late events on terminal
-orders, and rejects/lifecycle events for unknown orders all return empty results, so no
-callback fires. (The handlers themselves still live on AccountManager; their extraction
-into this module as pure free functions is a later step.)
+Pure state mutation: no connectors, no strategy callbacks, no clock reads (``now`` is a
+parameter). The ProcessingManager fires callbacks from the returned ApplyResult; routing
+the event to the right state is the AccountManager's job. Every status change goes
+through ``_transition`` (the legality chokepoint), and every handler short-circuits on a
+terminal order so late venue events are no-ops. None fields on ApplyResult are the
+suppress signal — deduped duplicate fills, late events on terminal orders, and
+rejects/lifecycle events for unknown orders all return empty results, so no callback
+fires.
 """
 
 from dataclasses import dataclass
 
-from qubx.core.basics import Deal, Order, OrderChange, Position
+import numpy as np
+
+from qubx import logger
+from qubx.core.account_manager import reconcile
+from qubx.core.account_manager.reconcile import ReconcileDiff
+from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state_machine import can_transition, validate_transition
+from qubx.core.basics import (
+    Deal,
+    Instrument,
+    Order,
+    OrderChange,
+    OrderOrigin,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+)
+from qubx.core.events import (
+    AccountMessage,
+    AccountSnapshotEvent,
+    BalanceUpdateEvent,
+    DealEvent,
+    FundingPaymentEvent,
+    OrderAcceptedEvent,
+    OrderCanceledEvent,
+    OrderCancelRejectedEvent,
+    OrderEvent,
+    OrderExpiredEvent,
+    OrderFilledEvent,
+    OrderPartiallyFilledEvent,
+    OrderRejectedEvent,
+    OrderUpdatedEvent,
+    OrderUpdateRejectedEvent,
+    PositionUpdateEvent,
+)
 
 
 @dataclass
 class ApplyResult:
-    order: Order | None = None  # status changed -> on_order(order, order_change)
+    order: Order | None = None  # status changed -> on_order_update(order, event)
     order_change: OrderChange | None = None  # paired with order
-    deal: Deal | None = None  # new deal applied -> on_execution
-    position: Position | None = None  # position changed -> on_position_change
+    deal: Deal | None = None  # new deal applied -> downstream fill consumers
+    position: Position | None = None  # position changed
+    reconcile_diff: ReconcileDiff | None = None  # set when a snapshot reconcile applied
+
+
+def _transition(state: AccountState, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
+    order = state.get_active_order(cid)
+    if order is None:
+        raise KeyError(f"order {cid} not found in {state.exchange}")
+    validate_transition(cid, order.status, new_status)
+    return state.transition_order(cid, new_status, now)
+
+
+def _resolve(state: AccountState, event: OrderEvent) -> Order | None:
+    # Known by cid (active or terminal-history) or by the venue id it was assigned.
+    if (order := state.get_order(event.client_order_id)) is not None:
+        return order
+    if event.venue_order_id is not None:
+        return state.get_order_by_venue_id(event.venue_order_id)
+    return None
+
+
+def _active_order_for(state: AccountState, event: OrderEvent) -> Order | None:
+    # Resolve an ACTIVE order by client id, then by venue id — so a reject addressed by
+    # venue id alone (a venue-id-only cancel/update) still routes. Active-only (no
+    # materialize): a reject has no order to create.
+    order = state.get_active_order(event.client_order_id)
+    if order is None and event.venue_order_id is not None:
+        order = state.get_order_by_venue_id(event.venue_order_id)
+    return order
+
+
+def _materialize_external(state: AccountState, event: OrderEvent, instrument: Instrument, now: np.datetime64) -> Order:
+    # Unknown to us => external order (manual UI / another bot / pre-existing). A venue
+    # lifecycle event always carries the id the venue assigned; fall back to the cid
+    # for a stable identity only in the (malformed) case where it doesn't.
+    venue_id = event.venue_order_id
+    order = Order(
+        client_order_id=f"ext:{venue_id or event.client_order_id}",
+        venue_order_id=venue_id,
+        origin=OrderOrigin.EXTERNAL,
+        type=OrderType.LIMIT,
+        instrument=instrument,
+        submitted_at=now,
+        quantity=0.0,
+        price=0.0,
+        side=OrderSide.BUY,
+        status=OrderStatus.ACCEPTED,  # it exists at the venue
+        time_in_force="gtc",
+    )
+    state.add_order(order)
+    return order
+
+
+def _resolve_or_materialize(state: AccountState, event: OrderEvent, now: np.datetime64) -> Order | None:
+    if (order := _resolve(state, event)) is not None:
+        return order
+    if event.instrument is None:  # can't track a position without an instrument
+        return None
+    return _materialize_external(state, event, event.instrument, now)
+
+
+# A late event for an already-terminal order — and any accepted/canceled/expired event
+# for an order we don't know — is a benign no-op: the handlers below return an empty
+# ApplyResult (the suppress signal) so the ProcessingManager fires nothing. External
+# orders materialize only on money-carrying events (fill/partial-fill/deal/updated).
+
+
+def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.datetime64) -> ApplyResult:
+    order = _resolve(state, event)
+    if order is None:
+        return ApplyResult()
+    if order.status.is_terminal:
+        # Late accept on an already-terminal order (design "OrderFilled before
+        # OrderAccepted"): benign side-effect, no transition, no phantom. Set
+        # the venue id ONLY if the order is still in active_orders — an evicted
+        # order's venue-id index was already dropped, so set_venue_id would
+        # KeyError on active_orders[cid].
+        if state.has_active_order(order.client_order_id):
+            if event.venue_order_id is not None:
+                state.set_venue_id(order.client_order_id, event.venue_order_id)
+            order.accepted_at = event.accepted_at
+        return ApplyResult()
+    if event.venue_order_id is not None:
+        state.set_venue_id(order.client_order_id, event.venue_order_id)
+    order.accepted_at = event.accepted_at
+    if order.status == OrderStatus.PENDING_CANCEL:
+        # A late accept racing an outstanding cancel must NOT wipe PENDING_CANCEL:
+        # the sweep keeps polling the cancel and a later cancel-rejected still reverts.
+        return ApplyResult()
+    if not can_transition(order.status, OrderStatus.ACCEPTED):
+        return ApplyResult()
+    order = _transition(state, order.client_order_id, OrderStatus.ACCEPTED, now)
+    return ApplyResult(order=order, order_change=OrderChange.ACCEPTED)
+
+
+def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.datetime64) -> ApplyResult:
+    order = _resolve(state, event)
+    if order is None or order.status.is_terminal:
+        return ApplyResult()
+    order = _transition(state, order.client_order_id, OrderStatus.CANCELED, now)
+    return ApplyResult(order=order, order_change=OrderChange.CANCELED)
+
+
+def _handle_expired(state: AccountState, event: OrderExpiredEvent, now: np.datetime64) -> ApplyResult:
+    order = _resolve(state, event)
+    if order is None or order.status.is_terminal:
+        return ApplyResult()
+    order = _transition(state, order.client_order_id, OrderStatus.EXPIRED, now)
+    return ApplyResult(order=order, order_change=OrderChange.EXPIRED)
+
+
+def _handle_rejected(state: AccountState, event: OrderRejectedEvent, now: np.datetime64) -> ApplyResult:
+    order = _active_order_for(state, event)
+    if order is None or order.status.is_terminal:
+        return ApplyResult()
+    order.rejected_reason = event.reason
+    order.error_code = event.code
+    order = _transition(state, order.client_order_id, OrderStatus.REJECTED, now)
+    return ApplyResult(order=order, order_change=OrderChange.REJECTED)
+
+
+def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Position:
+    """Apply a deal's effect to the position and balances. Caller dedups first.
+
+    Futures/swap: credits realized PnL and debits the fee to the settle-currency
+    balance. Spot: debits the quote currency by the trade cost (notional + fee) and
+    credits the base asset by the filled amount. Amounts are converted to the
+    portfolio funded currency via state.conversion_rate (currently 1.0 — the
+    multi-currency seam).
+    """
+    pos = state.ensure_position(instrument)
+    realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
+    if instrument.is_futures():
+        # TODO(account-mgmt): fee is folded into settle here (correct when
+        # settle == portfolio base currency); revisit for instruments whose
+        # settle currency differs from the portfolio base currency.
+        state.adjust_balance(instrument.settle, realized_pnl - fee)
+    else:
+        state.adjust_balance(instrument.quote, -(deal.amount * deal.price + fee))
+        state.adjust_balance(instrument.base, deal.amount)
+    return pos
+
+
+def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime64) -> ApplyResult:
+    order = _resolve_or_materialize(state, event, now)
+    if order is None or order.status.is_terminal:
+        return ApplyResult()
+    if event.venue_order_id is not None:
+        state.set_venue_id(order.client_order_id, event.venue_order_id)
+    # fill is None on split-stream venues (the deal arrives separately via DealEvent):
+    # the terminal transition still happens, only the booking is skipped.
+    new_deal = event.fill is not None and state.apply_fill(order.client_order_id, event.fill, now)
+    deal = event.fill if new_deal else None
+    position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
+    order = _transition(state, order.client_order_id, OrderStatus.FILLED, now)
+    return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
+
+
+def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, now: np.datetime64) -> ApplyResult:
+    order = _resolve_or_materialize(state, event, now)
+    if order is None or order.status.is_terminal:
+        return ApplyResult()
+    if event.venue_order_id is not None:
+        state.set_venue_id(order.client_order_id, event.venue_order_id)
+    # fill is None on split-stream venues (the deal arrives separately via DealEvent):
+    # the status transition still happens, only the booking is skipped.
+    new_deal = event.fill is not None and state.apply_fill(order.client_order_id, event.fill, now)
+    deal = event.fill if new_deal else None
+    position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
+    # a pending cancel/update is resolved by the venue separately — don't disturb its status
+    pending = order.status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
+    if pending:
+        # filled_quantity mirrors real, irreversible fills (and the position),
+        # so it is NEVER reduced. A fill that races a pending modify can push it
+        # past the new (smaller) target — surface that as a warning only; the
+        # venue resolves the race (OrderUpdated, or OrderUpdateRejected because
+        # it can't shrink an order below what's already filled).
+        if order.status == OrderStatus.PENDING_UPDATE and order.filled_quantity > order.quantity:
+            logger.warning(
+                f"[{order.client_order_id}] fill during pending-update pushed "
+                f"filled_quantity ({order.filled_quantity}) past target "
+                f"({order.quantity}); leaving filled intact, awaiting venue verdict"
+            )
+        return ApplyResult(deal=deal, position=position)
+    if can_transition(order.status, OrderStatus.PARTIALLY_FILLED):
+        order = _transition(state, order.client_order_id, OrderStatus.PARTIALLY_FILLED, now)
+        return ApplyResult(order=order, order_change=OrderChange.PARTIALLY_FILLED, deal=deal, position=position)
+    return ApplyResult(deal=deal, position=position)  # no status change -> execution only
+
+
+def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> ApplyResult:
+    # Status comes from order events; a deal only drives the ledger. A deal is
+    # money-carrying, so an unknown order materializes as EXTERNAL (instrument-guarded
+    # in _resolve_or_materialize).
+    order = _resolve_or_materialize(state, event, now)
+    if order is None:
+        return ApplyResult()
+    if order.status.is_terminal and not state.has_active_order(order.client_order_id):
+        # Evicted past the terminal grace window: the seen-trade dedup table is gone,
+        # so booking here could double-count a re-delivered trade. A terminal order
+        # still INSIDE the grace window falls through — the split-stream FILLED status
+        # (fill=None) can beat the final trade, and that trade must still book; the
+        # trade-id dedup below keeps an already-seen one a no-op.
+        return ApplyResult()
+    if event.venue_order_id is not None:
+        state.set_venue_id(order.client_order_id, event.venue_order_id)
+    if not state.apply_fill(order.client_order_id, event.deal, now):
+        return ApplyResult()
+    position = _book_deal(state, order.instrument, event.deal) if order.instrument is not None else None
+    return ApplyResult(deal=event.deal, position=position)
+
+
+def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datetime64) -> ApplyResult:
+    order = _resolve_or_materialize(state, event, now)
+    if order is None or order.status.is_terminal:
+        return ApplyResult()
+    if event.venue_order_id is not None and order.venue_order_id != event.venue_order_id:
+        # set_venue_id re-keys internally: it drops the order's previous venue id.
+        state.set_venue_id(order.client_order_id, event.venue_order_id)
+    if event.new_price is not None:
+        order.price = event.new_price
+    if event.new_quantity is not None:
+        order.quantity = event.new_quantity
+    order.last_updated_at = now
+    if order.status == OrderStatus.PENDING_UPDATE:
+        target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
+        order = _transition(state, order.client_order_id, target, now)
+    return ApplyResult(order=order, order_change=OrderChange.UPDATED)
+
+
+def _revert_from_pending(state: AccountState, order: Order, change: OrderChange, now: np.datetime64) -> ApplyResult:
+    # Revert to the status captured on entry to PENDING_* — never inferred from
+    # filled_quantity/venue_id (brittle when venues roll back partial fills). ACCEPTED
+    # is the safe default for the rare order with no captured status. The transition
+    # itself clears the capture (the target is non-pending).
+    target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
+    order = _transition(state, order.client_order_id, target, now)
+    return ApplyResult(order=order, order_change=change)
+
+
+def _handle_cancel_rejected(state: AccountState, event: OrderCancelRejectedEvent, now: np.datetime64) -> ApplyResult:
+    order = _active_order_for(state, event)
+    if order is None or order.status != OrderStatus.PENDING_CANCEL:
+        return ApplyResult()
+    return _revert_from_pending(state, order, OrderChange.CANCEL_REJECTED, now)
+
+
+def _handle_update_rejected(state: AccountState, event: OrderUpdateRejectedEvent, now: np.datetime64) -> ApplyResult:
+    order = _active_order_for(state, event)
+    if order is None or order.status != OrderStatus.PENDING_UPDATE:
+        return ApplyResult()
+    return _revert_from_pending(state, order, OrderChange.UPDATE_REJECTED, now)
+
+
+def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now: np.datetime64) -> ApplyResult:
+    payment = event.payment
+    instrument = event.instrument
+    if instrument is None:
+        return ApplyResult()
+    interval_ns = payment.funding_interval_hours * 3_600_000_000_000
+    bucket = (instrument, int(payment.time) // interval_ns)
+    if state.is_funding_applied(bucket):
+        return ApplyResult()
+    pos = state.get_position(instrument)
+    if pos is None:
+        return ApplyResult()
+    # Funding cash is computed on the mark price; FundingPayment carries no
+    # amount. If the position has no mark yet (NaN), we cannot value the
+    # payment — skip WITHOUT consuming the bucket so a re-delivered event can
+    # apply once a mark exists (rather than poisoning balance/PnL with NaN).
+    mark = pos.last_update_price
+    if np.isnan(mark):
+        logger.warning(f"[{state.exchange}] funding for {instrument} skipped: no mark price yet")
+        return ApplyResult()
+    state.mark_funding_applied(bucket)
+    amount = pos.apply_funding_payment(payment, mark)  # updates cumulative_funding/pnl
+    if state.get_balance(instrument.settle) is not None:
+        # adjust only an existing settle balance (funding never creates one)
+        state.adjust_balance(instrument.settle, amount)
+    return ApplyResult(position=pos)
+
+
+def _handle_position_balance_noop(state: AccountState, event: AccountMessage, now: np.datetime64) -> ApplyResult:
+    # No connector emits PositionUpdate/BalanceUpdate yet; positions/balances are derived
+    # from fills and corrected by snapshot reconcile. PM still fires on_account_update
+    # off the event payload.
+    # TODO(account-mgmt): apply venue WS position/balance to AccountState here (via
+    # set_position/update_balance) once the live connectors emit them, with the same
+    # freshness/ratchet guard as snapshot reconcile.
+    return ApplyResult()
+
+
+def _handle_snapshot(
+    state: AccountState, event: AccountSnapshotEvent, now: np.datetime64, grace: np.timedelta64
+) -> ApplyResult:
+    diff = reconcile.reconcile_snapshot(state, event.snapshot, now, grace)
+    if diff is None:  # stale/out-of-order snapshot, rejected by the as_of ratchet
+        return ApplyResult()
+    return ApplyResult(reconcile_diff=diff)
+
+
+_HANDLERS = {
+    OrderAcceptedEvent: _handle_accepted,
+    OrderPartiallyFilledEvent: _handle_partial_fill,
+    OrderFilledEvent: _handle_fill,
+    DealEvent: _handle_deal,
+    OrderUpdatedEvent: _handle_updated,
+    OrderCanceledEvent: _handle_canceled,
+    OrderExpiredEvent: _handle_expired,
+    OrderRejectedEvent: _handle_rejected,
+    OrderCancelRejectedEvent: _handle_cancel_rejected,
+    OrderUpdateRejectedEvent: _handle_update_rejected,
+    FundingPaymentEvent: _handle_funding_payment,
+    PositionUpdateEvent: _handle_position_balance_noop,
+    BalanceUpdateEvent: _handle_position_balance_noop,
+}
+
+
+def apply(
+    state: AccountState, event: AccountMessage, now: np.datetime64, *, snapshot_grace: np.timedelta64
+) -> ApplyResult:
+    # The snapshot handler is the one dispatch target that needs config (the grace
+    # window), so it is routed explicitly rather than through the uniform table.
+    if isinstance(event, AccountSnapshotEvent):
+        return _handle_snapshot(state, event, now, snapshot_grace)
+    handler = _HANDLERS.get(type(event))
+    if handler is None:
+        logger.warning(f"unhandled AccountMessage: {type(event)}")
+        return ApplyResult()
+    return handler(state, event, now)

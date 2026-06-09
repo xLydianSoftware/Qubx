@@ -33,7 +33,6 @@ def _am(exchange="binance"):
     am._cfg = AccountManagerConfig()
     am._time = _T()
     am._liveness_unready_since = {}
-    am._applied_funding_buckets = {}
     return am
 
 

@@ -219,7 +219,7 @@ def test_snapshot_terminalization_runs_full_transition_machinery():
     assert state.get_inflight_orders() == []
     # audit trail + counters recorded the transition
     assert [(t.from_status, t.to_status) for t in order.transitions] == [(OrderStatus.SUBMITTED, OrderStatus.FILLED)]
-    assert state.get_transition_counts()["filled"] == 1
+    assert state.get_transition_counts()[OrderStatus.FILLED.value] == 1
     # eviction registered: the retention sweep moves it to history instead of leaking it
     am._time.adv(31_000)
     am._sweep_terminal_evictions()

@@ -1,11 +1,11 @@
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
-from enum import Enum, StrEnum
+from enum import StrEnum
 from functools import cache
 from queue import Empty, Queue
 from threading import Event
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, Union
+from typing import TYPE_CHECKING, Any, Optional, TypeAlias, Union
 
 import numpy as np
 import pandas as pd
@@ -657,21 +657,29 @@ class Deal:
     fee_currency: str | None = None
 
 
-OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
-OrderSide = Literal["BUY", "SELL"]
+class OrderType(StrEnum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP_MARKET = "STOP_MARKET"
+    STOP_LIMIT = "STOP_LIMIT"
 
 
-class OrderStatus(str, Enum):
-    INITIALIZED = "initialized"
-    SUBMITTED = "submitted"
-    ACCEPTED = "accepted"
-    PARTIALLY_FILLED = "partially_filled"
-    PENDING_CANCEL = "pending_cancel"
-    PENDING_UPDATE = "pending_update"
-    FILLED = "filled"
-    CANCELED = "canceled"
-    REJECTED = "rejected"
-    EXPIRED = "expired"
+class OrderSide(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderStatus(StrEnum):
+    INITIALIZED = "INITIALIZED"
+    SUBMITTED = "SUBMITTED"
+    ACCEPTED = "ACCEPTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    PENDING_CANCEL = "PENDING_CANCEL"
+    PENDING_UPDATE = "PENDING_UPDATE"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
 
     @property
     def is_terminal(self) -> bool:
@@ -680,10 +688,6 @@ class OrderStatus(str, Enum):
     @property
     def is_inflight(self) -> bool:
         return self in _INFLIGHT_ORDER_STATUSES
-
-    @property
-    def is_pending(self) -> bool:
-        return self in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
 
 
 _TERMINAL_ORDER_STATUSES = frozenset(
@@ -703,10 +707,10 @@ _INFLIGHT_ORDER_STATUSES = frozenset(
 )
 
 
-class OrderOrigin(str, Enum):
-    FRAMEWORK = "framework"
-    RECOVERED = "recovered"
-    EXTERNAL = "external"
+class OrderOrigin(StrEnum):
+    FRAMEWORK = "FRAMEWORK"
+    RECOVERED = "RECOVERED"
+    EXTERNAL = "EXTERNAL"
 
 
 class OrderChange(StrEnum):
@@ -748,8 +752,8 @@ class OrderRequest:
     instrument: Instrument
     quantity: float
     price: float | None = None
-    order_type: OrderType = "LIMIT"
-    side: OrderSide = "BUY"
+    order_type: OrderType = OrderType.LIMIT
+    side: OrderSide = OrderSide.BUY
     time_in_force: str = "gtc"
     client_id: str | None = None
     options: dict[str, Any] = field(default_factory=dict)

@@ -13,13 +13,18 @@ out live element references; callers that stash an Order/Position for off-thread
 use must copy.copy() it first.
 """
 
-from collections import Counter, deque
+from collections import Counter, OrderedDict, deque
 from dataclasses import dataclass
 
 import numpy as np
 
 from qubx import logger
 from qubx.core.basics import Balance, Deal, Instrument, Order, OrderStatus, OrderTransition, Position
+
+# Bounded per-exchange funding-bucket dedup (insertion order ≈ funding-event time order):
+# old buckets evict once the cap is hit so the set can't grow unbounded over long-running
+# sessions. A re-delivered funding event only needs RECENT buckets to dedup against.
+_FUNDING_BUCKET_CAP: int = 4096
 
 _INFLIGHT_STATUSES: frozenset[OrderStatus] = frozenset(
     {
@@ -78,6 +83,7 @@ class AccountState:
         "_last_snapshot_as_of",
         "_transition_counts",
         "_venue_figures",
+        "_applied_funding_buckets",
     )
 
     def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
@@ -114,6 +120,9 @@ class AccountState:
         self._transition_counts: Counter = Counter()
         # exchange-reported account figures; None in sim, set from venue snapshots in live
         self._venue_figures: VenueAccountFigures | None = None
+        # applied funding buckets ((instrument, bucket-index) keys), LRU-bounded dedup
+        # side-table — same family as _seen_trade_ids, but keyed per funding interval
+        self._applied_funding_buckets: OrderedDict[tuple, None] = OrderedDict()
 
     def __repr__(self) -> str:
         return (
@@ -351,9 +360,6 @@ class AccountState:
     def set_venue_figures(self, figures: VenueAccountFigures) -> None:
         self._venue_figures = figures
 
-    def is_snapshot_stale(self, as_of: np.datetime64) -> bool:
-        return self._last_snapshot_as_of is not None and as_of <= self._last_snapshot_as_of
-
     def set_position(self, instrument: Instrument, position: Position) -> None:
         # Identity-preserving: an existing Position is updated in place (callers across
         # the framework hold references to it), never swapped for a new object.
@@ -390,3 +396,28 @@ class AccountState:
         )
         self.update_balance(balance.currency, balance)
         return changed
+
+    def ensure_position(self, instrument: Instrument) -> Position:
+        pos = self._positions.get(instrument)
+        if pos is None:
+            pos = Position(instrument=instrument)
+            self._positions[instrument] = pos
+        return pos
+
+    def adjust_balance(self, currency: str, delta: float) -> None:
+        # free moves with total (free == total - locked stays invariant for any locked),
+        # mutating the held Balance in place so external references stay live.
+        bal = self._balances.get(currency)
+        if bal is None:
+            bal = Balance(exchange=self.exchange, currency=currency)
+            self._balances[currency] = bal
+        bal.total += delta
+        bal.free += delta
+
+    def is_funding_applied(self, bucket: tuple) -> bool:
+        return bucket in self._applied_funding_buckets
+
+    def mark_funding_applied(self, bucket: tuple) -> None:
+        self._applied_funding_buckets[bucket] = None
+        if len(self._applied_funding_buckets) > _FUNDING_BUCKET_CAP:
+            self._applied_funding_buckets.popitem(last=False)  # evict the oldest bucket
