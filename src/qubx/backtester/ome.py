@@ -223,7 +223,7 @@ class OrdersManagementEngine:
             venue_order_id=self._generate_order_id(),
             type=order_type,
             instrument=self.instrument,
-            time=timestamp,
+            submitted_at=timestamp,
             quantity=amount,
             price=price,  # None for market orders (matched at BBO, never read as a limit)
             side=order_side,

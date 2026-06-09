@@ -55,7 +55,7 @@ def _add(state, cid="cid-1", status=OrderStatus.ACCEPTED, instrument=None):
             origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=instrument,
-            time=np.datetime64("2026-05-28T00:00:00"),
+            submitted_at=np.datetime64("2026-05-28T00:00:00"),
             quantity=1.0,
             price=50_000.0,
             side="BUY",

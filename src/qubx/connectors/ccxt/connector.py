@@ -812,7 +812,7 @@ class CcxtConnector(ChannelEmitter):
                 instrument=instrument,
                 client_order_id=order.client_order_id,
                 venue_order_id=order.venue_order_id,
-                accepted_at=order.time,
+                accepted_at=order.submitted_at,
             ))
 
         if status == OrderStatus.PARTIALLY_FILLED:
@@ -852,7 +852,7 @@ class CcxtConnector(ChannelEmitter):
                 instrument=instrument,
                 client_order_id=order.client_order_id,
                 venue_order_id=order.venue_order_id,
-                accepted_at=order.time,
+                accepted_at=order.submitted_at,
             ))
 
     def _handle_partial_fill_status(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:

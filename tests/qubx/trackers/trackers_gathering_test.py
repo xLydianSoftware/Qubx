@@ -121,7 +121,7 @@ class DebugStratageyCtx(IStrategyContext):
         if amount < 0: self._n_orders_sell += 1
         return Order(
             client_order_id="test1", venue_order_id="test", origin=OrderOrigin.FRAMEWORK, type="MARKET", instrument=instrument,
-            time=np.datetime64(0, "ns"), quantity=amount, price=price if price is not None else 0, side="BUY" if amount > 0 else "SELL", status="CLOSED", time_in_force="gtc")
+            submitted_at=np.datetime64(0, "ns"), quantity=amount, price=price if price is not None else 0, side="BUY" if amount > 0 else "SELL", status="CLOSED", time_in_force="gtc")
         # fmt: on
 
 

@@ -43,7 +43,7 @@ def _order(inst, cid="cid-1", venue_id="V1") -> Order:
         origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=inst,
-        time=np.datetime64("2026-05-28T00:00:00"),
+        submitted_at=np.datetime64("2026-05-28T00:00:00"),
         quantity=1.0,
         price=50_000.0,
         side="BUY",

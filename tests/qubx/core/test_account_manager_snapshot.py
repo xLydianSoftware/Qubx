@@ -62,7 +62,7 @@ def _order(cid, status, time, vid=None, origin=OrderOrigin.FRAMEWORK, instrument
         origin=origin,
         type="LIMIT",
         instrument=instrument,
-        time=np.datetime64(time),
+        submitted_at=np.datetime64(time),
         quantity=qty,
         price=50_000.0,
         side="BUY",
@@ -114,7 +114,7 @@ def test_missing_order_within_grace_not_terminated():
     inst = _instrument()
     state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:59:59", vid="V1", instrument=inst))
     am._time.t = np.datetime64("2026-05-28T01:00:00")
-    # snapshot as_of is 1s after order.time which is below the 5s grace window
+    # snapshot as_of is 1s after order.submitted_at which is below the 5s grace window
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
     assert state.get_order("cid-1").status is OrderStatus.ACCEPTED
 

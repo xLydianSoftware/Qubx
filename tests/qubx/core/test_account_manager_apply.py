@@ -67,7 +67,7 @@ def add_order(state, cid="cid-1", status=OrderStatus.SUBMITTED, instrument=None,
             origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=instrument,
-            time=np.datetime64("2026-05-28T00:00:00"),
+            submitted_at=np.datetime64("2026-05-28T00:00:00"),
             quantity=quantity,
             price=50_000.0,
             side="BUY",
@@ -478,6 +478,24 @@ def test_rejected_transitions_and_stores_reason():
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.REJECTED
     assert o.rejected_reason == "insufficient funds"
+    # no code on the event -> error_code stays None
+    assert o.error_code is None
+
+
+def test_rejected_stores_error_code_from_event():
+    # A venue reject carries the connector's error code (e.g. the ccxt error class name);
+    # the handler threads it onto the order alongside rejected_reason.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.SUBMITTED, instrument=inst)
+    am.apply(
+        OrderRejectedEvent(
+            instrument=inst, client_order_id="cid-1", reason="insufficient funds", code="InsufficientFunds"
+        )
+    )
+    o = am.get_state("binance").get_order("cid-1")
+    assert o.status is OrderStatus.REJECTED
+    assert o.error_code == "InsufficientFunds"
 
 
 def test_rejected_for_unknown_order_returns_empty_result():

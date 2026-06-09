@@ -63,9 +63,9 @@ class StubAccount:
             return
         for d in deals:
             seen = self._processed_trades.setdefault(d.order_id, [])
-            if d.id in seen:
+            if d.trade_id in seen:
                 continue
-            seen.append(d.id)
+            seen.append(d.trade_id)
             pos.update_position_by_deal(d, conversion_rate=1)
 
     def get_total_capital(self, exchange: str | None = None) -> float:

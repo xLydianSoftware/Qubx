@@ -199,7 +199,7 @@ class TestBasics:
 def _bare_order(**overrides):
     d = dict(
         client_order_id="o1", venue_order_id=None, origin=OrderOrigin.FRAMEWORK, type="LIMIT",
-        instrument=None, time=pd.Timestamp("2024-01-01").asm8, quantity=1.0, price=100.0,
+        instrument=None, submitted_at=pd.Timestamp("2024-01-01").asm8, quantity=1.0, price=100.0,
         side="BUY", status=OrderStatus.SUBMITTED, time_in_force="gtc",
     )
     d.update(overrides)

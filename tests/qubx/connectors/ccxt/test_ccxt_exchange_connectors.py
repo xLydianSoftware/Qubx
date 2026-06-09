@@ -222,7 +222,7 @@ def _seeded_am() -> SimulatedAccountManager:
             origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=_instrument(),
-            time=DummyTimeProvider().time(),
+            submitted_at=DummyTimeProvider().time(),
             quantity=1.0,
             price=100.0,
             side="BUY",

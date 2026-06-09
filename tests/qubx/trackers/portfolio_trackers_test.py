@@ -171,7 +171,7 @@ class DebugStratageyCtx(IStrategyContext):
             origin=OrderOrigin.FRAMEWORK,
             type="MARKET",
             instrument=instrument,
-            time=np.datetime64(0, "ns"),
+            submitted_at=np.datetime64(0, "ns"),
             quantity=amount,
             price=price if price is not None else 0,
             side=side,

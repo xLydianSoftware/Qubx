@@ -656,11 +656,6 @@ class Deal:
     fee_amount: float | None = None
     fee_currency: str | None = None
 
-    # TODO(account-mgmt): remove this legacy id alias once old read sites are gone.
-    @property
-    def id(self) -> str:
-        return self.trade_id
-
 
 OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
 OrderSide = Literal["BUY", "SELL"]
@@ -769,30 +764,32 @@ class OrderTransition:
     to_status: OrderStatus
 
 
-@dataclass
+@dataclass(slots=True, kw_only=True)
 class Order:
     client_order_id: str
-    venue_order_id: str | None
     type: OrderType
     instrument: Instrument
-    # submission timestamp; grace-window reconcile measures order age from this field
-    time: dt_64
     quantity: float
-    price: float | None  # None for market orders (no limit price)
     side: OrderSide
-    status: OrderStatus
     time_in_force: str
+    status: OrderStatus = OrderStatus.INITIALIZED
+    venue_order_id: str | None = None
+    price: float | None = None  # None for market orders (no limit price)
+    filled_quantity: float = 0.0
+    avg_fill_price: float | None = None
+    # submission timestamp; grace-window reconcile measures order age from this field
+    submitted_at: dt_64 | None = None
+    accepted_at: dt_64 | None = None
+    last_updated_at: dt_64 | None = None
+    rejected_reason: str | None = None
+    # venue/connector error code accompanying a reject (e.g. the ccxt error class name);
+    # None when the reject path carries no code (synthetic reconcile rejects).
+    error_code: str | None = None
+    reduce_only: bool = False
+    post_only: bool = False
     # Defaults to FRAMEWORK (the common case); the snapshot/external materialization
     # paths set EXTERNAL / RECOVERED explicitly.
     origin: OrderOrigin = OrderOrigin.FRAMEWORK
-    filled_quantity: float = 0.0
-    avg_fill_price: float | None = None
-    accepted_at: dt_64 | None = None
-    rejected_reason: str | None = None
-    last_updated_at: dt_64 | None = None
-    reduce_only: bool = False
-    post_only: bool = False
-    cost: float = 0.0
     options: dict[str, Any] = field(default_factory=dict)
     # Status-transition audit trail, appended on every AM-driven status change (the single
     # writer is AccountState.transition_order). Bounded by the order's lifetime + the

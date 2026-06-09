@@ -124,13 +124,12 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         origin=origin,
         type=_type,
         instrument=instrument,
-        time=recognize_time(raw["timestamp"]),
+        submitted_at=recognize_time(raw["timestamp"]),
         quantity=abs(amnt) * (-1 if side == "SELL" else 1),
         price=float(price) if price is not None else None,
         side=side,
         status=status,
         time_in_force=tif,
-        cost=float(raw["cost"] or 0),  # cost can be None
         options=options,
     )
 

@@ -26,7 +26,7 @@ def _make_order(status=OrderStatus.SUBMITTED, cid="cid-1"):
         origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=None,
-        time=np.datetime64("2026-05-28T00:00:00"),
+        submitted_at=np.datetime64("2026-05-28T00:00:00"),
         quantity=1.0,
         price=50_000.0,
         side="BUY",

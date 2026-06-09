@@ -55,7 +55,7 @@ def test_inflight_tick_calls_request_order_status():
             origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=None,
-            time=np.datetime64("2026-05-28T00:00:00"),
+            submitted_at=np.datetime64("2026-05-28T00:00:00"),
             quantity=1.0,
             price=50_000.0,
             side="BUY",
@@ -81,7 +81,7 @@ def test_inflight_tick_increments_retry_counter():
             origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=None,
-            time=np.datetime64("2026-05-28T00:00:00"),
+            submitted_at=np.datetime64("2026-05-28T00:00:00"),
             quantity=1.0,
             price=50_000.0,
             side="BUY",
@@ -104,7 +104,7 @@ def test_inflight_tick_no_action_within_threshold():
             origin=OrderOrigin.FRAMEWORK,
             type="LIMIT",
             instrument=None,
-            time=np.datetime64("2026-05-28T00:00:00"),
+            submitted_at=np.datetime64("2026-05-28T00:00:00"),
             quantity=1.0,
             price=50_000.0,
             side="BUY",
@@ -131,7 +131,7 @@ def test_inflight_exhausted_submitted_transitions_rejected():
         origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=None,
-        time=np.datetime64("2026-05-28T00:00:00"),
+        submitted_at=np.datetime64("2026-05-28T00:00:00"),
         quantity=1.0,
         price=50_000.0,
         side="BUY",
@@ -145,6 +145,8 @@ def test_inflight_exhausted_submitted_transitions_rejected():
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.REJECTED
     assert o.rejected_reason == "reconcile: no venue ack after 3 retries"
+    # the synthetic reconcile reject carries no venue code -> error_code stays None
+    assert o.error_code is None
     # the synthetic reject reaches the strategy through the PM dispatch
     am._pm._strategy.on_order_update.assert_called_once()
     assert isinstance(am._pm._strategy.on_order_update.call_args.args[2], OrderRejectedEvent)
@@ -159,7 +161,7 @@ def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
         origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=None,
-        time=np.datetime64("2026-05-28T00:00:00"),
+        submitted_at=np.datetime64("2026-05-28T00:00:00"),
         quantity=1.0,
         price=50_000.0,
         side="BUY",
@@ -191,7 +193,7 @@ def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
         origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=None,
-        time=np.datetime64("2026-05-28T00:00:00"),
+        submitted_at=np.datetime64("2026-05-28T00:00:00"),
         quantity=1.0,
         price=50_000.0,
         side="BUY",
@@ -309,7 +311,7 @@ def _mk_order(cid, status, vid):
         origin=OrderOrigin.FRAMEWORK,
         type="LIMIT",
         instrument=None,
-        time=np.datetime64("2026-05-28T00:00:00"),
+        submitted_at=np.datetime64("2026-05-28T00:00:00"),
         quantity=1.0,
         price=50_000.0,
         side="BUY",

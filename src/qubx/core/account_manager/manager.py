@@ -487,7 +487,7 @@ class AccountManager:
             origin=OrderOrigin.EXTERNAL,
             type="LIMIT",
             instrument=instrument,
-            time=self._time.time(),
+            submitted_at=self._time.time(),
             quantity=0.0,
             price=0.0,
             side="BUY",
@@ -630,6 +630,7 @@ class AccountManager:
         if order is None or order.status.is_terminal:
             return ApplyResult()
         order.rejected_reason = event.reason
+        order.error_code = event.code
         order = self._transition(state, order.client_order_id, OrderStatus.REJECTED)
         return ApplyResult(order=order, order_change=OrderChange.REJECTED)
 
@@ -692,7 +693,7 @@ class AccountManager:
                     # Still open at the venue — property drift is reconciled in the
                     # open-orders loop below (_update_from_snapshot), not here.
                     continue
-                if (snapshot.as_of - cached.time) < self._snapshot_grace:
+                if (snapshot.as_of - cached.submitted_at) < self._snapshot_grace:
                     continue
                 terminal = OrderStatus.REJECTED if cached.status == OrderStatus.SUBMITTED else OrderStatus.CANCELED
                 cached.rejected_reason = "reconcile: missing from snapshot"
@@ -769,7 +770,7 @@ class AccountManager:
                 origin=origin,
                 type=snap_order.type,
                 instrument=snap_order.instrument,
-                time=snap_order.time,
+                submitted_at=snap_order.submitted_at,
                 quantity=snap_order.quantity,
                 price=snap_order.price,
                 side=snap_order.side,
@@ -825,7 +826,7 @@ class AccountManager:
             for order in state.get_inflight_orders():
                 cid = order.client_order_id
                 try:
-                    last = order.last_updated_at or order.time
+                    last = order.last_updated_at or order.submitted_at
                     if (now - last) < self._inflight_threshold:
                         continue
                     if state.get_retry(cid) >= self._cfg.inflight_check_retries:

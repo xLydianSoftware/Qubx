@@ -130,7 +130,7 @@ class TradingManager(ITradingManager):
             origin=OrderOrigin.FRAMEWORK,
             type=cast(OrderType, order_type.upper()),
             instrument=instrument,
-            time=self._context.time(),
+            submitted_at=self._context.time(),
             quantity=size_adj,
             price=price,  # None for market orders
             side=side,
