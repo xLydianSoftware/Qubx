@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from qubx.core.account_manager import AccountManager
-from qubx.core.basics import Deal, Instrument, MarketType, Order, OrderOrigin, OrderStatus
+from qubx.core.basics import Deal, Instrument, MarketType, Order, OrderChange, OrderOrigin, OrderStatus
 from qubx.core.events import (
     OrderAcceptedEvent,
     OrderCanceledEvent,
@@ -15,6 +15,13 @@ from qubx.core.events import (
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
 )
+
+
+def _assert_empty(result):
+    assert result.order is None
+    assert result.order_change is None
+    assert result.deal is None
+    assert result.position is None
 
 
 class _T:
@@ -41,8 +48,12 @@ def _Inst() -> Instrument:
 def _am():
     am = AccountManager.__new__(AccountManager)
     am._init_state(
-        connectors={"binance": MagicMock()}, strategy=MagicMock(), time=_T(),
-        cfg=None, account_id="test", tcc=None,
+        connectors={"binance": MagicMock()},
+        strategy=MagicMock(),
+        time=_T(),
+        cfg=None,
+        account_id="test",
+        tcc=None,
     )
     return am
 
@@ -76,7 +87,7 @@ def _fill(trade_id="t1", amount=0.5, price=50_000.0):
     )
 
 
-def test_apply_event_for_unknown_exchange_returns_none():
+def test_apply_event_for_unknown_exchange_returns_empty_result():
     am = _am()
 
     class _Other:
@@ -91,14 +102,14 @@ def test_apply_event_for_unknown_exchange_returns_none():
             accepted_at=np.datetime64("2026-05-28"),
         )
     )
-    assert result is None
+    _assert_empty(result)
 
 
 def test_accepted_sets_venue_and_transitions():
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), instrument=inst)
-    am.apply(
+    r = am.apply(
         OrderAcceptedEvent(
             instrument=inst,
             client_order_id="cid-1",
@@ -106,10 +117,28 @@ def test_accepted_sets_venue_and_transitions():
             accepted_at=np.datetime64("2026-05-28"),
         )
     )
-    order = am.get_state("binance").get_order("cid-1")
-    assert order.status is OrderStatus.ACCEPTED
-    assert order.venue_order_id == "V1"
-    assert order.accepted_at == np.datetime64("2026-05-28")
+    assert r.order is not None
+    assert r.order.status is OrderStatus.ACCEPTED
+    assert r.order.venue_order_id == "V1"
+    assert r.order.accepted_at == np.datetime64("2026-05-28")
+    assert r.order_change is OrderChange.ACCEPTED
+    assert r.deal is None and r.position is None
+
+
+def test_accepted_double_ack_fires_once():
+    # Routine REST-ack + WS-ack double delivery: the first ACCEPTED transitions and
+    # reports, the second is suppressed (empty result -> no on_order_update re-fire).
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), instrument=inst)
+    evt = OrderAcceptedEvent(
+        instrument=inst, client_order_id="cid-1", venue_order_id="V1", accepted_at=np.datetime64("2026-05-28")
+    )
+    r1 = am.apply(evt)
+    assert r1.order is not None and r1.order_change is OrderChange.ACCEPTED
+    r2 = am.apply(evt)
+    _assert_empty(r2)
+    assert am.get_state("binance").get_order("cid-1").status is OrderStatus.ACCEPTED
 
 
 def test_accepted_during_pending_cancel_is_side_effect_only():
@@ -117,7 +146,7 @@ def test_accepted_during_pending_cancel_is_side_effect_only():
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
-    am.apply(
+    r = am.apply(
         OrderAcceptedEvent(
             instrument=inst,
             client_order_id="cid-1",
@@ -125,6 +154,7 @@ def test_accepted_during_pending_cancel_is_side_effect_only():
             accepted_at=np.datetime64("2026-05-28"),
         )
     )
+    _assert_empty(r)
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.PENDING_CANCEL
     assert o.venue_order_id == "V1"
@@ -135,7 +165,7 @@ def test_accepted_during_pending_update_transitions_to_accepted():
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
-    am.apply(
+    r = am.apply(
         OrderAcceptedEvent(
             instrument=inst,
             client_order_id="cid-1",
@@ -143,6 +173,7 @@ def test_accepted_during_pending_update_transitions_to_accepted():
             accepted_at=np.datetime64("2026-05-28"),
         )
     )
+    assert r.order is not None and r.order_change is OrderChange.ACCEPTED
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
     assert o.venue_order_id == "V2"
@@ -153,8 +184,8 @@ def test_accepted_on_terminal_order_sets_venue_without_transition():
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.0)))
-    # late OrderAccepted on an already-filled order: venue id only, no transition
-    am.apply(
+    # late OrderAccepted on an already-filled order: venue id only, no transition, no callback
+    r = am.apply(
         OrderAcceptedEvent(
             instrument=inst,
             client_order_id="cid-1",
@@ -162,6 +193,7 @@ def test_accepted_on_terminal_order_sets_venue_without_transition():
             accepted_at=np.datetime64("2026-05-28"),
         )
     )
+    _assert_empty(r)
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.FILLED
 
@@ -170,25 +202,29 @@ def test_happy_path_accepted_partial_filled():
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), instrument=inst)
-    am.apply(
+    r = am.apply(
         OrderAcceptedEvent(
             instrument=inst, client_order_id="cid-1", venue_order_id="V1", accepted_at=np.datetime64("2026-05-28")
         )
     )
-    am.apply(
+    assert r.order_change is OrderChange.ACCEPTED
+    r = am.apply(
         OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=0.5))
     )
-    o = am.get_state("binance").get_order("cid-1")
-    assert o.status is OrderStatus.PARTIALLY_FILLED
-    assert o.filled_quantity == 0.5
-    am.apply(
+    assert r.order is not None and r.order.status is OrderStatus.PARTIALLY_FILLED
+    assert r.order_change is OrderChange.PARTIALLY_FILLED
+    assert r.deal is not None and r.deal.trade_id == "t1"
+    assert r.position is not None
+    assert r.order.filled_quantity == 0.5
+    r = am.apply(
         OrderFilledEvent(
             instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t2", amount=0.5)
         )
     )
-    o = am.get_state("binance").get_order("cid-1")
-    assert o.status is OrderStatus.FILLED
-    assert o.filled_quantity == 1.0
+    assert r.order is not None and r.order.status is OrderStatus.FILLED
+    assert r.order_change is OrderChange.FILLED
+    assert r.deal is not None and r.deal.trade_id == "t2"
+    assert r.order.filled_quantity == 1.0
 
 
 def test_fill_dedup_by_trade_id():
@@ -198,9 +234,41 @@ def test_fill_dedup_by_trade_id():
     evt = OrderPartiallyFilledEvent(
         instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.5)
     )
-    am.apply(evt)
-    am.apply(evt)
+    r1 = am.apply(evt)
+    assert r1.deal is not None
+    r2 = am.apply(evt)
+    _assert_empty(r2)  # deduped -> no deal/position, no status change
     assert am.get_state("binance").get_order("cid-1").filled_quantity == 0.5
+
+
+def test_fill_redelivered_trade_id_promotes_status_without_deal():
+    # Two-stream FILLED promotion re-delivers the already-applied deal: the order still
+    # transitions to FILLED, but the deal is deduped -> delivered downstream exactly once.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    f = _fill(trade_id="t1", amount=0.5)
+    r1 = am.apply(OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=f))
+    assert r1.deal is not None and r1.deal.trade_id == "t1"
+    r2 = am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=f))
+    assert r2.order is not None and r2.order.status is OrderStatus.FILLED
+    assert r2.order_change is OrderChange.FILLED
+    assert r2.deal is None and r2.position is None  # already applied via the partial
+    assert r2.order.filled_quantity == 0.5
+
+
+def test_subsequent_partial_fill_is_execution_only():
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.PARTIALLY_FILLED, instrument=inst)
+    r = am.apply(
+        OrderPartiallyFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t2", amount=0.2)
+        )
+    )
+    assert r.order is None and r.order_change is None  # no status transition
+    assert r.deal is not None and r.deal.trade_id == "t2"
+    assert r.position is not None
 
 
 def test_partial_fill_during_pending_cancel_applies_without_transition():
@@ -208,9 +276,11 @@ def test_partial_fill_during_pending_cancel_applies_without_transition():
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
-    am.apply(
+    r = am.apply(
         OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=0.3))
     )
+    assert r.order is None  # pending status not disturbed -> execution only
+    assert r.deal is not None
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.PENDING_CANCEL
     assert o.filled_quantity == 0.3
@@ -245,7 +315,9 @@ def test_canceled_transitions_to_canceled():
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
-    am.apply(OrderCanceledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    r = am.apply(OrderCanceledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    assert r.order is not None and r.order.status is OrderStatus.CANCELED
+    assert r.order_change is OrderChange.CANCELED
     assert am.get_state("binance").get_order("cid-1").status is OrderStatus.CANCELED
 
 
@@ -253,7 +325,9 @@ def test_expired_transitions_to_expired():
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
-    am.apply(OrderExpiredEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    r = am.apply(OrderExpiredEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    assert r.order is not None and r.order.status is OrderStatus.EXPIRED
+    assert r.order_change is OrderChange.EXPIRED
     assert am.get_state("binance").get_order("cid-1").status is OrderStatus.EXPIRED
 
 
@@ -261,17 +335,47 @@ def test_rejected_transitions_and_stores_reason():
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.SUBMITTED, instrument=inst)
-    am.apply(OrderRejectedEvent(instrument=inst, client_order_id="cid-1", reason="insufficient funds"))
+    r = am.apply(OrderRejectedEvent(instrument=inst, client_order_id="cid-1", reason="insufficient funds"))
+    assert r.order is not None and r.order_change is OrderChange.REJECTED
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.REJECTED
     assert o.rejected_reason == "insufficient funds"
 
 
-def test_rejected_for_unknown_order_returns_none():
+def test_rejected_for_unknown_order_returns_empty_result():
     am = _am()
     inst = _Inst()
     result = am.apply(OrderRejectedEvent(instrument=inst, client_order_id="nope", reason="x"))
-    assert result is None
+    _assert_empty(result)
+
+
+def test_unknown_order_lifecycle_events_create_no_orders():
+    # Accepted/canceled/expired are resolve-only: an unknown order id must not
+    # materialize a phantom EXTERNAL order just to terminalize it, and fires nothing.
+    am = _am()
+    inst = _Inst()
+    r1 = am.apply(
+        OrderAcceptedEvent(
+            instrument=inst, client_order_id="ghost", venue_order_id="VX", accepted_at=np.datetime64("2026-05-28")
+        )
+    )
+    r2 = am.apply(OrderCanceledEvent(instrument=inst, client_order_id="ghost", venue_order_id="VX"))
+    r3 = am.apply(OrderExpiredEvent(instrument=inst, client_order_id="ghost", venue_order_id="VX"))
+    for r in (r1, r2, r3):
+        _assert_empty(r)
+    state = am.get_state("binance")
+    assert state.get_orders() == {}
+    assert not state.has_active_order("ext:VX")
+    assert state.get_order_by_venue_id("VX") is None
+
+
+def test_fill_without_instrument_for_unknown_order_is_noop():
+    # Money-carrying events materialize external orders ONLY when the event carries an
+    # instrument — without one there is no position to track, so nothing materializes.
+    am = _am()
+    r = am.apply(OrderFilledEvent(instrument=None, client_order_id="ghost", venue_order_id="VX", fill=_fill()))
+    _assert_empty(r)
+    assert am.get_state("binance").get_orders() == {}
 
 
 def test_rejected_resolves_by_venue_id_when_cid_unknown():
@@ -292,11 +396,13 @@ def test_updated_in_place_modifies_fields_no_transition():
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.get_state("binance").set_venue_id("cid-1", "V1")
-    am.apply(
+    r = am.apply(
         OrderUpdatedEvent(
             instrument=inst, client_order_id="cid-1", venue_order_id="V1", new_price=49_000.0, new_quantity=2.0
         )
     )
+    assert r.order is not None
+    assert r.order_change is OrderChange.UPDATED  # fires despite no status change
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
     assert o.price == 49_000.0
@@ -309,11 +415,12 @@ def test_updated_during_pending_update_transitions_and_reindexes_venue():
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.get_state("binance").set_venue_id("cid-1", "V1")
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
-    am.apply(
+    r = am.apply(
         OrderUpdatedEvent(
             instrument=inst, client_order_id="cid-1", venue_order_id="V2", new_price=48_000.0, new_quantity=None
         )
     )
+    assert r.order is not None and r.order_change is OrderChange.UPDATED
     state = am.get_state("binance")
     o = state.get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
@@ -323,12 +430,29 @@ def test_updated_during_pending_update_transitions_and_reindexes_venue():
     assert state.get_order_by_venue_id("V1") is None
 
 
+def test_updated_confirms_back_to_partially_filled():
+    # PENDING_UPDATE confirmation reverts to the captured pre-pending status, not a
+    # hardcoded ACCEPTED — a partially-filled order must keep PARTIALLY_FILLED.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.PARTIALLY_FILLED, instrument=inst)
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
+    r = am.apply(
+        OrderUpdatedEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", new_price=48_000.0, new_quantity=None
+        )
+    )
+    assert r.order is not None and r.order.status is OrderStatus.PARTIALLY_FILLED
+    assert r.order_change is OrderChange.UPDATED
+
+
 def test_cancel_rejected_reverts_to_pre_pending_status():
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
-    am.apply(OrderCancelRejectedEvent(instrument=inst, client_order_id="cid-1", reason="too late"))
+    r = am.apply(OrderCancelRejectedEvent(instrument=inst, client_order_id="cid-1", reason="too late"))
+    assert r.order is not None and r.order_change is OrderChange.CANCEL_REJECTED
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
     assert am.get_state("binance").get_pre_pending("cid-1") is None
@@ -360,12 +484,12 @@ def test_cancel_rejected_reverts_to_partially_filled():
     assert am.get_state("binance").get_pre_pending("cid-1") is None
 
 
-def test_cancel_rejected_unexpected_state_returns_none():
+def test_cancel_rejected_unexpected_state_returns_empty_result():
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     result = am.apply(OrderCancelRejectedEvent(instrument=inst, client_order_id="cid-1", reason="x"))
-    assert result is None
+    _assert_empty(result)
     assert am.get_state("binance").get_order("cid-1").status is OrderStatus.ACCEPTED
 
 
@@ -387,7 +511,8 @@ def test_update_rejected_reverts_to_pre_pending_status():
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
-    am.apply(OrderUpdateRejectedEvent(instrument=inst, client_order_id="cid-1", reason="bad price"))
+    r = am.apply(OrderUpdateRejectedEvent(instrument=inst, client_order_id="cid-1", reason="bad price"))
+    assert r.order is not None and r.order_change is OrderChange.UPDATE_REJECTED
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
     assert am.get_state("binance").get_pre_pending("cid-1") is None
@@ -396,7 +521,10 @@ def test_update_rejected_reverts_to_pre_pending_status():
 def test_materialize_external_for_unknown_cid_and_venue():
     am = _am()
     inst = _Inst()
-    am.apply(OrderPartiallyFilledEvent(instrument=inst, client_order_id="alien", venue_order_id="VX", fill=_fill()))
+    r = am.apply(OrderPartiallyFilledEvent(instrument=inst, client_order_id="alien", venue_order_id="VX", fill=_fill()))
+    assert r.order is not None and r.order.origin is OrderOrigin.EXTERNAL
+    assert r.deal is not None
+    assert r.position is not None and r.position.quantity == 0.5
     state = am.get_state("binance")
     o = state.get_order_by_venue_id("VX")
     assert o is not None
@@ -452,15 +580,26 @@ def test_resolve_via_venue_id_index():
 
 def test_late_cancel_on_filled_order_is_noop():
     # C1: a late OrderCanceled on an already-FILLED order (still in active_orders
-    # during the grace window) must NOT flip FILLED -> CANCELED.
+    # during the grace window) must NOT flip FILLED -> CANCELED, and fires nothing.
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
     am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.0)))
     assert am.get_state("binance").get_order("cid-1").status is OrderStatus.FILLED
-    # late cancel: benign no-op, no exception, status unchanged
-    am.apply(OrderCanceledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    # late cancel: benign no-op, no exception, status unchanged, empty result
+    r = am.apply(OrderCanceledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    _assert_empty(r)
     assert am.get_state("binance").get_order("cid-1").status is OrderStatus.FILLED
+
+
+def test_late_expired_on_terminal_order_is_noop():
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    am.apply(OrderCanceledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    r = am.apply(OrderExpiredEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1"))
+    _assert_empty(r)
+    assert am.get_state("binance").get_order("cid-1").status is OrderStatus.CANCELED
 
 
 def test_late_fill_on_filled_order_is_noop():
@@ -477,12 +616,13 @@ def test_late_fill_on_filled_order_is_noop():
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.FILLED
     assert o.filled_quantity == 1.0
-    # late fill with a brand-new trade_id: ignored, no double-count
-    am.apply(
+    # late fill with a brand-new trade_id: ignored, no double-count, empty result
+    r = am.apply(
         OrderFilledEvent(
             instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t2", amount=0.5)
         )
     )
+    _assert_empty(r)
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.FILLED
     assert o.filled_quantity == 1.0
@@ -536,9 +676,10 @@ def test_rejected_with_no_instrument_routes_via_client_order_id():
     assert o is not None, "order must be retrievable after reject"
     assert o.status is OrderStatus.REJECTED
     assert o.rejected_reason == "order not found in OME"
-    # apply() must return the real order, not None
-    assert result is not None
-    assert result.client_order_id == "cid-no-inst"
+    # apply() must return the real order, not an empty result
+    assert result.order is not None
+    assert result.order.client_order_id == "cid-no-inst"
+    assert result.order_change is OrderChange.REJECTED
 
 
 def test_cancel_rejected_with_no_instrument_reverts_pending_cancel():
@@ -547,15 +688,14 @@ def test_cancel_rejected_with_no_instrument_reverts_pending_cancel():
     am = _am()
     add_order(am.get_state("binance"), cid="cid-pc", status=OrderStatus.ACCEPTED, instrument=None)
     am.transition_order("binance", "cid-pc", OrderStatus.PENDING_CANCEL)
-    result = am.apply(
-        OrderCancelRejectedEvent(instrument=None, client_order_id="cid-pc", reason="too late")
-    )
+    result = am.apply(OrderCancelRejectedEvent(instrument=None, client_order_id="cid-pc", reason="too late"))
     o = am.get_state("binance").get_order("cid-pc")
     assert o is not None
     assert o.status is OrderStatus.ACCEPTED
     assert am.get_state("binance").get_pre_pending("cid-pc") is None
-    assert result is not None
-    assert result.client_order_id == "cid-pc"
+    assert result.order is not None
+    assert result.order.client_order_id == "cid-pc"
+    assert result.order_change is OrderChange.CANCEL_REJECTED
 
 
 def test_get_order_history_records_transitions():

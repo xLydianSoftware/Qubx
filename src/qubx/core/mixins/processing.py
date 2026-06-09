@@ -11,13 +11,14 @@ from qubx import logger
 if TYPE_CHECKING:
     from qubx.utils.throttler import InstrumentThrottler
 from qubx.core.account_manager import AccountManager
+from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.basics import (
     DataType,
     Deal,
     InitializingSignal,
     Instrument,
     MarketEvent,
-    Order,
+    OrderChange,
     RestoredState,
     Signal,
     TargetPosition,
@@ -34,8 +35,6 @@ from qubx.core.events import (
     ChannelMessage,
     OrderCancelRejectedEvent,
     OrderEvent,
-    OrderFilledEvent,
-    OrderPartiallyFilledEvent,
     OrderUpdateRejectedEvent,
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
@@ -1185,7 +1184,7 @@ class ProcessingManager(IProcessingManager):
 
     def _dispatch_account(self, event: AccountMessage) -> None:
         try:
-            updated = self._account_manager.apply(event)
+            result = self._account_manager.apply(event)
         except InvalidOrderTransition as e:
             logger.warning(f"invalid transition: {e}; skipping")
             return
@@ -1193,7 +1192,7 @@ class ProcessingManager(IProcessingManager):
             logger.exception(f"AM.apply raised on {type(event).__name__}")
             self._emit_error_metric("account_manager_apply_errors", event=type(event).__name__)
             return
-        self._safe_fire_account_callback(event, updated)
+        self._safe_fire_account_callback(event, result)
 
     def _emit_error_metric(self, name: str, **tags: str) -> None:
         """Best-effort error-counter emission; no-op when no emitter is configured."""
@@ -1211,36 +1210,37 @@ class ProcessingManager(IProcessingManager):
             logger.exception(f"strategy callback {getattr(fn, '__name__', fn)} raised")
             self._emit_error_metric("strategy_callback_errors", callback=getattr(fn, "__name__", "unknown"))
 
-    def _safe_fire_account_callback(self, event: AccountMessage, updated: Any) -> None:
+    def _safe_fire_account_callback(self, event: AccountMessage, result: ApplyResult) -> None:
         # Two unified strategy callbacks: on_order_update for OrderEvents, on_account_update
         # for everything else (position/balance/funding/snapshot). The strategy inspects the
-        # concrete event type itself.
+        # concrete event type itself. The ApplyResult fields are the fire signals — an empty
+        # result means the AM suppressed the event (late/duplicate/terminal/unknown — already
+        # logged) and nothing fires.
         if isinstance(event, OrderEvent):
-            # AM returns None when it couldn't resolve/transition the order (unknown order,
-            # unexpected state — already logged); on_order_update needs a real Order, so skip.
-            if updated is None:
-                return
             # Cancel/update rejections are dangerous-but-recoverable (order still alive at the
             # venue): surface loudly here so they aren't lost if the strategy ignores them.
-            if isinstance(event, OrderCancelRejectedEvent):
+            if result.order_change is OrderChange.CANCEL_REJECTED and isinstance(event, OrderCancelRejectedEvent):
                 logger.warning(
                     f"[{event.client_order_id}] cancel rejected by venue: {event.reason}; "
                     f"order is STILL ALIVE at the venue"
                 )
-            elif isinstance(event, OrderUpdateRejectedEvent):
+            elif result.order_change is OrderChange.UPDATE_REJECTED and isinstance(event, OrderUpdateRejectedEvent):
                 logger.warning(
                     f"[{event.client_order_id}] update rejected by venue: {event.reason}; "
                     f"order is STILL ALIVE with prior parameters"
                 )
-            self._safe_call(self._strategy.on_order_update, updated, event)
-            # Fills also drive framework-internal downstream consumers (trackers, gatherers,
-            # logging, export) — independent of whatever the strategy callback did.
-            if isinstance(event, (OrderPartiallyFilledEvent, OrderFilledEvent)):
-                self._notify_downstream_fill(event.instrument, updated, event.fill)
+            if result.order is not None:
+                self._safe_call(self._strategy.on_order_update, result.order, event)
+            # A newly applied deal also drives framework-internal downstream consumers
+            # (trackers, gatherers, logging, export) — independent of the strategy callback.
+            # Keyed off result.deal, NOT event.fill: a re-delivered fill the AM deduped
+            # must not reach save_deals/gatherers/trackers twice.
+            if result.deal is not None:
+                self._notify_downstream_fill(event.instrument, result.deal)
         else:
             self._safe_call(self._strategy.on_account_update, event)
 
-    def _notify_downstream_fill(self, instrument: Instrument | None, order: Order, fill: Deal) -> None:
+    def _notify_downstream_fill(self, instrument: Instrument | None, fill: Deal) -> None:
         if instrument is None:
             logger.debug(f"[<y>{self.__class__.__name__}</y>] :: fill for unknown instrument; skipping downstream")
             return

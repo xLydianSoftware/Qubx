@@ -4,6 +4,8 @@
                       SimulatedAccountManager backtest variant.
 - ``state``         — AccountState, the pure-data container the manager mutates.
 - ``state_machine`` — pure order-lifecycle transition rules (the bug-magnet, isolated).
+- ``reducer``       — ApplyResult, the apply() contract the ProcessingManager fires
+                      callbacks from (handler extraction lands here later).
 - ``config``        — AccountManagerConfig + the tick cron helper.
 
 Public symbols are re-exported here so callers import ``from qubx.core.account_manager

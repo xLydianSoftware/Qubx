@@ -15,7 +15,7 @@ from qubx.connectors.ccxt.exchanges.bitfinex.connector import BitfinexCcxtConnec
 from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
 from qubx.connectors.ccxt.factory import get_ccxt_connector
 from qubx.core.account_manager import SimulatedAccountManager
-from qubx.core.basics import Instrument, MarketType, OrderStatus
+from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus
 from qubx.core.events import (
     OrderAcceptedEvent,
     OrderFilledEvent,
@@ -201,8 +201,23 @@ async def test_okx_split_promotion_is_am_dedup_safe() -> None:
         strategy=strategy,
         time=DummyTimeProvider(),
     )
-    # Order must exist for the events to land on it: materialize via the accepted
-    # event first (AM creates the order from the accept).
+    # Order must exist for the events to land on it: accepted events are resolve-only
+    # (no materialization), so seed the framework order first, then ack it.
+    am.add_order(
+        Order(
+            client_order_id="qubxBTCUSDT1",
+            venue_order_id=None,
+            origin=OrderOrigin.FRAMEWORK,
+            type="LIMIT",
+            instrument=_instrument(),
+            time=DummyTimeProvider().time(),
+            quantity=1.0,
+            price=100.0,
+            side="BUY",
+            status=OrderStatus.SUBMITTED,
+            time_in_force="gtc",
+        )
+    )
     am.apply(OrderAcceptedEvent(
         instrument=_instrument(),
         client_order_id="qubxBTCUSDT1",
