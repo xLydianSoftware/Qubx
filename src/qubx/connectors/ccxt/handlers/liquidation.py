@@ -8,7 +8,6 @@ from typing import Set
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Instrument
-from qubx.core.events import event_for_data_type
 
 from ..exceptions import CcxtLiquidationParsingError
 from ..subscription_config import SubscriptionConfiguration
@@ -58,11 +57,7 @@ class LiquidationDataHandler(BaseDataTypeHandler):
                     )
                     liquidation_event = ccxt_convert_liquidation(liquidation)
 
-                    channel.send(
-                        event_for_data_type(
-                            sub_type, instrument=instrument, payload=liquidation_event, is_historical=False
-                        )
-                    )
+                    channel.send((instrument, sub_type, liquidation_event, False))
 
                 except CcxtLiquidationParsingError:
                     logger.debug(f"<yellow>{self._exchange_id}</yellow> Could not parse liquidation {liquidation}")

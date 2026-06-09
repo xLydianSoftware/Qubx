@@ -30,22 +30,13 @@ from qubx.core.connector import IConnector
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
-    MARKET_DATA_TYPES,
     AccountMessage,
     ChannelMessage,
-    CustomEvent,
-    ErrorEvent,
-    FundingPaymentEvent,
-    MarketDataMessage,
     OrderCancelRejectedEvent,
     OrderEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
     OrderUpdateRejectedEvent,
-    ScheduledEvent,
-    data_type_for_event,
-    event_for_data_type,
-    payload_for_event,
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
@@ -356,27 +347,15 @@ class ProcessingManager(IProcessingManager):
             ctx.emitter.emit(m["name"], m["value"], m["tags"])
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        # Adapter for data sources that still emit (instrument, type, data, hist) tuples
-        # rather than typed events (Tardis, the live warmup batch). The simulator and the
-        # CCXT handlers already emit typed events straight to process_event. A live
-        # convertible market-data tuple is wrapped in its typed event (these sources carry
-        # a parameterized OHLC type already — no re-labeling needed); historical batches and
-        # control tuples stay on the legacy __process_data path.
-        base, _ = DataType.from_str(d_type) if d_type else (None, {})
-        if not is_historical and base in MARKET_DATA_TYPES:
-            self.process_event(event_for_data_type(d_type, instrument=instrument, payload=data))
-        else:
-            self.__process_data(instrument, d_type, data, is_historical)
-            if not is_historical:
-                self._notify_after_data()
-        return False
-
-    def _notify_after_data(self) -> None:
-        # Flush position/portfolio logging cadence + metric heartbeat after a live
-        # data/scheduled event. Account events do not trigger it.
-        self._logging.notify(self._time_provider.time())
-        if self._context.emitter is not None:
-            self._context.emitter.notify(self._context)
+        # Market data and all non-account events (scheduled triggers, custom/feature streams,
+        # errors) ride (instrument, d_type, data, is_historical) tuples through here. Account
+        # events ride the typed channel to process_event instead.
+        should_stop = self.__process_data(instrument, d_type, data, is_historical)
+        if not is_historical:
+            self._logging.notify(self._time_provider.time())
+            if self._context.emitter is not None:
+                self._context.emitter.notify(self._context)
+        return should_stop
 
     def is_fitted(self) -> bool:
         return self._context._strategy_state.is_on_fit_called
@@ -406,17 +385,11 @@ class ProcessingManager(IProcessingManager):
         else:
             event = self._process_custom_event(instrument, d_type, data)
 
-        # Scheduled/control events no longer reach this tuple path: the scheduler emits a
-        # typed ScheduledEvent (handled by process_event -> _dispatch_scheduled via _handlers).
-        # This path now serves only historical-warmup batches and live custom-data tuples
-        # from providers that still emit tuples (e.g. Tardis); the market-data hot path is
-        # typed at process_event.
         return self._run_strategy_pipeline(event)
 
     def _run_strategy_pipeline(self, event: Any) -> bool:
         """Warmup/fit gating, strategy callback firing and signal processing — the
-        shared tail for both the tuple path (__process_data) and the typed
-        market-data path (_dispatch_market_data)."""
+        shared tail of the tuple data path (__process_data)."""
         if not self._context._strategy_state.is_on_start_called:
             self._handle_start()
 
@@ -843,6 +816,10 @@ class ProcessingManager(IProcessingManager):
         """
         if not is_historical:
             self._health_monitor.on_data_arrival(instrument, event_type, dt_64(data.time, "ns"))
+            # - paper trading: drive the simulated connector's OME with this tick so resting
+            #   orders match BEFORE the strategy reacts. No-op in backtest (the runner feeds the
+            #   OME directly via _feed_ome) and in live (which executes at the venue).
+            self._feed_simulated_connector(instrument, data)
 
         is_base_data, _update = self._is_base_data(data)
 
@@ -935,6 +912,22 @@ class ProcessingManager(IProcessingManager):
         else:
             for data in event_data:
                 self.__update_base_data(instrument, event_type, data, is_historical=True)
+
+    def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, bar)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, bar, is_trigger=base_update)
+
+    def _handle_trade(self, instrument: Instrument, event_type: str, trade: Trade) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, trade)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, trade, is_trigger=base_update)
+
+    def _handle_orderbook(self, instrument: Instrument, event_type: str, orderbook: OrderBook) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, orderbook)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, orderbook, is_trigger=base_update)
+
+    def _handle_quote(self, instrument: Instrument, event_type: str, quote: Quote) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, quote)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
 
     def _handle_event(self, instrument: Instrument, event_type: str, event_data: Any) -> TriggerEvent:
         return TriggerEvent(self._time_provider.time(), event_type, instrument, event_data)
@@ -1165,86 +1158,19 @@ class ProcessingManager(IProcessingManager):
         self._position_gathering.on_error(self._context, error)
 
     # ----------------------------------------------------------------------
-    # - Typed-event dispatch (order/account lifecycle + market-data marking)
+    # - Typed-event dispatch (order/account lifecycle)
     # ----------------------------------------------------------------------
 
     def process_event(self, event: ChannelMessage) -> None:
-        # FundingPaymentEvent is an AccountMessage that ALSO feeds the market-data
-        # path: it books the payment into balances (and fires on_account_update)
-        # AND runs the market-data side effects. Checked before the generic
-        # AccountMessage branch so both halves run.
-        if isinstance(event, FundingPaymentEvent):
-            self._dispatch_account(event)
-            self._dispatch_market_data(event)
-            if not event.is_historical:
-                self._notify_after_data()
-            return
-        if isinstance(event, MarketDataMessage):
-            self._dispatch_market_data(event)
-            if not event.is_historical:
-                self._notify_after_data()
-            return
-        if isinstance(event, ScheduledEvent):
-            self._dispatch_scheduled(event)
-            self._notify_after_data()
-            return
+        # Account-management events ride the typed channel and are applied to AccountState here.
+        # Everything else — market data, scheduled triggers, custom/feature streams, errors —
+        # rides (instrument, d_type, data, is_historical) tuples through process_data.
+        # FundingPaymentEvent is an AccountMessage (it books into balances), so it dispatches
+        # here like any other account event.
         if isinstance(event, AccountMessage):
             self._dispatch_account(event)
             return
-        if isinstance(event, ErrorEvent):
-            self._safe_call(self._strategy.on_error, event.error)
-            return
-        if isinstance(event, CustomEvent):
-            # Data types with no typed market-data event (custom storages, features, the
-            # generated-signals "event" stream). Same effect as the legacy tuple path:
-            # historical warms the cache; live runs the custom-event handler (which also
-            # services registered scheduled methods) through the strategy pipeline.
-            if event.is_historical:
-                self._process_hist_event(event.instrument, event.name, event.payload)
-                self._run_strategy_pipeline(None)
-            else:
-                strat_event = self._process_custom_event(event.instrument, event.name, event.payload)
-                self._run_strategy_pipeline(strat_event)
-            return
         logger.warning(f"unknown event type: {type(event)}")
-
-    def _dispatch_scheduled(self, event: ScheduledEvent) -> None:
-        # Scheduled/control triggers (time/fit/delisting_check/stale_data_check/
-        # state_snapshot/custom). Produce the strategy event the same way the tuple
-        # path did — control handler when one exists, else the custom-event path
-        # (which runs a registered scheduled method) — then run the shared pipeline.
-        handler = self._handlers.get(event.kind)
-        if handler is not None:
-            strat_event = handler(self, event.instrument, event.kind, event.payload)
-        else:
-            strat_event = self._process_custom_event(event.instrument, event.kind, event.payload)
-        self._run_strategy_pipeline(strat_event)
-
-    def _dispatch_market_data(self, event: MarketDataMessage) -> None:
-        instrument = event.instrument
-        d_type = data_type_for_event(event)
-        payload = payload_for_event(event)
-
-        if event.is_historical:
-            # Warmup: update cache/indicators only (no throttle, no OME feed, no trading) —
-            # the same effect the legacy tuple path produced via __process_data's historical
-            # branch. The pipeline runs with no strategy event so only start/warmup/fit
-            # lifecycle gating fires.
-            self._process_hist_event(instrument, d_type, payload)
-            self._run_strategy_pipeline(None)
-            return
-
-        if self._data_throttler is not None and not self._data_throttler.should_send(d_type, instrument):
-            return
-
-        # - paper trading: drive the simulated connector's OME with this tick so resting orders
-        #   match and the OME's BBO reflects it BEFORE the strategy reacts (mirrors the backtester
-        #   runner's _feed_ome). Live trading executes at the venue, so the connector is not fed.
-        self._feed_simulated_connector(instrument, payload)
-
-        base_update = self.__update_base_data(instrument, d_type, payload)
-        mkt = MarketEvent(self._time_provider.time(), d_type, instrument, payload, is_trigger=base_update)
-        self._run_strategy_pipeline(mkt)
 
     def _feed_simulated_connector(self, instrument: Instrument, payload: Any) -> None:
         # Paper only. is_paper_trading is also True in the backtester (it too uses a

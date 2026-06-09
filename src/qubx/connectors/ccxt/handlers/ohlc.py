@@ -11,7 +11,6 @@ from ccxt import BadSymbol
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
-from qubx.core.events import event_for_data_type
 from qubx.core.exceptions import NotSupported
 from qubx.core.series import Bar, Quote
 from qubx.utils.time import to_timedelta
@@ -128,14 +127,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
 
             if len(ohlcv) > 0:
                 # Send a quote update to the context at the end of warmup
-                channel.send(
-                    event_for_data_type(
-                        DataType.QUOTE,
-                        instrument=instrument,
-                        payload=self._convert_ohlcv_to_quote(ohlcv, instrument),
-                        is_historical=False,
-                    )
-                )
+                channel.send((instrument, DataType.QUOTE, self._convert_ohlcv_to_quote(ohlcv, instrument), False))
 
             self._update_quote(instrument, ohlcv)
 
@@ -367,7 +359,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         """
         bar = self._convert_ohlcv_to_bar(oh)
 
-        channel.send(event_for_data_type(sub_type, instrument=instrument, payload=bar, is_historical=False))
+        channel.send((instrument, sub_type, bar, False))
 
         # Generate synthetic quotes if no orderbook/quote subscription exists
         if not (

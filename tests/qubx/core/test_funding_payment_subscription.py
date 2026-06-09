@@ -5,7 +5,7 @@ import pyarrow as pa
 import pytest
 
 from qubx.backtester.simulated_data import DataPump, SimulatedDataIterator
-from qubx.core.basics import DataType, FundingPayment, Instrument, MarketEvent, MarketType
+from qubx.core.basics import DataType, FundingPayment, Instrument, MarketType
 from qubx.core.events import FundingPaymentEvent
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.data.containers import RawData
@@ -175,49 +175,17 @@ class TestFundingPaymentSubscription:
     # ProcessingManager tests
     # -----------------------------------------------------------------------
 
-    def test_process_event_routes_funding_payment_to_both_paths(self, mock_instrument, sample_funding_payment):
-        """process_event(FundingPaymentEvent) is a hybrid: it books funding via AM
-        (surfaced to the strategy through on_account_update) AND runs the market-data side effects."""
+    def test_process_event_routes_funding_payment_to_account_path(self, mock_instrument, sample_funding_payment):
+        """FundingPaymentEvent is an AccountMessage: process_event books it via AM
+        (surfaced to the strategy through on_account_update). Market data rides tuples
+        through process_data, not process_event, so there is no market-data half here."""
 
         processor = Mock()
         event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
         ProcessingManager.process_event(processor, event)
 
-        # - account half: AM books the payment and fires on_account_update
+        # - AM books the payment and fires on_account_update; that is the only path
         processor._dispatch_account.assert_called_once_with(event)
-        # - market-data half: runs __update_base_data + MarketEvent through the pipeline
-        processor._dispatch_market_data.assert_called_once_with(event)
-
-    def test_dispatch_market_data_funding_payment_builds_market_event(
-        self, mock_instrument, sample_funding_payment
-    ):
-        """_dispatch_market_data on a FundingPaymentEvent updates base data and feeds
-        the MarketEvent into the strategy pipeline (no AM mutation on this half)."""
-
-        processor = Mock()
-        processor._time_provider = Mock()
-        processor._time_provider.time.return_value = pd.Timestamp("2025-01-08 00:00:00").asm8
-        processor._data_throttler = None
-
-        # - mock the mangled private helper that determines trigger status
-        processor._ProcessingManager__update_base_data = Mock(return_value=True)
-
-        event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
-        ProcessingManager._dispatch_market_data(processor, event)
-
-        # - base-data update keyed on the funding_payment data type
-        processor._ProcessingManager__update_base_data.assert_called_once_with(
-            mock_instrument, "funding_payment", sample_funding_payment
-        )
-
-        # - the resulting MarketEvent flows through the strategy pipeline
-        processor._run_strategy_pipeline.assert_called_once()
-        mkt = processor._run_strategy_pipeline.call_args[0][0]
-        assert isinstance(mkt, MarketEvent)
-        assert mkt.type == "funding_payment"
-        assert mkt.instrument == mock_instrument
-        assert mkt.data == sample_funding_payment
-        assert mkt.is_trigger is True
 
     # -----------------------------------------------------------------------
     # SimulatedDataIterator tests

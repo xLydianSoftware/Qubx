@@ -12,7 +12,7 @@ import pytest
 
 from qubx.connectors.ccxt.handlers.funding_rate import FundingRateDataHandler
 from qubx.core.basics import CtrlChannel, DataType, FundingPayment, FundingRate, Instrument, MarketType
-from qubx.core.events import FundingPaymentEvent, FundingRateEvent
+from qubx.core.events import FundingPaymentEvent
 
 
 @pytest.fixture
@@ -216,16 +216,17 @@ class TestSimplifiedFundingHandler:
         # Call the subscriber function
         await config.subscriber_func()
 
-        # Should always emit funding rate
-        funding_rate_data = [data for data in sent_data if isinstance(data, FundingRateEvent)]
+        # Should always emit funding rate (market data rides (instrument, d_type, data, hist) tuples)
+        funding_rate_data = [data for data in sent_data if isinstance(data, tuple) and data[1] == DataType.FUNDING_RATE]
         assert len(funding_rate_data) == 1
 
         # Verify the data
-        event = funding_rate_data[0]
-        assert event.instrument.symbol == "BTCUSDT"
-        assert isinstance(event.funding_rate, FundingRate)
-        assert event.funding_rate.rate == 0.0001
-        assert not event.is_historical
+        instrument, data_type, funding_rate, is_historical = funding_rate_data[0]
+        assert instrument.symbol == "BTCUSDT"
+        assert data_type == DataType.FUNDING_RATE
+        assert isinstance(funding_rate, FundingRate)
+        assert funding_rate.rate == 0.0001
+        assert not is_historical
 
     @pytest.mark.asyncio
     @patch("qubx.connectors.ccxt.handlers.funding_rate.ccxt_find_instrument")
@@ -265,7 +266,7 @@ class TestSimplifiedFundingHandler:
         await config.subscriber_func()
 
         # Should have funding rate but no payment yet (first rate doesn't trigger payment)
-        assert len([d for d in sent_data if isinstance(d, FundingRateEvent)]) == 1
+        assert len([d for d in sent_data if isinstance(d, tuple) and d[1] == DataType.FUNDING_RATE]) == 1
         assert len([d for d in sent_data if isinstance(d, FundingPaymentEvent)]) == 0
 
         # Second call with advanced next_funding_time - should emit payment
@@ -286,7 +287,7 @@ class TestSimplifiedFundingHandler:
         await config.subscriber_func()
 
         # Should emit both rate and payment (handler always emits both when appropriate)
-        funding_rates = [d for d in sent_data if isinstance(d, FundingRateEvent)]
+        funding_rates = [d for d in sent_data if isinstance(d, tuple) and d[1] == DataType.FUNDING_RATE]
         funding_payments = [d for d in sent_data if isinstance(d, FundingPaymentEvent)]
 
         assert len(funding_rates) == 1  # Always emits funding rate

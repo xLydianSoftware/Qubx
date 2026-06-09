@@ -12,7 +12,6 @@ import pytest
 
 from qubx.connectors.ccxt.handlers.orderbook import OrderBookDataHandler
 from qubx.core.basics import CtrlChannel, DataType, Instrument, MarketType
-from qubx.core.events import OrderBookEvent
 
 
 @pytest.fixture
@@ -191,14 +190,15 @@ class TestOrderBookHandlerBulkSubscriptions:
         mock_exchange_with_bulk_support.exchange.watch_order_book_for_symbols.assert_called_once_with(["BTCUSDT"], limit=None)
 
         # Should emit orderbook data
-        orderbook_data = [data for data in sent_data if isinstance(data, OrderBookEvent)]
+        orderbook_data = [data for data in sent_data if data[1] == DataType.ORDERBOOK]
         assert len(orderbook_data) == 1
 
         # Verify the data
-        event = orderbook_data[0]
-        assert event.instrument.symbol == "BTCUSDT"
-        assert event.orderbook == mock_orderbook
-        assert not event.is_historical
+        instrument, data_type, orderbook, is_historical = orderbook_data[0]
+        assert instrument.symbol == "BTCUSDT"
+        assert data_type == DataType.ORDERBOOK
+        assert orderbook == mock_orderbook
+        assert not is_historical
 
 
 class TestOrderBookHandlerIndividualSubscriptions:
@@ -397,14 +397,15 @@ class TestOrderBookHandlerIndividualSubscriptions:
         await btc_subscriber()
 
         # Should emit orderbook data
-        orderbook_data = [data for data in sent_data if isinstance(data, OrderBookEvent)]
+        orderbook_data = [data for data in sent_data if data[1] == DataType.ORDERBOOK]
         assert len(orderbook_data) == 1
 
         # Verify the data
-        event = orderbook_data[0]
-        assert event.instrument.symbol == "BTCUSDT"
-        assert event.orderbook == mock_orderbook
-        assert not event.is_historical
+        instrument, data_type, orderbook, is_historical = orderbook_data[0]
+        assert instrument.symbol == "BTCUSDT"
+        assert data_type == DataType.ORDERBOOK
+        assert orderbook == mock_orderbook
+        assert not is_historical
 
     def test_individual_subscription_with_multiple_instruments(
         self, mock_exchange_without_bulk_support, mock_data_provider, btc_instrument, eth_instrument, orderbook_channel
@@ -468,11 +469,11 @@ class TestOrderBookDataProcessing:
         assert result is True
         assert len(sent_data) == 1
 
-        event = sent_data[0]
-        assert isinstance(event, OrderBookEvent)
-        assert event.instrument == btc_instrument
-        assert event.orderbook == mock_orderbook
-        assert not event.is_historical
+        instrument, data_type, orderbook, is_historical = sent_data[0]
+        assert instrument == btc_instrument
+        assert data_type == DataType.ORDERBOOK
+        assert orderbook == mock_orderbook
+        assert not is_historical
 
     @patch("qubx.connectors.ccxt.handlers.orderbook.ccxt_convert_orderbook")
     def test_process_orderbook_handles_none_result(

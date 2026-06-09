@@ -12,7 +12,7 @@ from qubx.backtester.transfers import SimulationTransferManager
 from qubx.core.account_manager import AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
-from qubx.core.events import MARKET_DATA_TYPES, CustomEvent, ScheduledEvent, event_for_data_type
+from qubx.core.events import FundingPaymentEvent
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
 from qubx.core.initializer import BasicStrategyInitializer
@@ -215,7 +215,7 @@ class SimulationRunner:
 
             while sigs and t >= (_signal_time := sigs[0][0].as_unit("ns").asm8):
                 self.time_provider.set_time(_signal_time)
-                cc.send(ScheduledEvent(instrument=instrument, kind="event", payload={"order": sigs[0][1]}))
+                cc.send((instrument, "event", {"order": sigs[0][1]}, False))
                 sigs.pop(0)
 
             if q := _exchange.emulate_quote_from_data(instrument, t, data):
@@ -254,16 +254,15 @@ class SimulationRunner:
         return cc.control.is_set()
 
     def _send_market_data(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> None:
-        # Everything goes on the channel as a typed event (no raw tuples). Convertible
-        # market-data types become their typed event; anything else (custom storages,
-        # features, generated-signals "event") rides a CustomEvent. The is_historical flag
-        # routes warmup data to the cache-only path in process_event.
-        if DataType.from_str(data_type)[0] in MARKET_DATA_TYPES:
-            self.channel.send(
-                event_for_data_type(data_type, instrument=instrument, payload=data, is_historical=is_hist)
-            )
+        # Market data rides (instrument, d_type, data, is_historical) tuples through process_data.
+        # Funding payment is an account event (the AccountManager books it into balances/position
+        # PnL), so a live (non-warmup) funding payment rides the typed channel as a
+        # FundingPaymentEvent — mirroring the live CCXT funding handler. Warmup funding stays on
+        # the cache-only tuple path (matching main, which never booked historical funding).
+        if not is_hist and DataType.from_str(data_type)[0] == DataType.FUNDING_PAYMENT:
+            self.channel.send(FundingPaymentEvent(instrument=instrument, payment=data))
         else:
-            self.channel.send(CustomEvent(instrument=instrument, is_historical=is_hist, name=data_type, payload=data))
+            self.channel.send((instrument, data_type, data, is_hist))
 
     def _feed_ome(self, instrument: Instrument, data: Any) -> None:
         """Drive the OME (now behind SimulatedConnector) with this tick so resting orders match.

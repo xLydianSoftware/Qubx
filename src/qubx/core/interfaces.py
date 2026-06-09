@@ -43,7 +43,7 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.errors import BaseErrorEvent
-from qubx.core.events import AccountMessage, OrderEvent
+from qubx.core.events import AccountMessage, ChannelMessage, OrderEvent
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.data.storage import IReader, IStorage
@@ -1138,6 +1138,17 @@ class IProcessingManager:
 
         Returns:
             bool: True if processing should be halted
+        """
+        ...
+
+    def process_event(self, event: ChannelMessage) -> None:
+        """
+        Process a typed channel event (account-management messages). Market data and other
+        non-account data ride (instrument, d_type, data, is_historical) tuples through
+        process_data instead.
+
+        Args:
+            event: The typed ChannelMessage to process (an AccountMessage subclass)
         """
         ...
 

@@ -9,7 +9,6 @@ from typing import Set
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Instrument
-from qubx.core.events import event_for_data_type
 
 from ..subscription_config import SubscriptionConfiguration
 from ..utils import (
@@ -83,7 +82,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
                 last_quote = self._data_provider._last_quotes[instrument]
                 if last_quote is None or quote.time > last_quote.time:
                     self._data_provider._last_quotes[instrument] = quote
-                    channel.send(event_for_data_type(sub_type, instrument=instrument, payload=quote, is_historical=False))
+                    channel.send((instrument, sub_type, quote, False))
 
         async def un_watch_quote(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
