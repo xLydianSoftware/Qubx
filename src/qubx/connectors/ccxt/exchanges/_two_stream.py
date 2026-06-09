@@ -20,7 +20,7 @@ instead split the account feed:
    order FILLED — carrying that last remembered deal.
 
 **Why the promotion is dedup-safe.** AccountManager dedups fills by
-``deal.trade_id`` (``order.seen_trade_ids``): ``_handle_fill`` only applies the
+``deal.trade_id`` (``AccountState._seen_trade_ids``): ``_handle_fill`` only applies the
 fill amount/position when the trade_id is new, but ALWAYS transitions the order to
 FILLED. So re-emitting the already-seen last deal inside the FILLED event does NOT
 double-count the fill — it just drives the terminal transition. (If the two streams

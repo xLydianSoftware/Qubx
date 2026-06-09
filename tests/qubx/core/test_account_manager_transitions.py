@@ -32,6 +32,8 @@ def _make_order(status=OrderStatus.SUBMITTED, cid="cid-1"):
         side="BUY",
         status=status,
         time_in_force="gtc",
+        # add_order requires a terminal-at timestamp on terminal adds (eviction registration)
+        last_updated_at=np.datetime64("2026-05-28T00:00:00") if status.is_terminal else None,
     )
 
 
@@ -97,21 +99,31 @@ def test_pre_pending_status_captured_for_pending_cancel():
     am = _am()
     am._states["binance"].add_order(_make_order(status=OrderStatus.ACCEPTED))
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
-    assert am._states["binance"].get_order("cid-1").pre_pending_status is OrderStatus.ACCEPTED
+    assert am._states["binance"].get_pre_pending("cid-1") is OrderStatus.ACCEPTED
 
 
 def test_pre_pending_status_captured_for_pending_update():
     am = _am()
     am._states["binance"].add_order(_make_order(status=OrderStatus.PARTIALLY_FILLED))
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
-    assert am._states["binance"].get_order("cid-1").pre_pending_status is OrderStatus.PARTIALLY_FILLED
+    assert am._states["binance"].get_pre_pending("cid-1") is OrderStatus.PARTIALLY_FILLED
+
+
+def test_pre_pending_status_kept_across_pending_update_to_pending_cancel():
+    # First-entry capture: cancelling while an amend is in flight must keep the
+    # ORIGINAL revert target (ACCEPTED), not record the intermediate PENDING_UPDATE.
+    am = _am()
+    am._states["binance"].add_order(_make_order(status=OrderStatus.ACCEPTED))
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
+    assert am._states["binance"].get_pre_pending("cid-1") is OrderStatus.ACCEPTED
 
 
 def test_non_pending_transition_does_not_set_pre_pending():
     am = _am()
     am._states["binance"].add_order(_make_order(status=OrderStatus.SUBMITTED))
     am.transition_order("binance", "cid-1", OrderStatus.ACCEPTED)
-    assert am._states["binance"].get_order("cid-1").pre_pending_status is None
+    assert am._states["binance"].get_pre_pending("cid-1") is None
 
 
 def test_get_orders_filters_by_origin():

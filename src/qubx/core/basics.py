@@ -680,11 +680,32 @@ class OrderStatus(str, Enum):
 
     @property
     def is_terminal(self) -> bool:
-        return self in (OrderStatus.FILLED, OrderStatus.CANCELED, OrderStatus.REJECTED, OrderStatus.EXPIRED)
+        return self in _TERMINAL_ORDER_STATUSES
+
+    @property
+    def is_inflight(self) -> bool:
+        return self in _INFLIGHT_ORDER_STATUSES
 
     @property
     def is_pending(self) -> bool:
         return self in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
+
+
+_TERMINAL_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.REJECTED,
+        OrderStatus.EXPIRED,
+    }
+)
+_INFLIGHT_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.SUBMITTED,
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.PENDING_UPDATE,
+    }
+)
 
 
 class OrderOrigin(str, Enum):
@@ -738,10 +759,10 @@ class Order:
     venue_order_id: str | None
     type: OrderType
     instrument: Instrument
-    time: dt_64                       # submission timestamp; grace-window reconcile
-                                      # measures order age from this field
+    # submission timestamp; grace-window reconcile measures order age from this field
+    time: dt_64
     quantity: float
-    price: float | None               # None for market orders (no limit price)
+    price: float | None  # None for market orders (no limit price)
     side: OrderSide
     status: OrderStatus
     time_in_force: str
@@ -753,9 +774,6 @@ class Order:
     accepted_at: dt_64 | None = None
     rejected_reason: str | None = None
     last_updated_at: dt_64 | None = None
-    retry_count: int = 0
-    pre_pending_status: OrderStatus | None = None
-    seen_trade_ids: set[str] = field(default_factory=set)
     reduce_only: bool = False
     post_only: bool = False
     cost: float = 0.0
@@ -767,10 +785,7 @@ class Order:
 
     def require_venue_id(self) -> str:
         if self.venue_order_id is None:
-            raise ValueError(
-                f"Order {self.client_order_id} has no venue_order_id "
-                f"(status={self.status})"
-            )
+            raise ValueError(f"Order {self.client_order_id} has no venue_order_id (status={self.status})")
         return self.venue_order_id
 
     def record_fill(self, quantity: float, price: float) -> None:

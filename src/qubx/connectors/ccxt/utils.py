@@ -146,7 +146,7 @@ def ccxt_convert_deal_info(raw: dict[str, Any]) -> Deal:
     amount = float(raw["amount"])
     price = float(raw["price"])
     # Some venues omit a per-fill id; synthesize a deterministic one from
-    # (order_id, timestamp, qty, price) so fill dedup (seen_trade_ids) still works.
+    # (order_id, timestamp, qty, price) so fill dedup (AccountState._seen_trade_ids) still works.
     trade_id = raw.get("id") or f"{order_id}:{timestamp}:{amount}:{price}"
     return Deal(
         trade_id=trade_id,

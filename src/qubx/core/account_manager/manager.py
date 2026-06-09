@@ -129,8 +129,6 @@ class AccountManager:
         if order is None:
             raise KeyError(f"order {cid} not found in {exchange}")
         validate_transition(cid, order.status, new_status)
-        if new_status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE):
-            order.pre_pending_status = order.status
         state.transition_order(cid, new_status, self._time.time())
 
     def remove_order(self, exchange: str, cid: str) -> None:
@@ -374,7 +372,10 @@ class AccountManager:
         self._inflight_threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
         self._liveness_threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
         self._terminal_retention = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
-        self._states = {ex: AccountState(exchange=ex) for ex in connectors}
+        self._states = {
+            ex: AccountState(exchange=ex, terminal_history_size=self._cfg.terminal_order_history_size)
+            for ex in connectors
+        }
         self._liveness_unready_since = {}
         # Bounded per-exchange funding-bucket dedup (see _FUNDING_BUCKET_CAP); old
         # buckets evict in _handle_funding_payment so this can't grow unbounded.
@@ -512,8 +513,7 @@ class AccountManager:
             return order
         if event.venue_order_id:
             state.set_venue_id(order.client_order_id, event.venue_order_id)
-        is_new_trade = event.fill.trade_id not in order.seen_trade_ids
-        state.apply_fill(order.client_order_id, event.fill, self._time.time())
+        is_new_trade = state.apply_fill(order.client_order_id, event.fill, self._time.time())
         if is_new_trade and order.instrument is not None:
             self._apply_deal_to_position(state, order.instrument, event.fill)
         if order.status.is_pending:
@@ -540,8 +540,7 @@ class AccountManager:
             return order
         if event.venue_order_id:
             state.set_venue_id(order.client_order_id, event.venue_order_id)
-        is_new_trade = event.fill.trade_id not in order.seen_trade_ids
-        state.apply_fill(order.client_order_id, event.fill, self._time.time())
+        is_new_trade = state.apply_fill(order.client_order_id, event.fill, self._time.time())
         if is_new_trade and order.instrument is not None:
             self._apply_deal_to_position(state, order.instrument, event.fill)
         return self._transition(state, order.client_order_id, OrderStatus.FILLED)
@@ -614,9 +613,9 @@ class AccountManager:
     def _revert_from_pending(self, state: AccountState, order: Order) -> Order:
         # Revert to the status captured on entry to PENDING_* — never inferred from
         # filled_quantity/venue_id (brittle when venues roll back partial fills). ACCEPTED
-        # is the safe default for the rare order with no captured status.
-        target = order.pre_pending_status or OrderStatus.ACCEPTED
-        order.pre_pending_status = None
+        # is the safe default for the rare order with no captured status. The transition
+        # itself clears the capture (the target is non-pending).
+        target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
         return self._transition(state, order.client_order_id, target)
 
     def _handle_snapshot(self, state: AccountState, event: AccountSnapshotEvent) -> None:
@@ -644,7 +643,6 @@ class AccountManager:
                     continue
                 terminal = OrderStatus.REJECTED if cached.status == OrderStatus.SUBMITTED else OrderStatus.CANCELED
                 cached.rejected_reason = "reconcile: missing from snapshot"
-                cached.pre_pending_status = None
                 try:
                     self._transition(state, cid, terminal)
                     n_terminal += 1
@@ -730,7 +728,7 @@ class AccountManager:
     def _sweep_terminal_evictions(self) -> None:
         now = self._time.time()
         for state in self._states.values():
-            state.evict_due_terminals(now, self._terminal_retention, self._cfg.terminal_order_history_size)
+            state.prune_terminal_orders(now, self._terminal_retention)
 
     def _on_inflight_tick(self, ctx) -> None:
         now = self._time.time()
@@ -741,14 +739,14 @@ class AccountManager:
                     last = order.last_updated_at or order.time
                     if (now - last) < self._inflight_threshold:
                         continue
-                    if order.retry_count >= self._cfg.inflight_check_retries:
+                    if state.get_retry(cid) >= self._cfg.inflight_check_retries:
                         self._resolve_exhausted_inflight(state, exchange, order)
                     else:
                         self._connectors[exchange].request_order_status(
                             client_order_id=cid,
                             venue_order_id=order.venue_order_id,
                         )
-                        order.retry_count += 1
+                        state.bump_retry(cid)
                         order.last_updated_at = now
                 except Exception:
                     # One bad order / raising strategy callback / connector error must not
@@ -756,14 +754,13 @@ class AccountManager:
                     logger.exception(f"[{exchange}] inflight sweep failed for {cid}")
         self._sweep_terminal_evictions()
 
-    def _resolve_exhausted_inflight(self, state, exchange, order):
-        reason = f"reconcile: no venue ack after {order.retry_count} retries"
+    def _resolve_exhausted_inflight(self, state: AccountState, exchange, order):
+        reason = f"reconcile: no venue ack after {state.get_retry(order.client_order_id)} retries"
         if order.status == OrderStatus.SUBMITTED:
             order.rejected_reason = reason
             self._transition(state, order.client_order_id, OrderStatus.REJECTED)
             return
-        target = order.pre_pending_status or OrderStatus.ACCEPTED
-        order.pre_pending_status = None
+        target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
         was = order.status
         self._transition(state, order.client_order_id, target)
         # Surface the failed cancel/update to the strategy as a synthesized reject event

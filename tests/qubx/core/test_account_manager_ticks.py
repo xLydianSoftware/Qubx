@@ -78,7 +78,7 @@ def test_inflight_tick_increments_retry_counter():
     )
     am._time.adv(6_000)
     am._on_inflight_tick(None)
-    assert am._states["binance"].get_order("cid-1").retry_count == 1
+    assert am._states["binance"].get_retry("cid-1") == 1
 
 
 def test_inflight_tick_no_action_within_threshold():
@@ -104,6 +104,11 @@ def test_inflight_tick_no_action_within_threshold():
     conn.request_order_status.assert_not_called()
 
 
+def _exhaust_retries(state, cid, n=3):
+    for _ in range(n):
+        state.bump_retry(cid)
+
+
 def test_inflight_exhausted_submitted_transitions_rejected():
     conn = MagicMock()
     am = _am({"binance": conn})
@@ -119,9 +124,9 @@ def test_inflight_exhausted_submitted_transitions_rejected():
         side="BUY",
         status=OrderStatus.SUBMITTED,
         time_in_force="gtc",
-        retry_count=3,
     )
     am._states["binance"].add_order(order)
+    _exhaust_retries(am._states["binance"], "cid-1")
     am._time.adv(6_000)
     am._on_inflight_tick(None)
     assert am._states["binance"].get_order("cid-1").status is OrderStatus.REJECTED
@@ -140,17 +145,17 @@ def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
         quantity=1.0,
         price=50_000.0,
         side="BUY",
-        status=OrderStatus.PENDING_CANCEL,
+        status=OrderStatus.ACCEPTED,
         time_in_force="gtc",
-        retry_count=3,
-        pre_pending_status=OrderStatus.ACCEPTED,
     )
     am._states["binance"].add_order(order)
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
+    _exhaust_retries(am._states["binance"], "cid-1")
     am._time.adv(6_000)
     am._on_inflight_tick(None)
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
-    assert o.pre_pending_status is None
+    assert am._states["binance"].get_pre_pending("cid-1") is None
     am._strategy.on_order_update.assert_called_once()
     assert am._strategy.on_order_update.call_args.args[0] is am._ctx
     assert isinstance(am._strategy.on_order_update.call_args.args[2], OrderCancelRejectedEvent)
@@ -169,12 +174,12 @@ def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
         quantity=1.0,
         price=50_000.0,
         side="BUY",
-        status=OrderStatus.PENDING_UPDATE,
+        status=OrderStatus.PARTIALLY_FILLED,
         time_in_force="gtc",
-        retry_count=3,
-        pre_pending_status=OrderStatus.PARTIALLY_FILLED,
     )
     am._states["binance"].add_order(order)
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
+    _exhaust_retries(am._states["binance"], "cid-1")
     am._time.adv(6_000)
     am._on_inflight_tick(None)
     o = am._states["binance"].get_order("cid-1")
@@ -182,6 +187,26 @@ def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
     am._strategy.on_order_update.assert_called_once()
     assert am._strategy.on_order_update.call_args.args[0] is am._ctx
     assert isinstance(am._strategy.on_order_update.call_args.args[2], OrderUpdateRejectedEvent)
+
+
+def test_retry_budget_resets_on_status_change():
+    # Retries consumed while SUBMITTED must NOT deplete a later PENDING_CANCEL sweep
+    # budget: transition_order resets the counter on every status change.
+    conn = MagicMock()
+    am = _am({"binance": conn})
+    state = am._states["binance"]
+    state.add_order(_mk_order("cid-1", OrderStatus.SUBMITTED, "V1"))
+    _exhaust_retries(state, "cid-1")
+    assert state.get_retry("cid-1") == 3
+    am.transition_order("binance", "cid-1", OrderStatus.ACCEPTED)
+    assert state.get_retry("cid-1") == 0
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
+    am._time.adv(6_000)
+    am._on_inflight_tick(None)
+    # fresh budget: the sweep polls the venue instead of giving up and reverting
+    conn.request_order_status.assert_called_once_with(client_order_id="cid-1", venue_order_id="V1")
+    assert state.get_order("cid-1").status is OrderStatus.PENDING_CANCEL
+    assert state.get_retry("cid-1") == 1
 
 
 def test_snapshot_tick_calls_request_snapshot_when_stale():
@@ -273,10 +298,10 @@ def test_inflight_sweep_isolates_raising_callback():
     am._strategy.on_order_update.side_effect = RuntimeError("boom")
     state = am._states["binance"]
 
-    a = _mk_order("cid-a", OrderStatus.PENDING_CANCEL, "VA")
-    a.retry_count = 3  # exhausted -> revert + (raising) callback
-    a.pre_pending_status = OrderStatus.ACCEPTED
+    a = _mk_order("cid-a", OrderStatus.ACCEPTED, "VA")
     state.add_order(a)
+    am.transition_order("binance", "cid-a", OrderStatus.PENDING_CANCEL)
+    _exhaust_retries(state, "cid-a")  # exhausted -> revert + (raising) callback
     b = _mk_order("cid-b", OrderStatus.SUBMITTED, "VB")  # retries left
     state.add_order(b)
 

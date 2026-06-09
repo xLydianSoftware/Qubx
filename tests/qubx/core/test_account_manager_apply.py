@@ -331,7 +331,22 @@ def test_cancel_rejected_reverts_to_pre_pending_status():
     am.apply(OrderCancelRejectedEvent(instrument=inst, client_order_id="cid-1", reason="too late"))
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
-    assert o.pre_pending_status is None
+    assert am.get_state("binance").get_pre_pending("cid-1") is None
+
+
+def test_cancel_rejected_after_pending_update_reverts_to_original_status():
+    # ACCEPTED -> PENDING_UPDATE -> PENDING_CANCEL -> cancel-rejected must revert to the
+    # ORIGINAL pre-pending status (ACCEPTED). Recording the intermediate PENDING_UPDATE
+    # used to strand the order in PENDING_CANCEL (illegal PENDING_CANCEL -> PENDING_UPDATE).
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
+    am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
+    am.apply(OrderCancelRejectedEvent(instrument=inst, client_order_id="cid-1", reason="too late"))
+    o = am.get_state("binance").get_order("cid-1")
+    assert o.status is OrderStatus.ACCEPTED
+    assert am.get_state("binance").get_pre_pending("cid-1") is None
 
 
 def test_cancel_rejected_reverts_to_partially_filled():
@@ -342,7 +357,7 @@ def test_cancel_rejected_reverts_to_partially_filled():
     am.apply(OrderCancelRejectedEvent(instrument=inst, client_order_id="cid-1", reason="too late"))
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.PARTIALLY_FILLED
-    assert o.pre_pending_status is None
+    assert am.get_state("binance").get_pre_pending("cid-1") is None
 
 
 def test_cancel_rejected_unexpected_state_returns_none():
@@ -375,7 +390,7 @@ def test_update_rejected_reverts_to_pre_pending_status():
     am.apply(OrderUpdateRejectedEvent(instrument=inst, client_order_id="cid-1", reason="bad price"))
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
-    assert o.pre_pending_status is None
+    assert am.get_state("binance").get_pre_pending("cid-1") is None
 
 
 def test_materialize_external_for_unknown_cid_and_venue():
@@ -538,7 +553,7 @@ def test_cancel_rejected_with_no_instrument_reverts_pending_cancel():
     o = am.get_state("binance").get_order("cid-pc")
     assert o is not None
     assert o.status is OrderStatus.ACCEPTED
-    assert o.pre_pending_status is None
+    assert am.get_state("binance").get_pre_pending("cid-pc") is None
     assert result is not None
     assert result.client_order_id == "cid-pc"
 
