@@ -1,9 +1,10 @@
-"""Exhaustive tests for the pure order state machine.
+"""Exhaustive oracle tests for the pure order state machine.
 
 The expected non-terminal edges below are written out INDEPENDENTLY of the module's
-own table, so this acts as a true oracle: a silent change to TRANSITIONS fails
-here. Terminalization is checked by rule (any live state may terminalize; terminal
-states never transition).
+own table, so this acts as a true oracle: a silent change to TRANSITIONS fails here.
+The terminalization rules (any live state may terminalize; terminal states never
+transition) are pinned by the ported PR #302 suite in
+tests/qubx/core/account_manager/state_machine_test.py.
 """
 
 import pytest
@@ -13,8 +14,6 @@ from qubx.core.basics import OrderStatus
 from qubx.core.exceptions import InvalidOrderTransition
 
 S = OrderStatus
-ALL = list(OrderStatus)
-TERMINAL = [S.FILLED, S.CANCELED, S.REJECTED, S.EXPIRED]
 NON_TERMINAL = [S.INITIALIZED, S.SUBMITTED, S.ACCEPTED, S.PARTIALLY_FILLED, S.PENDING_CANCEL, S.PENDING_UPDATE]
 
 # Independent reference of non-terminal -> non-terminal edges (mirrors the design, NOT
@@ -27,19 +26,6 @@ EXPECTED_NON_TERMINAL_EDGES = {
     S.PENDING_CANCEL: {S.SUBMITTED, S.ACCEPTED, S.PARTIALLY_FILLED},
     S.PENDING_UPDATE: {S.SUBMITTED, S.ACCEPTED, S.PARTIALLY_FILLED, S.PENDING_CANCEL},
 }
-
-
-def test_terminal_states_have_no_outgoing_edges():
-    for frm in TERMINAL:
-        for to in ALL:
-            assert not can_transition(frm, to), f"{frm} should not transition to {to}"
-
-
-def test_any_live_state_can_terminalize():
-    # venue-authoritative: liquidation / ADL / admin-cancel / late-reject-after-partial.
-    for frm in NON_TERMINAL:
-        for term in TERMINAL:
-            assert can_transition(frm, term), f"{frm} -> {term} must be allowed"
 
 
 @pytest.mark.parametrize("frm", NON_TERMINAL)

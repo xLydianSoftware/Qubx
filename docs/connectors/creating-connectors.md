@@ -4,12 +4,11 @@ This guide explains how to build exchange connectors for Qubx. Connectors enable
 
 ## Overview
 
-A complete exchange connector consists of four main components:
+A complete exchange connector consists of three main components:
 
 1. **Data Provider** (`IDataProvider`) - Streams real-time market data (quotes, trades, orderbooks, etc.)
-2. **Account Processor** (`IAccountProcessor`) - Tracks positions, balances, and orders
-3. **Broker** (`IBroker`) - Executes orders on the exchange
-4. **Data Reader** (`DataReader`) - Fetches historical data (OHLC, funding rates, etc.)
+2. **Connector** (`IConnector`) - Executes orders and streams account events (orders, deals, balances, positions)
+3. **Data Reader** (`DataReader`) - Fetches historical data (OHLC, funding rates, etc.)
 
 These components are registered with Qubx's plugin system using decorators, allowing them to be loaded dynamically.
 
@@ -18,19 +17,15 @@ These components are registered with Qubx's plugin system using decorators, allo
 Qubx uses a registry-based plugin system. Connectors are registered using decorators:
 
 ```python
-from qubx.connectors.registry import data_provider, account_processor, broker
+from qubx.connectors.registry import data_provider, connector
 from qubx.data.registry import reader
 
 @data_provider("myexchange")
 class MyDataProvider(IDataProvider):
     ...
 
-@account_processor("myexchange")
-class MyAccountProcessor(BasicAccountProcessor):
-    ...
-
-@broker("myexchange")
-class MyBroker(IBroker):
+@connector("myexchange")
+def create_myexchange_connector(exchange_name, time_provider, channel, **kwargs) -> IConnector:
     ...
 
 @reader("myexchange")
@@ -52,8 +47,7 @@ my_connector/
 │   └── my_connector/
 │       ├── __init__.py      # Exports + registration
 │       ├── data.py          # IDataProvider implementation
-│       ├── account.py       # IAccountProcessor implementation
-│       ├── broker.py        # IBroker implementation
+│       ├── connector.py     # IConnector implementation
 │       ├── reader.py        # DataReader implementation
 │       ├── client.py        # Exchange API client
 │       ├── factory.py       # Shared resource caching
@@ -149,109 +143,76 @@ class MyDataProvider(IDataProvider):
             self._ws_manager.disconnect()
 ```
 
-### 2. Account Processor
+### 2. Connector
 
-The account processor tracks positions, balances, and orders:
+The connector (`IConnector`, see `qubx.core.connector`) executes orders and streams account
+events. It is fire-and-forget: order operations return `None`, and all results come back
+asynchronously as typed events from `qubx.core.events` (`OrderAcceptedEvent`, `DealEvent`,
+`BalanceUpdateEvent`, `AccountSnapshotEvent`, ...) sent on the control channel, where the
+framework's `AccountManager` consumes them to maintain account state.
+
+Connectors are registered as factory functions:
 
 ```python
-from qubx.connectors.registry import account_processor
-from qubx.core.account import BasicAccountProcessor
+from qubx.connectors.registry import connector
+from qubx.core.connector import ChannelEmitter, IConnector
 
-@account_processor("myexchange")
-class MyAccountProcessor(BasicAccountProcessor):
-    def __init__(
-        self,
-        exchange_name: str,
-        channel: CtrlChannel,
-        time_provider: ITimeProvider,
-        account_manager: "AccountConfigurationManager",
-        tcc: TransactionCostsCalculator,
-        health_monitor: IHealthMonitor,
-        **kwargs,
-    ):
-        creds = account_manager.get_exchange_credentials(exchange_name)
-        account_id = creds.get_extra_field("account_index", exchange_name)
 
-        super().__init__(
-            account_id=str(account_id),
-            time_provider=time_provider,
-            base_currency=creds.base_currency,
-            health_monitor=health_monitor,
-            exchange="MYEXCHANGE",
-            tcc=tcc,
-            initial_capital=0,
-        )
-
-        # Initialize WebSocket for account updates
-        self.ws_manager = get_my_ws_manager()
+class MyConnector(ChannelEmitter):
+    def __init__(self, exchange_name, channel, time_provider, client, read_only=False, **kwargs):
+        self.exchange_name = exchange_name
         self.channel = channel
+        self.client = client
+        self._read_only = read_only
 
-    def start(self):
-        # Subscribe to account updates
-        self._async_loop.submit(self._subscribe_account_updates())
-
-    def stop(self):
-        # Cleanup
-        pass
-```
-
-### 3. Broker
-
-The broker executes orders on the exchange:
-
-```python
-from qubx.connectors.registry import broker
-from qubx.core.interfaces import IBroker
-
-@broker("myexchange")
-class MyBroker(IBroker):
-    def __init__(
-        self,
-        exchange_name: str,
-        channel: CtrlChannel,
-        time_provider: ITimeProvider,
-        account: IAccountProcessor,
-        data_provider: IDataProvider,
-        account_manager: "AccountConfigurationManager",
-        health_monitor: IHealthMonitor,
-        **kwargs,
-    ):
-        creds = account_manager.get_exchange_credentials(exchange_name)
-        self.client = get_my_client(creds.api_key, creds.secret)
-        self.time_provider = time_provider
-        self.account = account
-
-    @property
-    def is_simulated_trading(self) -> bool:
-        return False
-
-    def exchange(self) -> str:
-        return "MYEXCHANGE"
-
-    def send_order(self, request: OrderRequest) -> Order:
-        # Execute order synchronously
-        return self._async_loop.submit(
-            self._create_order(request)
-        ).result()
-
-    def send_order_async(self, request: OrderRequest) -> str | None:
-        # Execute order asynchronously
-        self._async_loop.submit(self._create_order(request))
-        return request.client_id
-
-    def cancel_order(self, order_id: str | None = None,
-                     client_order_id: str | None = None) -> bool:
-        # Cancel order
+    def submit_order(self, request: OrderRequest) -> None:
+        # Place the order; emit OrderAcceptedEvent / OrderRejectedEvent on the channel
         ...
 
-    def update_order(self, price: float, amount: float,
-                     order_id: str | None = None,
-                     client_order_id: str | None = None) -> Order:
-        # Modify order
+    def cancel_order(self, *, client_order_id: str | None = None,
+                     venue_order_id: str | None = None) -> None:
+        # Cancel by either id (prefer venue_order_id when present)
         ...
+
+    def update_order(self, *, client_order_id: str | None = None,
+                     venue_order_id: str | None = None,
+                     price: float | None = None,
+                     quantity: float | None = None) -> None: ...
+
+    def request_order_status(self, *, client_order_id: str | None = None,
+                             venue_order_id: str | None = None) -> None: ...
+
+    def request_snapshot(self) -> None:
+        # Fetch balances/positions/open orders and emit an AccountSnapshotEvent
+        ...
+
+    # ... plus connect/disconnect, is_ws_ready/reconnect, make_client_id,
+    # is_simulated_trading, read_only, set_instrument_leverage, set_margin_mode
+
+
+@connector("myexchange")
+def create_myexchange_connector(
+    exchange_name: str,
+    time_provider: ITimeProvider,
+    channel: CtrlChannel,
+    account_manager: "AccountConfigurationManager",
+    data_provider: IDataProvider,
+    health_monitor: IHealthMonitor,
+    read_only: bool = False,
+    **kwargs,
+) -> IConnector:
+    creds = account_manager.get_exchange_credentials(exchange_name)
+    client = get_my_client(creds.api_key, creds.secret)
+    return MyConnector(
+        exchange_name=exchange_name,
+        channel=channel,
+        time_provider=time_provider,
+        client=client,
+        read_only=read_only,
+    )
 ```
 
-### 4. Data Reader
+### 3. Data Reader
 
 The data reader fetches historical data from the exchange REST API. This is essential for:
 - Strategy warmup (loading recent OHLC data before live trading starts)

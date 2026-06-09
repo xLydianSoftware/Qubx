@@ -60,11 +60,8 @@ def test_total_capital_includes_unrealized_pnl():
     assert abs(am.get_total_capital("binance") - 2000.0) < 1e-6
 
 
-def test_total_capital_aggregates_across_exchanges():
-    am = _am(exchanges=("binance", "bybit"))
-    am._states["binance"].update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0))
-    am._states["bybit"].update_balance("USDT", Balance(exchange="bybit", currency="USDT", total=500.0))
-    assert am.get_total_capital() == 1500.0
+# cross-exchange total-capital aggregation is pinned by the ported PR #302 suite:
+# tests/qubx/core/account_manager/manager_test.py (test_total_capital_aggregates_across_exchanges).
 
 
 def test_gross_leverage_two_positions():

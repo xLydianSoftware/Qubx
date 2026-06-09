@@ -54,19 +54,6 @@ def test_on_market_quote_updates_position_market_value():
     assert abs(pos.market_value - 1000.0) < 1e-6
 
 
-def test_on_market_quote_no_op_when_no_position():
-    am = _am()
-    inst = _instrument()
-    # no position set -> must not raise, must not create a position
-    am.on_market_quote(inst, _quote(50_900.0, 51_100.0))
-    assert am._states["binance"].get_position(inst) is None
-
-
-def test_on_market_quote_unknown_exchange_no_op():
-    am = _am()
-
-    class _OtherInst:
-        exchange = "kraken"
-
-    # state for kraken doesn't exist -> graceful no-op
-    am.on_market_quote(_OtherInst(), _quote(1.0, 2.0))
+# no-position and unknown-exchange no-op cases are pinned by the ported PR #302 suite:
+# tests/qubx/core/account_manager/manager_test.py (test_on_market_quote_noop_without_position,
+# test_on_market_quote_unknown_exchange_is_noop).

@@ -128,9 +128,9 @@ def e2e_server():
 
     ctx = StrategyContext(
         strategy=TestStrategy,
-        brokers=[broker],
+        connectors={"BINANCE.UM": broker},
         data_providers=[dp],
-        account=account,
+        account_manager=account,
         scheduler=scheduler,
         time_provider=tp,
         instruments=instruments,
