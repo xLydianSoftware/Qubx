@@ -68,12 +68,25 @@ class OrderRejectedEvent(OrderEvent):
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OrderPartiallyFilledEvent(OrderEvent):
-    fill: Deal
+    fill: Deal | None = None
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
 class OrderFilledEvent(OrderEvent):
-    fill: Deal
+    fill: Deal | None = None
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class DealEvent(OrderEvent):
+    """A trade (execution) addressed to an order — the ledger leg of the hybrid event model.
+
+    Order status events drive the lifecycle; a DealEvent drives the ledger. Combined-stream
+    venues (Binance) deliver status+deal together, so the deal rides embedded on the fill
+    events above. Split-stream venues (OKX/Bitfinex) deliver executions on a separate
+    stream — each trade arrives as one DealEvent and the AccountManager correlates it to
+    the order by id, deduped by ``deal.trade_id``. Never changes order status."""
+
+    deal: Deal
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)

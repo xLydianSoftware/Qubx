@@ -83,8 +83,8 @@ def test_suppressed_result_fires_no_callbacks():
 
 
 def test_deduped_fill_skips_downstream_delivery():
-    # Two-stream FILLED promotion re-delivers an already-applied deal: the AM reports the
-    # status change (result.order set) but suppresses the deal (result.deal None), so
+    # A venue re-sends an order report whose embedded deal the AM already applied: it reports
+    # the status change (result.order set) but suppresses the deal (result.deal None), so
     # save_deals/gatherer/trackers must NOT receive the same Deal twice.
     pm = _pm()
     pm._account_manager.apply.return_value = ApplyResult(order=MagicMock(), order_change=OrderChange.FILLED)

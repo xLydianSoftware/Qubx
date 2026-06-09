@@ -4,8 +4,9 @@ Adds the OKX-specific behavior on top of the generic ``CcxtConnector``:
 
 - **Split orders/fills streams** (via ``_TwoStreamExecutionsMixin``): OKX's
   ``watch_orders`` carries only status, not fills; the fills come on a separate
-  ``watch_my_trades`` stream. The mixin runs both concurrently and promotes to
-  FILLED carrying the last deal (dedup-safe — see the mixin docstring).
+  ``watch_my_trades`` stream. The mixin runs both concurrently — status events ride
+  with ``fill=None`` and each trade arrives as a ``DealEvent``; the AccountManager
+  correlates them by trade id (see the mixin docstring).
 - **Balance extraction**: ccxt maps OKX's ``eq`` (= cashBal + unrealizedPnL) onto
   the canonical ``total``; the framework wants the cash leg, so we read per-currency
   ``cashBal`` / ``frozenBal`` from the raw ``info.data[0].details`` instead.

@@ -1,9 +1,10 @@
 """Unit tests for the per-exchange CcxtConnector subclasses (commit 4b).
 
-Covers OKX/Bitfinex split orders/fills streams, the FILLED-promotion-via-last-deal
-path (and its AM dedup safety), OKX balance extraction + make_client_id, and the
-get_ccxt_connector factory. Mocked ccxt — no credentials or network. Async work is
-driven deterministically via the ``_spawn``-capture pattern from the read tests.
+Covers OKX/Bitfinex split orders/fills streams (status events with ``fill=None`` plus
+one ``DealEvent`` per trade, with AM-level cross-stream convergence in both orderings),
+OKX balance extraction + make_client_id, and the get_ccxt_connector factory. Mocked
+ccxt — no credentials or network. Async work is driven deterministically via the
+``_spawn``-capture pattern from the read tests.
 """
 
 from unittest.mock import AsyncMock, Mock
@@ -17,6 +18,7 @@ from qubx.connectors.ccxt.factory import get_ccxt_connector
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus
 from qubx.core.events import (
+    DealEvent,
     OrderAcceptedEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
@@ -112,7 +114,7 @@ def _ws_trade(
 
 
 # --------------------------------------------------------------------------- #
-# OKX two-stream: open -> accepted; trade -> partial; FILLED -> filled
+# OKX two-stream: open -> accepted; trade -> DealEvent; status reports -> fill=None
 # --------------------------------------------------------------------------- #
 def test_okx_watch_orders_open_emits_accepted() -> None:
     conn, sent, _ = _make_connector(OkxCcxtConnector)
@@ -124,9 +126,9 @@ def test_okx_watch_orders_open_emits_accepted() -> None:
     assert ev.venue_order_id == "VENUE123"
 
 
-def test_okx_watch_orders_open_carries_no_fill() -> None:
-    # OKX watch_orders never carries a fill even on a partial/filled report; the trade
-    # stream owns fills. A PARTIALLY_FILLED status from watch_orders is a no-op here.
+def test_okx_partial_status_emits_status_only_event() -> None:
+    # OKX watch_orders never carries a trade; a PARTIALLY_FILLED report becomes a
+    # status-only OrderPartiallyFilledEvent (fill=None) — the deal rides the trade stream.
     conn, sent, _ = _make_connector(OkxCcxtConnector)
     # Seed the venue ack via the prior open report (the realistic order: open precedes
     # the partial), so the partial status isn't mistaken for a first-seen fill.
@@ -135,10 +137,15 @@ def test_okx_watch_orders_open_carries_no_fill() -> None:
     raw = _ws_order(status="open")
     raw["info"] = {"status": "PARTIALLY_FILLED"}
     conn._handle_ws_order(raw)
-    assert sent == []
+    assert len(sent) == 1
+    ev = sent[0]
+    assert isinstance(ev, OrderPartiallyFilledEvent)
+    assert ev.client_order_id == "qubxBTCUSDT1"
+    assert ev.venue_order_id == "VENUE123"
+    assert ev.fill is None
 
 
-def test_okx_watch_my_trades_emits_partially_filled() -> None:
+def test_okx_watch_my_trades_emits_deal_event() -> None:
     conn, sent, _ = _make_connector(OkxCcxtConnector)
     # Seed the venue->cid index via the open order so the trade resolves its cid.
     conn._handle_ws_order(_ws_order(status="open"))
@@ -147,63 +154,67 @@ def test_okx_watch_my_trades_emits_partially_filled() -> None:
     conn._handle_ws_trade(_ws_trade("T1", amount=0.5))
     assert len(sent) == 1
     ev = sent[0]
-    assert isinstance(ev, OrderPartiallyFilledEvent)
+    assert isinstance(ev, DealEvent)
     assert ev.client_order_id == "qubxBTCUSDT1"
     assert ev.venue_order_id == "VENUE123"
-    assert ev.fill.trade_id == "T1"
-    assert ev.fill.amount == 0.5
+    assert ev.deal.trade_id == "T1"
+    assert ev.deal.amount == 0.5
 
 
-def test_okx_filled_status_promotes_with_last_deal() -> None:
+def test_okx_filled_status_emits_status_only_filled() -> None:
     conn, sent, _ = _make_connector(OkxCcxtConnector)
     conn._handle_ws_order(_ws_order(status="open"))
     conn._handle_ws_trade(_ws_trade("T1", amount=1.0))
     sent.clear()
 
-    # watch_orders now reports the order FILLED (no trade) -> promote carrying T1.
+    # watch_orders reports the order FILLED (no trade) -> plain terminal status, no
+    # stitching: the deal already rode the trade stream as a DealEvent.
     conn._handle_ws_order(_ws_order(status="closed"))
     assert len(sent) == 1
     ev = sent[0]
     assert isinstance(ev, OrderFilledEvent)
     assert ev.client_order_id == "qubxBTCUSDT1"
-    assert ev.fill.trade_id == "T1"
-    assert ev.fill.amount == 1.0
+    assert ev.fill is None
 
 
-def test_okx_filled_without_remembered_trade_emits_nothing() -> None:
-    # No prior trade remembered -> OrderFilledEvent needs a Deal, so skip and rely on
-    # snapshot reconcile (do not fabricate a terminal transition without a fill).
+def test_okx_filled_status_without_prior_trade_still_emits() -> None:
+    # FILLED is emitted even when no trade was seen yet (the trade stream may lag):
+    # the terminal transition no longer depends on a remembered deal.
     conn, sent, _ = _make_connector(OkxCcxtConnector)
     conn._handle_ws_order(_ws_order(status="open"))
     sent.clear()
     conn._handle_ws_order(_ws_order(status="closed"))
-    assert sent == []
+    assert len(sent) == 1
+    ev = sent[0]
+    assert isinstance(ev, OrderFilledEvent)
+    assert ev.fill is None
 
 
-@pytest.mark.asyncio
-async def test_okx_split_promotion_is_am_dedup_safe() -> None:
-    # The same trade_id rides both the partial (trade stream) and the filled
-    # (promotion) events. A REAL AccountManager must dedup the fill by trade_id: the
-    # position reflects ONE fill, but the order still transitions to FILLED.
+def test_okx_trade_after_terminal_eviction_emits_deal_by_venue_id() -> None:
+    # The FILLED status evicts the connector's order cache; a trade landing after that
+    # can't resolve its cid but still rides as a DealEvent addressed by venue id — AM
+    # resolves it through its own venue-id index.
     conn, sent, _ = _make_connector(OkxCcxtConnector)
     conn._handle_ws_order(_ws_order(status="open"))
-    conn._handle_ws_trade(_ws_trade("T1", amount=1.0, price=100.0))
     conn._handle_ws_order(_ws_order(status="closed"))
+    sent.clear()
+    conn._handle_ws_trade(_ws_trade("T1", amount=1.0))
+    assert len(sent) == 1
+    ev = sent[0]
+    assert isinstance(ev, DealEvent)
+    assert ev.client_order_id is None
+    assert ev.venue_order_id == "VENUE123"
+    assert ev.deal.trade_id == "T1"
 
-    partials = [e for e in sent if isinstance(e, OrderPartiallyFilledEvent)]
-    fills = [e for e in sent if isinstance(e, OrderFilledEvent)]
-    assert len(partials) == 1
-    assert len(fills) == 1
-    # Same trade_id across both -> AM's seen_trade_ids dedups the fill amount.
-    assert partials[0].fill.trade_id == fills[0].fill.trade_id == "T1"
 
+def _seeded_am() -> SimulatedAccountManager:
     am = SimulatedAccountManager(
         connectors={"OKX.F": object()},
         base_currencies={"OKX.F": "USDT"},
         time=DummyTimeProvider(),
     )
     # Order must exist for the events to land on it: accepted events are resolve-only
-    # (no materialization), so seed the framework order first, then ack it.
+    # (no materialization), so seed the framework order first.
     am.add_order(
         Order(
             client_order_id="qubxBTCUSDT1",
@@ -219,35 +230,54 @@ async def test_okx_split_promotion_is_am_dedup_safe() -> None:
             time_in_force="gtc",
         )
     )
-    am.apply(
-        OrderAcceptedEvent(
-            instrument=_instrument(),
-            client_order_id="qubxBTCUSDT1",
-            venue_order_id="VENUE123",
-            accepted_at=DummyTimeProvider().time(),
-        )
-    )
-    am.apply(partials[0])
-    am.apply(fills[0])
+    return am
+
+
+def test_okx_split_streams_converge_in_am_deal_then_status() -> None:
+    # Trade stream wins the race: the DealEvent books the fill, the later FILLED status
+    # (fill=None) only drives the terminal transition. ONE fill total.
+    conn, sent, _ = _make_connector(OkxCcxtConnector)
+    conn._handle_ws_order(_ws_order(status="open"))
+    conn._handle_ws_trade(_ws_trade("T1", amount=1.0, price=100.0))
+    conn._handle_ws_order(_ws_order(status="closed"))
+
+    deals = [e for e in sent if isinstance(e, DealEvent)]
+    fills = [e for e in sent if isinstance(e, OrderFilledEvent)]
+    assert len(deals) == 1 and len(fills) == 1
+    assert fills[0].fill is None
+
+    am = _seeded_am()
+    for event in sent:
+        am.apply(event)
 
     order = am.find_order_by_id("VENUE123")
     assert order is not None
     assert order.status is OrderStatus.FILLED
-    # Dedup: filled_quantity reflects ONE fill of 1.0, not 2.0.
     assert order.filled_quantity == pytest.approx(1.0)
-    pos = am.get_position(_instrument())
-    assert pos.quantity == pytest.approx(1.0)
+    assert am.get_position(_instrument()).quantity == pytest.approx(1.0)
 
 
-def test_okx_terminal_evicts_last_deal_map() -> None:
-    conn, _sent, _ = _make_connector(OkxCcxtConnector)
+def test_okx_split_streams_converge_in_am_status_then_deal() -> None:
+    # Status stream wins the race: FILLED (fill=None) transitions first; the late trade
+    # still books against the terminal-but-retained order. ONE fill total.
+    conn, sent, _ = _make_connector(OkxCcxtConnector)
     conn._handle_ws_order(_ws_order(status="open"))
-    conn._handle_ws_trade(_ws_trade("T1", amount=1.0))
-    assert "qubxBTCUSDT1" in conn._last_deal_by_cid  # type: ignore[attr-defined]
     conn._handle_ws_order(_ws_order(status="closed"))
-    # Terminal eviction dropped both the order cache and the transient last-deal entry.
-    assert "qubxBTCUSDT1" not in conn._last_deal_by_cid  # type: ignore[attr-defined]
-    assert "qubxBTCUSDT1" not in conn._orders
+    conn._handle_ws_trade(_ws_trade("T1", amount=1.0, price=100.0))
+
+    deals = [e for e in sent if isinstance(e, DealEvent)]
+    fills = [e for e in sent if isinstance(e, OrderFilledEvent)]
+    assert len(deals) == 1 and len(fills) == 1
+
+    am = _seeded_am()
+    for event in sent:
+        am.apply(event)
+
+    order = am.find_order_by_id("VENUE123")
+    assert order is not None
+    assert order.status is OrderStatus.FILLED
+    assert order.filled_quantity == pytest.approx(1.0)
+    assert am.get_position(_instrument()).quantity == pytest.approx(1.0)
 
 
 # --------------------------------------------------------------------------- #
@@ -312,20 +342,20 @@ async def test_okx_snapshot_extracts_cashbal_balances() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# Bitfinex two-stream: partial + filled
+# Bitfinex two-stream: deal + status-only filled
 # --------------------------------------------------------------------------- #
-def test_bitfinex_two_stream_partial_then_filled() -> None:
+def test_bitfinex_two_stream_deal_then_filled() -> None:
     conn, sent, _ = _make_connector(BitfinexCcxtConnector)
     conn._handle_ws_order(_ws_order(status="open"))
     conn._handle_ws_trade(_ws_trade("BT1", amount=1.0))
     conn._handle_ws_order(_ws_order(status="closed"))
 
-    partials = [e for e in sent if isinstance(e, OrderPartiallyFilledEvent)]
+    deals = [e for e in sent if isinstance(e, DealEvent)]
     fills = [e for e in sent if isinstance(e, OrderFilledEvent)]
-    assert len(partials) == 1
+    assert len(deals) == 1
     assert len(fills) == 1
-    assert partials[0].fill.trade_id == "BT1"
-    assert fills[0].fill.trade_id == "BT1"
+    assert deals[0].deal.trade_id == "BT1"
+    assert fills[0].fill is None
 
 
 def test_bitfinex_uses_base_make_client_id_and_balances() -> None:

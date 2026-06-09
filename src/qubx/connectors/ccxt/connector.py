@@ -869,24 +869,23 @@ class CcxtConnector(ChannelEmitter):
         """Emit the terminal FILLED fill(s) for a watch_orders report (base / Binance).
 
         The inline trades close the order (the last deal becomes OrderFilledEvent).
-        Two-stream venues override this to promote-to-FILLED using the deal last seen
-        on their watch_my_trades stream.
+        Two-stream venues override this to emit a status-only OrderFilledEvent
+        (``fill=None``); their deals arrive via DealEvent off the trade stream.
         """
         self._emit_fills(instrument, order, ccxt_extract_deals_from_exec(raw), partial=False)
 
     def _emit_fills(self, instrument: Instrument, order: Order, deals: list[Deal], *, partial: bool) -> None:
         """Emit one fill event per extracted deal (AM dedups by trade_id).
 
-        OrderPartiallyFilledEvent / OrderFilledEvent both require a Deal, so when the
-        venue update carries no per-trade detail there is nothing to emit here. The
-        venues that omit ``trades`` on a ``watch_orders`` terminal report (OKX,
+        This is the combined-stream (Binance) path: the deal rides embedded on the fill
+        event, so when the venue update carries no per-trade detail there is nothing to
+        emit here. The venues that omit ``trades`` on a ``watch_orders`` report (OKX,
         Bitfinex) feed their fills through a separate ``watch_my_trades`` stream — the
-        two-stream subclass override that splits them — so the Deal still arrives.
-        Binance carries the trade inline on the order report, so the unified base feed
-        needs no split. (Reconcile does NOT recover a missed fill: a snapshot taken
-        after a fully-filled order leaves the open-orders set would see it gone and
-        transition it to CANCELED, not FILLED — so the trade stream, not reconcile, is
-        the mitigation.)
+        two-stream subclass overrides these seams to emit status-only fill events
+        (``fill=None``) plus one ``DealEvent`` per trade. (Reconcile does NOT recover a
+        missed fill: a snapshot taken after a fully-filled order leaves the open-orders
+        set would see it gone and transition it to CANCELED, not FILLED — so the trade
+        stream, not reconcile, is the mitigation.)
         """
         if not deals:
             logger.debug(

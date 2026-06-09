@@ -28,6 +28,7 @@ from qubx.core.events import (
     AccountMessage,
     AccountSnapshotEvent,
     BalanceUpdateEvent,
+    DealEvent,
     FundingPaymentEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
@@ -397,6 +398,7 @@ class AccountManager:
         self._handlers = {
             OrderPartiallyFilledEvent: self._handle_partial_fill,
             OrderFilledEvent: self._handle_fill,
+            DealEvent: self._handle_deal,
             OrderAcceptedEvent: self._handle_accepted,
             OrderCanceledEvent: self._handle_canceled,
             OrderExpiredEvent: self._handle_expired,
@@ -532,7 +534,9 @@ class AccountManager:
             return ApplyResult()
         if event.venue_order_id is not None:
             state.set_venue_id(order.client_order_id, event.venue_order_id)
-        new_deal = state.apply_fill(order.client_order_id, event.fill, self._time.time())
+        # fill is None on split-stream venues (the deal arrives separately via DealEvent):
+        # the status transition still happens, only the booking is skipped.
+        new_deal = event.fill is not None and state.apply_fill(order.client_order_id, event.fill, self._time.time())
         deal = event.fill if new_deal else None
         position = (
             self._book_deal(state, order.instrument, deal)
@@ -565,7 +569,9 @@ class AccountManager:
             return ApplyResult()
         if event.venue_order_id is not None:
             state.set_venue_id(order.client_order_id, event.venue_order_id)
-        new_deal = state.apply_fill(order.client_order_id, event.fill, self._time.time())
+        # fill is None on split-stream venues (the deal arrives separately via DealEvent):
+        # the terminal transition still happens, only the booking is skipped.
+        new_deal = event.fill is not None and state.apply_fill(order.client_order_id, event.fill, self._time.time())
         deal = event.fill if new_deal else None
         position = (
             self._book_deal(state, order.instrument, deal)
@@ -574,6 +580,27 @@ class AccountManager:
         )
         order = self._transition(state, order.client_order_id, OrderStatus.FILLED)
         return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
+
+    def _handle_deal(self, state: AccountState, event: DealEvent) -> ApplyResult:
+        # Status comes from order events; a deal only drives the ledger. A deal is
+        # money-carrying, so an unknown order materializes as EXTERNAL (instrument-guarded
+        # in _resolve_or_materialize).
+        order = self._resolve_or_materialize(state, event)
+        if order is None:
+            return ApplyResult()
+        if order.status.is_terminal and not state.has_active_order(order.client_order_id):
+            # Evicted past the terminal grace window: the seen-trade dedup table is gone,
+            # so booking here could double-count a re-delivered trade. A terminal order
+            # still INSIDE the grace window falls through — the split-stream FILLED status
+            # (fill=None) can beat the final trade, and that trade must still book; the
+            # trade-id dedup below keeps an already-seen one a no-op.
+            return ApplyResult()
+        if event.venue_order_id is not None:
+            state.set_venue_id(order.client_order_id, event.venue_order_id)
+        if not state.apply_fill(order.client_order_id, event.deal, self._time.time()):
+            return ApplyResult()
+        position = self._book_deal(state, order.instrument, event.deal) if order.instrument is not None else None
+        return ApplyResult(deal=event.deal, position=position)
 
     def _handle_canceled(self, state: AccountState, event: OrderCanceledEvent) -> ApplyResult:
         order = self._resolve(state, event)

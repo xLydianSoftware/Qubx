@@ -2275,7 +2275,8 @@ class IStrategy(metaclass=Mixable):
         react to a specific kind, e.g.::
 
             if isinstance(event, OrderFilledEvent):
-                deal = event.fill
+                deal = event.fill  # may be None on split-stream venues (OKX/Bitfinex);
+                # the deal then arrives via the deduped execution path
             elif isinstance(event, OrderRejectedEvent):
                 reason = event.reason
 

@@ -5,6 +5,7 @@ import numpy as np
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import Deal, Instrument, MarketType, Order, OrderChange, OrderOrigin, OrderStatus
 from qubx.core.events import (
+    DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
@@ -242,8 +243,9 @@ def test_fill_dedup_by_trade_id():
 
 
 def test_fill_redelivered_trade_id_promotes_status_without_deal():
-    # Two-stream FILLED promotion re-delivers the already-applied deal: the order still
-    # transitions to FILLED, but the deal is deduped -> delivered downstream exactly once.
+    # A venue re-sends an order report whose embedded deal was already applied (combined-stream
+    # re-delivery / cross-stream race): the order still transitions to FILLED, but the deal is
+    # deduped -> delivered downstream exactly once.
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
@@ -255,6 +257,142 @@ def test_fill_redelivered_trade_id_promotes_status_without_deal():
     assert r2.order_change is OrderChange.FILLED
     assert r2.deal is None and r2.position is None  # already applied via the partial
     assert r2.order.filled_quantity == 0.5
+
+
+def test_deal_event_books_without_status_change():
+    # Split-stream: the deal drives the ledger only; status comes from order events.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    r = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=_fill(amount=0.4)))
+    assert r.order is None and r.order_change is None  # never a status transition
+    assert r.deal is not None and r.deal.trade_id == "t1"
+    assert r.position is not None and r.position.quantity == 0.4
+    o = am.get_state("binance").get_order("cid-1")
+    assert o.status is OrderStatus.ACCEPTED
+    assert o.filled_quantity == 0.4
+
+
+def test_deal_event_duplicate_is_noop():
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    evt = DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=_fill(amount=0.4))
+    r1 = am.apply(evt)
+    assert r1.deal is not None
+    r2 = am.apply(evt)
+    _assert_empty(r2)  # deduped -> no second booking
+    assert am.get_state("binance").get_order("cid-1").filled_quantity == 0.4
+
+
+def test_cross_stream_dedup_deal_then_status_with_embedded_fill():
+    # Trade stream wins the race: the DealEvent books; the FILLED status re-delivering
+    # the same trade embedded still transitions but the deal is deduped.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    f = _fill(trade_id="t1", amount=0.5)
+    r1 = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=f))
+    assert r1.deal is not None and r1.deal.trade_id == "t1"
+    r2 = am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=f))
+    assert r2.order is not None and r2.order.status is OrderStatus.FILLED
+    assert r2.order_change is OrderChange.FILLED
+    assert r2.deal is None and r2.position is None  # already applied via DealEvent
+    assert r2.order.filled_quantity == 0.5
+
+
+def test_cross_stream_dedup_status_with_embedded_fill_then_deal():
+    # Status stream wins the race: the embedded fill books with the FILLED transition;
+    # the late DealEvent re-delivering the same trade is a complete no-op.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    f = _fill(trade_id="t1", amount=0.5)
+    r1 = am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=f))
+    assert r1.deal is not None and r1.order is not None and r1.order.status is OrderStatus.FILLED
+    r2 = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=f))
+    _assert_empty(r2)
+    assert am.get_state("binance").get_order("cid-1").filled_quantity == 0.5
+
+
+def test_fill_event_without_fill_transitions_without_booking():
+    # Split-stream FILLED status: terminal transition happens, nothing books — the deal
+    # arrives separately via DealEvent.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    r = am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=None))
+    assert r.order is not None and r.order.status is OrderStatus.FILLED
+    assert r.order_change is OrderChange.FILLED
+    assert r.deal is None and r.position is None
+    assert r.order.filled_quantity == 0.0
+
+
+def test_partial_fill_event_without_fill_transitions_without_booking():
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    r = am.apply(OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=None))
+    assert r.order is not None and r.order.status is OrderStatus.PARTIALLY_FILLED
+    assert r.order_change is OrderChange.PARTIALLY_FILLED
+    assert r.deal is None and r.position is None
+    assert r.order.filled_quantity == 0.0
+
+
+def test_late_deal_after_filled_books_when_trade_unseen():
+    # Split-stream race: the FILLED status (fill=None) beats the final trade. The order
+    # is terminal but still inside the eviction grace window, and the trade was never
+    # seen — it must still book (ledger correctness), with no status disturbance.
+    am = _am()
+    inst = _Inst()
+    add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
+    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=None))
+    r = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=_fill(amount=1.0)))
+    assert r.order is None and r.order_change is None
+    assert r.deal is not None and r.deal.trade_id == "t1"
+    assert r.position is not None and r.position.quantity == 1.0
+    o = am.get_state("binance").get_order("cid-1")
+    assert o.status is OrderStatus.FILLED
+    assert o.filled_quantity == 1.0
+
+
+def test_deal_after_terminal_eviction_is_noop():
+    # Past the grace window the seen-trade table is gone — a re-delivered trade must be
+    # suppressed rather than risk double-booking against an evicted order.
+    am = _am()
+    inst = _Inst()
+    state = am.get_state("binance")
+    add_order(state, status=OrderStatus.ACCEPTED, instrument=inst)
+    f = _fill(amount=1.0)
+    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=f))
+    state.evict_to_history("cid-1")
+    r = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=f))
+    _assert_empty(r)
+    assert state.get_position(inst).quantity == 1.0  # booked exactly once
+
+
+def test_deal_event_on_unknown_order_materializes_external():
+    # A deal is money-carrying: an unknown order materializes as EXTERNAL and the deal
+    # books — but materialization never produces a status-change callback.
+    am = _am()
+    inst = _Inst()
+    r = am.apply(DealEvent(instrument=inst, client_order_id="alien", venue_order_id="VX", deal=_fill(amount=0.3)))
+    assert r.order is None and r.order_change is None
+    assert r.deal is not None
+    assert r.position is not None and r.position.quantity == 0.3
+    o = am.get_state("binance").get_order_by_venue_id("VX")
+    assert o is not None
+    assert o.client_order_id == "ext:VX"
+    assert o.origin is OrderOrigin.EXTERNAL
+    assert o.status is OrderStatus.ACCEPTED
+    assert o.filled_quantity == 0.3
+
+
+def test_deal_event_without_instrument_for_unknown_order_is_noop():
+    am = _am()
+    r = am.apply(DealEvent(instrument=None, client_order_id="alien", venue_order_id="VX", deal=_fill()))
+    _assert_empty(r)
+    assert am.get_state("binance").get_orders() == {}
 
 
 def test_subsequent_partial_fill_is_execution_only():
