@@ -240,33 +240,42 @@ def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
     return Trade(recognize_time(trade["timestamp"]), price, amnt, side)
 
 
+def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str, dict[str, Any]]) -> Position | None:
+    """Convert one ccxt unified position dict into a Position; None when the symbol is
+    unknown to the loaded markets. Shared by the REST snapshot path (ccxt_convert_positions)
+    and WS position pushes so both produce the identical mapping."""
+    symbol = info["symbol"]
+    if symbol not in markets:
+        logger.warning(f"Could not find symbol {symbol}, skipping position...")
+        return None
+    instr = ccxt_symbol_to_instrument(
+        ccxt_exchange_name,
+        markets[symbol],
+    )
+    quantity = abs(info["contracts"]) * (-1 if info["side"] == "short" else 1)
+    pos = Position(
+        instrument=instr,
+        quantity=quantity,
+        pos_average_price=info["entryPrice"],
+    )
+    if info.get("markPrice", None) is not None:
+        pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
+
+    # Use exchange-provided maintenance margin if available (more accurate than calculated)
+    if info.get("maintenanceMargin") is not None:
+        pos.set_external_maint_margin(float(info["maintenanceMargin"]))
+
+    return pos
+
+
 def ccxt_convert_positions(
     pos_infos: list[dict], ccxt_exchange_name: str, markets: dict[str, dict[str, Any]]
 ) -> list[Position]:
     positions = []
     for info in pos_infos:
-        symbol = info["symbol"]
-        if symbol not in markets:
-            logger.warning(f"Could not find symbol {symbol}, skipping position...")
-            continue
-        instr = ccxt_symbol_to_instrument(
-            ccxt_exchange_name,
-            markets[symbol],
-        )
-        quantity = abs(info["contracts"]) * (-1 if info["side"] == "short" else 1)
-        pos = Position(
-            instrument=instr,
-            quantity=quantity,
-            pos_average_price=info["entryPrice"],
-        )
-        if info.get("markPrice", None) is not None:
-            pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
-
-        # Use exchange-provided maintenance margin if available (more accurate than calculated)
-        if info.get("maintenanceMargin") is not None:
-            pos.set_external_maint_margin(float(info["maintenanceMargin"]))
-
-        positions.append(pos)
+        pos = ccxt_convert_position(info, ccxt_exchange_name, markets)
+        if pos is not None:
+            positions.append(pos)
     return positions
 
 

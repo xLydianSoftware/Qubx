@@ -29,7 +29,7 @@ from qubx.core.basics import (
     TransactionCostsCalculator,
 )
 from qubx.core.connector import IConnector
-from qubx.core.events import AccountMessage, AccountSnapshotEvent, OrderEvent
+from qubx.core.events import AccountMessage, AccountSnapshotEvent, BalanceUpdateEvent, OrderEvent
 from qubx.core.interfaces import IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
 
@@ -49,6 +49,11 @@ class AccountManager:
     _terminal_retention: np.timedelta64
     _liveness_unready_since: dict[str, np.datetime64]
     _last_eviction_sweep: np.datetime64
+    _last_drift_snapshot: dict[str, np.datetime64]
+
+    # Min interval between drift-triggered snapshot requests, per exchange: a burst of
+    # drifting position pushes collapses into one REST correction.
+    _DRIFT_SNAPSHOT_MIN_INTERVAL = np.timedelta64(2_000, "ms")
 
     def __init__(
         self,
@@ -122,6 +127,7 @@ class AccountManager:
         }
         self._liveness_unready_since = {}
         self._last_eviction_sweep = time.time()
+        self._last_drift_snapshot = {}
 
     def _register_ticks(self) -> None:
         cfg = self._cfg
@@ -188,6 +194,8 @@ class AccountManager:
             if diff.missing:
                 self._resolve_missing_orders(state, diff)
             self._log_reconcile_diff(state.exchange, diff)
+        if result.position_drift is not None:
+            self._on_position_drift(state, result.position_drift, now)
         # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest)
         # registers no periodic ticks, so without this sweep terminal orders and their
         # side-table entries would grow unbounded there (and in live when
@@ -250,9 +258,42 @@ class AccountManager:
                 unresolved.append(order)
         diff.missing[:] = unresolved
 
+    def _on_position_drift(self, state: AccountState, pushed: Position, now: np.datetime64) -> None:
+        # A venue position push disagreed with local size. The reducer never applies it
+        # (sizes are owned by the deal ledger); the correction is the race-safe snapshot
+        # reconcile. Rate-limited per exchange so a burst of drifting pushes collapses
+        # into one REST request — drifts suppressed inside the window are still corrected
+        # by that pending snapshot.
+        instrument = pushed.instrument
+        local = state.get_position(instrument)
+        local_qty = local.quantity if local is not None else 0.0
+        last = self._last_drift_snapshot.get(state.exchange)
+        if last is not None and (now - last) < self._DRIFT_SNAPSHOT_MIN_INTERVAL:
+            logger.debug(
+                f"[{state.exchange}] position drift on {instrument.symbol} "
+                f"(local={local_qty}, pushed={pushed.quantity}) within rate window; snapshot already requested"
+            )
+            return
+        logger.warning(
+            f"[{state.exchange}] position drift on {instrument.symbol}: "
+            f"local={local_qty}, pushed={pushed.quantity}; requesting snapshot"
+        )
+        # Stamp before the request so a connector error doesn't re-fire every push;
+        # the periodic snapshot tick is the backstop.
+        self._last_drift_snapshot[state.exchange] = now
+        try:
+            self._connectors[state.exchange].request_snapshot()
+        except Exception:
+            logger.exception(f"[{state.exchange}] drift snapshot request failed")
+
     def _state_for_event(self, event: AccountMessage) -> AccountState | None:
         if isinstance(event, AccountSnapshotEvent):
             return self._states.get(event.snapshot.exchange)
+        if isinstance(event, BalanceUpdateEvent):
+            # Balance pushes carry no instrument — route strictly by the balance's
+            # exchange (the single-state fallback below would misroute a push stamped
+            # for an unmanaged exchange).
+            return self._states.get(event.balance.exchange)
         if event.instrument is not None:
             return self._states.get(event.instrument.exchange)
         # No instrument — route an order event by its identifiers so a reject emitted

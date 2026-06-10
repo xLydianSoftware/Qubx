@@ -146,22 +146,26 @@ def reconcile_snapshot(
                 _update_from_snapshot(state, existing, snap_order, snapshot.as_of, now)
                 diff.updated.append(existing)
 
-    # Positions and balances: the snapshot is the venue's authoritative truth for
-    # size/amount, and stale snapshots are already rejected wholesale by the as_of
-    # ratchet above. Positions reconcile surgically (size/avg-price/margin/mark only —
-    # locally accumulated r_pnl/commissions/funding always survive); balances overwrite.
-    # No per-record freshness here (unlike orders, where it guards a fresh fill):
-    # Position/Balance carry no reliable last-update timestamp yet.
-    # TODO(account-mgmt): once WS PositionUpdate/BalanceUpdate events are wired,
-    # add per-record freshness backed by a real timestamp so a snapshot older than
-    # a recent WS update can't clobber it.
+    # Positions: the snapshot is the venue's authoritative truth for size, and stale
+    # snapshots are already rejected wholesale by the as_of ratchet above. Reconcile is
+    # surgical (size/avg-price/margin/mark only — locally accumulated r_pnl/commissions/
+    # funding always survive) with NO per-record freshness: WS position pushes never
+    # write size, so the snapshot must stay the sole size-correction authority (a
+    # freshness guard would block exactly the correction position_drift requests).
     if snapshot.positions is not None:
         for snap_pos in snapshot.positions:
             if state.reconcile_position_from_snapshot(snap_pos):
                 diff.positions.append(snap_pos)
 
+    # Balances: skip a currency whose WS push as_of is at/after the snapshot's as_of —
+    # the absolute push already supersedes the snapshot figure. Tie-break favors the
+    # push: snapshot.as_of is the local fetch clock while push as_of is venue event
+    # time, so at equal stamps the push is the at-least-as-fresh figure.
     if snapshot.balances is not None:
         for snap_bal in snapshot.balances:
+            push_as_of = state.get_balance_push_as_of(snap_bal.currency)
+            if push_as_of is not None and push_as_of >= snapshot.as_of:
+                continue
             if state.apply_balance_snapshot(snap_bal):
                 diff.balances.append(snap_bal)
 

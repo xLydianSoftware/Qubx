@@ -640,6 +640,35 @@ def test_balance_updated_from_snapshot():
     assert state.get_balance("USDT").total == 1000.0
 
 
+def test_snapshot_balance_leg_skipped_when_push_at_least_as_fresh():
+    # F26: a currency whose WS push as_of >= snapshot.as_of keeps the push figure.
+    # Tie-break favors the push (snapshot as_of is the local fetch clock, push as_of
+    # is venue event time). Per-currency: an uncovered currency still applies.
+    am = _am()
+    state = am._states["binance"]
+    state.apply_balance_push("USDT", 1500.0, np.datetime64("2026-05-28T01:00:00"))
+    snap_usdt = Balance(exchange="binance", currency="USDT", free=900.0, locked=100.0, total=1000.0)
+    snap_btc = Balance(exchange="binance", currency="BTC", free=0.5, locked=0.0, total=0.5)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    r = am.apply(_snap_event(as_of="2026-05-28T01:00:00", balances=[snap_usdt, snap_btc]))
+    assert state.get_balance("USDT").total == 1500.0  # push figure stands
+    assert state.get_balance("BTC").total == 0.5
+    assert r.reconcile_diff is not None
+    assert r.reconcile_diff.balances == [snap_btc]
+
+
+def test_snapshot_balance_leg_applies_when_newer_than_push():
+    am = _am()
+    state = am._states["binance"]
+    state.apply_balance_push("USDT", 1500.0, np.datetime64("2026-05-28T00:59:00"))
+    snap_bal = Balance(exchange="binance", currency="USDT", free=900.0, locked=100.0, total=1000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    r = am.apply(_snap_event(as_of="2026-05-28T01:00:00", balances=[snap_bal]))
+    assert state.get_balance("USDT").total == 1000.0
+    assert r.reconcile_diff is not None
+    assert r.reconcile_diff.balances == [snap_bal]
+
+
 def test_snapshot_updates_existing_position_and_balance_in_place():
     # A snapshot carrying the same instrument/currency with new values updates the
     # EXISTING position/balance objects in place (identity preserved — code across the

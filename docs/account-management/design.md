@@ -170,10 +170,39 @@ Order **status** events drive the lifecycle; a **`DealEvent`** drives the ledger
   position's mark price and dedups per `(instrument, funding-interval bucket)` (bounded
   set), so venue + simulated re-deliveries apply once. No mark yet → skip *without*
   consuming the bucket, so a re-delivery can apply later.
-- `PositionUpdateEvent` / `BalanceUpdateEvent` are declared but have **no producer yet**
-  (see Deferred); the reducer handler is a no-op. The PM fires `on_position_change` off
-  the position-push payload; balance pushes fire no strategy callback (see Strategy
-  callbacks).
+- `PositionUpdateEvent` / `BalanceUpdateEvent` are **absolute venue pushes** (Binance UM
+  `ACCOUNT_UPDATE`, riding the existing listenKey user-data WS — other venues stay
+  snapshot-only via the `_account_streams()` seam), while the deal path books **deltas**.
+  The venue's per-fill ordering of `ORDER_TRADE_UPDATE` vs `ACCOUNT_UPDATE` is not
+  reliably documented, so application is **ordering-agnostic**:
+  - **Position pushes never write size on the event path** — sizes are owned by the deal
+    ledger. A push size-equal to local (within one lot) is a metadata no-op that advances
+    the per-instrument push `as_of` ratchet; size drift sets `ApplyResult.position_drift`
+    with **zero mutation**, and the AccountManager fires a rate-limited (~2 s per
+    exchange) `request_snapshot()` + WARNING — the race-safe snapshot reconcile corrects
+    the size. Venue upnl/mark are not taken from pushes (positions stay locally marked);
+    hedge-mode pushes (`ps != BOTH`) are warned+skipped at the connector (qubx `Position`
+    is net-only).
+  - **Balance pushes apply absolutely** (`apply_balance_push`) under a per-currency
+    `as_of` ratchet — strictly-older pushes drop; `as_of` is venue event time, the same
+    clock domain as `Deal.time`. Futures pushes carry the wallet total only (free/locked
+    = NaN by producer contract): `total` overwrites, `free` moves by the delta, `locked`
+    survives; a real split (free AND locked non-NaN) overwrites all three.
+  - **Covered-delta guard:** `_book_deal` and `_handle_funding_payment` skip *only their
+    `adjust_balance` leg* when the currency's push `as_of` is at/after the deal/funding
+    venue time — the absolute push already incorporated that cash change. Correct under
+    both `[deal, push]` and `[push, deal]` orderings (the ordering-matrix tests pin
+    convergence to identical qty/r_pnl/balances), and it fixes the funding double-count
+    (our computed `FundingPaymentEvent` vs the venue's actual `FUNDING_FEE` debit).
+    Position size, `r_pnl` and `cumulative_funding` always book.
+  - Dispatch: applied position pushes and the size-equal fire-through both reach
+    `on_position_change`; balance pushes fire **no** strategy callback (see Strategy
+    callbacks).
+
+  With this, liquidation/ADL and venue balance changes reach state at WS latency instead
+  of the ~30 s snapshot tick — **leveraged live (Binance UM) is ready pending a testnet
+  soak**, which also pins the real per-fill event ordering for a later opt-in
+  direct-apply upgrade.
 
 ## Strategy callbacks
 
@@ -193,7 +222,8 @@ callbacks:
 
 There is deliberately **no balance callback**: balances are read via
 `ctx.get_balances()` / `ctx.get_balance()`, and `BalanceUpdateEvent` applies to account
-state silently — a contract fixed now, while the event still has zero producers.
+state silently — for applied pushes (`ApplyResult.balance` set) and suppressed ones
+alike (both pinned in the dispatch tests).
 
 The dead-callback class of bug (a stale-arity override dying in a swallowed TypeError on
 every dispatch) is addressed at the root: a one-time **signature guard at strategy
@@ -215,6 +245,8 @@ class ApplyResult:
     deal: Deal | None = None                # new deal applied -> on_execution + downstream fill consumers
     position: Position | None = None        # position changed -> on_position_change
     reconcile_diff: ReconcileDiff | None = None  # snapshot reconcile -> on_position_change per corrected position
+    position_drift: Position | None = None  # venue push disagrees with local size -> AM snapshot request, no callback
+    balance: Balance | None = None          # balance push applied -> internal visibility only, NO strategy callback
 ```
 
 - The reducer **mutates state and returns the result**; it fires no callbacks (testable
@@ -229,8 +261,10 @@ class ApplyResult:
   `deal` → `on_execution` (plus downstream fill consumers), `position` →
   `on_position_change`, `reconcile_diff` → `on_position_change` per corrected position.
   Sole exception: `PositionUpdateEvent` fires `on_position_change` through on an empty
-  result — the reducer doesn't apply venue position pushes yet, but the push must still
-  reach the strategy. `BalanceUpdateEvent` fires nothing (see Strategy callbacks).
+  result — the reducer never writes size off a venue push (a size-equal push is a
+  metadata no-op), but the push must still reach the strategy. `position_drift` fires
+  nothing strategy-side (the AM reacts with the rate-limited snapshot request);
+  `BalanceUpdateEvent` fires nothing either way (see Strategy callbacks).
 
 ## Reconciler
 
@@ -269,7 +303,13 @@ drives the ticks** and makes every connector call.
 5. **Positions — surgical** (`reconcile_position_from_snapshot`): the snapshot is
    authoritative for size/avg-price and venue-reported margin/mark **only**; locally
    accumulated accounting (`r_pnl`, commissions, funding) always survives. Never routes
-   through `reset_by_position`. Balances overwrite (identity-preserving).
+   through `reset_by_position`. Positions deliberately keep **no** per-record freshness
+   guard against WS pushes: pushes never write size, so the snapshot must remain the sole
+   size-correction authority (a guard would block exactly the correction
+   `position_drift` requests). Balances overwrite (identity-preserving) — except a
+   currency whose push `as_of` is at/after the snapshot's `as_of`: the absolute push is
+   the at-least-as-fresh figure (tie-break favors the push; snapshot `as_of` is the
+   local fetch clock, push `as_of` is venue event time).
 6. **Venue figures** — set when the snapshot carries any; absence keeps the previous
    capture (means "not observed", not "gone").
 
@@ -389,11 +429,6 @@ Sanctioned departures, detailed in the sections above:
   other venues derive (sound fallback).
 - **Real multi-currency `conversion_rate`**: currently 1.0 — see the single-base-currency
   limitation under Capital/margin (COIN-M and non-base-quoted instruments out of scope).
-- **WS position/balance application** — *precondition for leveraged live*: no producer
-  emits `PositionUpdateEvent`/`BalanceUpdateEvent`, so liquidation/ADL reaches state only
-  via the ~30s snapshot tick. Implementation order: emit from Binance ACCOUNT_UPDATE on
-  the existing user-data WS, then replace the reducer no-op with timestamp-guarded
-  `set_position`/`update_balance` (same freshness/ratchet discipline as snapshots).
 - **Cancel+recreate update fallback**: `_update_via_cancel_recreate` raises NotSupported
   (fail-safe: rejects before canceling); all current target venues have `editOrder`, so
   it is unreachable until a venue without it is onboarded.

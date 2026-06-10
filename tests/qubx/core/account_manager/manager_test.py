@@ -21,8 +21,16 @@ from qubx.core.basics import (
     OrderSide,
     OrderStatus,
     OrderType,
+    Position,
 )
-from qubx.core.events import OrderAcceptedEvent, OrderCanceledEvent, OrderFilledEvent, OrderPartiallyFilledEvent
+from qubx.core.events import (
+    BalanceUpdateEvent,
+    OrderAcceptedEvent,
+    OrderCanceledEvent,
+    OrderFilledEvent,
+    OrderPartiallyFilledEvent,
+    PositionUpdateEvent,
+)
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 
@@ -45,6 +53,19 @@ def _present(value: _T | None) -> _T:
 class _Time(ITimeProvider):
     def time(self) -> np.datetime64:
         return T1
+
+
+class _Clock(ITimeProvider):
+    """Mutable clock for rate-limit tests."""
+
+    def __init__(self, start: np.datetime64 = T1):
+        self.now = start
+
+    def time(self) -> np.datetime64:
+        return self.now
+
+    def adv(self, ms: int) -> None:
+        self.now = self.now + np.timedelta64(ms, "ms")
 
 
 def _am(*exchanges: str) -> AccountManager:
@@ -175,3 +196,50 @@ def test_get_order_by_exchange_and_shortcuts():
     one = _am()
     one.get_state(EX).add_order(_order("x", OrderStatus.ACCEPTED))
     assert _present(one.get_order("x")).client_order_id == "x"
+
+
+# --------------------------------------------------------------------------- #
+# F26 — venue push handling at the manager layer
+# --------------------------------------------------------------------------- #
+
+
+def test_position_drift_snapshot_request_is_rate_limited():
+    clock = _Clock()
+    conn = MagicMock()
+    am = AccountManager(connectors={EX: conn}, base_currencies={EX: "USDT"}, time=clock)
+
+    def push_drift(qty: float) -> None:
+        # as_of tracks the clock (strictly increasing), so the reducer's stale-push
+        # ratchet never suppresses; local stays flat, so every push is a drift
+        pos = Position(BTC, quantity=qty, pos_average_price=50_000.0)
+        r = am.apply(PositionUpdateEvent(instrument=BTC, position=pos, as_of=clock.now))
+        assert r.position_drift is pos
+
+    push_drift(1.0)
+    assert conn.request_snapshot.call_count == 1
+    for qty in (2.0, 3.0):
+        clock.adv(500)
+        push_drift(qty)
+    assert conn.request_snapshot.call_count == 1  # drifts inside the ~2s window collapse
+    clock.adv(2_500)  # past the min interval since the first request
+    push_drift(4.0)
+    assert conn.request_snapshot.call_count == 2
+
+
+def test_balance_push_routes_by_balance_exchange():
+    am = _am(EX, "OKX")
+    push = Balance(exchange="OKX", currency="USDT", free=np.nan, locked=np.nan, total=500.0)
+    r = am.apply(BalanceUpdateEvent(instrument=None, balance=push, as_of=T1))
+    assert r.balance is not None
+    assert _present(am.get_state("OKX").get_balance("USDT")).total == 500.0
+    assert am.get_state(EX).get_balance("USDT") is None  # other exchange untouched
+
+
+def test_balance_push_for_unmanaged_exchange_is_dropped():
+    # Strict routing: even with a single state, a push stamped for an unmanaged
+    # exchange must not fall back into it.
+    am = _am()
+    push = Balance(exchange="KRAKEN.F", currency="USDT", free=np.nan, locked=np.nan, total=500.0)
+    r = am.apply(BalanceUpdateEvent(instrument=None, balance=push, as_of=T1))
+    assert r.is_empty()
+    assert am.get_state(EX).get_balance("USDT") is None

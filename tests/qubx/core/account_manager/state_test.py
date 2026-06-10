@@ -306,6 +306,80 @@ def test_update_position_inserts_then_resets_existing():
 
 
 # --------------------------------------------------------------------------- #
+# WS push side-tables: apply_balance_push / push as_of ratchets (F26)
+# --------------------------------------------------------------------------- #
+
+
+def test_apply_balance_push_total_only_preserves_locked():
+    # Futures pushes carry only the wallet total: total is overwritten absolutely,
+    # free moves by the same delta, locked survives.
+    state = AccountState("binance", "USDT")
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=80.0, locked=20.0, total=100.0))
+    assert state.apply_balance_push("USDT", 150.0, T1) is True
+    bal = _present(state.get_balance("USDT"))
+    assert bal.total == 150.0
+    assert bal.free == 130.0
+    assert bal.locked == 20.0
+
+
+def test_apply_balance_push_ratchet_drops_strictly_older():
+    state = AccountState("binance", "USDT")
+    assert state.apply_balance_push("USDT", 100.0, T1) is True
+    assert state.apply_balance_push("USDT", 50.0, T0) is False  # older -> dropped
+    assert _present(state.get_balance("USDT")).total == 100.0
+    assert state.get_balance_push_as_of("USDT") == T1
+    # same-time push applies: absolute overwrite is idempotent and a later
+    # same-ms push is the fresher figure
+    assert state.apply_balance_push("USDT", 120.0, T1) is True
+    assert _present(state.get_balance("USDT")).total == 120.0
+
+
+def test_apply_balance_push_creates_balance_for_new_currency():
+    state = AccountState("binance", "USDT")
+    assert state.apply_balance_push("BNB", 5.0, T1) is True
+    bal = _present(state.get_balance("BNB"))
+    assert (bal.total, bal.free, bal.locked) == (5.0, 5.0, 0.0)
+
+
+def test_apply_balance_push_full_overwrite_when_split_reported():
+    state = AccountState("binance", "USDT")
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=80.0, locked=20.0, total=100.0))
+    assert state.apply_balance_push("USDT", 150.0, T1, free=100.0, locked=50.0) is True
+    bal = _present(state.get_balance("USDT"))
+    assert (bal.total, bal.free, bal.locked) == (150.0, 100.0, 50.0)
+
+
+def test_apply_balance_push_partial_split_falls_back_to_total_only():
+    # A half-reported split (free without locked) is not trusted: the conservative
+    # delta-preserving-locked path applies instead.
+    state = AccountState("binance", "USDT")
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=80.0, locked=20.0, total=100.0))
+    assert state.apply_balance_push("USDT", 150.0, T1, free=140.0) is True
+    bal = _present(state.get_balance("USDT"))
+    assert (bal.total, bal.free, bal.locked) == (150.0, 130.0, 20.0)
+
+
+def test_apply_balance_push_mutates_held_reference_in_place():
+    state = AccountState("binance", "USDT")
+    held = Balance(exchange="binance", currency="USDT", free=100.0, locked=0.0, total=100.0)
+    state.update_balance("USDT", held)
+    state.apply_balance_push("USDT", 200.0, T1)
+    assert state.get_balance("USDT") is held
+    assert held.total == 200.0
+
+
+def test_push_as_of_accessors_default_none_then_track_marks():
+    state = AccountState("binance", "USDT")
+    inst = _instrument("BTCUSDT")
+    assert state.get_position_push_as_of(inst) is None
+    assert state.get_balance_push_as_of("USDT") is None
+    state.mark_position_push(inst, T1)
+    assert state.get_position_push_as_of(inst) == T1
+    state.apply_balance_push("USDT", 100.0, T2)
+    assert state.get_balance_push_as_of("USDT") == T2
+
+
+# --------------------------------------------------------------------------- #
 # side-tables: pre_pending_status / retry_count
 # --------------------------------------------------------------------------- #
 

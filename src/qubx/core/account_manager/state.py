@@ -63,6 +63,8 @@ class AccountState:
         "_transition_counts",
         "_venue_figures",
         "_applied_funding_buckets",
+        "_position_push_as_of",
+        "_balance_push_as_of",
     )
 
     def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
@@ -107,6 +109,12 @@ class AccountState:
         # applied funding buckets ((instrument, bucket-index) keys), LRU-bounded dedup
         # side-table — same family as _seen_trade_ids, but keyed per funding interval
         self._applied_funding_buckets: OrderedDict[tuple, None] = OrderedDict()
+        # venue event time of the last applied WS push, per instrument / per currency
+        # (venue clock — same domain as Deal.time). Drive the stale-push ratchet and
+        # the covered-delta guards. Instrument/currency-keyed and tiny, so retained
+        # for the state's lifetime (no eviction).
+        self._position_push_as_of: dict[Instrument, np.datetime64] = {}
+        self._balance_push_as_of: dict[str, np.datetime64] = {}
 
     def __repr__(self) -> str:
         return (
@@ -168,6 +176,12 @@ class AccountState:
 
     def get_snapshot_fill_as_of(self, cid: str) -> np.datetime64 | None:
         return self._snapshot_fill_as_of.get(cid)
+
+    def get_position_push_as_of(self, instrument: Instrument) -> np.datetime64 | None:
+        return self._position_push_as_of.get(instrument)
+
+    def get_balance_push_as_of(self, currency: str) -> np.datetime64 | None:
+        return self._balance_push_as_of.get(currency)
 
     def get_transition_counts(self) -> dict[str, int]:
         """Audit counter snapshot: status.value -> number of transitions into it."""
@@ -412,6 +426,42 @@ class AccountState:
                 existing.last_update_time, existing.last_update_price, existing.last_update_conversion_rate
             )
         return changed
+
+    def mark_position_push(self, instrument: Instrument, as_of: np.datetime64) -> None:
+        """Record the venue event time of an applied position push. Staleness checks
+        live in the reducer (this setter is dumb, like mark_snapshot_fill)."""
+        self._position_push_as_of[instrument] = as_of
+
+    def apply_balance_push(
+        self, currency: str, total: float, as_of: np.datetime64, *, free: float = np.nan, locked: float = np.nan
+    ) -> bool:
+        """Apply an absolute venue balance push (WS user-data stream).
+
+        Per-currency ratchet: a push strictly older than the last applied one is
+        dropped (returns False; same-time pushes apply — absolute overwrite is
+        idempotent and a later same-ms push is the fresher figure). Futures pushes
+        carry total only (free/locked NaN): total is overwritten and free moves by
+        the same delta, preserving locked. When the venue reports a real split
+        (free AND locked non-NaN), all three fields are overwritten. ``as_of`` is
+        venue event time (Deal.time clock domain).
+        """
+        last = self._balance_push_as_of.get(currency)
+        if last is not None and as_of < last:
+            return False
+        self._balance_push_as_of[currency] = as_of
+        bal = self._balances.get(currency)
+        if bal is None:
+            bal = Balance(exchange=self.exchange, currency=currency)
+            self._balances[currency] = bal
+        if not np.isnan(free) and not np.isnan(locked):
+            bal.free = free
+            bal.locked = locked
+            bal.total = total
+        else:
+            delta = total - bal.total
+            bal.total = total
+            bal.free += delta
+        return True
 
     def apply_balance_snapshot(self, balance: Balance) -> bool:
         existing = self._balances.get(balance.currency)

@@ -23,7 +23,7 @@ instead split the account feed:
    keeps the application idempotent.
 """
 
-import asyncio
+from collections.abc import Coroutine
 from typing import Any
 
 from qubx import logger
@@ -42,14 +42,17 @@ class _TwoStreamCcxtConnector(CcxtConnector):
     AccountManager correlates deals to orders.
     """
 
-    async def _subscribe_executions(self) -> None:
-        """Run the orders-status and trades streams concurrently.
+    def _account_streams(self) -> list[Coroutine[Any, Any, None]]:
+        """The split venue's two loops: order statuses + trades.
 
         Each leg uses the base ``_run_ws_loop`` so it inherits the same
         reconnect/backoff/teardown as the single-stream base path. Only the order
-        loop marks WS readiness — a trade-only feed must not flip liveness on its own.
+        loop marks WS readiness — a trade-only feed must not flip liveness on its
+        own. No position/balance push loops here: F26 is Binance-only (decision
+        D4) — split venues keep snapshot-only position/balance correction until
+        their push streams are verified.
         """
-        await asyncio.gather(
+        return [
             self._run_ws_loop(
                 watch=self._em.exchange.watch_orders,
                 handle=self._handle_ws_order,
@@ -62,8 +65,7 @@ class _TwoStreamCcxtConnector(CcxtConnector):
                 stream="my_trades",
                 mark_ready=False,
             ),
-        )
-        logger.debug(f"[{self.exchange_name}] split executions streams ended")
+        ]
 
     # ------------------------------------------------------------------ #
     # Trade stream → deals

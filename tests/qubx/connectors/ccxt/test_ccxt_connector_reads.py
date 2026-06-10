@@ -7,24 +7,31 @@ crossed. WS updates are exercised by feeding raw ccxt order dicts straight into 
 synchronous ``_handle_ws_order`` handler.
 """
 
+import math
 from unittest.mock import AsyncMock, Mock, patch
 
 import ccxt
+import ccxt.pro
+import numpy as np
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
+from qubx.connectors.ccxt.exchanges._two_stream import _TwoStreamCcxtConnector
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, Instrument, MarketType, OrderOrigin, OrderRequest, OrderStatus, Position
 from qubx.core.events import (
     AccountSnapshotEvent,
+    BalanceUpdateEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
+    PositionUpdateEvent,
 )
 from qubx.core.series import Quote
+from tests.qubx.connectors.ccxt.data.ccxt_responses import BINANCE_MARKETS
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 CCXT_SYMBOL = "BTC/USDT:USDT"
@@ -50,7 +57,9 @@ def _quote(bid: float = 99.0, ask: float = 101.0) -> Quote:
     return Quote(0, bid, ask, 1.0, 1.0)
 
 
-def _make_connector(*, exchange: Mock | None = None) -> tuple[CcxtConnector, list, Mock]:
+def _make_connector(
+    *, exchange: Mock | None = None, cls: type[CcxtConnector] = CcxtConnector
+) -> tuple[CcxtConnector, list, Mock]:
     if exchange is None:
         exchange = Mock()
         exchange.create_order = AsyncMock(return_value={})
@@ -67,7 +76,7 @@ def _make_connector(*, exchange: Mock | None = None) -> tuple[CcxtConnector, lis
     channel = Mock()
     channel.send = Mock(side_effect=lambda e: sent.append(e))
 
-    conn = CcxtConnector(
+    conn = cls(
         exchange_name="BINANCE.UM",
         channel=channel,
         time_provider=DummyTimeProvider(),
@@ -543,3 +552,196 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     assert registered.origin is OrderOrigin.RECOVERED
     assert registered.client_order_id == "qubx_BTCUSDT_1"
     assert am.get_balance("USDT", exchange="BINANCE.UM").total == 1000.0
+
+
+# --------------------------------------------------------------------------- #
+# (g) F26 — WS position/balance pushes + account-stream composition
+# --------------------------------------------------------------------------- #
+def _ws_position(*, contracts: float = 0.03, side: str = "long", ps: str = "BOTH", ts: int = 1700000000000) -> dict:
+    # ccxt unified position as pro/binance.parse_ws_position emits it for an
+    # ACCOUNT_UPDATE P entry: contracts is abs, side carries the sign, markPrice /
+    # maintenanceMargin are None, timestamp is the event time E (stamped in
+    # handle_positions), and the raw P entry rides in info (incl. hedge-mode ps).
+    return {
+        "info": {"s": "ETHUSDT", "pa": "0.03", "ep": "3383.73", "ps": ps},
+        "symbol": "ETH/USDT:USDT",
+        "contracts": contracts,
+        "side": side,
+        "entryPrice": 3383.73,
+        "unrealizedPnl": 1.5,
+        "markPrice": None,
+        "maintenanceMargin": None,
+        "timestamp": ts,
+    }
+
+
+def _ws_balance(*, reason: str = "ORDER", event_time: int = 1700000000123) -> dict:
+    # ccxt unified watch_balance result: a currency cache plus the raw last venue
+    # message in info — for futures, the ACCOUNT_UPDATE with the changed assets in a.B.
+    return {
+        "info": {
+            "e": "ACCOUNT_UPDATE",
+            "E": event_time,
+            "T": event_time - 3,
+            "a": {
+                "m": reason,
+                "B": [
+                    {"a": "USDT", "wb": "122624.125", "cw": "100.1"},
+                    {"a": "BNB", "wb": "10.5", "cw": "10.5"},
+                ],
+                "P": [],
+            },
+        },
+        "timestamp": event_time,
+        "USDT": {"free": None, "used": None, "total": 122624.125},
+    }
+
+
+def test_ws_position_push_emits_position_update_event() -> None:
+    conn, sent, exchange = _make_connector()
+    # Production contract: the factory stamps the framework exchange name onto the ccxt
+    # exchange ({"name": exchange}), so converted instruments route to the right state.
+    exchange.name = "BINANCE.UM"
+    exchange.markets = BINANCE_MARKETS
+
+    conn._handle_ws_position(_ws_position(contracts=0.03, side="short"))
+
+    assert len(sent) == 1
+    ev = sent[0]
+    assert isinstance(ev, PositionUpdateEvent)
+    assert ev.position.quantity == -0.03  # signed from contracts/side
+    assert ev.position.instrument.symbol == "ETHUSDT"
+    assert ev.position.instrument.exchange == "BINANCE.UM"
+    assert ev.instrument == ev.position.instrument
+    assert ev.as_of == np.datetime64(1700000000000, "ms")  # venue event time E
+
+
+def test_ws_position_push_hedge_mode_skipped() -> None:
+    conn, sent, exchange = _make_connector()
+    exchange.markets = BINANCE_MARKETS
+    conn._handle_ws_position(_ws_position(ps="LONG"))
+    assert sent == []
+
+
+def test_ws_balance_push_emits_per_asset_events() -> None:
+    conn, sent, _ = _make_connector()
+
+    conn._handle_ws_balances(_ws_balance(reason="FUNDING_FEE"))
+
+    assert len(sent) == 2
+    by_ccy = {e.balance.currency: e for e in sent}
+    ev = by_ccy["USDT"]
+    assert isinstance(ev, BalanceUpdateEvent)
+    assert ev.balance.exchange == "BINANCE.UM"
+    assert ev.balance.total == 122624.125
+    # Futures pushes carry no free/locked split: NaN tells the reducer total-only.
+    assert math.isnan(ev.balance.free) and math.isnan(ev.balance.locked)
+    assert ev.reason == "FUNDING_FEE"
+    assert ev.as_of == np.datetime64(1700000000123, "ms")  # venue event time E
+    assert by_ccy["BNB"].balance.total == 10.5
+
+
+def test_ws_balance_push_without_account_update_payload_skipped() -> None:
+    # A non-futures payload (spot balanceUpdate: info.a is the asset string) must not emit.
+    conn, sent, _ = _make_connector()
+    conn._handle_ws_balances({"info": {"e": "balanceUpdate", "E": 1, "a": "IOTX", "d": "0.4"}, "timestamp": 1})
+    assert sent == []
+
+
+def _record_streams(conn: CcxtConnector) -> list[dict]:
+    """Replace _run_ws_loop with a recorder so _subscribe_executions composition can be
+    asserted without driving real watch loops."""
+    recorded: list[dict] = []
+
+    async def _fake_loop(**kwargs) -> None:
+        recorded.append(kwargs)
+
+    conn._run_ws_loop = _fake_loop  # type: ignore[method-assign]
+    return recorded
+
+
+def _binance_exchange(*, has: dict, options: dict) -> Mock:
+    """Exchange mock that passes the isinstance(ex, ccxt.pro.binance) D4 gate."""
+    exchange = Mock(spec=ccxt.pro.binance)
+    exchange.has = has
+    exchange.options = options
+    return exchange
+
+
+@pytest.mark.asyncio
+async def test_account_streams_derivatives_venue_adds_position_and_balance_loops() -> None:
+    exchange = _binance_exchange(
+        has={"watchPositions": True, "watchBalance": True},
+        options={"defaultSubType": "linear"},  # binanceusdm: defaultType stays 'spot'
+    )
+    conn, _, _ = _make_connector(exchange=exchange)
+    recorded = _record_streams(conn)
+
+    await conn._subscribe_executions()
+
+    assert [k["stream"] for k in recorded] == ["executions", "positions", "balance"]
+    # Only the orders loop owns liveness; watch_balance resolves a single dict.
+    assert [k["mark_ready"] for k in recorded] == [True, False, False]
+    assert [k.get("iterate", True) for k in recorded] == [True, True, False]
+    assert recorded[1]["handle"] == conn._handle_ws_position
+    assert recorded[2]["handle"] == conn._handle_ws_balances
+    # ccxt's own positions snapshot fetch is disabled — AM owns the snapshot fetch.
+    assert exchange.options["watchPositions"] == {"fetchPositionsSnapshot": False, "awaitPositionsSnapshot": False}
+
+
+@pytest.mark.asyncio
+async def test_account_streams_spot_venue_no_push_loops() -> None:
+    exchange = _binance_exchange(
+        has={"watchPositions": True, "watchBalance": True},
+        options={"defaultType": "spot"},
+    )
+    conn, _, _ = _make_connector(exchange=exchange)
+    recorded = _record_streams(conn)
+
+    await conn._subscribe_executions()
+
+    assert [k["stream"] for k in recorded] == ["executions"]
+
+
+@pytest.mark.asyncio
+async def test_account_streams_derivatives_without_watch_support_no_push_loops() -> None:
+    exchange = _binance_exchange(has={"editOrder": True}, options={"defaultSubType": "linear"})
+    conn, _, _ = _make_connector(exchange=exchange)
+    recorded = _record_streams(conn)
+
+    await conn._subscribe_executions()
+
+    assert [k["stream"] for k in recorded] == ["executions"]
+
+
+@pytest.mark.asyncio
+async def test_account_streams_non_binance_derivatives_venue_no_push_loops() -> None:
+    # D4 scope pin: a non-Binance derivatives venue (hyperliquid-like) advertises the
+    # same has[] capability flags, but the push handlers only parse Binance
+    # ACCOUNT_UPDATE shapes — only the executions loop may compose.
+    exchange = Mock()
+    exchange.has = {"watchPositions": True, "watchBalance": True}
+    exchange.options = {"defaultType": "swap"}
+    conn, _, _ = _make_connector(exchange=exchange)
+    recorded = _record_streams(conn)
+
+    await conn._subscribe_executions()
+
+    assert [k["stream"] for k in recorded] == ["executions"]
+
+
+@pytest.mark.asyncio
+async def test_two_stream_subscribes_orders_and_trades_only() -> None:
+    # Even on a derivatives venue advertising the push streams, the split-venue
+    # connector keeps exactly its two loops (F26 push streams are Binance-only — D4).
+    exchange = Mock()
+    exchange.has = {"watchPositions": True, "watchBalance": True}
+    exchange.options = {"defaultType": "swap"}
+    conn, _, _ = _make_connector(exchange=exchange, cls=_TwoStreamCcxtConnector)
+    recorded = _record_streams(conn)
+
+    await conn._subscribe_executions()
+
+    assert [k["stream"] for k in recorded] == ["orders", "my_trades"]
+    assert [k["mark_ready"] for k in recorded] == [True, False]
+    assert recorded[1]["handle"] == conn._handle_ws_trade

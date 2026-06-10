@@ -15,7 +15,9 @@ from qubx.core.account_manager.state import AccountState
 from qubx.core.basics import (
     Balance,
     Deal,
+    FundingPayment,
     Instrument,
+    MarketType,
     Order,
     OrderChange,
     OrderOrigin,
@@ -27,6 +29,7 @@ from qubx.core.basics import (
 from qubx.core.events import (
     BalanceUpdateEvent,
     DealEvent,
+    FundingPaymentEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
@@ -265,20 +268,157 @@ def test_dedup_across_deal_and_order_stream():
     assert r2.order.filled_quantity == 0.5
 
 
-def test_position_balance_update_events_apply_as_noop():
-    # No connector emits these yet (see _handle_position_balance_noop): the reducer leaves
-    # state untouched and returns an empty ApplyResult; the PM still fires on_position_change
-    # off a raw PositionUpdateEvent payload (the documented fire-through, pinned in dispatch
-    # tests); balance pushes fire no strategy callback.
+# --------------------------------------------------------------------------- #
+# F26 — venue position/balance pushes
+# --------------------------------------------------------------------------- #
+
+
+def _venue_position(qty: float, price: float = 50_000.0) -> Position:
+    return Position(BTC, quantity=qty, pos_average_price=price)
+
+
+def _total_push(total: float, currency: str = "USDT") -> Balance:
+    # futures pushes carry no free/locked split — total only (NaN split by contract)
+    return Balance(exchange="binance", currency=currency, free=np.nan, locked=np.nan, total=total)
+
+
+def test_position_push_size_equal_is_metadata_only():
     state = _state()
-    r = apply(state, PositionUpdateEvent(instrument=None, position=Position(BTC)), T1)
+    _order(state, status=OrderStatus.ACCEPTED)
+    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5)), T1)
+    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.5), as_of=T1), T1)
+    assert r.is_empty()  # fire-through dispatch still notifies the strategy (Item 6 rule)
+    assert state.get_position_push_as_of(BTC) == T1
+    assert _present(state.get_position(BTC)).quantity == 0.5
+
+
+def test_position_push_flat_on_empty_state_creates_nothing():
+    state = _state()
+    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.0), as_of=T1), T1)
     assert r.is_empty()
     assert state.get_position(BTC) is None
+    assert state.get_position_push_as_of(BTC) == T1
 
-    balance = Balance(exchange="binance", currency="USDT", free=100.0, locked=0.0, total=100.0)
-    r = apply(state, BalanceUpdateEvent(instrument=None, balance=balance), T1)
+
+def test_position_push_drift_flags_without_mutation():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5, 50_000.0)), T1)
+    venue = _venue_position(0.7, 49_000.0)
+    r = apply(state, PositionUpdateEvent(instrument=BTC, position=venue, as_of=T1), T1)
+    assert r.position_drift is venue
+    assert r.position is None and not r.is_empty()
+    local = _present(state.get_position(BTC))
+    assert local.quantity == 0.5  # zero mutation — the snapshot reconcile corrects size
+    assert local.position_avg_price == 50_000.0
+
+
+def test_position_push_stale_as_of_suppressed():
+    state = _state()
+    apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.0), as_of=T1), T1)
+    # older AND same-time pushes are stale (<= ratchet), even when they would drift
+    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.7), as_of=T0), T1)
     assert r.is_empty()
-    assert state.get_balance("USDT") is None
+    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.7), as_of=T1), T1)
+    assert r.is_empty()
+    assert state.get_position_push_as_of(BTC) == T1
+
+
+def test_balance_push_applies_absolutely_preserving_locked():
+    state = _state()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=80.0, locked=20.0, total=100.0))
+    r = apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(150.0), as_of=T1), T1)
+    bal = _present(state.get_balance("USDT"))
+    assert r.balance is bal  # internal visibility only — fires NO strategy callback
+    assert (bal.total, bal.free, bal.locked) == (150.0, 130.0, 20.0)
+
+
+def test_balance_push_stale_ratchet_returns_empty():
+    state = _state()
+    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(150.0), as_of=T1), T1)
+    r = apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(90.0), as_of=T0), T1)
+    assert r.is_empty()
+    assert _present(state.get_balance("USDT")).total == 150.0
+
+
+def test_deal_covered_by_balance_push_books_position_but_skips_cash_leg():
+    # A balance push at/after the deal's venue time already carries the deal's cash
+    # effect: position/r_pnl still book, the settle adjust_balance leg is skipped —
+    # correct under both [deal, push] and [push, deal] orderings.
+    state = _state()
+    _order(state, cid="c1", status=OrderStatus.ACCEPTED)
+    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5, 50_000.0)), T0)
+    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(1010.0), as_of=T1), T1)
+    # closing deal at T0 (<= push as_of T1): pnl +12, fee 2 — already in the pushed total
+    closing = Deal(trade_id="t2", order_id="v2", time=T0, amount=-0.5, price=50_024.0, aggressive=True, fee_amount=2.0)
+    _order(state, cid="c2", status=OrderStatus.ACCEPTED)
+    r = apply(state, OrderFilledEvent(instrument=None, client_order_id="c2", fill=closing), T1)
+    pos = _present(r.position)
+    assert pos.quantity == 0.0
+    assert pos.r_pnl == 12.0
+    assert _present(state.get_balance("USDT")).total == 1010.0  # the push figure stands
+
+
+def test_deal_not_covered_by_older_push_still_adjusts_balance():
+    state = _state()
+    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(1000.0), as_of=T0), T0)
+    _order(state, status=OrderStatus.ACCEPTED)
+    deal = Deal(trade_id="t1", order_id="v1", time=T1, amount=0.5, price=50_000.0, aggressive=True, fee_amount=2.0)
+    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=deal), T1)
+    assert _present(state.get_balance("USDT")).total == 998.0  # 1000 - fee
+
+
+def test_spot_deal_legs_covered_independently():
+    # Spot books two legs (quote debit, base credit); each is guarded against its OWN
+    # currency's push as_of.
+    spot = Instrument(
+        symbol="ETHUSDT",
+        market_type=MarketType.SPOT,
+        exchange="binance",
+        base="ETH",
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol="ETHUSDT",
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+        contract_size=1.0,
+    )
+    state = _state()
+    _seed_usdt(state, 1000.0)
+    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(900.0), as_of=T1), T1)
+    deal = Deal(trade_id="t1", order_id="v1", time=T0, amount=0.1, price=1_000.0, aggressive=True)
+    apply(state, OrderFilledEvent(instrument=spot, client_order_id="x", venue_order_id="E1", fill=deal), T1)
+    assert _present(state.get_balance("USDT")).total == 900.0  # quote leg covered by the push
+    assert _present(state.get_balance("ETH")).total == 0.1  # base leg uncovered -> still credited
+
+
+def test_funding_covered_by_balance_push_skips_cash_leg():
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(T0, 50_000.0, 1.0)
+    state.set_position(BTC, pos)
+    _seed_usdt(state, 1000.0)
+    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(995.0), as_of=T1), T1)
+    # funding venue time T0 <= push as_of T1: the venue's FUNDING_FEE debit is in the total
+    payment = FundingPayment(time=int(T0.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
+    r = apply(state, FundingPaymentEvent(instrument=BTC, payment=payment), T1)
+    assert r.position is pos
+    expected = -(1.0 * 50_000.0 * 0.0001)
+    assert abs(pos.cumulative_funding - expected) < 1e-9  # funding still books on the position
+    assert _present(state.get_balance("USDT")).total == 995.0  # cash leg skipped
+
+
+def test_funding_not_covered_by_older_push_still_adjusts_balance():
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(T0, 50_000.0, 1.0)
+    state.set_position(BTC, pos)
+    _seed_usdt(state, 1000.0)
+    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(1000.0), as_of=T0), T0)
+    payment = FundingPayment(time=int(T1.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
+    apply(state, FundingPaymentEvent(instrument=BTC, payment=payment), T1)
+    assert abs(_present(state.get_balance("USDT")).total - 995.0) < 1e-9  # 1000 - 5 funding paid
 
 
 # --------------------------------------------------------------------------- #

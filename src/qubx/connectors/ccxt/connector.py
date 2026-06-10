@@ -29,11 +29,14 @@ and its "Rejection boundary" subsection):
 """
 
 import asyncio
+import math
 from asyncio.exceptions import CancelledError
+from collections.abc import Coroutine
 from dataclasses import dataclass
 from typing import Any, Literal
 
 import ccxt
+import ccxt.pro
 from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
 from qubx import logger
@@ -53,6 +56,7 @@ from qubx.core.connector import ChannelEmitter
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
+    BalanceUpdateEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
@@ -62,9 +66,11 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
+    PositionUpdateEvent,
 )
 from qubx.core.exceptions import InvalidOrderParameters, ReadOnlyConnector
 from qubx.core.interfaces import IDataProvider, ITimeProvider
+from qubx.core.utils import recognize_time
 from qubx.utils.misc import AsyncThreadLoop
 from qubx.utils.time import to_timedelta
 
@@ -73,6 +79,7 @@ from .exchange_manager import ExchangeManager
 from .utils import (
     ccxt_convert_balance,
     ccxt_convert_order_info,
+    ccxt_convert_position,
     ccxt_convert_positions,
     ccxt_extract_deals_from_exec,
     ccxt_find_instrument,
@@ -703,22 +710,83 @@ class CcxtConnector(ChannelEmitter):
         return ccxt_find_instrument(ccxt_symbol, self._em.exchange, self._symbol_to_instrument)
 
     async def _subscribe_executions(self) -> None:
-        """WS account-event loop (base / Binance model).
+        """Run the account WS loops concurrently (composed by ``_account_streams``).
 
-        A single ``watch_orders()`` stream carries both order-status transitions and
-        their fills. The loop survives WS drops: it retries with backoff on transient
-        errors and exits cleanly on cancellation / channel close. OKX and Bitfinex
-        split fills into a separate ``watch_my_trades`` stream — they override this
-        method by running two ``_run_ws_loop`` loops concurrently; the base assumes
-        the unified Binance feed.
+        Base / Binance model: a single ``watch_orders()`` stream carries both
+        order-status transitions and their fills, plus — on Binance derivatives
+        venues only (D4) — ``watch_positions``/``watch_balance`` push loops. On
+        Binance all of these resolve off the same listenKey user-data WS, so no
+        extra connections are opened. Each loop survives WS drops via ``_run_ws_loop``'s
+        retry/backoff and exits cleanly on cancellation / channel close. Split-feed
+        venues (OKX/Bitfinex) override ``_account_streams``, not this method.
         """
-        await self._run_ws_loop(
-            watch=self._em.exchange.watch_orders,
-            handle=self._handle_ws_order,
-            stream="executions",
-            mark_ready=True,
+        await asyncio.gather(*self._account_streams())
+        logger.debug(f"[{self.exchange_name}] account event streams ended")
+
+    def _account_streams(self) -> list[Coroutine[Any, Any, None]]:
+        """Build the account WS loops to gather — the venue stream-composition seam.
+
+        Base = Binance model: the ``watch_orders`` loop (owns liveness via
+        ``mark_ready``), plus position/balance push loops gated on the Binance
+        family + a derivatives venue (F26 / D4). Pushes are emitted
+        as PositionUpdateEvent/BalanceUpdateEvent; the reducer applies them under the
+        conservative rule (positions never write size on the event path, balances
+        apply absolutely through the per-currency ratchet). Subclasses override to
+        compose differently (``_TwoStreamCcxtConnector`` splits orders/trades and
+        adds no push streams).
+        """
+        ex = self._em.exchange
+        streams: list[Coroutine[Any, Any, None]] = [
+            self._run_ws_loop(
+                watch=ex.watch_orders,
+                handle=self._handle_ws_order,
+                stream="executions",
+                mark_ready=True,
+            )
+        ]
+        # D4 scope: the push handlers parse Binance ACCOUNT_UPDATE shapes. Other
+        # venues (hyperliquid, bybit, gateio) advertise the same has[] capability
+        # flags but emit shapes these handlers don't understand (e.g. hyperliquid
+        # positions carry no timestamp) — keep them snapshot-only until ported.
+        if not isinstance(ex, ccxt.pro.binance) or not self._is_derivatives_venue():
+            return streams
+        if ex.has.get("watchPositions"):
+            # ccxt's watch_positions defaults to fetching (and awaiting) its own REST
+            # positions snapshot on first watch; AM already owns the snapshot fetch,
+            # so disable it to avoid a duplicate fetch_positions round-trip.
+            opts = ex.options.setdefault("watchPositions", {})
+            opts["fetchPositionsSnapshot"] = False
+            opts["awaitPositionsSnapshot"] = False
+            streams.append(
+                self._run_ws_loop(
+                    watch=ex.watch_positions,
+                    handle=self._handle_ws_position,
+                    stream="positions",
+                    mark_ready=False,
+                )
+            )
+        if ex.has.get("watchBalance"):
+            streams.append(
+                self._run_ws_loop(
+                    watch=ex.watch_balance,
+                    handle=self._handle_ws_balances,
+                    stream="balance",
+                    mark_ready=False,
+                    iterate=False,  # watch_balance resolves one Balances dict, not a list
+                )
+            )
+        return streams
+
+    def _is_derivatives_venue(self) -> bool:
+        """True when the ccxt exchange trades derivatives (position/balance push
+        streams only exist there). ccxt resolves the account stream from
+        ``defaultType`` OR the linear/inverse ``defaultSubType`` — binanceusdm
+        carries ``defaultSubType='linear'`` while ``defaultType`` stays 'spot'."""
+        options = self._em.exchange.options
+        return options.get("defaultType") in ("future", "delivery", "swap") or options.get("defaultSubType") in (
+            "linear",
+            "inverse",
         )
-        logger.debug(f"[{self.exchange_name}] executions stream ended")
 
     async def _run_ws_loop(
         self,
@@ -727,6 +795,7 @@ class CcxtConnector(ChannelEmitter):
         handle: Any,
         stream: str,
         mark_ready: bool,
+        iterate: bool = True,
     ) -> None:
         """Generic WS subscription loop: ``await watch()`` → ``handle(raw)`` per item.
 
@@ -734,9 +803,11 @@ class CcxtConnector(ChannelEmitter):
         (the single Binance ``watch_orders`` feed and the split OKX/Bitfinex
         ``watch_orders`` + ``watch_my_trades`` feeds). ``mark_ready`` flips
         ``_ws_ready`` after the first successful round-trip — only the order stream
-        owns liveness, so a trade-only stream passes ``mark_ready=False``. On exit
+        owns liveness, so every other stream passes ``mark_ready=False``. On exit
         (cancellation, channel close, or max retries) readiness is cleared so a
-        half-open split feed can't report ready.
+        half-open account feed can't report ready. ``iterate=False`` passes the
+        resolved value to ``handle`` whole (``watch_balance`` returns a single
+        Balances dict, not a list of updates).
         """
         n_retry = 0
         while self.channel.control.is_set():
@@ -745,8 +816,11 @@ class CcxtConnector(ChannelEmitter):
                 if mark_ready:
                     self._ws_ready = True
                 n_retry = 0
-                for raw in updates:
-                    handle(raw)
+                if iterate:
+                    for raw in updates:
+                        handle(raw)
+                else:
+                    handle(updates)
             except CcxtSymbolNotRecognized:
                 continue
             except CancelledError:
@@ -949,6 +1023,84 @@ class CcxtConnector(ChannelEmitter):
                         fill=deal,
                     )
                 )
+
+    # ------------------------------------------------------------------ #
+    # Read side — WS position/balance pushes (F26)
+    # ------------------------------------------------------------------ #
+    def _handle_ws_position(self, raw: dict[str, Any]) -> None:
+        """Convert one ccxt unified position push into a PositionUpdateEvent.
+
+        The push is the venue's absolute post-trade state; the reducer never applies
+        its size on the event path (size-equal advances the ratchet, drift triggers a
+        rate-limited snapshot correction). ``as_of`` is the venue event time ``E``
+        (ccxt stamps it as ``timestamp``) — same clock domain as ``Deal.time``.
+        Hedge-mode entries (Binance ``ps`` != BOTH) are skipped: qubx positions are
+        net-only, and a per-side size would corrupt the drift comparison.
+        """
+        ps = (raw.get("info") or {}).get("ps")
+        if ps is not None and ps != "BOTH":
+            logger.warning(
+                f"[{self.exchange_name}] hedge-mode position push for {raw.get('symbol')} (ps={ps}) skipped: "
+                "qubx positions are net-only"
+            )
+            return
+        timestamp = raw.get("timestamp")
+        if timestamp is None:
+            logger.warning(
+                f"[{self.exchange_name}] position push for {raw.get('symbol')} carried no event time; skipped"
+            )
+            return
+        ex = self._em.exchange
+        position = ccxt_convert_position(raw, ex.name, ex.markets)
+        if position is None:
+            return
+        self.send(
+            PositionUpdateEvent(
+                instrument=position.instrument,
+                position=position,
+                as_of=recognize_time(timestamp),
+            )
+        )
+
+    def _handle_ws_balances(self, raw: dict[str, Any]) -> None:
+        """Emit one BalanceUpdateEvent per asset changed by a venue balance push.
+
+        ccxt's unified watch_balance dict is a cache of every currency ever seen, so
+        the handler reads the raw venue message it carries in ``info``: a Binance
+        futures ACCOUNT_UPDATE lists exactly the changed assets (``a.B``) with the
+        post-change wallet total ``wb``. Futures pushes carry no free/locked split —
+        free/locked ride as NaN so the reducer applies total-only, preserving locked.
+        ``as_of`` is the venue event time ``E`` (same clock domain as ``Deal.time``,
+        driving the per-currency ratchet and the covered-delta guards); ``reason`` is
+        the venue change reason ``a.m`` (ORDER / FUNDING_FEE / ...).
+        """
+        info = raw.get("info")
+        data = info.get("a") if isinstance(info, dict) else None
+        event_time = info.get("E") if isinstance(info, dict) else None
+        if not isinstance(data, dict) or event_time is None:
+            logger.debug(f"[{self.exchange_name}] balance push without ACCOUNT_UPDATE payload; skipped")
+            return
+        as_of = recognize_time(int(event_time))
+        reason = data.get("m")
+        for entry in data.get("B") or []:
+            currency = entry.get("a")
+            total = entry.get("wb")
+            if currency is None or total is None:
+                continue
+            self.send(
+                BalanceUpdateEvent(
+                    instrument=None,
+                    balance=Balance(
+                        exchange=self.exchange_name,
+                        currency=currency,
+                        free=math.nan,
+                        locked=math.nan,
+                        total=float(total),
+                    ),
+                    as_of=as_of,
+                    reason=reason,
+                )
+            )
 
     # ------------------------------------------------------------------ #
     # Reconciliation primitives — READ side

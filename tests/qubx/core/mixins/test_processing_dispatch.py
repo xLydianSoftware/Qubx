@@ -265,12 +265,12 @@ def test_suppressed_funding_fires_no_callback():
 
 
 def test_position_update_fires_through_on_empty_result():
-    # The reducer is a no-op for venue position pushes until WS application lands, but
-    # the push must still reach the strategy — off the event payload.
+    # A size-equal venue push is a metadata no-op in the reducer (empty result), but the
+    # push must still reach the strategy — off the event payload.
     pm = make_pm()
     position = MagicMock()
     pm._account_manager.apply.return_value = ApplyResult()
-    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=position))
+    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=position, as_of=np.datetime64("now")))
     pm._strategy.on_position_change.assert_called_once()
     assert pm._strategy.on_position_change.call_args.args[1] is position
 
@@ -281,16 +281,37 @@ def test_applied_position_update_fires_once_off_result():
     pm = make_pm()
     applied = MagicMock()
     pm._account_manager.apply.return_value = ApplyResult(position=applied)
-    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock()))
+    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock(), as_of=np.datetime64("now")))
     pm._strategy.on_position_change.assert_called_once()
     assert pm._strategy.on_position_change.call_args.args[1] is applied
+
+
+def test_position_drift_result_fires_no_strategy_callback():
+    # Drift is operator machinery: the AM reacts with a rate-limited snapshot request
+    # (pinned at the manager level); the strategy sees nothing until the race-safe
+    # snapshot reconcile corrects the position and fires on_position_change off the diff.
+    pm = make_pm()
+    pm._account_manager.apply.return_value = ApplyResult(position_drift=MagicMock())
+    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock(), as_of=np.datetime64("now")))
+    pm._account_manager.apply.assert_called_once()
+    assert pm._strategy.mock_calls == []
 
 
 def test_balance_update_fires_no_strategy_callback():
     # Deliberate contract: there is NO balance callback — balances are read via ctx.
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult()
-    pm.process_event(BalanceUpdateEvent(instrument=None, balance=MagicMock()))
+    pm.process_event(BalanceUpdateEvent(instrument=None, balance=MagicMock(), as_of=np.datetime64("now")))
+    pm._account_manager.apply.assert_called_once()
+    assert pm._strategy.mock_calls == []
+
+
+def test_applied_balance_push_fires_no_strategy_callback():
+    # The balance-silent contract holds for APPLIED pushes too (ApplyResult.balance set),
+    # not just suppressed ones — the field is internal/diff visibility only.
+    pm = make_pm()
+    pm._account_manager.apply.return_value = ApplyResult(balance=MagicMock())
+    pm.process_event(BalanceUpdateEvent(instrument=None, balance=MagicMock(), as_of=np.datetime64("now")))
     pm._account_manager.apply.assert_called_once()
     assert pm._strategy.mock_calls == []
 

@@ -1257,10 +1257,10 @@ class ProcessingManager(IProcessingManager):
         # field fires its callback, an empty result means the AM suppressed the event
         # (late/duplicate/terminal/unknown/deduped funding/stale snapshot — already logged)
         # and nothing fires. Sole exception: PositionUpdateEvent fires through on an empty
-        # result — the reducer doesn't apply venue position pushes yet
-        # (reducer._handle_position_balance_noop), but the push must still reach the
-        # strategy off the event payload. BalanceUpdateEvent deliberately fires NO callback:
-        # balances are read via ctx.
+        # result — the reducer never writes size off a venue push (size-equal pushes are
+        # metadata no-ops, drift triggers a snapshot correction), but the push must still
+        # reach the strategy off the event payload. BalanceUpdateEvent deliberately fires
+        # NO callback: balances are read via ctx.
         if isinstance(event, OrderEvent):
             # Cancel/update rejections are dangerous-but-recoverable (order still alive at the
             # venue): surface loudly here so they aren't lost if the strategy ignores them.

@@ -21,6 +21,7 @@ from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import can_transition
 from qubx.core.basics import (
     EXTERNAL_CID_PREFIX,
+    Balance,
     Deal,
     Instrument,
     Order,
@@ -58,6 +59,12 @@ class ApplyResult:
     deal: Deal | None = None  # new deal applied -> downstream fill consumers
     position: Position | None = None  # position changed
     reconcile_diff: ReconcileDiff | None = None  # set when a snapshot reconcile applied
+    # venue position push disagrees with local size — NOT applied to state; the
+    # AccountManager reacts with a rate-limited snapshot request (race-safe correction)
+    position_drift: Position | None = None
+    # balance push applied (the live state Balance) — internal/diff visibility only,
+    # fires NO strategy callback by design (balances are read via ctx)
+    balance: Balance | None = None
 
     def is_empty(self) -> bool:
         """All fields None — the suppress signal (see module docstring): no callback fires."""
@@ -67,6 +74,8 @@ class ApplyResult:
             and self.deal is None
             and self.position is None
             and self.reconcile_diff is None
+            and self.position_drift is None
+            and self.balance is None
         )
 
 
@@ -182,6 +191,15 @@ def _handle_rejected(state: AccountState, event: OrderRejectedEvent, now: np.dat
     return ApplyResult(order=order, order_change=OrderChange.REJECTED)
 
 
+def _covered_by_balance_push(state: AccountState, currency: str, venue_time: np.datetime64) -> bool:
+    # An absolute balance push at/after this venue time (both clocks are the venue's —
+    # same domain as Deal.time) already incorporated the change, so the delta leg must
+    # not book on top of it. Correct under both [deal, push] and [push, deal] orderings:
+    # an older push leaves the delta to book, a newer push supersedes it absolutely.
+    as_of = state.get_balance_push_as_of(currency)
+    return as_of is not None and as_of >= venue_time
+
+
 def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Position:
     """Apply a deal's effect to the position and balances. Caller dedups first.
 
@@ -189,7 +207,8 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
     balance. Spot: debits the quote currency by the trade cost (notional + fee) and
     credits the base asset by the filled amount. Amounts are converted to the
     portfolio funded currency via state.conversion_rate (currently 1.0 — the
-    multi-currency seam).
+    multi-currency seam). Each balance leg is skipped when a venue balance push
+    already covers it (see _covered_by_balance_push); position/r_pnl always book.
     """
     pos = state.ensure_position(instrument)
     realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
@@ -197,10 +216,13 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
         # TODO(account-mgmt): fee is folded into settle here (correct when
         # settle == portfolio base currency); revisit for instruments whose
         # settle currency differs from the portfolio base currency.
-        state.adjust_balance(instrument.settle, realized_pnl - fee)
+        if not _covered_by_balance_push(state, instrument.settle, deal.time):
+            state.adjust_balance(instrument.settle, realized_pnl - fee)
     else:
-        state.adjust_balance(instrument.quote, -(deal.amount * deal.price + fee))
-        state.adjust_balance(instrument.base, deal.amount)
+        if not _covered_by_balance_push(state, instrument.quote, deal.time):
+            state.adjust_balance(instrument.quote, -(deal.amount * deal.price + fee))
+        if not _covered_by_balance_push(state, instrument.base, deal.time):
+            state.adjust_balance(instrument.base, deal.amount)
     return pos
 
 
@@ -344,20 +366,47 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
         return ApplyResult()
     state.mark_funding_applied(bucket)
     amount = pos.apply_funding_payment(payment, mark)  # updates cumulative_funding/pnl
-    if state.get_balance(instrument.settle) is not None:
+    # Skip the cash leg when a venue balance push already covers it (the venue debits
+    # the wallet and pushes the new total with reason FUNDING_FEE — booking our computed
+    # amount on top would double-count). cumulative_funding/pnl above always book.
+    # payment.time is a venue-clock ns epoch — same domain as the push as_of.
+    covered = _covered_by_balance_push(state, instrument.settle, np.datetime64(int(payment.time), "ns"))
+    if not covered and state.get_balance(instrument.settle) is not None:
         # adjust only an existing settle balance (funding never creates one)
         state.adjust_balance(instrument.settle, amount)
     return ApplyResult(position=pos)
 
 
-def _handle_position_balance_noop(state: AccountState, event: AccountMessage, now: np.datetime64) -> ApplyResult:
-    # No connector emits PositionUpdate/BalanceUpdate yet; positions/balances are derived
-    # from fills and corrected by snapshot reconcile. PM still fires on_position_change
-    # off a PositionUpdateEvent's payload; balance pushes fire no strategy callback.
-    # TODO(account-mgmt): apply venue WS position/balance to AccountState here (via
-    # set_position/update_balance) once the live connectors emit them, with the same
-    # freshness/ratchet guard as snapshot reconcile.
-    return ApplyResult()
+def _handle_position_update(state: AccountState, event: PositionUpdateEvent, now: np.datetime64) -> ApplyResult:
+    # Venue position pushes NEVER write size on the event path: sizes are owned by the
+    # deal ledger, and the venue's ORDER_TRADE_UPDATE vs ACCOUNT_UPDATE ordering is not
+    # reliably documented. Size-equal (within one lot) -> metadata no-op that advances
+    # the push ratchet; the empty result still fires through to on_position_change off
+    # the event payload (the Item 6 dispatch rule). Size drift -> position_drift flag,
+    # zero mutation: the AccountManager reacts with a rate-limited snapshot request, and
+    # the race-safe snapshot reconcile corrects the size. Hedge-mode pushes are filtered
+    # connector-side, so the payload here is always net.
+    instrument = event.position.instrument
+    last = state.get_position_push_as_of(instrument)
+    if last is not None and event.as_of <= last:
+        return ApplyResult()
+    state.mark_position_push(instrument, event.as_of)
+    local = state.get_position(instrument)
+    local_qty = local.quantity if local is not None else 0.0
+    if abs(event.position.quantity - local_qty) < instrument.lot_size:
+        return ApplyResult()
+    return ApplyResult(position_drift=event.position)
+
+
+def _handle_balance_update(state: AccountState, event: BalanceUpdateEvent, now: np.datetime64) -> ApplyResult:
+    # Absolute apply through the per-currency as_of ratchet; total-only pushes (futures
+    # carry no free/locked split -> NaN) preserve locked. Producer contract: a push
+    # without a real split MUST carry free/locked = NaN, not 0. The balance field on the
+    # result is internal visibility only — no strategy callback fires (Item 6 contract).
+    bal = event.balance
+    if not state.apply_balance_push(bal.currency, bal.total, event.as_of, free=bal.free, locked=bal.locked):
+        return ApplyResult()
+    return ApplyResult(balance=state.get_balance(bal.currency))
 
 
 def _handle_snapshot(
@@ -381,8 +430,8 @@ _HANDLERS = {
     OrderCancelRejectedEvent: _handle_cancel_rejected,
     OrderUpdateRejectedEvent: _handle_update_rejected,
     FundingPaymentEvent: _handle_funding_payment,
-    PositionUpdateEvent: _handle_position_balance_noop,
-    BalanceUpdateEvent: _handle_position_balance_noop,
+    PositionUpdateEvent: _handle_position_update,
+    BalanceUpdateEvent: _handle_balance_update,
 }
 
 
