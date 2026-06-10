@@ -1,6 +1,8 @@
+from unittest.mock import MagicMock
+
 import numpy as np
 
-from qubx.core.account_manager import AccountManager, AccountManagerConfig, AccountState
+from qubx.core.account_manager import AccountManager
 from qubx.core.basics import Balance, Instrument, MarketType, Position
 
 
@@ -26,13 +28,11 @@ def _instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 
 
 def _am(exchanges=("binance",)):
-    am = AccountManager.__new__(AccountManager)
-    am._states = {ex: AccountState(exchange=ex, base_currency="USDT") for ex in exchanges}
-    am._connectors = {}
-    am._cfg = AccountManagerConfig()
-    am._time = _T()
-    am._liveness_unready_since = {}
-    return am
+    return AccountManager(
+        connectors={ex: MagicMock() for ex in exchanges},
+        base_currencies={ex: "USDT" for ex in exchanges},
+        time=_T(),
+    )
 
 
 def _marked_position(inst, quantity, avg_price, mark_price):

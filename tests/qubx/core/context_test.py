@@ -1,8 +1,12 @@
-from unittest.mock import Mock
+from unittest.mock import MagicMock, Mock
+
+import numpy as np
 
 from qubx import logger
 from qubx.backtester.simulator import simulate
-from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, TriggerEvent
+from qubx.core.basics import CtrlChannel, Deal, Instrument, Signal, TargetPosition, TriggerEvent
+from qubx.core.context import StrategyContext
+from qubx.core.events import OrderAcceptedEvent
 from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext, IStrategyInitializer
 from qubx.data import CsvStorage
 
@@ -122,3 +126,27 @@ class TestStrategyGathererOverride:
         gatherer = strategy.gatherer(mock_ctx)
 
         assert gatherer is None, "Strategy without gatherer override should return None"
+
+
+def test_incoming_data_loop_routes_typed_messages_to_process_event():
+    # The typed branch of the incoming-data loop: a ChannelMessage goes to
+    # ProcessingManager.process_event and never enters the market-data tuple path.
+    channel = CtrlChannel("test")
+    event = OrderAcceptedEvent(
+        instrument=Mock(), client_order_id="cid-1", venue_order_id="V1", accepted_at=np.datetime64("now")
+    )
+
+    ctx = StrategyContext.__new__(StrategyContext)
+    ctx._command_queue = None
+    ctx._notifier = None
+    ctx._health_monitor = MagicMock()
+    ctx._processing_manager = MagicMock()
+    # stop the channel once the event is consumed so the loop exits deterministically
+    ctx._processing_manager.process_event.side_effect = lambda _msg: channel.stop()
+    ctx.process_data = MagicMock(return_value=False)
+
+    channel.send(event)
+    ctx._StrategyContext__process_incoming_data_loop(channel)
+
+    ctx._processing_manager.process_event.assert_called_once_with(event)
+    ctx.process_data.assert_not_called()

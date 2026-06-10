@@ -331,30 +331,24 @@ def test_cancel_raises_when_no_id_given() -> None:
         conn.cancel_order(client_order_id="")
 
 
+@pytest.mark.parametrize(
+    "ids",
+    [
+        {"venue_order_id": "VENUE123"},
+        {"client_order_id": "qubx_BTCUSDT_1", "venue_order_id": "VENUE123"},
+    ],
+    ids=["venue_id_only", "both_ids"],
+)
 @pytest.mark.asyncio
-async def test_cancel_by_venue_id_only_emits_canceled() -> None:
-    # A caller that only knows the venue id must still cancel — no client_order_id given.
+async def test_cancel_by_venue_id_emits_canceled(ids: dict) -> None:
+    # With a venue id (alone, or alongside the cid) the venue-id endpoint is used — a caller
+    # that only knows the venue id must still be able to cancel.
     exchange = Mock()
     exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1"})
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(venue_order_id="VENUE123")
-    await _drive(conn)
-
-    exchange.cancel_order.assert_awaited_once_with("VENUE123", None)
-    assert isinstance(sent[0], OrderCanceledEvent)
-    assert sent[0].venue_order_id == "VENUE123"
-
-
-@pytest.mark.asyncio
-async def test_cancel_by_venue_id_emits_canceled() -> None:
-    exchange = Mock()
-    exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1"})
-    exchange.has = {"editOrder": True}
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.cancel_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    conn.cancel_order(**ids)
     await _drive(conn)
 
     # Order not in cache (never submitted via this connector) -> symbol is None; the

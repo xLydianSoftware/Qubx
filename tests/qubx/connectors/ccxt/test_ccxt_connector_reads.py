@@ -14,7 +14,7 @@ import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
 from qubx.core.account_manager import SimulatedAccountManager
-from qubx.core.basics import Balance, Instrument, MarketType, OrderRequest, OrderStatus, Position
+from qubx.core.basics import Balance, Instrument, MarketType, OrderOrigin, OrderRequest, OrderStatus, Position
 from qubx.core.events import (
     AccountSnapshotEvent,
     OrderAcceptedEvent,
@@ -292,14 +292,23 @@ async def test_request_snapshot_failed_leg_left_none() -> None:
 # --------------------------------------------------------------------------- #
 # (c) request_order_status -> lifecycle event / not-found reject
 # --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "ids",
+    [
+        {"client_order_id": "qubx_BTCUSDT_1", "venue_order_id": "VENUE123"},
+        {"venue_order_id": "VENUE123"},
+    ],
+    ids=["both_ids", "venue_id_only"],
+)
 @pytest.mark.asyncio
-async def test_request_order_status_emits_event() -> None:
+async def test_request_order_status_emits_event(ids: dict) -> None:
+    # Reconcile by both ids or by venue id alone: fetch by venue id and surface the order.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_order = AsyncMock(return_value=_ws_order(status="closed", trades=[_ws_trade("TX", amount=1.0)]))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    conn.request_order_status(**ids)
     await _drive(conn)
 
     exchange.fetch_order.assert_awaited_once_with("VENUE123", None)
@@ -345,22 +354,6 @@ async def test_request_order_status_not_found_emits_reject_with_both_ids() -> No
     assert ev.reason == "reconcile: order not present at venue"
     assert ev.client_order_id == "qubx_BTCUSDT_1"
     assert ev.venue_order_id == "VENUE123"
-
-
-@pytest.mark.asyncio
-async def test_request_order_status_by_venue_id_only_emits_event() -> None:
-    # Reconcile a venue-id-only order (no client_order_id): fetch by venue id and surface it.
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.fetch_order = AsyncMock(return_value=_ws_order(status="closed", trades=[_ws_trade("TX", amount=1.0)]))
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.request_order_status(venue_order_id="VENUE123")
-    await _drive(conn)
-
-    exchange.fetch_order.assert_awaited_once_with("VENUE123", None)
-    assert isinstance(sent[0], OrderAcceptedEvent)
-    assert isinstance(sent[1], OrderFilledEvent)
 
 
 @pytest.mark.asyncio
@@ -487,11 +480,14 @@ async def test_is_ws_ready_reflects_stream_state() -> None:
 
     # One successful watch_orders round-trip flips readiness; then channel closes.
     calls = {"n": 0}
+    ready_during_run: list[bool] = []
 
     async def _watch():
         calls["n"] += 1
         if calls["n"] == 1:
             return [_ws_order(status="open")]
+        # Call 2: the first successful round-trip has already flipped readiness.
+        ready_during_run.append(conn.is_ws_ready())
         conn.channel.control.is_set = Mock(return_value=False)
         return []
 
@@ -500,9 +496,8 @@ async def test_is_ws_ready_reflects_stream_state() -> None:
     conn.channel.control.is_set = Mock(return_value=True)
 
     await conn._subscribe_executions()
-    # Loop exited cleanly; readiness was True during the run and reset on exit.
-    assert conn.is_ws_ready() is False
-    assert calls["n"] >= 1
+    assert ready_during_run == [True]  # ready while the stream was live
+    assert conn.is_ws_ready() is False  # reset on clean exit
 
 
 # --------------------------------------------------------------------------- #
@@ -541,8 +536,10 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     am.apply(event)  # must NOT raise
 
     # The open order was registered against the real account state (materialized
-    # EXTERNAL since its cid does not match the qubx- recovered prefix).
+    # RECOVERED since its cid carries the qubx_ framework prefix).
     registered = am.find_order_by_id("V1")
     assert registered is not None
     assert registered.status is OrderStatus.ACCEPTED
+    assert registered.origin is OrderOrigin.RECOVERED
+    assert registered.client_order_id == "qubx_BTCUSDT_1"
     assert am.get_balance("USDT", exchange="BINANCE.UM").total == 1000.0

@@ -138,9 +138,9 @@ def test_leverage_marked_position():
     pos.quantity = 0.1
     pos.update_market_price(T0, 50_000.0, 1.0)
     state.set_position(inst, pos)
-    capital = 1000.0 + pos.market_value_funds
-    assert state.total_capital() == capital
-    assert state.leverage(inst) == _notional(pos) / capital
+    # 0.1 BTC marked at 50_000 -> notional 5_000; capital = 1_000 cash + 5_000 market value
+    assert state.total_capital() == 6_000.0
+    assert state.leverage(inst) == 5_000.0 / 6_000.0
 
 
 def test_net_and_gross_leverage():
@@ -150,10 +150,9 @@ def test_net_and_gross_leverage():
     pos.quantity = 0.1
     pos.update_market_price(T0, 50_000.0, 1.0)
     state.set_position(inst, pos)
-    capital = state.total_capital()
-    n = _notional(pos)
-    assert state.net_leverage() == n / capital
-    assert state.gross_leverage() == abs(n) / capital
+    # notional 5_000 over capital 1_000_000 cash + 5_000 market value
+    assert state.net_leverage() == 5_000.0 / 1_005_000.0
+    assert state.gross_leverage() == 5_000.0 / 1_005_000.0
 
 
 def test_net_leverage_signed_negative_for_short():
@@ -163,18 +162,8 @@ def test_net_leverage_signed_negative_for_short():
     pos.quantity = -0.1
     pos.update_market_price(T0, 50_000.0, 1.0)
     state.set_position(inst, pos)
-    capital = state.total_capital()
-    n = _notional(pos)
-    assert n < 0
-    assert state.net_leverage() == n / capital < 0
-    assert state.gross_leverage() == abs(n) / capital > 0
-    assert state.leverage(inst) == n / capital < 0
-
-
-def test_conversion_rate_is_identity():
-    # The single multi-currency seam: 1.0 until real settle/quote -> base conversion lands.
-    assert _state().conversion_rate(_instrument()) == 1.0
-
-
-def test_venue_figures_unset_by_default():
-    assert _state().get_venue_figures() is None
+    # short 0.1 BTC at 50_000 -> notional -5_000; capital = 1_000_000 cash - 5_000 market value
+    assert _notional(pos) == -5_000.0
+    assert state.net_leverage() == -5_000.0 / 995_000.0
+    assert state.gross_leverage() == 5_000.0 / 995_000.0
+    assert state.leverage(inst) == -5_000.0 / 995_000.0

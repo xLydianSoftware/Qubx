@@ -30,14 +30,14 @@ def _make_order(cid="qubx-1", status=OrderStatus.SUBMITTED, venue_id=None, last_
     )
 
 
-def testadd_order_accepted_not_indexed_inflight():
+def test_add_order_accepted_not_indexed_inflight():
     # only SUBMITTED / PENDING_* are in-flight; a resting ACCEPTED order is not swept
     state = AccountState(exchange="binance", base_currency="USDT")
     state.add_order(_make_order(status=OrderStatus.ACCEPTED))
-    assert "qubx-1" not in state._inflight_index
+    assert state.get_inflight_orders() == []
 
 
-def testremove_order_drains_indexes():
+def test_remove_order_drains_indexes():
     # remove_order is the FULL drop (submit never reached the venue): unlike
     # evict_to_history, the order must NOT remain resolvable via terminal history.
     state = AccountState(exchange="binance", base_currency="USDT")
@@ -46,7 +46,7 @@ def testremove_order_drains_indexes():
     state.remove_order("qubx-1")
     assert state.get_order("qubx-1") is None
     assert state.get_order_by_venue_id("VENUE_ABC") is None
-    assert "qubx-1" not in state._inflight_index
+    assert state.get_inflight_orders() == []
 
 
 def test_terminal_history_bounded_by_constructor_size():

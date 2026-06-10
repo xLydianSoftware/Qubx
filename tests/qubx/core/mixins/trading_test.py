@@ -505,18 +505,6 @@ class TestTradingManagerCancelOrder:
         with pytest.raises(OrderNotFound):
             trading_manager.cancel_order(order_id="missing_order_789", exchange="BINANCE.UM")
 
-    def test_cancel_order_routes_to_connector(self, trading_manager, mock_connector, mock_account):
-        """cancel_order forwards through the connector cancel path."""
-        order = _live_order()
-        mock_account.find_order_by_id.return_value = order
-
-        result = trading_manager.cancel_order(order_id="test_order_123", exchange="BINANCE.UM")
-
-        assert result is True
-        mock_connector.cancel_order.assert_called_once_with(
-            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
-        )
-
     def test_cancel_order_resolves_exchange_from_order(self, trading_manager, mock_connector, mock_account):
         """When no exchange is given, the order's own exchange is used."""
         order = _live_order()

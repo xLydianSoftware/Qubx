@@ -34,19 +34,6 @@ def test_non_terminal_edges_match_reference(frm, to):
     assert can_transition(frm, to) == (to in EXPECTED_NON_TERMINAL_EDGES[frm])
 
 
-def test_pending_states_revert_to_live_states():
-    # cancel/update reject (and sweep give-up) revert a PENDING_* order to a live state.
-    for revert_to in (S.SUBMITTED, S.ACCEPTED, S.PARTIALLY_FILLED):
-        assert can_transition(S.PENDING_CANCEL, revert_to)
-        assert can_transition(S.PENDING_UPDATE, revert_to)
-
-
-def test_cannot_modify_before_venue_ack():
-    # a not-yet-acked SUBMITTED order can be cancelled but not modified.
-    assert can_transition(S.SUBMITTED, S.PENDING_CANCEL)
-    assert not can_transition(S.SUBMITTED, S.PENDING_UPDATE)
-
-
 def test_validate_transition_raises_with_context():
     with pytest.raises(InvalidOrderTransition) as exc:
         validate_transition("cid-7", S.FILLED, S.ACCEPTED)
@@ -55,6 +42,8 @@ def test_validate_transition_raises_with_context():
     assert exc.value.attempted is S.ACCEPTED
 
 
-def test_validate_transition_allows_legal_move():
-    # returns None, does not raise
+def test_validate_transition_silent_on_legal():
+    # the single silent-on-legal pin; covers both can_transition branches —
+    # rule-based terminalization and a table edge. Returns None, does not raise.
     assert validate_transition("cid-1", S.ACCEPTED, S.REJECTED) is None
+    assert validate_transition("cid-1", S.SUBMITTED, S.ACCEPTED) is None

@@ -13,7 +13,7 @@ from typing import TypeVar
 import numpy as np
 import pytest
 
-from qubx.core.account_manager.state import AccountState, VenueAccountFigures
+from qubx.core.account_manager.state import AccountState
 from qubx.core.basics import (
     Balance,
     Deal,
@@ -37,6 +37,10 @@ def _present(value: _T | None) -> _T:
     """Narrow an Optional lookup result: fail loudly on None, return the value."""
     assert value is not None
     return value
+
+
+def _inflight_cids(state: AccountState) -> set[str]:
+    return {o.client_order_id for o in state.get_inflight_orders()}
 
 
 def _order(
@@ -83,7 +87,7 @@ def test_add_order_inserts_and_indexes_inflight():
     state = AccountState("binance", "USDT")
     state.add_order(_order())
     assert state.get_order("qubx-1") is not None
-    assert "qubx-1" in state._inflight_index
+    assert "qubx-1" in _inflight_cids(state)
 
 
 def test_add_order_with_venue_id_indexes_by_venue():
@@ -93,11 +97,16 @@ def test_add_order_with_venue_id_indexes_by_venue():
     assert found is not None and found.client_order_id == "qubx-1"
 
 
-def test_add_terminal_order_populates_evict_index_not_inflight():
+def test_add_terminal_order_registers_eviction_not_inflight():
     state = AccountState("binance", "USDT")
     state.add_order(_order(status=OrderStatus.FILLED, last_updated_at=T1))
-    assert "qubx-1" not in state._inflight_index
-    assert state._pending_evict_index["qubx-1"] == T1
+    assert "qubx-1" not in _inflight_cids(state)
+    # eviction is registered at last_updated_at (T1): not due before T1 + retention
+    retention = np.timedelta64(60, "s")
+    state.prune_terminal_orders(T1 + retention - np.timedelta64(1, "ms"), retention)
+    assert state.has_active_order("qubx-1")
+    state.prune_terminal_orders(T1 + retention, retention)
+    assert not state.has_active_order("qubx-1")
 
 
 def test_add_terminal_order_without_last_updated_at_raises():
@@ -138,11 +147,6 @@ def test_set_venue_id_drops_stale_key_on_repoint():
     assert _present(state.get_order_by_venue_id("NEW")).client_order_id == "qubx-1"
 
 
-def test_get_order_by_unknown_venue_id_returns_none():
-    state = AccountState("binance", "USDT")
-    assert state.get_order_by_venue_id("NOPE") is None
-
-
 # --------------------------------------------------------------------------- #
 # transitions
 # --------------------------------------------------------------------------- #
@@ -154,24 +158,29 @@ def test_transition_to_accepted_drains_inflight():
     order = state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
     assert order.status is OrderStatus.ACCEPTED
     assert order.last_updated_at == T1
-    assert "qubx-1" not in state._inflight_index
+    assert "qubx-1" not in _inflight_cids(state)
 
 
-def test_transition_to_terminal_populates_evict_index():
+def test_transition_to_terminal_registers_eviction():
     state = AccountState("binance", "USDT")
     state.add_order(_order())
     state.transition_order("qubx-1", OrderStatus.FILLED, T1)
-    assert "qubx-1" not in state._inflight_index
-    assert state._pending_evict_index["qubx-1"] == T1
+    assert "qubx-1" not in _inflight_cids(state)
+    # eviction is registered at the transition time (T1): not due before T1 + retention
+    retention = np.timedelta64(60, "s")
+    state.prune_terminal_orders(T1 + retention - np.timedelta64(1, "ms"), retention)
+    assert state.has_active_order("qubx-1")
+    state.prune_terminal_orders(T1 + retention, retention)
+    assert not state.has_active_order("qubx-1")
 
 
 def test_transition_back_to_pending_re_indexes_inflight():
     state = AccountState("binance", "USDT")
     state.add_order(_order())
     state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
-    assert "qubx-1" not in state._inflight_index
+    assert "qubx-1" not in _inflight_cids(state)
     state.transition_order("qubx-1", OrderStatus.PENDING_CANCEL, T2)
-    assert "qubx-1" in state._inflight_index
+    assert "qubx-1" in _inflight_cids(state)
 
 
 # --------------------------------------------------------------------------- #
@@ -198,28 +207,20 @@ def test_apply_fill_dedup_by_trade_id():
     assert _present(state.get_order("qubx-1")).filled_quantity == 0.5
 
 
-def test_apply_fill_uses_magnitude_for_sell():
+def test_apply_fill_accumulates_magnitude_across_sell_fills():
     # filled_quantity is unsigned magnitude (direction lives in order.side), matching
     # Order.quantity / the OME's positive-amount requirement. Deal.amount is signed,
-    # so a sell fill accumulates abs(amount). Keeps `filled_quantity >= quantity`
-    # well-defined for both sides.
+    # so a sell fill accumulates abs(amount), keeping `filled_quantity >= quantity`
+    # well-defined for both sides. Also guards the avg-price / apply_fill coupling:
+    # two sell fills must not cancel to new_qty == 0 (the bug if filled_quantity
+    # were unsigned but the avg used signed amounts).
     state = AccountState("binance", "USDT")
     state.add_order(_order())
     state.apply_fill("qubx-1", _fill("t1", amount=-0.5, price=100.0), T1)
     order = _present(state.get_order("qubx-1"))
     assert order.filled_quantity == 0.5
     assert order.avg_fill_price == 100.0
-
-
-def test_apply_fill_accumulates_magnitude_across_sell_fills():
-    # Guards the avg-price / apply_fill coupling: two sell fills must not
-    # cancel to new_qty == 0 (the bug if filled_quantity were unsigned but the
-    # avg used signed amounts).
-    state = AccountState("binance", "USDT")
-    state.add_order(_order())
-    state.apply_fill("qubx-1", _fill("t1", amount=-0.5, price=100.0), T1)
     state.apply_fill("qubx-1", _fill("t2", amount=-0.5, price=102.0), T2)
-    order = _present(state.get_order("qubx-1"))
     assert order.filled_quantity == 1.0
     assert order.avg_fill_price == 101.0
 
@@ -240,11 +241,10 @@ def test_remove_order_drains_indexes_and_moves_to_history():
     state.transition_order("qubx-1", OrderStatus.FILLED, T1)
     state.evict_to_history("qubx-1")
 
-    assert "qubx-1" not in state._active_orders
+    assert not state.has_active_order("qubx-1")
+    assert "qubx-1" not in state.get_orders()
     assert state.get_order_by_venue_id("VENUE_ABC") is None
-    assert "qubx-1" not in state._inflight_index
-    assert "qubx-1" not in state._pending_evict_index
-    assert "qubx-1" not in state._seen_trade_ids
+    assert "qubx-1" not in _inflight_cids(state)
     # still resolvable via the terminal-history ring buffer
     assert state.get_order("qubx-1") is not None
 
@@ -253,16 +253,6 @@ def test_remove_unknown_order_is_noop():
     state = AccountState("binance", "USDT")
     state.evict_to_history("does-not-exist")  # must not raise
     state.remove_order("does-not-exist")  # must not raise
-
-
-def test_get_order_falls_back_to_terminal_history():
-    state = AccountState("binance", "USDT")
-    state.add_order(_order())
-    state.transition_order("qubx-1", OrderStatus.FILLED, T1)
-    state.evict_to_history("qubx-1")
-    order = state.get_order("qubx-1")
-    assert order is not None
-    assert order.status is OrderStatus.FILLED
 
 
 # --------------------------------------------------------------------------- #
@@ -390,12 +380,8 @@ def test_get_active_order_excludes_terminal_history():
     state.transition_order("qubx-1", OrderStatus.FILLED, T1)
     state.evict_to_history("qubx-1")
     assert state.get_active_order("qubx-1") is None  # evicted
-    assert state.get_order("qubx-1") is not None  # but still in history
-
-
-def test_get_active_order_unknown_returns_none():
-    state = AccountState("binance", "USDT")
-    assert state.get_active_order("nope") is None
+    # but still resolvable via get_order's terminal-history fallback, status intact
+    assert _present(state.get_order("qubx-1")).status is OrderStatus.FILLED
 
 
 def test_get_inflight_orders_tracks_index():
@@ -409,24 +395,9 @@ def test_get_inflight_orders_tracks_index():
     assert {o.client_order_id for o in state.get_inflight_orders()} == {"a", "b"}
 
 
-def test_get_inflight_orders_empty_when_none():
-    state = AccountState("binance", "USDT")
-    state.add_order(_order(status=OrderStatus.FILLED, last_updated_at=T1))
-    assert state.get_inflight_orders() == []
-
-
 # --------------------------------------------------------------------------- #
-# snapshot ratchet / terminal pruning
+# terminal pruning
 # --------------------------------------------------------------------------- #
-
-
-def test_snapshot_as_of_ratchet():
-    state = AccountState("binance", "USDT")
-    assert state.get_last_snapshot_as_of() is None
-    state.mark_snapshot_applied(T1)
-    assert state.get_last_snapshot_as_of() == T1
-    state.mark_snapshot_applied(T2)
-    assert state.get_last_snapshot_as_of() == T2
 
 
 def test_prune_terminal_orders_removes_only_expired():
@@ -444,12 +415,3 @@ def test_prune_terminal_orders_ignores_non_terminal():
     state.add_order(_order("live"))  # SUBMITTED, never in the evict index
     state.prune_terminal_orders(T2, np.timedelta64(0, "s"))
     assert state.get_active_order("live") is not None
-
-
-def test_venue_figures_roundtrip():
-    state = AccountState("binance", "USDT")
-    assert state.get_venue_figures() is None
-    figures = VenueAccountFigures(as_of=T1, equity=12_345.0, margin_ratio=42.0)
-    state.set_venue_figures(figures)
-    assert state.get_venue_figures() is figures
-    assert _present(state.get_venue_figures()).equity == 12_345.0

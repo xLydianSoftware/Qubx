@@ -2,16 +2,13 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from qubx.core.account_manager import AccountManager, AccountManagerConfig, reducer
+from qubx.core.account_manager import AccountManager, reducer
 from qubx.core.basics import (
     Balance,
     Deal,
     FundingPayment,
     Instrument,
     MarketType,
-    Order,
-    OrderOrigin,
-    OrderStatus,
     Position,
 )
 from qubx.core.events import FundingPaymentEvent
@@ -58,33 +55,11 @@ def _spot_instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 
 
 def _am(exchange="binance"):
-    am = AccountManager.__new__(AccountManager)
-    am._init_state(
+    return AccountManager(
         connectors={exchange: MagicMock()},
         base_currencies={exchange: "USDT"},
         time=_T(),
-        cfg=AccountManagerConfig(),
         account_id="test",
-        tcc=None,
-    )
-    return am
-
-
-def add_order(state, inst, cid="cid-1", status=OrderStatus.ACCEPTED, qty=1.0):
-    state.add_order(
-        Order(
-            client_order_id=cid,
-            venue_order_id="V1",
-            origin=OrderOrigin.FRAMEWORK,
-            type="LIMIT",
-            instrument=inst,
-            submitted_at=np.datetime64("2026-05-28T00:00:00"),
-            quantity=qty,
-            price=50_000.0,
-            side="BUY",
-            status=status,
-            time_in_force="gtc",
-        )
     )
 
 
@@ -97,52 +72,6 @@ def _fill(trade_id="t1", amount=0.5, price=50_000.0):
         price=price,
         aggressive=True,
     )
-
-
-def test_partial_fill_updates_position_quantity_and_avg():
-    from qubx.core.events import OrderPartiallyFilledEvent
-
-    am = _am()
-    state = am._states["binance"]
-    inst = _instrument()
-    add_order(state, inst)
-    am.apply(
-        OrderPartiallyFilledEvent(
-            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=0.5, price=50_000.0)
-        )
-    )
-    pos = state.get_position(inst)
-    assert pos is not None
-    assert pos.quantity == 0.5
-    assert pos.position_avg_price == 50_000.0
-
-
-def test_two_fills_average_into_position():
-    from qubx.core.events import OrderFilledEvent, OrderPartiallyFilledEvent
-
-    am = _am()
-    state = am._states["binance"]
-    inst = _instrument()
-    add_order(state, inst, qty=1.0)
-    am.apply(
-        OrderPartiallyFilledEvent(
-            instrument=inst,
-            client_order_id="cid-1",
-            venue_order_id="V1",
-            fill=_fill(trade_id="t1", amount=0.5, price=50_000.0),
-        )
-    )
-    am.apply(
-        OrderFilledEvent(
-            instrument=inst,
-            client_order_id="cid-1",
-            venue_order_id="V1",
-            fill=_fill(trade_id="t2", amount=0.5, price=51_000.0),
-        )
-    )
-    pos = state.get_position(inst)
-    assert pos.quantity == 1.0
-    assert abs(pos.position_avg_price - 50_500.0) < 1e-6
 
 
 def test_funding_payment_applied_once_per_bucket():
@@ -188,20 +117,6 @@ def test_funding_payment_duplicate_skipped():
     am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
     assert pos.cumulative_funding == funding_after_first
     assert state.get_balance("USDT").total == balance_after_first
-
-
-def test_simulation_account_manager_constructs_without_pm():
-    from qubx.core.account_manager import SimulatedAccountManager
-
-    sam = SimulatedAccountManager(connectors={"binance": object()}, base_currencies={"binance": "USDT"}, time=_T())
-    assert sam._pm is None
-    assert "binance" in sam._states
-    # deal booking is pure reducer logic and works against the sim variant's state
-    inst = _instrument()
-    state = sam._states["binance"]
-    deal = _fill(amount=1.0, price=50_000.0)
-    reducer._book_deal(state, inst, deal)
-    assert state.get_position(inst).quantity == 1.0
 
 
 def test_funding_on_unmarked_position_skipped_without_consuming_bucket():

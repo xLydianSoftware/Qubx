@@ -7,6 +7,7 @@ from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
 from qubx.core.events import OrderCancelRejectedEvent, OrderRejectedEvent, OrderUpdateRejectedEvent
 from qubx.core.mixins.processing import ProcessingManager
+from tests.qubx.core.conftest import make_pm
 
 
 class _T:
@@ -24,95 +25,56 @@ def _real_pm(am: AccountManager) -> ProcessingManager:
     # A REAL ProcessingManager wired to the real AM — the give-up path must exercise the
     # genuine process_event -> apply -> _safe_call dispatch (error isolation included),
     # not a mock that would skip the apply.
-    pm = ProcessingManager.__new__(ProcessingManager)
-    pm._account_manager = am
-    pm._strategy = MagicMock()
-    pm._context = MagicMock()
-    pm._context.emitter = None
-    return pm
+    return make_pm(_account_manager=am)
 
 
 def _am(connectors, cfg=None):
-    am = AccountManager.__new__(AccountManager)
-    am._init_state(
+    am = AccountManager(
         connectors=connectors,
         base_currencies={ex: "USDT" for ex in connectors},
         time=_T(),
         cfg=cfg or AccountManagerConfig(inflight_check_threshold_ms=5_000, inflight_check_retries=3),
         account_id="test",
-        tcc=None,
     )
+    # assigned post-construction (not via set_processing_manager): the half-object PM
+    # has no scheduler, and these tests drive the ticks directly.
     am._pm = _real_pm(am)
     return am
 
 
-def test_inflight_tick_calls_request_order_status():
+def _mk_order(cid, status, vid):
+    return Order(
+        client_order_id=cid,
+        venue_order_id=vid,
+        origin=OrderOrigin.FRAMEWORK,
+        type="LIMIT",
+        instrument=None,
+        submitted_at=np.datetime64("2026-05-28T00:00:00"),
+        quantity=1.0,
+        price=50_000.0,
+        side="BUY",
+        status=status,
+        time_in_force="gtc",
+    )
+
+
+def test_inflight_tick_requests_status_and_bumps_retry():
     conn = MagicMock()
     am = _am({"binance": conn})
-    am._states["binance"].add_order(
-        Order(
-            client_order_id="cid-1",
-            venue_order_id="V1",
-            origin=OrderOrigin.FRAMEWORK,
-            type="LIMIT",
-            instrument=None,
-            submitted_at=np.datetime64("2026-05-28T00:00:00"),
-            quantity=1.0,
-            price=50_000.0,
-            side="BUY",
-            status=OrderStatus.SUBMITTED,
-            time_in_force="gtc",
-        )
-    )
+    am._states["binance"].add_order(_mk_order("cid-1", OrderStatus.SUBMITTED, "V1"))
     am._time.adv(6_000)
     am._on_inflight_tick(None)
     conn.request_order_status.assert_called_once_with(
         client_order_id="cid-1",
         venue_order_id="V1",
     )
-
-
-def test_inflight_tick_increments_retry_counter():
-    conn = MagicMock()
-    am = _am({"binance": conn})
-    am._states["binance"].add_order(
-        Order(
-            client_order_id="cid-1",
-            venue_order_id="V1",
-            origin=OrderOrigin.FRAMEWORK,
-            type="LIMIT",
-            instrument=None,
-            submitted_at=np.datetime64("2026-05-28T00:00:00"),
-            quantity=1.0,
-            price=50_000.0,
-            side="BUY",
-            status=OrderStatus.SUBMITTED,
-            time_in_force="gtc",
-        )
-    )
-    am._time.adv(6_000)
-    am._on_inflight_tick(None)
     assert am._states["binance"].get_retry("cid-1") == 1
 
 
 def test_inflight_tick_no_action_within_threshold():
     conn = MagicMock()
     am = _am({"binance": conn})
-    am._states["binance"].add_order(
-        Order(
-            client_order_id="cid-1",
-            venue_order_id="V1",
-            origin=OrderOrigin.FRAMEWORK,
-            type="LIMIT",
-            instrument=None,
-            submitted_at=np.datetime64("2026-05-28T00:00:00"),
-            quantity=1.0,
-            price=50_000.0,
-            side="BUY",
-            status=OrderStatus.SUBMITTED,
-            time_in_force="gtc",
-        )
-    )
+    am._states["binance"].add_order(_mk_order("cid-1", OrderStatus.SUBMITTED, "V1"))
     am._time.adv(1_000)
     am._on_inflight_tick(None)
     conn.request_order_status.assert_not_called()
@@ -126,20 +88,7 @@ def _exhaust_retries(state, cid, n=3):
 def test_inflight_exhausted_submitted_transitions_rejected():
     conn = MagicMock()
     am = _am({"binance": conn})
-    order = Order(
-        client_order_id="cid-1",
-        venue_order_id=None,
-        origin=OrderOrigin.FRAMEWORK,
-        type="LIMIT",
-        instrument=None,
-        submitted_at=np.datetime64("2026-05-28T00:00:00"),
-        quantity=1.0,
-        price=50_000.0,
-        side="BUY",
-        status=OrderStatus.SUBMITTED,
-        time_in_force="gtc",
-    )
-    am._states["binance"].add_order(order)
+    am._states["binance"].add_order(_mk_order("cid-1", OrderStatus.SUBMITTED, None))
     _exhaust_retries(am._states["binance"], "cid-1")
     am._time.adv(6_000)
     am._on_inflight_tick(None)
@@ -156,20 +105,7 @@ def test_inflight_exhausted_submitted_transitions_rejected():
 def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
     conn = MagicMock()
     am = _am({"binance": conn})
-    order = Order(
-        client_order_id="cid-1",
-        venue_order_id="V1",
-        origin=OrderOrigin.FRAMEWORK,
-        type="LIMIT",
-        instrument=None,
-        submitted_at=np.datetime64("2026-05-28T00:00:00"),
-        quantity=1.0,
-        price=50_000.0,
-        side="BUY",
-        status=OrderStatus.ACCEPTED,
-        time_in_force="gtc",
-    )
-    am._states["binance"].add_order(order)
+    am._states["binance"].add_order(_mk_order("cid-1", OrderStatus.ACCEPTED, "V1"))
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_CANCEL)
     _exhaust_retries(am._states["binance"], "cid-1")
     am._time.adv(6_000)
@@ -188,20 +124,7 @@ def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
 def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
     conn = MagicMock()
     am = _am({"binance": conn})
-    order = Order(
-        client_order_id="cid-1",
-        venue_order_id="V1",
-        origin=OrderOrigin.FRAMEWORK,
-        type="LIMIT",
-        instrument=None,
-        submitted_at=np.datetime64("2026-05-28T00:00:00"),
-        quantity=1.0,
-        price=50_000.0,
-        side="BUY",
-        status=OrderStatus.PARTIALLY_FILLED,
-        time_in_force="gtc",
-    )
-    am._states["binance"].add_order(order)
+    am._states["binance"].add_order(_mk_order("cid-1", OrderStatus.PARTIALLY_FILLED, "V1"))
     am.transition_order("binance", "cid-1", OrderStatus.PENDING_UPDATE)
     _exhaust_retries(am._states["binance"], "cid-1")
     am._time.adv(6_000)
@@ -361,22 +284,6 @@ def test_am_holds_no_strategy_reference():
     )
     assert not hasattr(am, "_strategy")
     assert not hasattr(am, "_ctx")
-
-
-def _mk_order(cid, status, vid):
-    return Order(
-        client_order_id=cid,
-        venue_order_id=vid,
-        origin=OrderOrigin.FRAMEWORK,
-        type="LIMIT",
-        instrument=None,
-        submitted_at=np.datetime64("2026-05-28T00:00:00"),
-        quantity=1.0,
-        price=50_000.0,
-        side="BUY",
-        status=status,
-        time_in_force="gtc",
-    )
 
 
 def test_inflight_sweep_isolates_raising_callback():

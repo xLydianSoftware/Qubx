@@ -45,16 +45,13 @@ def _instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
 
 
 def _am(exchange="binance", cfg=None):
-    am = AccountManager.__new__(AccountManager)
-    am._init_state(
+    return AccountManager(
         connectors={exchange: MagicMock()},
         base_currencies={exchange: "USDT"},
         time=_T(),
         cfg=cfg or AccountManagerConfig(snapshot_check_threshold_ms=5_000),
         account_id="test",
-        tcc=None,
     )
-    return am
 
 
 def _order(cid, status, time, vid=None, origin=OrderOrigin.FRAMEWORK, instrument=None, qty=1.0):
@@ -742,6 +739,8 @@ def test_restored_positions_first_snapshot_updates_present_keeps_absent():
 
 
 def test_reconcile_applies_to_state():
+    # The one combined-integration case: every facet (terminalize / materialize / position /
+    # balance) is pinned individually above; this pins them landing together in ONE snapshot.
     # Reconcile mutates AccountState silently (no per-event callback) — the strategy is
     # notified once via on_account_update at the PM layer. Here we assert the state effects.
     am = _am()

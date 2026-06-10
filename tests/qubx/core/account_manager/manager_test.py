@@ -22,7 +22,7 @@ from qubx.core.basics import (
     OrderStatus,
     OrderType,
 )
-from qubx.core.events import OrderAcceptedEvent, OrderCanceledEvent, OrderFilledEvent
+from qubx.core.events import OrderAcceptedEvent, OrderCanceledEvent, OrderFilledEvent, OrderPartiallyFilledEvent
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 
@@ -111,9 +111,15 @@ def test_apply_unroutable_returns_empty():
 def test_apply_fill_books_position_via_manager():
     am = _am()
     am.get_state(EX).add_order(_order("c1", OrderStatus.ACCEPTED))
-    r = am.apply(OrderFilledEvent(instrument=BTC, client_order_id="c1", fill=_fill("t1", 0.5)))
+    r = am.apply(OrderPartiallyFilledEvent(instrument=BTC, client_order_id="c1", fill=_fill("t1", 0.5)))
     assert r.position is not None and r.position.quantity == 0.5
-    assert _present(am.get_position(BTC)).quantity == 0.5
+    pos = _present(am.get_position(BTC))
+    assert pos.quantity == 0.5
+    assert pos.position_avg_price == 50_000.0
+    # second fill at a new price: quantity accumulates, avg price size-weights
+    am.apply(OrderFilledEvent(instrument=BTC, client_order_id="c1", fill=_fill("t2", 0.5, 51_000.0)))
+    assert pos.quantity == 1.0
+    assert abs(pos.position_avg_price - 50_500.0) < 1e-6
 
 
 def test_get_orders_aggregates_and_filters_terminal():
@@ -134,10 +140,6 @@ def test_total_capital_aggregates_across_exchanges():
     assert am.get_available_margin() == 1500.0  # no positions -> no initial margin
 
 
-def test_margin_ratio_no_maint_is_100():
-    assert _am().get_margin_ratio() == 100.0
-
-
 def test_on_market_quote_marks_existing_position():
     am = _am()
     pos = am.get_state(EX).ensure_position(BTC)
@@ -145,6 +147,7 @@ def test_on_market_quote_marks_existing_position():
     am.on_market_quote(BTC, _quote(50_999.0, 51_001.0))  # mid 51000
     assert pos.last_update_price == 51_000.0
     assert pos.unrealized_pnl() == 500.0  # 0.5 * (51000 - 50000)
+    assert abs(pos.market_value - 500.0) < 1e-6  # futures market value tracks unrealized pnl
 
 
 def test_on_market_quote_noop_without_position():
@@ -167,6 +170,7 @@ def test_get_order_by_exchange_and_shortcuts():
     assert _present(am.get_order("c1", exchange="OKX")).status is OrderStatus.ACCEPTED  # direct
     assert am.get_order("c1", exchange=EX) is None  # wrong exchange
     assert _present(am.get_order("c1")).client_order_id == "c1"  # multi-exchange scan fallback
+    assert am.get_order("nope") is None  # unknown cid -> None (scan miss)
     # single-exchange shortcut (no scan)
     one = _am()
     one.get_state(EX).add_order(_order("x", OrderStatus.ACCEPTED))

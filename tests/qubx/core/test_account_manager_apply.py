@@ -47,16 +47,12 @@ def _Inst() -> Instrument:
 
 
 def _am():
-    am = AccountManager.__new__(AccountManager)
-    am._init_state(
+    return AccountManager(
         connectors={"binance": MagicMock()},
         base_currencies={"binance": "USDT"},
         time=_T(),
-        cfg=None,
         account_id="test",
-        tcc=None,
     )
-    return am
 
 
 def add_order(state, cid="cid-1", status=OrderStatus.SUBMITTED, instrument=None, quantity=1.0):
@@ -446,7 +442,7 @@ def test_pending_update_overfill_keeps_filled_intact_and_warns():
     o = am.get_state("binance").get_order("cid-1")
     assert o.status is OrderStatus.PENDING_UPDATE
     assert o.filled_quantity == 1.5  # left intact — NOT clamped to quantity
-    assert any("leaving filled intact" in m for m in messages)
+    assert any(m.record["level"].name == "WARNING" and "cid-1" in m for m in messages)
 
 
 def test_canceled_transitions_to_canceled():

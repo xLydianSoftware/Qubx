@@ -9,6 +9,7 @@ import pytest
 import yaml
 
 from qubx import QubxLogConfig, logger
+from qubx.core.account_manager import AccountManager
 from qubx.core.basics import Balance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
 from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
@@ -19,7 +20,18 @@ from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.utils.misc import class_import
 from qubx.utils.runner.accounts import AccountConfigurationManager
-from qubx.utils.runner.runner import run_strategy_yaml
+from qubx.utils.runner.runner import _inject_restored_state, run_strategy_yaml
+
+
+def _wait_until(condition, timeout: float = 10.0, poll: float = 0.05) -> bool:
+    """Poll an outcome predicate — queue size is not a completion signal (the last
+    message may still be inside process_data after the queue empties)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(poll)
+    return condition()
 
 
 class TestRunStrategyYaml:
@@ -337,19 +349,23 @@ class TestRunStrategyYaml:
         mock_create_data_provider.assert_called()
         mock_restore_state.assert_called_once()
 
-        # Stream live bars
+        # Stream live bars and wait on the asserted outcome (both restored positions
+        # closed by SYNC_STATE, executions logged), not on queue size
         QubxLogConfig.set_log_level("INFO")
+        assert isinstance(ctx, StrategyContext)
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
         mock_data_provider.stream_bars(max_bars=10)
-        while channel._queue.qsize() > 0:
-            time.sleep(0.1)
+        assert _wait_until(
+            lambda: len(logs_writer.get_executions()) > 0
+            and ctx.get_position(btc_instrument).quantity == 0.0
+            and ctx.get_position(eth_instrument).quantity == 0.0
+        )
 
         if ctx.is_running():
             ctx.stop()
 
         # Check executions
-        assert isinstance(ctx, StrategyContext)
-        logs_writer = ctx._logging.logs_writer
-        assert isinstance(logs_writer, InMemoryLogsWriter)
         executions = logs_writer.get_executions()
         assert len(executions) > 0
 
@@ -409,19 +425,19 @@ class TestRunStrategyYaml:
 
         mock_create_data_provider.assert_called()
 
-        # Stream live bars
+        # Stream live bars and wait on the asserted outcome (the on_start signal
+        # executed), not on queue size
         QubxLogConfig.set_log_level("DEBUG")
+        assert isinstance(ctx, StrategyContext)
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
         mock_data_provider.stream_bars(max_bars=10)
-        while channel._queue.qsize() > 0:
-            time.sleep(0.1)
+        assert _wait_until(lambda: len(logs_writer.get_executions()) >= 1)
 
         if ctx.is_running():
             ctx.stop()
 
         # Check executions
-        assert isinstance(ctx, StrategyContext)
-        logs_writer = ctx._logging.logs_writer
-        assert isinstance(logs_writer, InMemoryLogsWriter)
         executions = logs_writer.get_executions()
         # - init signal
         assert len(executions) == 1
@@ -436,9 +452,6 @@ def test_inject_restored_state_preserves_accounting_fields():
     # Regression guard: _inject_restored_state seeds the whole persisted Position, so the
     # accounting fields (r_pnl, commissions, cumulative_funding) survive a restart — not
     # just quantity. This lost dedicated coverage when merge_restored_accounting was removed.
-    from qubx.core.account_manager import AccountManager, AccountState
-    from qubx.utils.runner.runner import _inject_restored_state
-
     inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
     assert inst is not None
     pos = Position(inst, quantity=2.0, pos_average_price=50_000.0)
@@ -446,8 +459,11 @@ def test_inject_restored_state_preserves_accounting_fields():
     pos.commissions = 4.5
     pos.cumulative_funding = -7.0
 
-    am = AccountManager.__new__(AccountManager)
-    am._states = {inst.exchange: AccountState(exchange=inst.exchange, base_currency="USDT")}
+    am = AccountManager(
+        connectors={inst.exchange: MagicMock()},
+        base_currencies={inst.exchange: "USDT"},
+        time=LiveTimeProvider(),
+    )
 
     restored = RestoredState(
         time=np.datetime64("now"),

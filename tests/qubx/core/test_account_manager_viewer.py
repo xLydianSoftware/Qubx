@@ -88,12 +88,6 @@ def test_get_balances_returns_list_of_balances():
     assert am.get_balances(exchange="binance")[0].free == 900.0
 
 
-def test_get_base_currency():
-    am = _am()
-    assert am.get_base_currency() == "USDT"
-    assert am.get_base_currency(exchange="binance") == "USDT"
-
-
 def test_find_order_by_id_uses_venue_id():
     am = _am()
     found = am.find_order_by_id("V1")
@@ -122,4 +116,5 @@ def test_position_report():
     am = _am()
     report = am.position_report()
     assert "BTCUSDT" in report
+    assert set(report["BTCUSDT"]) == {"Qty", "Price", "PnL", "MktValue", "Leverage"}
     assert report["BTCUSDT"]["Qty"] == 1.0

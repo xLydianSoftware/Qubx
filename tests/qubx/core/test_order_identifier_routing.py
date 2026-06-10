@@ -4,7 +4,6 @@ import pandas as pd
 import pytest
 
 from qubx.core.basics import OrderStatus, Position
-from qubx.core.exceptions import OrderNotFound
 from qubx.core.mixins.trading import TradingManager
 from qubx.health.dummy import DummyHealthMonitor
 
@@ -71,25 +70,6 @@ def test_cancel_order_routes_client_order_id(trading_manager):
     trading_manager._exchange_to_connector["BINANCE.UM"].cancel_order.assert_called_once_with(
         client_order_id="cid_1", venue_order_id="exchange_order_1"
     )
-
-
-def test_cancel_order_routes_order_id(trading_manager):
-    order = _order(order_id="exchange_order_2", client_order_id="cid_2")
-    trading_manager._account_manager.find_order_by_id.return_value = order
-    trading_manager._account_manager.find_order_by_client_id.return_value = None
-
-    trading_manager.cancel_order(order_id="exchange_order_2", exchange="BINANCE.UM")
-
-    trading_manager._exchange_to_connector["BINANCE.UM"].cancel_order.assert_called_once_with(
-        client_order_id="cid_2", venue_order_id="exchange_order_2"
-    )
-
-
-def test_cancel_unknown_order_raises(trading_manager):
-    trading_manager._account_manager.find_order_by_client_id.return_value = None
-    trading_manager._account_manager.find_order_by_id.return_value = None
-    with pytest.raises(OrderNotFound):
-        trading_manager.cancel_order(client_order_id="cid_1", exchange="BINANCE.UM")
 
 
 def test_update_order_routes_client_order_id(trading_manager):

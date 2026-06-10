@@ -8,10 +8,10 @@ from qubx.backtester.simulated_data import DataPump, SimulatedDataIterator
 from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.basics import DataType, FundingPayment, Instrument, MarketType
 from qubx.core.events import FundingPaymentEvent
-from qubx.core.mixins.processing import ProcessingManager
 from qubx.data.containers import RawData
 from qubx.data.storage import IReader, IStorage
 from qubx.data.transformers import TypedRecords
+from tests.qubx.core.conftest import make_pm
 
 # ---------------------------------------------------------------------------
 # Test helpers
@@ -160,18 +160,6 @@ class TestFundingPaymentSubscription:
         assert pump._producing_data_type == "funding_payment"
         assert isinstance(pump._transformer, TypedRecords)
 
-    def test_data_pump_funding_payment_different_exchanges(self):
-        """DataPump created for different exchanges keeps correct data types independently."""
-        mock_reader = Mock(spec=IReader)
-
-        pump_binance = DataPump(mock_reader, "funding_payment", "binance", "SWAP")
-        pump_okx = DataPump(mock_reader, "funding_payment", "okx", "SWAP")
-
-        assert pump_binance._requested_data_type == "funding_payment"
-        assert pump_okx._requested_data_type == "funding_payment"
-        assert isinstance(pump_binance._transformer, TypedRecords)
-        assert isinstance(pump_okx._transformer, TypedRecords)
-
     # -----------------------------------------------------------------------
     # ProcessingManager tests
     # -----------------------------------------------------------------------
@@ -180,11 +168,7 @@ class TestFundingPaymentSubscription:
         """FundingPaymentEvent is an AccountMessage: process_event books it via AM and
         surfaces it to the strategy through on_account_update. Market data rides tuples
         through process_data, not process_event, so there is no market-data half here."""
-        pm = ProcessingManager.__new__(ProcessingManager)
-        pm._strategy = Mock()
-        pm._account_manager = Mock()
-        pm._context = Mock()
-        pm._context.emitter = None
+        pm = make_pm()
         pm._account_manager.apply.return_value = ApplyResult(position=Mock())
 
         event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)

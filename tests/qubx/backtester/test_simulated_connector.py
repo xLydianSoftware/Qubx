@@ -1,5 +1,3 @@
-from unittest.mock import MagicMock
-
 import numpy as np
 import pytest
 
@@ -12,7 +10,6 @@ from qubx.core.basics import (
     ZERO_COSTS,
     ITimeProvider,
     OrderRequest,
-    OrderStatus,
 )
 from qubx.core.connector import IConnector
 from qubx.core.events import (
@@ -87,37 +84,6 @@ def setup():
     # generator so the quote is actually processed.
     list(exchange.process_market_data(instr, time.feed(Q("2020-01-01 10:00", 32000.0, 32001.0))))
     return conn, collector, exchange, instr, time
-
-
-def test_submit_limit_emits_accepted_event():
-    channel, collector = _channel()
-    exchange = MagicMock()
-    exchange.exchange_id = "binance.um"
-    report = MagicMock()
-    report.order.status = OrderStatus.ACCEPTED
-    report.order.venue_order_id = "V1"
-    report.order.client_order_id = "qubx-1"
-    report.exec = None
-    report.instrument = MagicMock()
-    exchange.place_order.return_value = report
-    time = MagicMock()
-    conn = SimulatedConnector(channel=channel, exchange=exchange, time_provider=time)
-    request = OrderRequest(
-        client_id="qubx-1",
-        instrument=report.instrument,
-        quantity=1.0,
-        price=50_000.0,
-        side="BUY",
-        order_type="LIMIT",
-        time_in_force="gtc",
-    )
-    conn.submit_order(request)
-    events = _drain(collector)
-    assert len(events) == 1
-    msg = events[0]
-    assert isinstance(msg, OrderAcceptedEvent)
-    assert msg.client_order_id == "qubx-1"
-    assert msg.venue_order_id == "V1"
 
 
 def test_isinstance_iconnector():

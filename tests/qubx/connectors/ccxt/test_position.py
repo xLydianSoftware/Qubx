@@ -7,7 +7,7 @@ from qubx.connectors.ccxt.utils import (
     ccxt_convert_order_info,
     ccxt_restore_position_from_deals,
 )
-from qubx.core.basics import Deal, Instrument, OrderOrigin, Position
+from qubx.core.basics import Deal, Instrument, OrderOrigin, OrderStatus, Position
 from qubx.core.lookups import lookup
 from tests.qubx.connectors.ccxt.data.ccxt_responses import (
     C1,
@@ -27,31 +27,30 @@ class TestStrats:
     def test_ccxt_exec_report_conversion(self):
         instrument = lookup.find_symbol("BINANCE", "ACAUSDT")
         assert instrument is not None
-        # - execution reports
-        for o in [
-            ccxt_convert_order_info(instrument, C1),
-            ccxt_convert_order_info(instrument, C2),
-            ccxt_convert_order_info(instrument, C3),
-            ccxt_convert_order_info(instrument, C4),
-            ccxt_convert_order_info(instrument, C5new),
-            ccxt_convert_order_info(instrument, C6ex),
-            ccxt_convert_order_info(instrument, C7cancel),
-        ]:
-            print(o)
-        print("-" * 50)
+        # - execution reports: (raw, status, side, signed qty, price, type)
+        expected = [
+            (C1, OrderStatus.ACCEPTED, "BUY", 50.0, None, "MARKET"),
+            (C2, OrderStatus.FILLED, "BUY", 50.0, 0.1612, "MARKET"),
+            (C3, OrderStatus.ACCEPTED, "SELL", -50.0, None, "MARKET"),
+            (C4, OrderStatus.FILLED, "SELL", -50.0, 0.1606, "MARKET"),
+            (C5new, OrderStatus.ACCEPTED, "BUY", 51.0, 0.1611, "LIMIT"),
+            (C6ex, OrderStatus.FILLED, "BUY", 51.0, 0.1611, "LIMIT"),
+            (C7cancel, OrderStatus.CANCELED, "BUY", 50.0, 0.1, "LIMIT"),
+        ]
+        for raw, status, side, quantity, price, order_type in expected:
+            o = ccxt_convert_order_info(instrument, raw)
+            assert o.venue_order_id == raw["id"]
+            assert o.client_order_id == raw["clientOrderId"]
+            assert o.status is status
+            assert o.side == side
+            assert o.quantity == quantity
+            assert o.price == price
+            assert o.type == order_type
 
-        print(ccxt_convert_order_info(instrument, C5new))
-        print(ccxt_convert_order_info(instrument, C6ex))
-        print(ccxt_convert_order_info(instrument, C7cancel))
-
-        print("#" * 50)
-
-        # - historical records
-        for h in HIST:
-            i = lookup.find_symbol("BINANCE.UM", h["info"]["symbol"])
-            if i is not None:
-                o = ccxt_convert_order_info(i, h)
-                print(o)
+        # - historical records (spot ACAUSDT order history) all convert to recognized statuses
+        hist_orders = [ccxt_convert_order_info(instrument, h) for h in HIST]
+        assert [o.venue_order_id for o in hist_orders] == [h["id"] for h in HIST]
+        assert all(o.status in (OrderStatus.ACCEPTED, OrderStatus.FILLED, OrderStatus.CANCELED) for o in hist_orders)
 
     def test_ccxt_hist_trades_conversion(self):
         raw = {
@@ -84,7 +83,15 @@ class TestStrats:
             "fee": {"cost": 6.48e-06, "currency": "BNB"},
             "fees": [{"cost": 6.48e-06, "currency": "BNB"}],
         }
-        print(ccxt_convert_deal_info(raw))
+        deal = ccxt_convert_deal_info(raw)
+        assert deal.trade_id == "56324015"
+        assert deal.order_id == "536752004"
+        assert deal.time == pd.Timestamp("2024-04-07 13:48:37.270000")
+        assert deal.amount == 2.4
+        assert deal.price == 2.1129
+        assert deal.aggressive is True  # taker
+        assert deal.fee_amount == N(6.48e-06)
+        assert deal.fee_currency == "BNB"
 
     def test_deal_synthesizes_trade_id_when_venue_omits_it(self):
         # Some venues omit a per-fill id; the converter must synthesize a deterministic
