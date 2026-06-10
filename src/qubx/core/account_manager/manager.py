@@ -57,6 +57,7 @@ class AccountManager:
     _liveness_threshold: np.timedelta64
     _terminal_retention: np.timedelta64
     _liveness_unready_since: dict[str, np.datetime64]
+    _last_eviction_sweep: np.datetime64
 
     def __init__(
         self,
@@ -131,6 +132,7 @@ class AccountManager:
             for ex in connectors
         }
         self._liveness_unready_since = {}
+        self._last_eviction_sweep = time.time()
 
     def _register_ticks(self) -> None:
         cfg = self._cfg
@@ -172,11 +174,20 @@ class AccountManager:
         state = self._state_for_event(event)
         if state is None:
             return ApplyResult()
-        result = reducer.apply(state, event, self._time.time(), snapshot_grace=self._snapshot_grace)
+        now = self._time.time()
+        result = reducer.apply(state, event, now, snapshot_grace=self._snapshot_grace)
         if (diff := result.reconcile_diff) is not None:
             if diff.missing:
                 self._resolve_missing_orders(state, diff)
             self._log_reconcile_diff(state.exchange, diff)
+        # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest)
+        # registers no periodic ticks, so without this sweep terminal orders and their
+        # side-table entries would grow unbounded there (and in live when
+        # inflight_check_interval_ms=0). One timestamp comparison per apply; the sweep
+        # itself runs at most once per retention window. Live additionally sweeps from
+        # the inflight tick so eviction stays prompt during event silence.
+        if now - self._last_eviction_sweep >= self._terminal_retention:
+            self._sweep_terminal_evictions()
         return result
 
     def _log_reconcile_diff(self, exchange: str, diff: reconcile.ReconcileDiff) -> None:
@@ -464,6 +475,7 @@ class AccountManager:
 
     def _sweep_terminal_evictions(self) -> None:
         now = self._time.time()
+        self._last_eviction_sweep = now
         for state in self._states.values():
             state.prune_terminal_orders(now, self._terminal_retention)
 

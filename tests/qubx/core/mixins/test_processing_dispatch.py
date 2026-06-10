@@ -1,3 +1,4 @@
+import threading
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -397,3 +398,40 @@ def test_legacy_override_fails_loudly_at_pm_construction():
             health_monitor=MagicMock(),
             delisting_detector=MagicMock(),
         )
+
+
+def test_on_warmup_finished_runs_synchronously_on_processing_thread():
+    # F12/D3 regression: on_warmup_finished executes inline on the processing thread in live
+    # mode (no thread pool), so ctx.trade()/account access inside it cannot race the reducer,
+    # and account events arriving during the callback are dispatched only after it returns.
+    pm = _pm()
+    pm._is_simulation = False
+    pm._health_monitor = MagicMock()
+    pm._subscription_manager = MagicMock()
+    pm._strategy_name = "TestStrategy"
+    pm._context.instruments = []
+
+    calls: list[str] = []
+    callback_thread: list[int] = []
+
+    def _warmup(ctx):
+        ctx.trade(MagicMock(), 1.0)
+        callback_thread.append(threading.get_ident())
+        calls.append("on_warmup_finished")
+
+    pm._strategy.on_warmup_finished.side_effect = _warmup
+    pm._strategy.on_order_update.side_effect = lambda *a: calls.append("on_order_update")
+    pm._account_manager.apply.return_value = ApplyResult(order=MagicMock(), order_change=OrderChange.ACCEPTED)
+
+    pm._handle_warmup_finished()
+
+    assert callback_thread == [threading.get_ident()]
+    assert pm._context._strategy_state.is_on_warmup_finished_called is True
+    pm._context.trade.assert_called_once()
+
+    pm.process_event(
+        OrderAcceptedEvent(
+            instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
+        )
+    )
+    assert calls == ["on_warmup_finished", "on_order_update"]

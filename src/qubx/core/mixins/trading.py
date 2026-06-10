@@ -13,6 +13,7 @@ from qubx.core.basics import (
     OrderType,
 )
 from qubx.core.connector import IConnector
+from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
 from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound
 from qubx.core.interfaces import (
     IHealthMonitor,
@@ -340,6 +341,8 @@ class TradingManager(ITradingManager):
 
         Idempotent: cancelling a terminal or already-PENDING_CANCEL order is a no-op
         that reports success (the venue is already in the desired state).
+        A synchronous connector failure reverts the order to its pre-pending status
+        (via a synthetic OrderCancelRejectedEvent) and re-raises to the caller.
         """
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         order = self._resolve_order(order_id, client_order_id)
@@ -358,10 +361,25 @@ class TradingManager(ITradingManager):
             event_time=self._context.time(),
         )
         self._account_manager.transition_order(order.instrument.exchange, cid, OrderStatus.PENDING_CANCEL)
-        self._get_connector(order.instrument.exchange).cancel_order(
-            client_order_id=cid,
-            venue_order_id=order.venue_order_id,
-        )
+        try:
+            self._get_connector(order.instrument.exchange).cancel_order(
+                client_order_id=cid,
+                venue_order_id=order.venue_order_id,
+            )
+        except Exception as e:
+            # A synchronous raise means the cancel never reached the venue. Route the
+            # synthetic reject through the PM (same path as the reconcile give-up) so the
+            # reducer reverts PENDING_CANCEL via pre_pending and callbacks fire
+            # error-isolated; then re-raise to keep the synchronous-failure contract.
+            self._context.process_event(
+                OrderCancelRejectedEvent(
+                    instrument=order.instrument,
+                    client_order_id=cid,
+                    venue_order_id=order.venue_order_id,
+                    reason=f"cancel request failed before reaching venue: {e}",
+                )
+            )
+            raise
         return True
 
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
@@ -382,6 +400,8 @@ class TradingManager(ITradingManager):
 
         Raises OrderAlreadyTerminal on a settled order (updating a settled order is
         meaningful misuse); a no-op while a previous update is still in flight.
+        A synchronous connector failure reverts the order to its pre-pending status
+        (via a synthetic OrderUpdateRejectedEvent) and re-raises to the caller.
         """
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         order = self._resolve_order(order_id, client_order_id)
@@ -401,12 +421,25 @@ class TradingManager(ITradingManager):
 
         cid = order.client_order_id
         self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
-        self._get_connector(instrument.exchange).update_order(
-            client_order_id=cid,
-            venue_order_id=order.venue_order_id,
-            price=adjusted_price,
-            quantity=abs(amount),
-        )
+        try:
+            self._get_connector(instrument.exchange).update_order(
+                client_order_id=cid,
+                venue_order_id=order.venue_order_id,
+                price=adjusted_price,
+                quantity=abs(amount),
+            )
+        except Exception as e:
+            # Same contract as cancel_order: synthetic reject through the PM reverts
+            # PENDING_UPDATE via pre_pending, then the original exception re-raises.
+            self._context.process_event(
+                OrderUpdateRejectedEvent(
+                    instrument=instrument,
+                    client_order_id=cid,
+                    venue_order_id=order.venue_order_id,
+                    reason=f"update request failed before reaching venue: {e}",
+                )
+            )
+            raise
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         return self._get_min_size(instrument, amount)

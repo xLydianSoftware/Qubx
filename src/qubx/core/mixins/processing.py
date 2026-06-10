@@ -1,9 +1,7 @@
 import inspect
-import time
 import traceback
 import uuid
 from collections import defaultdict
-from multiprocessing.pool import ThreadPool
 from types import FunctionType
 from typing import TYPE_CHECKING, Any, Callable
 
@@ -123,7 +121,6 @@ class ProcessingManager(IProcessingManager):
     _warmup_finished_is_running: bool = False
     _fails_counter: int = 0
     _is_simulation: bool
-    _pool: ThreadPool | None
     _trig_bar_freq_nsec: int | None = None
     _cur_sim_step: int | None = None
     _updated_instruments: set[Instrument] = set()
@@ -189,7 +186,6 @@ class ProcessingManager(IProcessingManager):
         )
         self._stale_data_detection_enabled = False
 
-        self._pool = ThreadPool(2) if not self._is_simulation else None
         self._handlers = {
             n.split("_handle_")[1]: f
             for n, f in self.__class__.__dict__.items()
@@ -710,16 +706,6 @@ class ProcessingManager(IProcessingManager):
 
         return filtered_target_positions
 
-    def _run_in_thread_pool(self, func: Callable, args=()):
-        # For simulation we don't need to call function in thread
-        if self._is_simulation:
-            func(*args)
-        else:
-            assert self._pool
-            self._pool.apply_async(func, args)
-            # - wait just a bit in case the function is very simple, to not skip next events
-            time.sleep(0.1)
-
     @staticmethod
     def _as_list(xs: list[Any] | Any | None) -> list[Any]:
         if xs is None:
@@ -1035,7 +1021,9 @@ class ProcessingManager(IProcessingManager):
         if not self._is_data_ready():
             return
         self._warmup_finished_is_running = True
-        self._run_in_thread_pool(self.__invoke_on_warmup_finished)
+        # Runs inline on the processing thread (single-mutator invariant): account events
+        # queue in the channel until the callback returns.
+        self.__invoke_on_warmup_finished()
 
     def _handle_fit(self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]) -> None:
         """
@@ -1046,7 +1034,9 @@ class ProcessingManager(IProcessingManager):
         self._fit_is_running = True
         current_time = data[1]
         self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
-        self._run_in_thread_pool(self.__invoke_on_fit)
+        # Runs inline on the processing thread (single-mutator invariant): a long fit
+        # blocks event processing until it returns.
+        self.__invoke_on_fit()
 
     def _handle_delisting_check(
         self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]

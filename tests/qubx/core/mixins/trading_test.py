@@ -3,8 +3,10 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 
-from qubx.core.basics import Instrument, MarketType, OrderStatus, Position
-from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
+from qubx.core.account_manager import SimulatedAccountManager
+from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus, Position
+from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
+from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound
 from qubx.core.interfaces import IStrategyContext, ITimeProvider
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
@@ -501,6 +503,7 @@ class TestTradingManagerCancelOrder:
 
         assert trading_manager.cancel_order(order_id="test_order_123") is True
         mock_connector.cancel_order.assert_not_called()
+        mock_account.transition_order.assert_not_called()
 
     def test_cancel_order_empty_id(self, trading_manager):
         """Empty/ambiguous identifiers raise ValueError."""
@@ -534,6 +537,110 @@ class TestTradingManagerCancelOrder:
         mock_connector.cancel_order.assert_called_once_with(
             client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
         )
+
+
+class _AccountRoutingContext(MockStrategyContext):
+    """process_event applies straight to the AM — the PM dispatch leg
+    (ProcessingManager._dispatch_account) minus strategy callbacks."""
+
+    def __init__(self, account_manager):
+        super().__init__()
+        self._am = account_manager
+        self.routed_events = []
+
+    def process_event(self, event):
+        self.routed_events.append(event)
+        self._am.apply(event)
+
+
+class TestTradingManagerCancelUpdateFailure:
+    """Synchronous connector raise on cancel/update: the exception propagates to the
+    caller AND the order reverts to its pre-pending status via the synthetic reject
+    routed through the PM (not stuck PENDING_CANCEL/PENDING_UPDATE)."""
+
+    @pytest.fixture
+    def failure_setup(self, mock_connector):
+        instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instrument is not None
+        am = SimulatedAccountManager(
+            connectors={"BINANCE.UM": mock_connector},
+            base_currencies={"BINANCE.UM": "USDT"},
+            time=MockTimeProvider(),
+        )
+        context = _AccountRoutingContext(am)
+        tm = TradingManager(
+            context=context,
+            connectors={"BINANCE.UM": mock_connector},
+            account_manager=am,
+            strategy_name="test_strategy",
+            health_monitor=DummyHealthMonitor(),
+        )
+        order = Order(
+            client_order_id="qubx_BTCUSDT_1",
+            venue_order_id="V1",
+            origin=OrderOrigin.FRAMEWORK,
+            type="LIMIT",
+            instrument=instrument,
+            submitted_at=pd.Timestamp("2023-01-01").asm8,
+            quantity=0.1,
+            price=50_000.0,
+            side="BUY",
+            status=OrderStatus.ACCEPTED,
+            time_in_force="gtc",
+        )
+        am.add_order(order)
+        return tm, am, context, order
+
+    def test_cancel_sync_raise_propagates_and_reverts_order(self, failure_setup, mock_connector):
+        tm, am, context, order = failure_setup
+        mock_connector.cancel_order.side_effect = ConnectionError("venue unreachable")
+
+        with pytest.raises(ConnectionError):
+            tm.cancel_order(client_order_id=order.client_order_id)
+
+        assert am.get_order(order.client_order_id).status is OrderStatus.ACCEPTED
+        (event,) = context.routed_events
+        assert isinstance(event, OrderCancelRejectedEvent)
+        assert event.client_order_id == order.client_order_id
+        assert "venue unreachable" in event.reason
+
+    def test_update_sync_raise_propagates_and_reverts_order(self, failure_setup, mock_connector):
+        tm, am, context, order = failure_setup
+        mock_connector.update_order.side_effect = ConnectionError("venue unreachable")
+
+        with pytest.raises(ConnectionError):
+            tm.update_order(price=51_000.0, amount=0.1, client_order_id=order.client_order_id)
+
+        assert am.get_order(order.client_order_id).status is OrderStatus.ACCEPTED
+        (event,) = context.routed_events
+        assert isinstance(event, OrderUpdateRejectedEvent)
+        assert event.client_order_id == order.client_order_id
+        assert "venue unreachable" in event.reason
+
+
+class TestTradingManagerUpdateOrderGuards:
+    """update_order pre-connector guards: terminal misuse raises, in-flight update no-ops."""
+
+    def test_update_filled_raises_terminal_connector_not_called(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        order.status = OrderStatus.FILLED
+        mock_account.find_order_by_id.return_value = order
+
+        with pytest.raises(OrderAlreadyTerminal):
+            trading_manager.update_order(price=51_000.0, amount=0.1, order_id="test_order_123")
+
+        mock_connector.update_order.assert_not_called()
+        mock_account.transition_order.assert_not_called()
+
+    def test_update_while_pending_update_is_silent_noop(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        order.status = OrderStatus.PENDING_UPDATE
+        mock_account.find_order_by_id.return_value = order
+
+        assert trading_manager.update_order(price=51_000.0, amount=0.1, order_id="test_order_123") is None
+
+        mock_connector.update_order.assert_not_called()
+        mock_account.transition_order.assert_not_called()
 
 
 class TestAdjustSizeMinNotional:
@@ -607,9 +714,7 @@ class TestAdjustSizeMinNotional:
         result = notional_trading_manager._adjust_size(ada_instrument, 37.0)
         assert result == 37.0
 
-    def test_round_up_amount_above_min(
-        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
-    ):
+    def test_round_up_amount_above_min(self, notional_trading_manager, ada_instrument, strategy_context, mock_account):
         """Test that amount=36.76 rounds up to 36.8 via step 2 (round_size_up of amount)."""
         mid_price = 25.0 / 36.755
         self._setup_quote(strategy_context, mid_price)
@@ -618,9 +723,7 @@ class TestAdjustSizeMinNotional:
         result = notional_trading_manager._adjust_size(ada_instrument, 36.76)
         assert result == 36.8
 
-    def test_genuinely_too_small_raises(
-        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
-    ):
+    def test_genuinely_too_small_raises(self, notional_trading_manager, ada_instrument, strategy_context, mock_account):
         """Test that genuinely small amounts raise InvalidOrderSize."""
         mid_price = 25.0 / 36.755
         self._setup_quote(strategy_context, mid_price)
@@ -629,9 +732,7 @@ class TestAdjustSizeMinNotional:
         with pytest.raises(InvalidOrderSize):
             notional_trading_manager._adjust_size(ada_instrument, 10.0)
 
-    def test_borderline_reject(
-        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
-    ):
+    def test_borderline_reject(self, notional_trading_manager, ada_instrument, strategy_context, mock_account):
         """Test that amount=36.6 (more than one lot step below min) raises."""
         mid_price = 25.0 / 36.755
         self._setup_quote(strategy_context, mid_price)

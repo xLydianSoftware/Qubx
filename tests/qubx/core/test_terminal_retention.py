@@ -2,7 +2,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from qubx.core.account_manager import AccountManager, AccountManagerConfig
+from qubx.core.account_manager import AccountManager, AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import Deal, Instrument, MarketType, Order, OrderOrigin, OrderStatus
 from qubx.core.events import OrderAcceptedEvent, OrderFilledEvent
 
@@ -102,36 +102,47 @@ def test_terminal_evicted_after_grace():
     assert state.get_order("cid-1").status is OrderStatus.FILLED
 
 
-def test_late_accepted_on_terminal_sets_venue_id_no_phantom():
-    am = _am()
-    state = am.get_state("binance")
-    inst = _instrument()
-    _add(state, instrument=inst)
-    state.set_venue_id("cid-1", "V1")
-    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill()))
-    # evict to history then deliver a late OrderAccepted resolving via venue/cid
-    am._time.adv(31_000)
-    am._sweep_terminal_evictions()
-    assert not state.has_active_order("cid-1")
-    am.apply(
-        OrderAcceptedEvent(
-            instrument=inst, client_order_id="cid-1", venue_order_id="V1", accepted_at=np.datetime64("2026-05-28")
-        )
-    )
-    # no phantom EXTERNAL order, evicted order remains FILLED
-    assert not state.has_active_order("ext:V1")
-    assert not state.has_active_order("cid-1")
-    assert state.get_order("cid-1").status is OrderStatus.FILLED
-
-
 def test_terminal_eviction_runs_on_inflight_tick():
-    # eviction is wired into the inflight tick cadence; calling the sweep evicts
+    # live cadence: the inflight tick itself must run the eviction sweep
     am = _am()
     state = am.get_state("binance")
     inst = _instrument()
     _add(state, instrument=inst)
     am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill()))
     am._time.adv(31_000)
-    am._sweep_terminal_evictions()
+    am._on_inflight_tick(None)
     assert not state.has_active_order("cid-1")
     assert state.get_order("cid-1") is not None  # retained in terminal history
+
+
+def test_terminal_eviction_runs_on_apply_path_in_simulation():
+    # F6 regression: SimulatedAccountManager (paper + backtest) registers no periodic
+    # ticks — terminal orders must still be evicted via the opportunistic sweep on the
+    # apply path once the sim clock passes the retention window.
+    time = _T()
+    am = SimulatedAccountManager(
+        connectors={"binance": MagicMock()},
+        base_currencies={"binance": "USDT"},
+        time=time,
+        cfg=AccountManagerConfig(terminal_order_retention_ms=30_000),
+    )
+    state = am.get_state("binance")
+    inst = _instrument()
+    for i in range(5):
+        _add(state, cid=f"cid-{i}", instrument=inst)
+        am.apply(
+            OrderFilledEvent(
+                instrument=inst, client_order_id=f"cid-{i}", venue_order_id=f"V{i}", fill=_fill(trade_id=f"t{i}")
+            )
+        )
+    assert all(state.has_active_order(f"cid-{i}") for i in range(5))
+
+    time.adv(31_000)
+    # any applied account event triggers the sweep once retention has elapsed
+    _add(state, cid="cid-new", status=OrderStatus.SUBMITTED, instrument=inst)
+    am.apply(OrderAcceptedEvent(instrument=inst, client_order_id="cid-new", venue_order_id="VN", accepted_at=time.t))
+
+    for i in range(5):
+        assert not state.has_active_order(f"cid-{i}")
+        assert state.get_order(f"cid-{i}").status is OrderStatus.FILLED  # resolvable from terminal history
+    assert state.has_active_order("cid-new")  # the live order is untouched

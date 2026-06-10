@@ -2222,12 +2222,19 @@ class IStrategy(metaclass=Mixable):
     def on_warmup_finished(self, ctx: IStrategyContext):
         """
         This method is called when the warmup period is finished.
+
+        Runs on the strategy's event-processing thread: account and market events queue up
+        and are applied only after it returns, so context access here is safe but long work
+        blocks event processing.
         """
         pass
 
     def on_fit(self, ctx: IStrategyContext):
         """
         Called when it's time to fit the model.
+
+        Runs on the strategy's event-processing thread: a long fit blocks event processing
+        until it returns (queued events are applied afterwards).
         """
         return None
 
