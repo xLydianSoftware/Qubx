@@ -5,6 +5,7 @@ import pyarrow as pa
 import pytest
 
 from qubx.backtester.simulated_data import DataPump, SimulatedDataIterator
+from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.basics import DataType, FundingPayment, Instrument, MarketType
 from qubx.core.events import FundingPaymentEvent
 from qubx.core.mixins.processing import ProcessingManager
@@ -176,16 +177,24 @@ class TestFundingPaymentSubscription:
     # -----------------------------------------------------------------------
 
     def test_process_event_routes_funding_payment_to_account_path(self, mock_instrument, sample_funding_payment):
-        """FundingPaymentEvent is an AccountMessage: process_event books it via AM
-        (surfaced to the strategy through on_account_update). Market data rides tuples
+        """FundingPaymentEvent is an AccountMessage: process_event books it via AM and
+        surfaces it to the strategy through on_account_update. Market data rides tuples
         through process_data, not process_event, so there is no market-data half here."""
+        pm = ProcessingManager.__new__(ProcessingManager)
+        pm._strategy = Mock()
+        pm._account_manager = Mock()
+        pm._context = Mock()
+        pm._context.emitter = None
+        pm._account_manager.apply.return_value = ApplyResult(position=Mock())
 
-        processor = Mock()
         event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
-        ProcessingManager.process_event(processor, event)
+        pm.process_event(event)
 
         # - AM books the payment and fires on_account_update; that is the only path
-        processor._dispatch_account.assert_called_once_with(event)
+        pm._account_manager.apply.assert_called_once_with(event)
+        pm._strategy.on_account_update.assert_called_once()
+        assert pm._strategy.on_account_update.call_args.args[1] is event
+        pm._strategy.on_order_update.assert_not_called()
 
     # -----------------------------------------------------------------------
     # SimulatedDataIterator tests

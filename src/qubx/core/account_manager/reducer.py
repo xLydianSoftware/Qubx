@@ -58,6 +58,16 @@ class ApplyResult:
     position: Position | None = None  # position changed
     reconcile_diff: ReconcileDiff | None = None  # set when a snapshot reconcile applied
 
+    def is_empty(self) -> bool:
+        """All fields None — the suppress signal (see module docstring): no callback fires."""
+        return (
+            self.order is None
+            and self.order_change is None
+            and self.deal is None
+            and self.position is None
+            and self.reconcile_diff is None
+        )
+
 
 def _transition(state: AccountState, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
     order = state.get_active_order(cid)
@@ -113,6 +123,8 @@ def _resolve_or_materialize(state: AccountState, event: OrderEvent, now: np.date
         return order
     if event.instrument is None:  # can't track a position without an instrument
         return None
+    if event.client_order_id is None and event.venue_order_id is None:
+        return None  # no identity at all — materializing would collide every such event on "ext:None"
     return _materialize_external(state, event, event.instrument, now)
 
 

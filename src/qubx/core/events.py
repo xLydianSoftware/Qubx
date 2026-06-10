@@ -53,11 +53,14 @@ class MarketDataMessage(ChannelMessage):
 
 @msg
 class OrderEvent(AccountMessage):
-    """Base for order-lifecycle events, addressed by ``client_order_id`` (always present —
-    synthesized ``ext:<venue_id>`` for external orders). ``venue_order_id`` is None until
-    the venue acks (and stays None on reject events that never reached the venue)."""
+    """Base for order-lifecycle events, addressed by ``client_order_id`` when known.
+    ``client_order_id`` is None when the connector only has the venue's id (e.g. a deal
+    or reject observed before the cid index is seeded, or an external order) — the event
+    is then addressed by ``venue_order_id`` alone and the AccountManager resolves (or
+    materializes ``ext:<venue_id>``) from it. ``venue_order_id`` is None until the venue
+    acks (and stays None on reject events that never reached the venue)."""
 
-    client_order_id: str
+    client_order_id: str | None
     venue_order_id: str | None = None
 
 

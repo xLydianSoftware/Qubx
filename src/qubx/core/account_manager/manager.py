@@ -173,9 +173,32 @@ class AccountManager:
         if state is None:
             return ApplyResult()
         result = reducer.apply(state, event, self._time.time(), snapshot_grace=self._snapshot_grace)
-        if result.reconcile_diff is not None and result.reconcile_diff.missing:
-            self._resolve_missing_orders(state, result.reconcile_diff)
+        if (diff := result.reconcile_diff) is not None:
+            if diff.missing:
+                self._resolve_missing_orders(state, diff)
+            self._log_reconcile_diff(state.exchange, diff)
         return result
+
+    def _log_reconcile_diff(self, exchange: str, diff: reconcile.ReconcileDiff) -> None:
+        # The operator surface for snapshot reconcile: one line per applied snapshot that
+        # changed anything. WARNING when orders were terminalized/materialized/are still
+        # missing (drift an operator must act on), INFO for benign corrections. A diff
+        # carrying only venue_figures (present on virtually every live snapshot) stays silent.
+        if not (
+            diff.missing or diff.terminated or diff.materialized or diff.updated or diff.positions or diff.balances
+        ):
+            return
+        msg = (
+            f"[{exchange}] reconcile applied: "
+            f"terminated={[o.client_order_id for o in diff.terminated]}, "
+            f"materialized={[o.client_order_id for o in diff.materialized]}, "
+            f"missing={[o.client_order_id for o in diff.missing]}, "
+            f"updated={len(diff.updated)} orders, {len(diff.positions)} positions, {len(diff.balances)} balances"
+        )
+        if diff.terminated or diff.materialized or diff.missing:
+            logger.warning(msg)
+        else:
+            logger.info(msg)
 
     def _resolve_missing_orders(self, state: AccountState, diff: reconcile.ReconcileDiff) -> None:
         # Fetch-before-terminalize: an order missing from the snapshot past grace may have
@@ -192,7 +215,8 @@ class AccountManager:
             try:
                 if reconcile.retries_exhausted(state, cid, self._cfg.inflight_check_retries):
                     logger.warning(
-                        f"[{state.exchange}] reconcile give-up: terminalizing {cid} after "
+                        f"[{state.exchange}] reconcile give-up: terminalizing {cid} "
+                        f"(status={order.status}, vid={order.venue_order_id}) after "
                         f"{state.get_retry(cid)} status-fetch attempts"
                     )
                     if reconcile.terminalize_missing(state, order, now):
@@ -336,7 +360,7 @@ class AccountManager:
 
     def get_metrics(self) -> dict[str, dict[str, int]]:
         """Per-exchange audit counters: exchange -> {order-status: transitions into it}.
-        A pull-based hook for emitters/dashboards; never reset within a session."""
+        Operator/debug surface — not wired to emitters; never reset within a session."""
         return {exchange: state.get_transition_counts() for exchange, state in self._states.items()}
 
     def position_report(self, exchange: str | None = None) -> dict:
@@ -457,8 +481,18 @@ class AccountManager:
                         # (with metrics). The AM never calls the strategy directly. The
                         # tick runs on the strategy thread (PM-scheduled), so apply stays
                         # single-mutator.
+                        # Give-ups (and WS reconnects) are WARNING-log-only counters: the
+                        # AM holds no metric emitter — that seam lives on the PM, which
+                        # does emit reconcile terminated/materialized off the ApplyResult
+                        # diff it already sees.
+                        retries = state.get_retry(cid)
+                        logger.warning(
+                            f"[{exchange}] inflight give-up: no venue answer for {cid} "
+                            f"(status={order.status}, vid={order.venue_order_id}) after "
+                            f"{retries} status-fetch attempts; synthesizing reject"
+                        )
                         assert self._pm is not None  # ticks only register with a pm
-                        self._pm.process_event(reconcile.giveup_event(order, state.get_retry(cid)))
+                        self._pm.process_event(reconcile.giveup_event(order, retries))
                     else:
                         self._connectors[exchange].request_order_status(
                             client_order_id=cid,

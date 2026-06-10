@@ -403,9 +403,7 @@ class IAccountViewer:
         """
         ...
 
-    def get_margin_mode(
-        self, instrument: Instrument
-    ) -> Literal["cross", "isolated"] | None:
+    def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
         """Per-instrument margin mode currently configured on the exchange.
 
         Returns:
@@ -2289,7 +2287,9 @@ class IStrategy(metaclass=Mixable):
 
         Inspect ``event`` to react to a specific kind, e.g. ``PositionUpdateEvent.position``,
         ``BalanceUpdateEvent.balance``, ``FundingPaymentEvent.payment``,
-        ``AccountSnapshotEvent.snapshot``.
+        ``AccountSnapshotEvent.snapshot``. Note: no live connector currently emits
+        ``PositionUpdateEvent``/``BalanceUpdateEvent`` — position/balance changes (including
+        liquidations) reach the strategy via fills and the periodic ``AccountSnapshotEvent``.
         """
         ...
 

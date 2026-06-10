@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
+from qubx import logger
 from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import (
     Balance,
@@ -811,3 +812,38 @@ def test_sim_snapshot_never_sets_venue_figures():
     assert state.get_venue_figures() is None
     assert am.get_total_capital("binance") == 1000.0
     assert am.get_margin_ratio("binance") == 100.0
+
+
+def test_reconcile_termination_logs_warning_with_cid():
+    # F8: a reconcile that terminalized an order is operator-visible drift — the applied
+    # diff must leave a WARNING carrying the cid (message prose deliberately not pinned).
+    am = _am()
+    state = am._states["binance"]
+    state.add_order(
+        _order("cid-gone", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=_instrument())
+    )
+    _exhaust_fetch_budget(state, "cid-gone")
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    warnings: list[str] = []
+    sink = logger.add(lambda m: warnings.append(str(m)), level="WARNING")
+    try:
+        am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
+    finally:
+        logger.remove(sink)
+    assert any("cid-gone" in m for m in warnings)
+
+
+def test_benign_reconcile_diff_logs_info_not_warning():
+    # Drift without terminalized/materialized/missing orders (here: a balance correction)
+    # logs the applied diff at INFO; nothing escalates to WARNING.
+    am = _am()
+    snap_bal = Balance(exchange="binance", currency="USDT", free=900.0, locked=100.0, total=1000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    records = []
+    sink = logger.add(lambda m: records.append(m.record), level="INFO")
+    try:
+        am.apply(_snap_event(as_of="2026-05-28T01:00:00", balances=[snap_bal]))
+    finally:
+        logger.remove(sink)
+    assert not [r for r in records if r["level"].name == "WARNING"]
+    assert any("reconcile" in r["message"] for r in records if r["level"].name == "INFO")

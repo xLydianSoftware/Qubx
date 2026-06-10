@@ -140,7 +140,9 @@ class AccountState:
     def get_orders(self) -> dict[str, Order]:
         return dict(self._active_orders)
 
-    def get_order(self, client_order_id: str) -> Order | None:
+    def get_order(self, client_order_id: str | None) -> Order | None:
+        if client_order_id is None:  # venue-id-only event; caller falls back to get_order_by_venue_id
+            return None
         order = self._active_orders.get(client_order_id)
         if order is not None:
             return order
@@ -150,7 +152,7 @@ class AccountState:
                 return o
         return None
 
-    def get_active_order(self, client_order_id: str) -> Order | None:
+    def get_active_order(self, client_order_id: str | None) -> Order | None:
         # Active (non-evicted) order only — distinct from get_order, which also searches
         # the terminal-history ring buffer.
         return self._active_orders.get(client_order_id)

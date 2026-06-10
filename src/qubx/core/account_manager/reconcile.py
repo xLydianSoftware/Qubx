@@ -174,12 +174,8 @@ def reconcile_snapshot(
         state.set_venue_figures(figures)
         diff.venue_figures = figures
 
-    if diff.missing or diff.materialized or diff.updated or diff.positions or diff.balances:
-        logger.debug(
-            f"[{snapshot.exchange}] reconcile applied: {len(diff.missing)} missing, "
-            f"{len(diff.materialized)} materialized, {len(diff.updated)} updated, "
-            f"{len(diff.positions)} positions, {len(diff.balances)} balances"
-        )
+    # No summary log here: the manager logs the operator-facing INFO/WARNING line after
+    # resolving the missing list (only then is diff.terminated known).
     return diff
 
 

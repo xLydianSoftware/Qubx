@@ -1,17 +1,25 @@
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from qubx import logger
+from qubx.core.account_manager.reconcile import ReconcileDiff
 from qubx.core.account_manager.reducer import ApplyResult
-from qubx.core.basics import Deal, OrderChange
+from qubx.core.basics import Deal, FundingPayment, OrderChange
 from qubx.core.events import (
+    AccountSnapshot,
+    AccountSnapshotEvent,
+    BalanceUpdateEvent,
+    FundingPaymentEvent,
     OrderAcceptedEvent,
     OrderCancelRejectedEvent,
     OrderFilledEvent,
     OrderUpdateRejectedEvent,
+    PositionUpdateEvent,
 )
-from qubx.core.mixins.processing import ProcessingManager
+from qubx.core.interfaces import IStrategy
+from qubx.core.mixins.processing import ProcessingManager, validate_account_callback_signatures
 
 
 def _pm() -> ProcessingManager:
@@ -224,3 +232,168 @@ def test_suppressed_reject_logs_no_warning():
         logger.remove(sink)
     assert not any("STILL ALIVE" in m for m in messages)
     pm._strategy.on_order_update.assert_not_called()
+
+
+def _funding_event() -> FundingPaymentEvent:
+    payment = FundingPayment(time=1736294400_000_000_000, funding_rate=0.0001, funding_interval_hours=8)
+    return FundingPaymentEvent(instrument=MagicMock(), payment=payment)
+
+
+def _snapshot_event() -> AccountSnapshotEvent:
+    return AccountSnapshotEvent(
+        instrument=None, snapshot=AccountSnapshot(exchange="BINANCE.UM", as_of=np.datetime64("now"))
+    )
+
+
+def test_applied_funding_fires_on_account_update_once():
+    pm = _pm()
+    pm._account_manager.apply.return_value = ApplyResult(position=MagicMock())
+    event = _funding_event()
+    pm.process_event(event)
+    pm._strategy.on_account_update.assert_called_once()
+    assert pm._strategy.on_account_update.call_args.args[1] is event
+    pm._strategy.on_order_update.assert_not_called()
+
+
+def test_suppressed_funding_fires_no_callback():
+    # Bucket-deduped (or skipped: no position / NaN mark) funding returns an empty
+    # ApplyResult — the strategy must not see the payment twice.
+    pm = _pm()
+    pm._account_manager.apply.return_value = ApplyResult()
+    pm.process_event(_funding_event())
+    pm._account_manager.apply.assert_called_once()
+    pm._strategy.on_account_update.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    "event",
+    [
+        PositionUpdateEvent(instrument=MagicMock(), position=MagicMock()),
+        BalanceUpdateEvent(instrument=None, balance=MagicMock()),
+    ],
+    ids=["position", "balance"],
+)
+def test_position_balance_updates_fire_through_on_empty_result(event):
+    # The documented fire-through pair: the reducer is a no-op for these until WS
+    # application lands, but the venue push still reaches the strategy.
+    pm = _pm()
+    pm._account_manager.apply.return_value = ApplyResult()
+    pm.process_event(event)
+    pm._strategy.on_account_update.assert_called_once()
+    assert pm._strategy.on_account_update.call_args.args[1] is event
+
+
+def test_stale_snapshot_is_suppressed():
+    # A snapshot rejected by the as_of ratchet returns an empty ApplyResult: nothing
+    # was applied, so on_account_update must not fire.
+    pm = _pm()
+    pm._account_manager.apply.return_value = ApplyResult()
+    pm.process_event(_snapshot_event())
+    pm._account_manager.apply.assert_called_once()
+    pm._strategy.on_account_update.assert_not_called()
+
+
+def test_applied_snapshot_fires_on_account_update():
+    pm = _pm()
+    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=ReconcileDiff())
+    event = _snapshot_event()
+    pm.process_event(event)
+    pm._strategy.on_account_update.assert_called_once()
+    assert pm._strategy.on_account_update.call_args.args[1] is event
+    pm._strategy.on_order_update.assert_not_called()
+
+
+def test_reconcile_terminations_emit_counters():
+    # F8 ops counters: the PM emits reconcile_orders_terminated/materialized off the
+    # ApplyResult diff (the AM holds no emitter — the metric seam lives on the PM).
+    pm = _pm()
+    emitter = _FakeEmitter()
+    pm._context.emitter = emitter
+    diff = ReconcileDiff(
+        terminated=[MagicMock(client_order_id="c1"), MagicMock(client_order_id="c2")],
+        materialized=[MagicMock(client_order_id="e1")],
+    )
+    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=diff)
+    pm.process_event(_snapshot_event())
+    by_name = {name: value for name, value, _ in emitter.calls}
+    assert by_name["reconcile_orders_terminated"] == 2.0
+    assert by_name["reconcile_orders_materialized"] == 1.0
+
+
+def test_clean_reconcile_emits_no_counters():
+    pm = _pm()
+    emitter = _FakeEmitter()
+    pm._context.emitter = emitter
+    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=ReconcileDiff())
+    pm.process_event(_snapshot_event())
+    assert not any(name.startswith("reconcile_orders") for name, _, _ in emitter.calls)
+
+
+class _LegacyOrderCallbackStrategy(IStrategy):
+    def on_order_update(self, ctx, order) -> None: ...
+
+
+class _LegacyAccountCallbackStrategy(IStrategy):
+    def on_account_update(self, ctx) -> None: ...
+
+
+class _CurrentCallbacksStrategy(IStrategy):
+    def on_order_update(self, ctx, order, event) -> None: ...
+
+    def on_account_update(self, ctx, event) -> None: ...
+
+
+def test_legacy_two_arg_on_order_update_raises():
+    with pytest.raises(TypeError, match=r"on_order_update.*on_order_update\(self, ctx, order, event\)"):
+        validate_account_callback_signatures(_LegacyOrderCallbackStrategy())
+
+
+def test_legacy_on_account_update_raises():
+    with pytest.raises(TypeError, match=r"on_account_update\(self, ctx, event\)"):
+        validate_account_callback_signatures(_LegacyAccountCallbackStrategy())
+
+
+def test_current_callback_signatures_pass():
+    validate_account_callback_signatures(_CurrentCallbacksStrategy())
+
+
+def test_non_overriding_strategy_passes():
+    class _Plain(IStrategy): ...
+
+    validate_account_callback_signatures(_Plain())
+
+
+def test_var_positional_override_passes():
+    class _Wildcard(IStrategy):
+        def on_order_update(self, ctx, *args) -> None: ...
+
+    validate_account_callback_signatures(_Wildcard())
+
+
+def test_extra_defaulted_param_passes():
+    class _Extra(IStrategy):
+        def on_order_update(self, ctx, order, event, extra=None) -> None: ...
+
+    validate_account_callback_signatures(_Extra())
+
+
+def test_legacy_override_fails_loudly_at_pm_construction():
+    # the guard runs first in __init__, so all-mock collaborators never get touched
+    with pytest.raises(TypeError, match="on_order_update"):
+        ProcessingManager(
+            context=MagicMock(),
+            strategy=_LegacyOrderCallbackStrategy(),
+            logging=MagicMock(),
+            market_data=MagicMock(),
+            subscription_manager=MagicMock(),
+            time_provider=MagicMock(),
+            account_manager=MagicMock(),
+            connectors={},
+            position_tracker=MagicMock(),
+            position_gathering=MagicMock(),
+            universe_manager=MagicMock(),
+            scheduler=MagicMock(),
+            is_simulation=True,
+            health_monitor=MagicMock(),
+            delisting_detector=MagicMock(),
+        )

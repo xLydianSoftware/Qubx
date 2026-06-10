@@ -25,6 +25,7 @@ from qubx.core.basics import (
     Position,
 )
 from qubx.core.events import (
+    BalanceUpdateEvent,
     DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
@@ -151,9 +152,10 @@ def test_reject_unknown_order_is_noop():
 
 
 def test_reject_resolves_by_venue_id():
+    # client_order_id=None: venue-only addressing — the event resolves via the venue index.
     state = _state()
     _order(state, cid="c1", status=OrderStatus.ACCEPTED, venue_id="V1")
-    r = apply(state, OrderRejectedEvent(instrument=None, client_order_id="", venue_order_id="V1", reason="x"), T1)
+    r = apply(state, OrderRejectedEvent(instrument=None, client_order_id=None, venue_order_id="V1", reason="x"), T1)
     assert r.order is not None and r.order.client_order_id == "c1"
     assert r.order.status is OrderStatus.REJECTED
 
@@ -231,6 +233,17 @@ def test_deal_event_applies_and_reports_execution_only():
     assert _present(state.get_active_order("c1")).filled_quantity == 0.4
 
 
+def test_deal_event_with_no_cid_resolves_by_venue_id():
+    # Split-stream trade arriving before the connector's cid index is seeded: cid=None,
+    # venue id present — resolves via the venue index, never materializes an external.
+    state = _state()
+    _order(state, cid="c1", status=OrderStatus.ACCEPTED, venue_id="V1")
+    r = apply(state, DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V1", deal=_fill("t1", 0.4)), T1)
+    assert _present(r.deal).trade_id == "t1"
+    assert _present(state.get_active_order("c1")).filled_quantity == 0.4
+    assert state.get_order("ext:V1") is None
+
+
 def test_deal_event_duplicate_is_noop():
     state = _state()
     _order(state, status=OrderStatus.ACCEPTED)
@@ -252,9 +265,19 @@ def test_dedup_across_deal_and_order_stream():
     assert r2.order.filled_quantity == 0.5
 
 
-def test_unhandled_event_type_is_noop():
-    r = apply(_state(), PositionUpdateEvent(instrument=None, position=Position(BTC)), T1)
-    assert r.order is None and r.deal is None and r.position is None
+def test_position_balance_update_events_apply_as_noop():
+    # No connector emits these yet (see _handle_position_balance_noop): the reducer leaves
+    # state untouched and returns an empty ApplyResult; the PM still fires on_account_update
+    # off the raw event payload (the documented fire-through, pinned in dispatch tests).
+    state = _state()
+    r = apply(state, PositionUpdateEvent(instrument=None, position=Position(BTC)), T1)
+    assert r.is_empty()
+    assert state.get_position(BTC) is None
+
+    balance = Balance(exchange="binance", currency="USDT", free=100.0, locked=0.0, total=100.0)
+    r = apply(state, BalanceUpdateEvent(instrument=None, balance=balance), T1)
+    assert r.is_empty()
+    assert state.get_balance("USDT") is None
 
 
 # --------------------------------------------------------------------------- #

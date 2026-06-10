@@ -1,3 +1,4 @@
+import inspect
 import time
 import traceback
 import uuid
@@ -32,10 +33,12 @@ from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
     AccountMessage,
+    BalanceUpdateEvent,
     ChannelMessage,
     OrderCancelRejectedEvent,
     OrderEvent,
     OrderUpdateRejectedEvent,
+    PositionUpdateEvent,
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
@@ -57,6 +60,36 @@ from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.trackers.riskctrl import _InitializationStageTracker
 from qubx.utils.time import interval_to_cron
+
+
+def validate_account_callback_signatures(strategy: IStrategy) -> None:
+    """One-time construction guard for the unified account callbacks.
+
+    A strategy overriding ``on_order_update`` / ``on_account_update`` with a stale arity
+    (e.g. the legacy 2-arg ``on_order_update(self, ctx, order)``) would die in a TypeError
+    on every dispatch, swallowed by ``_safe_call`` — fail loudly here instead.
+    """
+    if not isinstance(strategy, IStrategy):
+        return
+    for name in ("on_order_update", "on_account_update"):
+        impl = getattr(type(strategy), name)
+        base = getattr(IStrategy, name)
+        if impl is base:
+            continue
+        params = list(inspect.signature(impl).parameters.values())
+        if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+            continue
+        positional = [
+            p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        required = [p for p in positional if p.default is inspect.Parameter.empty]
+        n_expected = len(inspect.signature(base).parameters)  # incl. self
+        if len(required) > n_expected or len(positional) < n_expected:
+            expected = ", ".join(inspect.signature(base).parameters)
+            raise TypeError(
+                f"{type(strategy).__name__}.{name}{inspect.signature(impl)} has an incompatible signature: "
+                f"the framework calls it as {name}({expected}) — update the override to match"
+            )
 
 
 class ProcessingManager(IProcessingManager):
@@ -128,6 +161,7 @@ class ProcessingManager(IProcessingManager):
         exporter: ITradeDataExport | None = None,
         data_throttler: "InstrumentThrottler | None" = None,
     ):
+        validate_account_callback_signatures(strategy)
         self._context = context
         self._strategy = strategy
         self._logging = logging
@@ -1192,14 +1226,21 @@ class ProcessingManager(IProcessingManager):
             logger.exception(f"AM.apply raised on {type(event).__name__}")
             self._emit_error_metric("account_manager_apply_errors", event=type(event).__name__)
             return
+        if (diff := result.reconcile_diff) is not None:
+            # Ops counters for reconcile drift: the metric seam lives here on the PM (the
+            # AM holds no emitter), counting off the diff the AM already surfaced.
+            if diff.terminated:
+                self._emit_error_metric("reconcile_orders_terminated", value=float(len(diff.terminated)))
+            if diff.materialized:
+                self._emit_error_metric("reconcile_orders_materialized", value=float(len(diff.materialized)))
         self._safe_fire_account_callback(event, result)
 
-    def _emit_error_metric(self, name: str, **tags: str) -> None:
-        """Best-effort error-counter emission; no-op when no emitter is configured."""
+    def _emit_error_metric(self, name: str, value: float = 1.0, **tags: str) -> None:
+        """Best-effort operational-counter emission; no-op when no emitter is configured."""
         emitter = self._context.emitter
         if emitter is not None:
             try:
-                emitter.emit(name, 1.0, tags)
+                emitter.emit(name, value, tags)
             except Exception:
                 logger.exception("metric emitter raised while recording error metric")
 
@@ -1212,10 +1253,13 @@ class ProcessingManager(IProcessingManager):
 
     def _safe_fire_account_callback(self, event: AccountMessage, result: ApplyResult) -> None:
         # Two unified strategy callbacks: on_order_update for OrderEvents, on_account_update
-        # for everything else (position/balance/funding/snapshot). The strategy inspects the
+        # for everything else (funding/snapshot/position/balance). The strategy inspects the
         # concrete event type itself. The ApplyResult fields are the fire signals — an empty
-        # result means the AM suppressed the event (late/duplicate/terminal/unknown — already
-        # logged) and nothing fires.
+        # result means the AM suppressed the event (late/duplicate/terminal/unknown/deduped
+        # funding/stale snapshot — already logged) and nothing fires. Sole exception:
+        # PositionUpdateEvent/BalanceUpdateEvent fire through even on an empty result — the
+        # reducer doesn't apply them yet (reducer._handle_position_balance_noop), but the
+        # venue push must still reach the strategy off the event payload.
         if isinstance(event, OrderEvent):
             # Cancel/update rejections are dangerous-but-recoverable (order still alive at the
             # venue): surface loudly here so they aren't lost if the strategy ignores them.
@@ -1238,7 +1282,8 @@ class ProcessingManager(IProcessingManager):
             if result.deal is not None:
                 self._notify_downstream_fill(event.instrument, result.deal)
         else:
-            self._safe_call(self._strategy.on_account_update, event)
+            if not result.is_empty() or isinstance(event, (PositionUpdateEvent, BalanceUpdateEvent)):
+                self._safe_call(self._strategy.on_account_update, event)
 
     def _notify_downstream_fill(self, instrument: Instrument | None, fill: Deal) -> None:
         if instrument is None:

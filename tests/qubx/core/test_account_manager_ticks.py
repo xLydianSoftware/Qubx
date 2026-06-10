@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
+from qubx import logger
 from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import Order, OrderOrigin, OrderStatus
 from qubx.core.events import OrderCancelRejectedEvent, OrderRejectedEvent, OrderUpdateRejectedEvent
@@ -210,6 +211,23 @@ def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
     am._pm._strategy.on_order_update.assert_called_once()
     assert am._pm._strategy.on_order_update.call_args.args[0] is am._pm._context
     assert isinstance(am._pm._strategy.on_order_update.call_args.args[2], OrderUpdateRejectedEvent)
+
+
+def test_inflight_giveup_logs_warning_with_cid():
+    # F8: the give-up is an operator-visible event — it must leave a WARNING carrying the
+    # cid (message prose deliberately not pinned).
+    conn = MagicMock()
+    am = _am({"binance": conn})
+    am._states["binance"].add_order(_mk_order("cid-giveup", OrderStatus.SUBMITTED, None))
+    _exhaust_retries(am._states["binance"], "cid-giveup")
+    am._time.adv(6_000)
+    messages: list[str] = []
+    sink = logger.add(lambda m: messages.append(str(m)), level="WARNING")
+    try:
+        am._on_inflight_tick(None)
+    finally:
+        logger.remove(sink)
+    assert any("cid-giveup" in m for m in messages)
 
 
 def test_retry_budget_resets_on_status_change():

@@ -155,9 +155,7 @@ async def test_submit_builds_payload_limit_with_client_id() -> None:
 @pytest.mark.asyncio
 async def test_submit_payload_reduce_only_and_trigger() -> None:
     conn, _sent, exchange = _make_connector()
-    conn.submit_order(
-        _order_request(order_type="stop_limit", price=120.0, options={"reduceOnly": True})
-    )
+    conn.submit_order(_order_request(order_type="stop_limit", price=120.0, options={"reduceOnly": True}))
     await _drive(conn)
 
     payload = exchange.create_order.await_args.kwargs
@@ -403,7 +401,7 @@ async def test_cancel_venue_reject_emits_cancel_rejected() -> None:
 @pytest.mark.asyncio
 async def test_cancel_venue_reject_by_venue_id_only_carries_venue_id() -> None:
     # Venue-id-only cancel that the venue refuses: the reject must still carry the venue id
-    # (and use it as the client_order_id filler) so AM resolves the order by venue id.
+    # so AM resolves the order by it; the unknown cid stays None (no stand-in).
     exchange = Mock()
     exchange.cancel_order = AsyncMock(side_effect=ccxt.OperationRejected("Order already filled"))
     exchange.has = {"editOrder": True}
@@ -415,7 +413,7 @@ async def test_cancel_venue_reject_by_venue_id_only_carries_venue_id() -> None:
     assert len(sent) == 1
     assert isinstance(sent[0], OrderCancelRejectedEvent)
     assert sent[0].venue_order_id == "VENUE123"
-    assert sent[0].client_order_id == "VENUE123"  # cid unknown -> venue id fills the cid field
+    assert sent[0].client_order_id is None  # cid unknown -> venue-only addressing
 
 
 @pytest.mark.asyncio
@@ -500,7 +498,7 @@ async def test_update_edit_venue_reject_emits_update_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_update_by_venue_id_only_emits_updated() -> None:
-    # update_order by venue id alone (no client_order_id): editOrder path, both ids on the event.
+    # update_order by venue id alone (no client_order_id): editOrder path, venue id addresses the event.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
@@ -513,7 +511,7 @@ async def test_update_by_venue_id_only_emits_updated() -> None:
     ev = sent[0]
     assert isinstance(ev, OrderUpdatedEvent)
     assert ev.venue_order_id == "VENUE123"
-    assert ev.client_order_id == "VENUE123"  # cid unknown -> venue id fills the cid field
+    assert ev.client_order_id is None  # cid unknown -> venue-only addressing
     assert ev.new_price == 102.0
 
 

@@ -99,7 +99,7 @@ class _TwoStreamExecutionsMixin:
         self.send(  # type: ignore[attr-defined]
             DealEvent(
                 instrument=instrument,
-                client_order_id=cid,  # type: ignore[arg-type]  # AM resolves by venue id when None
+                client_order_id=cid,  # None when not indexed — AM resolves by venue id
                 venue_order_id=venue_order_id,
                 deal=deal,
             )

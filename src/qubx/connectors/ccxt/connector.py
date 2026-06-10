@@ -392,7 +392,7 @@ class CcxtConnector(ChannelEmitter):
         self.send(
             OrderRejectedEvent(
                 instrument=instrument,
-                client_order_id=client_id,  # type: ignore[arg-type]
+                client_order_id=client_id,
                 reason=str(error),
                 code=type(error).__name__,
             )
@@ -436,7 +436,7 @@ class CcxtConnector(ChannelEmitter):
         self.send(
             OrderCancelRejectedEvent(
                 instrument=None,
-                client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]  # cid if known, else venue id
+                client_order_id=client_order_id,
                 venue_order_id=venue_order_id,
                 reason=f"venue rejected cancel for {venue_order_id or client_order_id}",
             )
@@ -542,7 +542,7 @@ class CcxtConnector(ChannelEmitter):
         self.send(
             OrderCanceledEvent(
                 instrument=instrument,
-                client_order_id=cid,  # type: ignore[arg-type]
+                client_order_id=cid,
                 venue_order_id=vid,
             )
         )
@@ -601,7 +601,7 @@ class CcxtConnector(ChannelEmitter):
         self.send(
             OrderUpdatedEvent(
                 instrument=None,
-                client_order_id=client_order_id or vid,  # type: ignore[arg-type]  # cid if known, else venue id
+                client_order_id=client_order_id,
                 venue_order_id=vid,  # str | None — never coerce to "" (AM would index a bogus id)
                 new_price=price,
                 new_quantity=quantity,
@@ -641,7 +641,7 @@ class CcxtConnector(ChannelEmitter):
         self.send(
             OrderUpdateRejectedEvent(
                 instrument=None,
-                client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]  # cid if known, else venue id
+                client_order_id=client_order_id,
                 venue_order_id=venue_order_id,
                 reason=str(error),
                 code=type(error).__name__,
@@ -984,7 +984,7 @@ class CcxtConnector(ChannelEmitter):
         self.send(
             OrderRejectedEvent(
                 instrument=cached.instrument if cached is not None else None,
-                client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]  # cid if known, else venue id
+                client_order_id=client_order_id,
                 venue_order_id=venue_order_id,
                 reason="reconcile: order not present at venue",
                 code="OrderNotFound",
