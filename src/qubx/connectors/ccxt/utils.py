@@ -11,6 +11,7 @@ from ccxt import BadSymbol
 from qubx import logger
 from qubx.core.basics import (
     EXTERNAL_CID_PREFIX,
+    FRAMEWORK_CID_PREFIX,
     Balance,
     Deal,
     FundingRate,
@@ -58,6 +59,21 @@ _CCXT_STATUS_MAP: dict[str, OrderStatus] = {
 }
 
 
+def info_float(info: dict[str, Any], key: str) -> float | None:
+    """Parse an optional numeric field from a raw venue payload; None when absent/malformed.
+
+    Venue payloads carry numerics as strings and some use ``""`` for not-applicable
+    fields (e.g. OKX outside multi-currency margin mode) — both map to None.
+    """
+    value = info.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def ccxt_status_to_order_status(raw: str | None, info: dict[str, Any] | None = None) -> OrderStatus:
     """Map a ccxt order status string to a framework ``OrderStatus`` enum.
 
@@ -78,9 +94,14 @@ def ccxt_status_to_order_status(raw: str | None, info: dict[str, Any] | None = N
     return mapped
 
 
-def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Order:
+def ccxt_convert_order_info(
+    instrument: Instrument, raw: dict[str, Any], *, framework_prefix: str = FRAMEWORK_CID_PREFIX
+) -> Order:
     """
-    Convert CCXT excution record to Order object
+    Convert CCXT excution record to Order object.
+
+    ``framework_prefix`` is the venue-echoed framework cid prefix the connector
+    classifies origins with (``CcxtConnector.cid_framework_prefix``).
     """
     ri = raw["info"]
     if isinstance(ri, list):
@@ -117,7 +138,7 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
     # framework's external-order id convention (ext:<venue_id>) so it reads as EXTERNAL and
     # still has a stable, non-null client_order_id.
     client_order_id = raw.get("clientOrderId") or f"{EXTERNAL_CID_PREFIX}{raw['id']}"
-    origin = classify_origin(client_order_id)
+    origin = classify_origin(client_order_id, framework_prefix=framework_prefix)
 
     return Order(
         client_order_id=client_order_id,

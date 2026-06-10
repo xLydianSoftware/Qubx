@@ -131,7 +131,8 @@ legality, runs no reconcile rules, fires no callbacks, depends on no clock.
 margin_ratio, as_of}`. Each metric prefers its venue counterpart when present, else
 derives. The figures ride **flat on `AccountSnapshot`** (optional fields next to
 `as_of`/orders/positions/balances) and are set only by snapshot reconcile; the connector
-extracts them via the `_extract_venue_figures` seam (Binance wired; other venues return
+extracts them via the `_extract_venue_figures` seam (Binance and OKX wired; Bitfinex
+documented derive-only — `fetch_balance` carries no account figures; other venues return
 None and always derive — as does sim).
 
 - **Freshness = WS liveness, not a TTL.** Venue figures arrive in lockstep with the
@@ -383,8 +384,9 @@ Sanctioned departures, detailed in the sections above:
   lives in `core/account_manager/reconcile.py` while `manager.py` imports
   `core.interfaces`, so declaring the signature on `IStrategy` requires relocating
   `ReconcileDiff` first.
-- **Venue figures beyond Binance**: only Binance's snapshot leg extracts
-  equity/available-margin today; other venues derive (sound fallback).
+- **Venue figures beyond Binance/OKX**: Binance and OKX snapshot legs extract venue
+  figures; Bitfinex is documented derive-only (figures absent from `fetch_balance`);
+  other venues derive (sound fallback).
 - **Real multi-currency `conversion_rate`**: currently 1.0 — see the single-base-currency
   limitation under Capital/margin (COIN-M and non-base-quoted instruments out of scope).
 - **WS position/balance application** — *precondition for leveraged live*: no producer

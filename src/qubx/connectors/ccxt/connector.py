@@ -76,6 +76,7 @@ from .utils import (
     ccxt_convert_positions,
     ccxt_extract_deals_from_exec,
     ccxt_find_instrument,
+    info_float,
     instrument_to_ccxt_symbol,
     prepare_ccxt_order_payload,
 )
@@ -106,17 +107,6 @@ _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
 # the order is left inflight for AM to reconcile, never terminal-rejected.
 
 
-def _info_float(info: dict[str, Any], key: str) -> float | None:
-    """Parse an optional numeric field from a raw venue payload; None when absent/malformed."""
-    value = info.get(key)
-    if value is None:
-        return None
-    try:
-        return float(value)
-    except (TypeError, ValueError):
-        return None
-
-
 @dataclass
 class _CachedOrder:
     """Connector-local venue-call metadata for one order — NOT account state.
@@ -145,6 +135,12 @@ class CcxtConnector(ChannelEmitter):
 
     channel: CtrlChannel
     exchange_name: str
+
+    # Framework cid prefix as the venue echoes it back — what origin classification
+    # keys on when parsing venue order data. A venue whose cid charset mangles
+    # FRAMEWORK_CID_PREFIX (OKX bans "_") overrides this with the prefix its
+    # make_client_id actually produces, so producer and classifier can never drift.
+    cid_framework_prefix: str = FRAMEWORK_CID_PREFIX
 
     def __init__(
         self,
@@ -367,7 +363,7 @@ class CcxtConnector(ChannelEmitter):
             logger.debug(f"[{self.exchange_name}] create_order for {client_id} returned no id; awaiting WS ack")
             return
 
-        order = ccxt_convert_order_info(instrument, r)
+        order = ccxt_convert_order_info(instrument, r, framework_prefix=self.cid_framework_prefix)
         # Record the venue id on the cache so a subsequent cancel/update can prefer it.
         self._index_venue_id(order.client_order_id, order.venue_order_id)
         # Immediate ack from the REST response. AM dedups this against the later WS
@@ -781,7 +777,7 @@ class CcxtConnector(ChannelEmitter):
         except CcxtSymbolNotRecognized:
             logger.warning(f"[{self.exchange_name}] WS order for unknown symbol {raw.get('symbol')}; skipped")
             return
-        order = ccxt_convert_order_info(instrument, raw)
+        order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
         # Was this the first venue acknowledgement (no prior ACCEPTED in our cache)?
         cached = self._orders.get(order.client_order_id) if order.client_order_id is not None else None
         had_prior_ack = cached is not None and cached.status is not None
@@ -1028,7 +1024,7 @@ class CcxtConnector(ChannelEmitter):
                     instrument = self._instrument_for_symbol(raw["symbol"])
                 except CcxtSymbolNotRecognized:
                     continue
-                open_orders.append(ccxt_convert_order_info(instrument, raw))
+                open_orders.append(ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix))
 
         positions: list[Position] | None = None
         if isinstance(raw_positions, BaseException):
@@ -1082,7 +1078,7 @@ class CcxtConnector(ChannelEmitter):
         info = raw_balance.get("info")
         if not isinstance(info, dict):
             return None, None, None
-        return _info_float(info, "totalMarginBalance"), _info_float(info, "availableBalance"), None
+        return info_float(info, "totalMarginBalance"), info_float(info, "availableBalance"), None
 
     # ------------------------------------------------------------------ #
     # Lifecycle / health

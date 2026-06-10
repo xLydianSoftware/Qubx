@@ -141,6 +141,15 @@ class FundingPaymentEvent(AccountMessage):
 
 @msg
 class AccountSnapshot:
+    """Venue-truth capture produced by ``IConnector.request_snapshot``. A None field
+    means that leg was not observed (failed fetch / not applicable), never "empty".
+
+    Producer contract: ``open_orders`` carry a producer-classified ``Order.origin`` —
+    only the connector knows the framework-cid prefix its venue echoes back (OKX
+    strips the underscore from ``qubx_``), so reconcile trusts the assigned origin
+    instead of re-classifying.
+    """
+
     exchange: str
     as_of: np.datetime64
     open_orders: list[Order] | None = None

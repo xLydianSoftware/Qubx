@@ -15,8 +15,9 @@ from qubx.connectors.ccxt.connector import CcxtConnector
 from qubx.connectors.ccxt.exchanges.bitfinex.connector import BitfinexCcxtConnector
 from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
 from qubx.connectors.ccxt.factory import get_ccxt_connector
+from qubx.connectors.ccxt.utils import ccxt_convert_order_info
 from qubx.core.account_manager import SimulatedAccountManager
-from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus
+from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus, classify_origin
 from qubx.core.events import (
     DealEvent,
     OrderAcceptedEvent,
@@ -300,16 +301,53 @@ def test_okx_make_client_id_truncates_to_32() -> None:
 
 
 # --------------------------------------------------------------------------- #
+# OKX cid origin classification (cid_framework_prefix = venue-sanitized "qubx")
+# --------------------------------------------------------------------------- #
+def test_okx_cid_framework_prefix_matches_make_client_id_output() -> None:
+    # Producer/classifier coherence pin: the prefix is derived with the SAME sanitizing
+    # regex make_client_id applies, so whatever cid the producer sends to the venue
+    # classifies RECOVERED when echoed back — they can never drift.
+    conn, _sent, _ = _make_connector(OkxCcxtConnector)
+    produced = conn.make_client_id("qubx_BTCUSDT_1")
+    assert produced.startswith(OkxCcxtConnector.cid_framework_prefix)
+    assert classify_origin(produced, framework_prefix=conn.cid_framework_prefix) is OrderOrigin.RECOVERED
+
+
+def test_okx_order_parse_classifies_sanitized_cid_as_recovered() -> None:
+    # An OKX-echoed framework cid ("qubx_" with the venue-banned "_" stripped) must read
+    # RECOVERED through the connector's venue-aware prefix — the default "qubx_" check
+    # would misclassify it as EXTERNAL.
+    order = ccxt_convert_order_info(
+        _instrument(), _ws_order(status="open"), framework_prefix=OkxCcxtConnector.cid_framework_prefix
+    )
+    assert order.client_order_id == "qubxBTCUSDT1"
+    assert order.origin is OrderOrigin.RECOVERED
+
+
+# --------------------------------------------------------------------------- #
 # OKX snapshot balance extraction (cashBal / frozenBal from info.data[0].details)
 # --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_okx_snapshot_extracts_cashbal_balances() -> None:
+def _snapshot_exchange(raw_balance: dict | list) -> Mock:
     exchange = Mock()
     exchange.fetch_open_orders = AsyncMock(return_value=[])
     exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value=raw_balance)
+    exchange.markets = {}
+    return exchange
+
+
+async def _snapshot_from(conn: CcxtConnector, sent: list):
+    conn.request_snapshot()
+    for coro in conn._captured:  # type: ignore[attr-defined]
+        await coro
+    return sent[0].snapshot
+
+
+@pytest.mark.asyncio
+async def test_okx_snapshot_extracts_cashbal_balances() -> None:
     # ccxt maps OKX eq -> total (1234), but cashBal (1000) is the cash leg we want.
-    exchange.fetch_balance = AsyncMock(
-        return_value={
+    exchange = _snapshot_exchange(
+        {
             "total": {"USDT": 1234.0},
             "used": {"USDT": 100.0},
             "info": {
@@ -325,20 +363,115 @@ async def test_okx_snapshot_extracts_cashbal_balances() -> None:
             },
         }
     )
-    exchange.markets = {}
     conn, sent, _ = _make_connector(OkxCcxtConnector, exchange=exchange)
 
-    conn.request_snapshot()
-    for coro in conn._captured:  # type: ignore[attr-defined]
-        await coro
-
-    snap = sent[0].snapshot
+    snap = await _snapshot_from(conn, sent)
     assert len(snap.balances) == 1  # zero-cashBal BTC skipped
     bal = snap.balances[0]
     assert bal.currency == "USDT"
     assert bal.total == 1000.0  # cashBal, NOT ccxt's eq-derived 1234
     assert bal.locked == 100.0
     assert bal.free == 900.0
+
+
+# --------------------------------------------------------------------------- #
+# OKX venue account figures (totalEq / mgnRatio / adjEq − imr from info.data[0])
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_okx_snapshot_extracts_venue_figures_multi_ccy() -> None:
+    # Multi-currency margin mode: all account-level figures populated.
+    exchange = _snapshot_exchange(
+        {
+            "total": {"USDT": 40000.0, "BTC": 0.1},
+            "used": {"USDT": 1200.0, "BTC": 0.0},
+            "info": {
+                "data": [
+                    {
+                        "totalEq": "50000.5",
+                        "adjEq": "49000.0",
+                        "imr": "1200.0",
+                        "mgnRatio": "35.5",
+                        "details": [
+                            {"ccy": "USDT", "cashBal": "40000.0", "frozenBal": "1200.0"},
+                            {"ccy": "BTC", "cashBal": "0.1", "frozenBal": "0"},
+                        ],
+                    }
+                ]
+            },
+        }
+    )
+    conn, sent, _ = _make_connector(OkxCcxtConnector, exchange=exchange)
+
+    snap = await _snapshot_from(conn, sent)
+    assert snap.equity == 50000.5  # totalEq (USD-denominated, USD~USDT)
+    assert snap.available_margin == pytest.approx(47800.0)  # adjEq - imr
+    assert snap.margin_ratio == 35.5  # mgnRatio
+
+    # End-to-end: the snapshot lands in AM and the venue figures win over derived metrics.
+    am = SimulatedAccountManager(
+        connectors={"OKX.F": object()},
+        base_currencies={"OKX.F": "USDT"},
+        time=DummyTimeProvider(),
+    )
+    am.apply(sent[0])
+    assert am.get_total_capital("OKX.F") == 50000.5
+    assert am.get_available_margin("OKX.F") == pytest.approx(47800.0)
+    assert am.get_margin_ratio("OKX.F") == 35.5
+
+
+@pytest.mark.asyncio
+async def test_okx_snapshot_single_ccy_empty_fields_yield_none() -> None:
+    # Outside multi-currency margin mode OKX sends "" for adjEq/imr/mgnRatio:
+    # those degrade to None (AM derives), while totalEq still carries equity.
+    exchange = _snapshot_exchange(
+        {
+            "total": {"BTC": 0.049},
+            "used": {"BTC": 0.0},
+            "info": {
+                "data": [
+                    {
+                        "totalEq": "1918.55678",
+                        "adjEq": "",
+                        "imr": "",
+                        "mgnRatio": "",
+                        "details": [{"ccy": "BTC", "cashBal": "0.049", "frozenBal": "0"}],
+                    }
+                ]
+            },
+        }
+    )
+    conn, sent, _ = _make_connector(OkxCcxtConnector, exchange=exchange)
+
+    snap = await _snapshot_from(conn, sent)
+    assert snap.equity == 1918.55678
+    assert snap.available_margin is None
+    assert snap.margin_ratio is None
+
+
+@pytest.mark.asyncio
+async def test_okx_snapshot_order_round_trips_as_recovered() -> None:
+    # End-to-end: OKX echoes a framework cid with "_" stripped; the snapshot leg
+    # classifies it RECOVERED (venue-aware prefix) and AM's reconcile trusts the
+    # producer-assigned origin — materializing keep-cid instead of burying the
+    # strategy's own order under a synthetic ext:<vid>.
+    exchange = _snapshot_exchange({})
+    exchange.fetch_open_orders = AsyncMock(return_value=[_ws_order(status="open")])
+    conn, sent, _ = _make_connector(OkxCcxtConnector, exchange=exchange)
+
+    snap = await _snapshot_from(conn, sent)
+    assert snap.open_orders[0].client_order_id == "qubxBTCUSDT1"
+    assert snap.open_orders[0].origin is OrderOrigin.RECOVERED
+
+    am = SimulatedAccountManager(
+        connectors={"OKX.F": object()},
+        base_currencies={"OKX.F": "USDT"},
+        time=DummyTimeProvider(),
+    )
+    am.apply(sent[0])
+    order = am.get_order("qubxBTCUSDT1")
+    assert order is not None
+    assert order.origin is OrderOrigin.RECOVERED
+    assert order.client_order_id == "qubxBTCUSDT1"
 
 
 # --------------------------------------------------------------------------- #
@@ -366,6 +499,31 @@ def test_bitfinex_uses_base_make_client_id_and_balances() -> None:
     balances = conn._convert_balances(raw_balance)
     assert len(balances) == 1
     assert balances[0].total == 50.0
+
+
+@pytest.mark.asyncio
+async def test_bitfinex_snapshot_venue_figures_pinned_all_none() -> None:
+    # Pins the deliberate contract: Bitfinex's fetch_balance info is the raw wallets
+    # LIST (no account-level figures exist in this payload) -> all-None venue figures,
+    # while the unified total/used maps still parse into balances.
+    exchange = _snapshot_exchange(
+        {
+            "total": {"USDT": 50.0},
+            "used": {"USDT": 5.0},
+            "free": {"USDT": 45.0},
+            "info": [["margin", "UST", 50.0, 0, 45.0]],
+        }
+    )
+    conn, sent, _ = _make_connector(BitfinexCcxtConnector, exchange=exchange)
+
+    snap = await _snapshot_from(conn, sent)
+    assert snap.equity is None
+    assert snap.available_margin is None
+    assert snap.margin_ratio is None
+    assert len(snap.balances) == 1
+    assert snap.balances[0].currency == "USDT"
+    assert snap.balances[0].total == 50.0
+    assert snap.balances[0].locked == 5.0
 
 
 # --------------------------------------------------------------------------- #

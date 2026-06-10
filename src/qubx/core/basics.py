@@ -720,12 +720,17 @@ class OrderOrigin(StrEnum):
     EXTERNAL = "EXTERNAL"
 
 
-def classify_origin(client_order_id: str) -> OrderOrigin:
+def classify_origin(client_order_id: str, *, framework_prefix: str = FRAMEWORK_CID_PREFIX) -> OrderOrigin:
     """Classify an order observed in venue data by its client id: the framework cid
     prefix marks a framework order seen back from the venue (RECOVERED), anything
     else is EXTERNAL. Orders the framework places itself are FRAMEWORK at creation
-    and never pass through here."""
-    if client_order_id.startswith(FRAMEWORK_CID_PREFIX):
+    and never pass through here.
+
+    ``framework_prefix`` is for connectors whose venue cid charset mangles
+    ``FRAMEWORK_CID_PREFIX`` (OKX bans ``_``): they classify with the prefix the venue
+    actually echoes back, derived from the same sanitizer their ``make_client_id`` uses.
+    """
+    if client_order_id.startswith(framework_prefix):
         return OrderOrigin.RECOVERED
     return OrderOrigin.EXTERNAL
 

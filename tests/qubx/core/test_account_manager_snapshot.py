@@ -312,10 +312,18 @@ def test_out_of_order_snapshot_skipped():
 
 
 def test_external_order_materialized_from_snapshot():
+    # Producer-classified EXTERNAL (AccountSnapshot contract) -> synthesized ext:<vid> cid.
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    snap_order = _order("manual-123", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VX", instrument=inst)
+    snap_order = _order(
+        "manual-123",
+        OrderStatus.ACCEPTED,
+        "2026-05-28T00:00:00",
+        vid="VX",
+        origin=OrderOrigin.EXTERNAL,
+        instrument=inst,
+    )
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
     materialized = state.get_order_by_venue_id("VX")
@@ -328,9 +336,8 @@ def test_recovered_order_materialized_from_snapshot():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    # Realistic framework cid as produced by ClientIdStore._create_id ("qubx_<sym>_<n>").
-    # Reconcile must classify it as RECOVERED — using the doc's illustrative "qubx-"
-    # would silently misclassify every recovered framework order as EXTERNAL.
+    # Sim snapshots carry the order as the strategy created it (origin=FRAMEWORK, the
+    # _order default): seen back via a snapshot it must materialize as RECOVERED, keep-cid.
     snap_order = _order("qubx_BTCUSDT_1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VY", instrument=inst)
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
@@ -338,6 +345,30 @@ def test_recovered_order_materialized_from_snapshot():
     assert materialized is not None
     assert materialized.origin is OrderOrigin.RECOVERED
     assert materialized.client_order_id == "qubx_BTCUSDT_1"
+
+
+def test_recovered_order_with_venue_mangled_cid_keeps_cid():
+    # OKX strips "_" from cids, so a recovered framework order arrives as "qubxBTCUSDT1"
+    # with origin=RECOVERED assigned by the connector (venue-aware prefix). Reconcile must
+    # trust that origin — re-classifying with the default "qubx_" prefix would misread it
+    # as EXTERNAL and bury the strategy's own order under a synthetic ext:<vid> cid.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    snap_order = _order(
+        "qubxBTCUSDT1",
+        OrderStatus.ACCEPTED,
+        "2026-05-28T00:00:00",
+        vid="VZ",
+        origin=OrderOrigin.RECOVERED,
+        instrument=inst,
+    )
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+    materialized = state.get_order("qubxBTCUSDT1")
+    assert materialized is not None
+    assert materialized.origin is OrderOrigin.RECOVERED
+    assert materialized.client_order_id == "qubxBTCUSDT1"
 
 
 def test_unacked_order_within_grace_matched_by_cid_captures_venue_id():
@@ -750,7 +781,14 @@ def test_reconcile_applies_to_state():
     # plus position and balance
     state.add_order(_order("cid-gone", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="VG", instrument=inst))
     _exhaust_fetch_budget(state, "cid-gone")
-    snap_order = _order("manual-9", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VNEW", instrument=inst)
+    snap_order = _order(
+        "manual-9",
+        OrderStatus.ACCEPTED,
+        "2026-05-28T00:00:00",
+        vid="VNEW",
+        origin=OrderOrigin.EXTERNAL,
+        instrument=inst,
+    )
     snap_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
     snap_bal = Balance(exchange="binance", currency="USDT", total=1000.0)
     am._time.t = np.datetime64("2026-05-28T01:00:00")

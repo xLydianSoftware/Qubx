@@ -32,7 +32,6 @@ from qubx.core.basics import (
     OrderOrigin,
     OrderStatus,
     Position,
-    classify_origin,
 )
 from qubx.core.events import (
     AccountSnapshot,
@@ -185,14 +184,19 @@ def reconcile_snapshot(
 
 
 def _materialize_from_snapshot(state: AccountState, snap_order: Order, as_of: np.datetime64) -> Order:
-    # cid prefix classifies origin: our prefix → a recovered framework order;
-    # anything else → external. Keep an already-synthesized ext: cid as-is,
-    # otherwise synthesize one from the venue id.
-    origin = classify_origin(snap_order.client_order_id)
-    if origin is OrderOrigin.RECOVERED or snap_order.client_order_id.startswith(EXTERNAL_CID_PREFIX):
+    # Trust the producer-assigned origin (the AccountSnapshot contract: only the
+    # connector knows the cid prefix its venue echoes back, so only it can classify).
+    # EXTERNAL keeps an already-synthesized ext: cid or gets one from the venue id;
+    # anything else is a framework order seen back from the venue (FRAMEWORK in sim
+    # snapshots, RECOVERED from live connectors) — keep its cid, store RECOVERED.
+    if snap_order.origin is OrderOrigin.EXTERNAL:
+        origin = OrderOrigin.EXTERNAL
         cid = snap_order.client_order_id
+        if not cid.startswith(EXTERNAL_CID_PREFIX):
+            cid = f"{EXTERNAL_CID_PREFIX}{snap_order.venue_order_id}"
     else:
-        cid = f"{EXTERNAL_CID_PREFIX}{snap_order.venue_order_id}"
+        origin = OrderOrigin.RECOVERED
+        cid = snap_order.client_order_id
     order = Order(
         client_order_id=cid,
         venue_order_id=snap_order.venue_order_id,

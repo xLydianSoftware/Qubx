@@ -9,22 +9,24 @@ Adds the OKX-specific behavior on top of the generic ``CcxtConnector``:
   correlates them by trade id (see the two-stream base docstring).
 - **Balance extraction**: ccxt's OKX balance mapping is wrong for the framework — see
   ``_convert_balances``.
-- **make_client_id**: OKX clOrdId is case-sensitive alphanumeric only, 1-32 chars.
+- **Venue account figures**: OKX's trading-balance payload carries account-level
+  figures (``totalEq`` / ``mgnRatio`` / ``adjEq`` / ``imr`` in ``info.data[0]``) — see
+  ``_extract_venue_figures``; AM prefers them per metric over its derived values.
+- **make_client_id / cid_framework_prefix**: OKX clOrdId is case-sensitive
+  alphanumeric only, 1-32 chars — the underscore in ``qubx_`` is stripped, so origin
+  classification keys on the sanitized prefix (``qubx``), derived from the same
+  regex the producer uses.
 
-Account Manager derives total capital and margin ratio itself from per-currency
-balances + position PnL (``AccountState.total_capital`` / ``margin_ratio``), so no
-account-level equity figure (``totalEq`` / ``mgnRatio``) is extracted into venue
-figures here (the base ``_extract_venue_figures`` reads Binance-style keys, absent
-from OKX payloads → all-None → AM derives); supplying the correct per-currency
-``cashBal`` balances is what AM needs. There is no real-time ``watch_balance``
-stream — AM's snapshot cadence covers balance refresh.
+There is no real-time ``watch_balance`` stream — AM's snapshot cadence covers
+balance refresh.
 """
 
 import re
 from typing import Any
 
-from qubx.core.basics import Balance
+from qubx.core.basics import FRAMEWORK_CID_PREFIX, Balance
 
+from ...utils import info_float
 from .._two_stream import _TwoStreamCcxtConnector
 
 _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
@@ -33,6 +35,12 @@ _OKX_CLIENT_ID_MAX_LEN = 32
 
 class OkxCcxtConnector(_TwoStreamCcxtConnector):
     """OKX connector: split orders/fills streams + OKX balance/clOrdId rules."""
+
+    # OKX strips "_" from cids (see make_client_id), so framework orders echo back as
+    # "qubx..." — classify with the prefix produced by the SAME sanitizing regex, so
+    # producer and classifier can never drift. Residual caveat: an external cid that
+    # happens to start with "qubx" reads as RECOVERED (unavoidable given the charset).
+    cid_framework_prefix = _OKX_CLIENT_ID_RE.sub("", FRAMEWORK_CID_PREFIX)
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         """Use OKX ``cashBal``/``frozenBal`` per currency from the raw response.
@@ -60,15 +68,33 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             )
         return balances
 
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+        """OKX account-level figures from ``info.data[0]`` of the trading-balance payload.
+
+        - equity: ``totalEq`` — total account equity. USD-denominated; reported as-is
+          against the USDT base (USD≈USDT, a bp-level basis difference).
+        - available_margin: ``adjEq − imr`` (adjusted equity minus initial margin
+          requirement) — both populated only in multi-currency/portfolio margin modes.
+        - margin_ratio: ``mgnRatio`` — same coverage-multiple convention as the derived
+          ``AccountState.margin_ratio``, but the venue value is not capped at 100.
+
+        Not-applicable fields arrive as ``""`` → None → AM derives that metric.
+        """
+        acct = raw_balance.get("info", {}).get("data", [{}])[0]
+        equity = info_float(acct, "totalEq")
+        margin_ratio = info_float(acct, "mgnRatio")
+        adj_eq = info_float(acct, "adjEq")
+        imr = info_float(acct, "imr")
+        available_margin = adj_eq - imr if adj_eq is not None and imr is not None else None
+        return equity, available_margin, margin_ratio
+
     def make_client_id(self, suggested: str) -> str:
         """OKX clOrdId: case-sensitive alphanumeric only, 1-32 chars.
 
         Enforce the base ``qubx_`` prefix first, then strip the underscore (and any
         other non-alphanumeric character) and truncate to 32. The ``qubx`` lead
-        survives the strip (alphanumeric), preserving the origin marker as far as the
-        venue allows. Caveat: the downstream origin check (``classify_origin``)
-        keys on the literal ``qubx_`` *with* the underscore, which OKX bans — so OKX
-        framework orders are mis-detected as EXTERNAL (a pre-existing venue limitation).
+        survives the strip (alphanumeric), and origin classification keys on that
+        sanitized form via ``cid_framework_prefix``.
         """
         prefixed = super().make_client_id(suggested)
         sanitized = _OKX_CLIENT_ID_RE.sub("", prefixed)
