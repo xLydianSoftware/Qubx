@@ -55,26 +55,6 @@ def sample_signal(sample_instrument):
 
 
 @pytest.fixture
-def sample_target_position(sample_signal):
-    """Return a sample target position for testing."""
-    return TargetPosition(
-        time=np.datetime64("2023-01-01T11:00:00"),
-        instrument=sample_signal.instrument,
-        target_position_size=1.0,
-    )
-
-
-@pytest.fixture
-def sample_position(sample_instrument):
-    """Return a sample position for testing."""
-    return Position(
-        instrument=sample_instrument,
-        quantity=1.0,
-        pos_average_price=50000.0,
-    )
-
-
-@pytest.fixture
 def empty_state(sample_time):
     """Return an empty restored state for testing."""
     return RestoredState(
@@ -339,11 +319,17 @@ class TestTimeFinderLASTSIGNAL:
             min_size=0.01,
         )
         btc_targets = [
-            TargetPosition(time=np.datetime64("2023-01-01T11:00:00"), instrument=sample_instrument, target_position_size=1.0),
-            TargetPosition(time=np.datetime64("2023-01-01T10:00:00"), instrument=sample_instrument, target_position_size=0.0),
+            TargetPosition(
+                time=np.datetime64("2023-01-01T11:00:00"), instrument=sample_instrument, target_position_size=1.0
+            ),
+            TargetPosition(
+                time=np.datetime64("2023-01-01T10:00:00"), instrument=sample_instrument, target_position_size=0.0
+            ),
         ]
         stale_targets = [
-            TargetPosition(time=np.datetime64("2022-06-01T00:00:00"), instrument=stale_instrument, target_position_size=1.0),
+            TargetPosition(
+                time=np.datetime64("2022-06-01T00:00:00"), instrument=stale_instrument, target_position_size=1.0
+            ),
         ]
         state = RestoredState(
             time=sample_time,

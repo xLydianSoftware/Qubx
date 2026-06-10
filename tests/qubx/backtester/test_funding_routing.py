@@ -33,7 +33,6 @@ def test_live_funding_payment_rides_typed_account_channel():
     assert isinstance(sent, FundingPaymentEvent)
     assert sent.instrument is instr
     assert sent.payment is payment
-    assert not sent.is_historical
 
 
 def test_warmup_funding_payment_stays_on_tuple_path():

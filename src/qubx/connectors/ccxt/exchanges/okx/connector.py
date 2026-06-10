@@ -7,9 +7,8 @@ Adds the OKX-specific behavior on top of the generic ``CcxtConnector``:
   ``watch_my_trades`` stream. The base runs both concurrently — status events ride
   with ``fill=None`` and each trade arrives as a ``DealEvent``; the AccountManager
   correlates them by trade id (see the two-stream base docstring).
-- **Balance extraction**: ccxt maps OKX's ``eq`` (= cashBal + unrealizedPnL) onto
-  the canonical ``total``; the framework wants the cash leg, so we read per-currency
-  ``cashBal`` / ``frozenBal`` from the raw ``info.data[0].details`` instead.
+- **Balance extraction**: ccxt's OKX balance mapping is wrong for the framework — see
+  ``_convert_balances``.
 - **make_client_id**: OKX clOrdId is case-sensitive alphanumeric only, 1-32 chars.
 
 Account Manager derives total capital and margin ratio itself from per-currency

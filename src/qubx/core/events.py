@@ -20,9 +20,9 @@ from qubx.core.basics import (
 )
 
 
-# kw_only is REQUIRED, not stylistic: the base carries a defaulted field
-# (is_historical) and subclasses add required fields, so positional ordering
-# would raise "non-default argument follows default argument" at class
+# kw_only is REQUIRED, not stylistic: bases carry defaulted fields (e.g.
+# OrderEvent.venue_order_id) while subclasses add required ones, so positional
+# ordering would raise "non-default argument follows default argument" at class
 # definition. kw_only sidesteps the ordering entirely.
 @dataclass_transform(frozen_default=True, kw_only_default=True)
 def msg[T](cls: type[T]) -> type[T]:
@@ -32,7 +32,6 @@ def msg[T](cls: type[T]) -> type[T]:
 @msg
 class ChannelMessage:
     instrument: Instrument | None
-    is_historical: bool = False
 
 
 @msg
@@ -45,10 +44,9 @@ class AccountMessage(ChannelMessage):
 
 @msg
 class MarketDataMessage(ChannelMessage):
-    """Marker base class (no fields of its own) for market-data events. DORMANT: market data
-    currently rides (instrument, d_type, data, is_historical) tuples through
-    ProcessingManager.process_data, so these typed classes are declared but unused. They are
-    kept as the foundation for a future, separate market-data typing refactor."""
+    """Reserved for a future typed market-data path. Market data deliberately rides
+    (instrument, d_type, data, is_historical) tuples today (see 4ac821d1: only account
+    events were typed), so this hierarchy is declared but unused."""
 
 
 @msg

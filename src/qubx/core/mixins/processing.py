@@ -1,14 +1,13 @@
+import asyncio
+import concurrent.futures
 import inspect
 import traceback
 import uuid
 from collections import defaultdict
 from types import FunctionType
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 from qubx import logger
-
-if TYPE_CHECKING:
-    from qubx.utils.throttler import InstrumentThrottler
 from qubx.core.account_manager import AccountManager
 from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.basics import (
@@ -56,7 +55,9 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.state.dummy import DummyStatePersistence
 from qubx.trackers.riskctrl import _InitializationStageTracker
+from qubx.utils.throttler import InstrumentThrottler
 from qubx.utils.time import interval_to_cron
 
 
@@ -111,12 +112,15 @@ class ProcessingManager(IProcessingManager):
     _health_monitor: IHealthMonitor
     _stale_data_detector: StaleDataDetector
     _delisting_detector: DelistingDetector
-    _data_throttler: "InstrumentThrottler | None"
+    _data_throttler: InstrumentThrottler | None
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
 
     _trigger_on_time_event: bool = False
+    # Same-thread re-entrancy guards: on_fit/on_warmup_finished run inline on the processing
+    # thread and may pump events that re-enter the trigger tail before is_on_fit_called /
+    # is_on_warmup_finished_called flip (set only after the callback returns).
     _fit_is_running: bool = False
     _warmup_finished_is_running: bool = False
     _fails_counter: int = 0
@@ -156,7 +160,7 @@ class ProcessingManager(IProcessingManager):
         health_monitor: IHealthMonitor,
         delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
-        data_throttler: "InstrumentThrottler | None" = None,
+        data_throttler: InstrumentThrottler | None = None,
     ):
         validate_account_callback_signatures(strategy)
         self._context = context
@@ -327,8 +331,6 @@ class ProcessingManager(IProcessingManager):
         self._scheduler.unschedule_event("state_snapshot")
 
         if interval is not None and not self._is_simulation:
-            from qubx.state.dummy import DummyStatePersistence
-
             if not isinstance(self._context.persistence, DummyStatePersistence):
                 cron_schedule = interval_to_cron(interval)
                 self._scheduler.schedule_event(cron_schedule, "state_snapshot")
@@ -354,9 +356,6 @@ class ProcessingManager(IProcessingManager):
 
     def _emit_rate_limit_metrics(self, ctx) -> None:
         """Emit rate limit metrics for all registered rate limiters."""
-        import asyncio
-        import concurrent.futures
-
         if ctx.emitter is None or ctx.event_loop is None:
             return
 
@@ -376,9 +375,7 @@ class ProcessingManager(IProcessingManager):
             ctx.emitter.emit(m["name"], m["value"], m["tags"])
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
-        # Market data and all non-account events (scheduled triggers, custom/feature streams,
-        # errors) ride (instrument, d_type, data, is_historical) tuples through here. Account
-        # events ride the typed channel to process_event instead.
+        # Non-account events ride tuples through here; account events go to process_event.
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
         if not is_historical:
             self._logging.notify(self._time_provider.time())

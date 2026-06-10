@@ -132,8 +132,9 @@ def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.dat
     if order is None:
         return ApplyResult()
     if order.status.is_terminal:
-        # Late accept on an already-terminal order (design "OrderFilled before
-        # OrderAccepted"): benign side-effect, no transition, no phantom. Set
+        # Late accept on an already-terminal order (design.md "Event model" —
+        # a FILLED can arrive before its ACCEPTED): benign side-effect, no
+        # transition, no phantom. Set
         # the venue id ONLY if the order is still in active_orders — an evicted
         # order's venue-id index was already dropped, so set_venue_id would
         # KeyError on active_orders[cid].

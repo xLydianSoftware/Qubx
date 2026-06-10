@@ -30,6 +30,7 @@ from qubx.core.basics import (
     MarketEvent,
     MarketType,
     Order,
+    OrderOrigin,
     OrderRequest,
     OrderTransition,
     Position,
@@ -266,12 +267,18 @@ class IAccountViewer:
         """
         return self.get_positions()
 
-    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
-        """Get active orders, optionally filtered by instrument and/or exchange.
+    def get_orders(
+        self,
+        instrument: Instrument | None = None,
+        exchange: str | None = None,
+        origin: OrderOrigin | None = None,
+    ) -> dict[str, Order]:
+        """Get active orders, optionally filtered by instrument, exchange and/or origin.
 
         Args:
             instrument: Optional instrument to filter orders by
             exchange: Optional exchange to filter orders by
+            origin: Optional order origin (strategy/external/...) to filter orders by
 
         Returns:
             dict[str, Order]: Dictionary mapping order IDs to Order objects

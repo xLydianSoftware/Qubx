@@ -5,12 +5,12 @@ import traceback
 from functools import wraps
 from queue import Empty, Queue
 from threading import Lock, Thread
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 import pandas as pd
 
 from qubx import logger
-from qubx.control.executor import CommandEvent
+from qubx.control.executor import ActionExecutor, CommandEvent
 from qubx.control.types import ActionResult
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
@@ -21,6 +21,7 @@ from qubx.core.basics import (
     ITimeProvider,
     MarketType,
     Order,
+    OrderOrigin,
     OrderRequest,
     OrderTransition,
     Position,
@@ -68,6 +69,7 @@ from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
 from qubx.state import DummyStatePersistence
 from qubx.trackers.sizers import FixedSizer
+from qubx.utils.throttler import InstrumentThrottler
 
 from .mixins import (
     MarketManager,
@@ -76,10 +78,6 @@ from .mixins import (
     TradingManager,
     UniverseManager,
 )
-
-if TYPE_CHECKING:
-    from qubx.control.executor import ActionExecutor
-    from qubx.utils.throttler import InstrumentThrottler
 
 DEFAULT_POSITION_TRACKER: Callable[[], PositionsTracker] = lambda: PositionsTracker(
     FixedSizer(1.0, amount_in_quote=False)
@@ -129,7 +127,7 @@ class StrategyContext(IStrategyContext):
 
     # Command queue for control server actions (drained in data loop)
     _command_queue: Queue | None = None
-    _control_executor: "ActionExecutor | None" = None
+    _control_executor: ActionExecutor | None = None
 
     # Shutdown handling
     _is_stopping: bool = False
@@ -159,7 +157,7 @@ class StrategyContext(IStrategyContext):
         strategy_state: StrategyState | None = None,
         health_monitor: IHealthMonitor | None = None,
         restored_state: RestoredState | None = None,
-        data_throttler: "InstrumentThrottler | None" = None,
+        data_throttler: InstrumentThrottler | None = None,
         state_persistence: IStatePersistence | None = None,
         state_snapshot_interval: str | None = None,
         rate_limiting_config: Any | None = None,
@@ -626,8 +624,13 @@ class StrategyContext(IStrategyContext):
     def positions(self):
         return self.account.get_positions()
 
-    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
-        return self.account.get_orders(instrument, exchange)
+    def get_orders(
+        self,
+        instrument: Instrument | None = None,
+        exchange: str | None = None,
+        origin: OrderOrigin | None = None,
+    ) -> dict[str, Order]:
+        return self.account.get_orders(instrument, exchange, origin)
 
     def get_order_history(self, client_order_id: str) -> list[OrderTransition]:
         return self.account.get_order_history(client_order_id)

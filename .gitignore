@@ -192,5 +192,4 @@ accounts/
 .vscode/skena-mcp.js
 
 # Local-only migration reference docs (deleted at end of account-mgmt-redesign)
-docs/account-management/
 docs/superpowers/

@@ -42,7 +42,6 @@ class AccountManager:
     account_id: str
     _tcc: dict[str, TransactionCostsCalculator]
     _states: dict[str, AccountState]
-    # Derived timedeltas, precomputed once in _init_state (config is fixed for the AM's life).
     _snapshot_grace: np.timedelta64
     _snapshot_interval: np.timedelta64
     _inflight_threshold: np.timedelta64
@@ -71,10 +70,7 @@ class AccountManager:
             account_id=account_id,
             tcc=tcc,
         )
-        # The live runner builds the AM before the ProcessingManager (which lives inside
-        # StrategyContext and needs the AM), so pm is None there — ticks register later in
-        # set_processing_manager once the PM exists. Direct-construction callers (tests)
-        # still pass pm and get ticks immediately.
+        # Live passes pm=None and registers the ticks later — see set_processing_manager.
         if self._pm is not None:
             self._register_ticks()
 
@@ -145,15 +141,12 @@ class AccountManager:
     # ---- order-entry bookkeeping (TradingManager calls these) ----------- #
 
     def add_order(self, order: Order) -> None:
-        # exchange is derived from the order's instrument — no separate parameter needed.
         self._states[order.instrument.exchange].add_order(order)
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
         reconcile.transition(self._states[exchange], cid, new_status, self._time.time())
 
     def remove_order(self, exchange: str, cid: str) -> None:
-        # Drop an order from state entirely (e.g. a submit that raised before reaching the
-        # venue) — distinct from a terminal transition, which keeps it in history.
         self._states[exchange].remove_order(cid)
 
     # ---- state seeding & cash adjustments (runner/transfer boundary) ------ #
@@ -287,8 +280,6 @@ class AccountManager:
         pos = state.get_position(instrument)
         if pos is None:  # only mark positions we hold; never create one per quote
             return
-        # Position.update_market_price expects (timestamp, price, conversion_rate);
-        # mark-to-market uses the quote mid.
         pos.update_market_price(self._time.time(), quote.mid_price(), state.conversion_rate(instrument))
 
     # ---- reads (cross-exchange) -------------------------------------------- #
@@ -530,7 +521,7 @@ class AccountManager:
                         order.last_updated_at = now
                 except Exception:
                     # One bad order / connector error must not abort the rest of the sweep
-                    # or skip terminal eviction (design §1260). Strategy-callback errors are
+                    # or skip terminal eviction (design.md "Ticks & sweeps"). Strategy-callback errors are
                     # already isolated inside the PM dispatch the give-up path routes through.
                     logger.exception(f"[{exchange}] inflight sweep failed for {cid}")
         self._sweep_terminal_evictions()
@@ -576,7 +567,6 @@ class SimulatedAccountManager(AccountManager):
         account_id: str = "SimulatedAccountManager",
         tcc: dict[str, TransactionCostsCalculator] | None = None,
     ):
-        # pm stays None and set_processing_manager below is a no-op, so no ticks ever register.
         super().__init__(
             connectors=connectors,
             base_currencies=base_currencies,

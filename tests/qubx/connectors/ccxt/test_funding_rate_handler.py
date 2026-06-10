@@ -19,30 +19,12 @@ from qubx.core.events import FundingPaymentEvent
 def btc_instrument():
     return Instrument(
         symbol="BTCUSDT",
-
         market_type=MarketType.SWAP,
         exchange="binance",
         base="BTC",
         quote="USDT",
         settle="USDT",
         exchange_symbol="BTCUSDT",
-        tick_size=0.01,
-        lot_size=0.001,
-        min_size=0.001,
-    )
-
-
-@pytest.fixture
-def eth_instrument():
-    return Instrument(
-        symbol="ETHUSDT",
-
-        market_type=MarketType.SWAP,
-        exchange="binance",
-        base="ETH",
-        quote="USDT",
-        settle="USDT",
-        exchange_symbol="ETHUSDT",
         tick_size=0.01,
         lot_size=0.001,
         min_size=0.001,
@@ -68,7 +50,7 @@ def mock_exchange():
             "limits": {"amount": {"min": 0.001}},
         }
     )
-    
+
     # Create mock exchange manager that returns the mock exchange
     exchange_manager = Mock()
     exchange_manager.exchange = ccxt_exchange

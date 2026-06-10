@@ -588,7 +588,6 @@ def test_set_margin_mode_calls_ccxt_returns_true() -> None:
 # --------------------------------------------------------------------------- #
 def test_read_only_raises_on_submit() -> None:
     conn, _, _ = _make_connector(read_only=True)
-    assert conn.read_only is True
     with pytest.raises(ReadOnlyConnector):
         conn.submit_order(_order_request())
 

@@ -246,10 +246,6 @@ class SimulatedConnector(ChannelEmitter):
     def is_simulated_trading(self) -> bool:
         return True
 
-    @property
-    def read_only(self) -> bool:
-        return False
-
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
         return True
 

@@ -154,7 +154,7 @@ def run_strategy_yaml(
         raise FileNotFoundError(f"Account configuration file not found: {account_file}")
 
     # Register built-in connectors and load plugins
-    import qubx.connectors  # noqa: F401, I001 - registers ccxt/tardis/xlighter connectors
+    import qubx.connectors  # noqa: F401, I001 - registers built-in ccxt/tardis connectors
     from qubx.plugins import load_plugins  # noqa: I001
 
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
@@ -601,12 +601,8 @@ def create_strategy_context(
             f"Strategy {config.name or ''} is trying to access aux data bit no auxiliary storage configured for live mode"
         )
 
-    # - central account manager. Paper's simulated execution is synchronous (no pm/ticks),
-    #   so it uses SimulatedAccountManager. Live builds the real AccountManager WITHOUT a
-    #   pm — the ProcessingManager lives inside StrategyContext (which takes the AM), so the
-    #   AM↔pm cycle is resolved by registering the periodic ticks in
-    #   AccountManager.set_processing_manager once the PM exists. The function param `account_manager` is the
-    #   credentials manager — keep them distinct (`_am`).
+    # - central account manager: paper uses SimulatedAccountManager (synchronous execution, no ticks).
+    #   NB: the `account_manager` function param is the credentials manager — keep them distinct (`_am`).
     _am_cls = SimulatedAccountManager if paper else AccountManager
     _base_currencies = {
         exchange_name: _resolve_base_currency(exchange_name, exchange_config, config.live, account_manager)

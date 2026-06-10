@@ -136,17 +136,6 @@ def mock_instrument():
 
 
 @pytest.fixture
-def mock_spot_instrument():
-    """Create a mock spot instrument for testing."""
-    instrument = Mock(spec=Instrument)
-    instrument.symbol = "BTCUSDT"
-    instrument.exchange = "BINANCE.SPOT"
-    instrument.market_type = MarketType.SPOT
-    instrument.min_size = 0.001
-    return instrument
-
-
-@pytest.fixture
 def mock_connector():
     """Create a mock connector for testing."""
     connector = Mock()

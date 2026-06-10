@@ -30,38 +30,15 @@ class ClientIdStore:
     """Manages generation of unique client order IDs."""
 
     def __init__(self):
-        """Initialize a client ID store."""
         self._order_id: int | None = None
 
     def generate_id(self, time_provider: ITimeProvider, symbol: str) -> str:
-        """Generate a unique client order ID.
-
-        Args:
-            time_provider: Time provider to get current timestamp
-            symbol: Trading symbol for the order
-
-        Returns:
-            A unique client order ID
-        """
-        # Initialize order ID from timestamp if not yet set
         if self._order_id is None:
             self._order_id = self._initialize_id_from_timestamp(time_provider)
-
-        # Increment order ID to ensure uniqueness across calls
         self._order_id += 1
-
-        # Create and return the unique ID
         return self._create_id(symbol, self._order_id)
 
     def _initialize_id_from_timestamp(self, time_provider: ITimeProvider) -> int:
-        """Initialize the order ID from the current timestamp.
-
-        Args:
-            time_provider: Time provider to get current timestamp
-
-        Returns:
-            Initial order ID value
-        """
         return time_provider.time().astype("int64") // 100_000_000
 
     def _create_id(self, symbol: str, order_id: int) -> str:
@@ -173,29 +150,13 @@ class TradingManager(ITradingManager):
     def set_target_position(
         self, instrument: Instrument, target: float, price: float | None = None, time_in_force="gtc", **options
     ) -> Order | None:
-        """Set target position for an instrument.
-
-        Calculates the difference between current and target position,
-        then places an order to reach the target.
-
-        Args:
-            instrument: The instrument to set target position for
-            target: Target position size (positive for long, negative for short)
-            price: Optional limit price. If provided, uses limit order; otherwise market order
-            time_in_force: Time in force for the order
-            **options: Additional order options
-
-        Returns:
-            Order | None: The created order, or None if no order needed
-        """
-        # Get current position
+        """Trade the difference between the current and target position; None when the
+        difference is below the instrument's min size (no order needed)."""
         current_position = self._account_manager.get_position(instrument)
         current_quantity = current_position.quantity if current_position is not None else 0.0
 
-        # Calculate amount to trade
         amount_to_trade = target - current_quantity
 
-        # Check if we need to trade
         if self._is_below_min_size(instrument, amount_to_trade):
             logger.debug(
                 f"[<g>{instrument.symbol}</g>] :: Target position {target} is close to current position "
@@ -203,7 +164,6 @@ class TradingManager(ITradingManager):
             )
             return None
 
-        # Place order
         logger.debug(
             f"[<g>{instrument.symbol}</g>] :: Setting target position to {target}, current: {current_quantity}, "
             f"trading: {amount_to_trade}"
@@ -216,46 +176,24 @@ class TradingManager(ITradingManager):
     def set_target_leverage(
         self, instrument: Instrument, leverage: float, price: float | None = None, **options
     ) -> Order | None:
-        """Set target leverage for an instrument.
-
-        Calculates target position size based on leverage percentage of total capital,
-        then calls set_target_position to place the order.
-
-        Args:
-            instrument: The instrument to set target leverage for
-            leverage: Target leverage as fraction (e.g., 0.03 for 3% of capital,
-                      negative for short positions)
-            price: Optional limit price. If provided, uses limit order and the provided price
-                   for position calculation. Otherwise, uses current market price and market order.
-            **options: Additional order options
-
-        Returns:
-            Order | None: The created order, or None if no order needed
-        """
-        # Get total capital for the exchange
+        """Trade to a target leverage, given as a fraction of total capital (0.03 = 3%,
+        negative for short). Sizes with the limit price if given, else the quote mid."""
         total_capital = self._account_manager.get_total_capital(instrument.exchange)
         if total_capital == 0:
             logger.warning(f"[<g>{instrument.symbol}</g>] :: Total capital is 0, cannot set target position")
             return None
 
-        # Calculate capital to use (leverage is a fraction, e.g., 0.03 = 3%)
         capital_to_use = total_capital * abs(leverage)
 
-        # Get price for calculation
         if price is None:
-            # Get current market price from quote
             quote = self._context.quote(instrument)
             if quote is None:
                 logger.error(f"[<g>{instrument.symbol}</g>] :: Cannot get current price for leverage calculation")
                 return None
-            # Use mid price for calculation
             calc_price = quote.mid_price()
         else:
             calc_price = price
 
-        # Calculate target position size
-        # For positive leverage: long position (positive quantity)
-        # For negative leverage: short position (negative quantity)
         target_position = (capital_to_use / (calc_price * instrument.quantity_multiplier)) * (1 if leverage > 0 else -1)
 
         logger.debug(
@@ -264,7 +202,6 @@ class TradingManager(ITradingManager):
             f"price: {calc_price:.2f}, target: {target_position:.6f})"
         )
 
-        # Call set_target_position to execute the trade
         return self.set_target_position(instrument=instrument, target=target_position, price=price, **options)
 
     def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:

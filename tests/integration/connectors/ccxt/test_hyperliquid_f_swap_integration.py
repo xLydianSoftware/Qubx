@@ -80,7 +80,7 @@ def _make_provider(channel: MagicMock) -> CcxtDataProvider:
         time_provider=LiveTimeProvider(),
         channel=channel,
         health_monitor=_make_health_monitor(),
-        account_manager=AccountConfigurationManager(),
+        credentials=AccountConfigurationManager(),
         max_ws_retries=3,
         warmup_timeout=30,
     )
@@ -187,8 +187,10 @@ class TestHyperliquidFundingRateAdapter:
     def _cleanup_adapter(self, provider: CcxtDataProvider) -> None:
         ex = self._ccxt_ex(provider)
         if hasattr(ex, "_funding_rate_adapter") and ex._funding_rate_adapter:
+
             async def _stop():
                 await ex._funding_rate_adapter.stop()
+
             try:
                 asyncio.run_coroutine_threadsafe(_stop(), self._async_loop(provider)).result(timeout=10)
                 ex._funding_rate_adapter = None

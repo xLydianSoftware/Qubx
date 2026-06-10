@@ -181,6 +181,19 @@ class ConnectorRegistry:
         return cls._data_providers.copy()
 
 
+# Tombstone for the pre-IConnector registry API so stale plugins fail with a pointer to the migration.
+_REMOVED_NAMES = ("broker", "account_processor", "register_broker", "register_account_processor")
+
+
+def __getattr__(name: str) -> Any:
+    if name in _REMOVED_NAMES:
+        raise ImportError(
+            f"'{name}' was removed: plugins now implement a single IConnector and register a factory with "
+            "@connector(name) — see docs/account-management/design.md, section 'Connectors (IConnector)'."
+        )
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
 # Convenience decorators
 def data_provider(name: str) -> Callable[[Type[T]], Type[T]]:
     """

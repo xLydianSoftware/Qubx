@@ -8,8 +8,8 @@ This module owns both sides of the IConnector surface:
   plus a small order cache the write side consults to fill in the ccxt
   symbol/side/type that cancel/edit require.
 
-Design contract (see docs/account-management/account-management-design.md
-"IConnector — exchange-facing only" and the rejection-boundary table):
+Design contract (see docs/account-management/design.md, "Connectors (IConnector)"
+and its "Rejection boundary" subsection):
 
 - The connector is a pure adapter. Its only outbound surface to the framework is
   ``self.send(event)`` on the channel. It holds NO AccountManager / ProcessingManager
@@ -239,7 +239,6 @@ class CcxtConnector(ChannelEmitter):
     # Order cache (connector-local venue-call metadata)
     # ------------------------------------------------------------------ #
     def _resolve_cached(self, client_order_id: str | None, venue_order_id: str | None) -> _CachedOrder | None:
-        """Resolve a cached order by cid (preferred) or venue id, else None."""
         if client_order_id is not None and client_order_id in self._orders:
             return self._orders[client_order_id]
         if venue_order_id is not None:
@@ -249,7 +248,6 @@ class CcxtConnector(ChannelEmitter):
         return None
 
     def _index_venue_id(self, client_order_id: str | None, venue_order_id: str | None) -> None:
-        """Record the venue id on the cached order and the reverse index."""
         if client_order_id is None or venue_order_id is None:
             return
         cached = self._orders.get(client_order_id)
@@ -406,9 +404,7 @@ class CcxtConnector(ChannelEmitter):
         self._spawn(self._cancel_async(client_order_id, venue_order_id))
 
     async def _cancel_async(self, client_order_id: str | None, venue_order_id: str | None) -> None:
-        """Cancel with retry/backoff. Prefers venue_order_id; falls back to cloid.
-
-        A successful REST cancel ack emits OrderCanceledEvent immediately; the WS
+        """A successful REST cancel ack emits OrderCanceledEvent immediately; the WS
         read side also emits one and AM dedups. A definitive venue cancel-rejection
         emits OrderCancelRejectedEvent. A transient network failure is an UNKNOWN
         outcome (the cancel may still have landed), so the order is left inflight for
@@ -708,7 +704,6 @@ class CcxtConnector(ChannelEmitter):
     # Read side — WS account-event subscription
     # ------------------------------------------------------------------ #
     def _instrument_for_symbol(self, ccxt_symbol: str) -> Instrument:
-        """Resolve a ccxt symbol to an Instrument, memoizing the result."""
         return ccxt_find_instrument(ccxt_symbol, self._em.exchange, self._symbol_to_instrument)
 
     async def _subscribe_executions(self) -> None:
@@ -1068,10 +1063,8 @@ class CcxtConnector(ChannelEmitter):
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         """Convert a ccxt fetch_balance response to framework Balances.
 
-        Base impl reads ccxt's canonical ``total``/``used`` maps. OKX overrides this:
-        ccxt maps OKX's ``eq`` (= cashBal + unrealizedPnL) to ``total``,
-        but the framework wants the cash leg — so OKX reads per-currency ``cashBal``/
-        ``frozenBal`` straight from the raw ``info.data[0].details``.
+        Base impl reads ccxt's canonical ``total``/``used`` maps; venue subclasses
+        override when ccxt's mapping is wrong for the framework (see OKX).
         """
         return ccxt_convert_balance(raw_balance, self.exchange_name)
 
@@ -1102,7 +1095,7 @@ class CcxtConnector(ChannelEmitter):
         snapshots flow, but write methods raise ReadOnlyConnector).
         """
         self._start_executions_stream()
-        # Initial snapshot (design connect() contract case 1).
+        # Initial snapshot (design.md "connect / reconnect contract", case 1).
         self.request_snapshot()
 
     def _start_executions_stream(self) -> None:
@@ -1123,7 +1116,7 @@ class CcxtConnector(ChannelEmitter):
         The running _subscribe_executions loop captured watch_orders bound to the
         *previous* exchange; after recreation that stream is dead, so restart it (the
         loop re-reads self._em.exchange.watch_orders) and resync AM against venue truth
-        (design IConnector.connect contract case 2).
+        (design.md "connect / reconnect contract", case 2).
         """
         if self._executions_future is None:
             return  # never connected; nothing to resubscribe
@@ -1156,7 +1149,3 @@ class CcxtConnector(ChannelEmitter):
     @property
     def is_simulated_trading(self) -> bool:
         return False
-
-    @property
-    def read_only(self) -> bool:
-        return self._read_only

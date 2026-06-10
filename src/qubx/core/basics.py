@@ -5,7 +5,7 @@ from enum import StrEnum
 from functools import cache
 from queue import Empty, Queue
 from threading import Event
-from typing import TYPE_CHECKING, Any, Optional, TypeAlias, Union
+from typing import Any, Optional, TypeAlias, Union
 
 import numpy as np
 import pandas as pd
@@ -16,9 +16,6 @@ from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_st
 from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
 from qubx.utils.time import to_timedelta
-
-if TYPE_CHECKING:
-    from qubx.core.interfaces import IStrategyContext
 
 dt_64 = np.datetime64
 td_64 = np.timedelta64
@@ -476,14 +473,6 @@ class Instrument:
             options=(options or {}) | kwargs,
         )
 
-    def get_amount_for_leverage(self, ctx: "IStrategyContext", leverage: float) -> float:
-        q = ctx.quote(self)
-        capital = ctx.get_total_capital()
-        if q is None or not capital:
-            return 0
-        amount = (capital * leverage) / q.mid_price()
-        return self.round_size_down(amount)
-
     def __hash__(self) -> int:
         return hash((self.symbol, self.exchange, self.market_type))
 
@@ -866,26 +855,12 @@ class Balance:
     def __str__(self) -> str:
         return f"{self.exchange}:{self.currency} free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
 
-    def lock(self, lock_amount: float) -> None:
-        self.locked += lock_amount
-        self.free = self.total - self.locked
-
     def reset_by_balance(self, balance: "Balance") -> None:
         # In-place value copy (exchange/currency are identity) so holders of this
         # Balance keep a live reference. Mirrors Position.reset_by_position.
         self.free = balance.free
         self.locked = balance.locked
         self.total = balance.total
-
-    def __add__(self, amount: float) -> "Balance":
-        self.total += amount
-        self.free += amount
-        return self
-
-    def __sub__(self, amount: float) -> "Balance":
-        self.total -= amount
-        self.free -= amount
-        return self
 
 
 DEFAULT_MAINTENANCE_MARGIN = 0.05
@@ -1543,28 +1518,6 @@ class RestoredState:
     instrument_to_signal_positions: dict[Instrument, list[Signal]]
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]
-
-    def filter_by_exchange(self, exchange: str) -> "RestoredState":
-        # TODO: maybe this needs to be mapped for BINANCE.PM, not sure
-        return RestoredState(
-            time=self.time,
-            balances=[balance for balance in self.balances if balance.exchange == exchange],
-            instrument_to_signal_positions={
-                instrument: signals
-                for instrument, signals in self.instrument_to_signal_positions.items()
-                if instrument.exchange == exchange
-            },
-            instrument_to_target_positions={
-                instrument: targets
-                for instrument, targets in self.instrument_to_target_positions.items()
-                if instrument.exchange == exchange
-            },
-            positions={
-                instrument: position
-                for instrument, position in self.positions.items()
-                if instrument.exchange == exchange
-            },
-        )
 
 
 class InstrumentsLookup:
