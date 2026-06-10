@@ -1,13 +1,16 @@
 """Reconciliation logic: snapshot reconcile + the periodic-sweep decision rules.
 
 The reconciler splits along the logic-vs-orchestration line: this module owns the
-LOGIC — ``reconcile_snapshot`` (the as_of ratchet, grace-window terminalization of
-orders missing from the snapshot, RECOVERED/EXTERNAL materialization, per-order
+LOGIC — ``reconcile_snapshot`` (the as_of ratchet, grace-window detection of orders
+missing from the snapshot, RECOVERED/EXTERNAL materialization, per-order
 freshness-guarded updates, position/balance application, venue figures) and the
 sweep decision helpers (stuck-inflight selection, retry give-up, snapshot freshness,
 liveness). AccountManager drives the ticks and makes every connector call; the
 reducer routes the snapshot event here and surfaces the returned ``ReconcileDiff``
-on its ApplyResult.
+on its ApplyResult. Orders missing from the snapshot past grace are REPORTED on the
+diff, not terminalized: the order may have FILLED during a WS gap, so the manager
+fetches its true status first and terminalizes (``terminalize_missing``) only once
+the per-order fetch budget is exhausted.
 
 Import rule: this module must never import the reducer (or the manager) — that is
 the cycle-relevant rule; state, state_machine and the leaf event/basics modules are fine. The tiny validate+transition helper is deliberately
@@ -43,9 +46,13 @@ class ReconcileDiff:
 
     Surfaced on ``ApplyResult.reconcile_diff`` (None when the event wasn't a snapshot
     or the snapshot was rejected as stale). Replaces the old debug-log tally with a
-    real record of the affected objects.
+    real record of the affected objects. ``missing`` holds orders absent from the
+    snapshot past grace that still have fetch budget left — the manager requests
+    their true status; once the budget is exhausted they are terminalized instead
+    and moved to ``terminated``.
     """
 
+    missing: list[Order] = field(default_factory=list)
     terminated: list[Order] = field(default_factory=list)
     materialized: list[Order] = field(default_factory=list)
     updated: list[Order] = field(default_factory=list)
@@ -95,13 +102,16 @@ def reconcile_snapshot(
 
     if snapshot.open_orders is not None:
         snap_by_vid = {o.venue_order_id: o for o in snapshot.open_orders if o.venue_order_id}
+        snap_cids = {o.client_order_id for o in snapshot.open_orders if o.client_order_id}
         for cid, cached in state.get_orders().items():
             if cached.status.is_terminal:
                 continue
             vid = cached.venue_order_id
-            if vid is not None and vid in snap_by_vid:
+            if (vid is not None and vid in snap_by_vid) or cid in snap_cids:
                 # Still open at the venue — property drift is reconciled in the
-                # open-orders loop below (_update_from_snapshot), not here.
+                # open-orders loop below (_update_from_snapshot), not here. The cid
+                # fallback covers an unacked framework order (lost create ack, no
+                # venue id yet) that the snapshot reports under our own cid.
                 continue
             seen_at = _last_seen_at(cached)
             if seen_at is None:
@@ -111,24 +121,31 @@ def reconcile_snapshot(
                 continue
             if (snapshot.as_of - seen_at) < grace:
                 continue
-            terminal = OrderStatus.REJECTED if cached.status == OrderStatus.SUBMITTED else OrderStatus.CANCELED
-            cached.rejected_reason = "reconcile: missing from snapshot"
-            try:
-                _transition(state, cid, terminal, now)
-                diff.terminated.append(cached)
-            except InvalidOrderTransition:
-                logger.warning(f"reconcile: cannot terminate {cid} from {cached.status}")
+            # Missing past grace: report, don't terminalize — the order may have FILLED
+            # during a WS gap and a blind CANCELED would lose the execution forever. The
+            # manager fetches the true status (the fetched FILLED/CANCELED replays through
+            # the normal event path) and falls back to terminalize_missing on give-up.
+            diff.missing.append(cached)
         for snap_order in snapshot.open_orders:
             existing = state.get_order_by_venue_id(snap_order.venue_order_id) if snap_order.venue_order_id else None
+            if existing is None and snap_order.client_order_id:
+                # cid fallback: an unacked framework order has venue_order_id=None and
+                # can never match by venue id — capture the id the snapshot carries and
+                # update in place instead of materializing a RECOVERED twin.
+                existing = state.get_active_order(snap_order.client_order_id)
+                if existing is not None and snap_order.venue_order_id:
+                    if existing.venue_order_id != snap_order.venue_order_id:
+                        state.set_venue_id(existing.client_order_id, snap_order.venue_order_id)
             if existing is None:
                 diff.materialized.append(_materialize_from_snapshot(state, snap_order, snapshot.as_of))
             elif existing.last_updated_at is None or snapshot.as_of > existing.last_updated_at:
                 _update_from_snapshot(state, existing, snap_order, snapshot.as_of, now)
                 diff.updated.append(existing)
 
-    # Positions and balances: the snapshot is the venue's authoritative full
-    # truth for size/amount, and stale snapshots are already rejected wholesale
-    # by the as_of ratchet above — so an accepted snapshot always overwrites.
+    # Positions and balances: the snapshot is the venue's authoritative truth for
+    # size/amount, and stale snapshots are already rejected wholesale by the as_of
+    # ratchet above. Positions reconcile surgically (size/avg-price/margin/mark only —
+    # locally accumulated r_pnl/commissions/funding always survive); balances overwrite.
     # No per-record freshness here (unlike orders, where it guards a fresh fill):
     # Position/Balance carry no reliable last-update timestamp yet.
     # TODO(account-mgmt): once WS PositionUpdate/BalanceUpdate events are wired,
@@ -136,7 +153,7 @@ def reconcile_snapshot(
     # a recent WS update can't clobber it.
     if snapshot.positions is not None:
         for snap_pos in snapshot.positions:
-            if state.apply_position_snapshot(snap_pos):
+            if state.reconcile_position_from_snapshot(snap_pos):
                 diff.positions.append(snap_pos)
 
     if snapshot.balances is not None:
@@ -157,9 +174,9 @@ def reconcile_snapshot(
         state.set_venue_figures(figures)
         diff.venue_figures = figures
 
-    if diff.terminated or diff.materialized or diff.updated or diff.positions or diff.balances:
+    if diff.missing or diff.materialized or diff.updated or diff.positions or diff.balances:
         logger.debug(
-            f"[{snapshot.exchange}] reconcile applied: {len(diff.terminated)} terminated, "
+            f"[{snapshot.exchange}] reconcile applied: {len(diff.missing)} missing, "
             f"{len(diff.materialized)} materialized, {len(diff.updated)} updated, "
             f"{len(diff.positions)} positions, {len(diff.balances)} balances"
         )
@@ -196,6 +213,10 @@ def _materialize_from_snapshot(state: AccountState, snap_order: Order, as_of: np
         last_updated_at=as_of,
     )
     state.add_order(order)
+    if order.filled_quantity > 0.0:
+        # The snapshot's filled_quantity (and its position/balance legs) already count
+        # executions up to as_of — a late DealEvent for one of them must not book again.
+        state.mark_snapshot_fill(order.client_order_id, as_of)
     return order
 
 
@@ -204,6 +225,11 @@ def _update_from_snapshot(
 ) -> None:
     if snap_order.status != existing.status:
         _reconcile_status_from_snapshot(state, existing, snap_order.status, now)
+    if snap_order.filled_quantity > existing.filled_quantity:
+        # The snapshot counted executions we haven't seen as deals yet (and its
+        # position/balance legs incorporate them) — remember as_of so a late DealEvent
+        # at or before it isn't booked twice (_handle_deal checks this).
+        state.mark_snapshot_fill(existing.client_order_id, as_of)
     existing.filled_quantity = snap_order.filled_quantity
     existing.avg_fill_price = snap_order.avg_fill_price
     existing.price = snap_order.price
@@ -234,6 +260,21 @@ def _reconcile_status_from_snapshot(
             f"{existing.status} -> {venue_status} (snapshot is authoritative)"
         )
     state.transition_order(cid, venue_status, now)
+
+
+def terminalize_missing(state: AccountState, order: Order, now: np.datetime64) -> bool:
+    """Give-up terminalization for an order missing from snapshots past grace whose
+    status-fetch budget is exhausted: REJECTED if the venue never acked it, else
+    CANCELED. Returns True when the transition applied."""
+    cid = order.client_order_id
+    terminal = OrderStatus.REJECTED if order.status == OrderStatus.SUBMITTED else OrderStatus.CANCELED
+    order.rejected_reason = "reconcile: missing from snapshot"
+    try:
+        _transition(state, cid, terminal, now)
+        return True
+    except InvalidOrderTransition:
+        logger.warning(f"reconcile: cannot terminate {cid} from {order.status}")
+        return False
 
 
 # ---- sweep decision helpers (the manager's ticks call these, then act) -------- #

@@ -261,6 +261,13 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
         return ApplyResult()
     if event.venue_order_id is not None:
         state.set_venue_id(order.client_order_id, event.venue_order_id)
+    snap_as_of = state.get_snapshot_fill_as_of(order.client_order_id)
+    if snap_as_of is not None and event.deal.time <= snap_as_of:
+        # A snapshot already raised filled_quantity past this execution and reconciled
+        # the position/balance legs with it — record the trade id so re-deliveries
+        # (DealEvent or embedded fill) still dedup, but don't book it a second time.
+        state.record_trade_id(order.client_order_id, event.deal.trade_id)
+        return ApplyResult()
     if not state.apply_fill(order.client_order_id, event.deal, now):
         return ApplyResult()
     position = _book_deal(state, order.instrument, event.deal) if order.instrument is not None else None

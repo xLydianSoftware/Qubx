@@ -106,6 +106,17 @@ def test_add_terminal_order_without_last_updated_at_raises():
         state.add_order(_order(status=OrderStatus.CANCELED, last_updated_at=None))
 
 
+def test_add_order_refuses_duplicate_active_cid():
+    # F11: silent overwrite orphaned the caller's Order reference and left stale
+    # index entries — a duplicate active cid is a framework bug and must fail loudly.
+    state = AccountState("binance", "USDT")
+    first = _order()
+    state.add_order(first)
+    with pytest.raises(ValueError, match="duplicate"):
+        state.add_order(_order())
+    assert state.get_order("qubx-1") is first
+
+
 # --------------------------------------------------------------------------- #
 # venue id
 # --------------------------------------------------------------------------- #

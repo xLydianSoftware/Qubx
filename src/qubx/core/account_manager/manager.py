@@ -172,7 +172,40 @@ class AccountManager:
         state = self._state_for_event(event)
         if state is None:
             return ApplyResult()
-        return reducer.apply(state, event, self._time.time(), snapshot_grace=self._snapshot_grace)
+        result = reducer.apply(state, event, self._time.time(), snapshot_grace=self._snapshot_grace)
+        if result.reconcile_diff is not None and result.reconcile_diff.missing:
+            self._resolve_missing_orders(state, result.reconcile_diff)
+        return result
+
+    def _resolve_missing_orders(self, state: AccountState, diff: reconcile.ReconcileDiff) -> None:
+        # Fetch-before-terminalize: an order missing from the snapshot past grace may have
+        # FILLED during a WS gap — request its true status (the connector replays the venue's
+        # answer through the normal event path: _handle_ws_order emits the real FILLED/
+        # CANCELED, OrderNotFound synthesizes the reject). The shared per-order retry counter
+        # is the fetch budget; once exhausted across snapshot cycles, give up and terminalize
+        # exactly as before. Resolved orders leave the budget via transition_order's reset.
+        connector = self._connectors[state.exchange]
+        now = self._time.time()
+        unresolved: list[Order] = []
+        for order in diff.missing:
+            cid = order.client_order_id
+            try:
+                if reconcile.retries_exhausted(state, cid, self._cfg.inflight_check_retries):
+                    logger.warning(
+                        f"[{state.exchange}] reconcile give-up: terminalizing {cid} after "
+                        f"{state.get_retry(cid)} status-fetch attempts"
+                    )
+                    if reconcile.terminalize_missing(state, order, now):
+                        diff.terminated.append(order)
+                else:
+                    connector.request_order_status(client_order_id=cid, venue_order_id=order.venue_order_id)
+                    state.bump_retry(cid)
+                    unresolved.append(order)
+            except Exception:
+                # One bad order / connector error must not abort the rest of the resolution.
+                logger.exception(f"[{state.exchange}] missing-order status fetch failed for {cid}")
+                unresolved.append(order)
+        diff.missing[:] = unresolved
 
     def _state_for_event(self, event: AccountMessage) -> AccountState | None:
         if isinstance(event, AccountSnapshotEvent):
@@ -456,10 +489,16 @@ class AccountManager:
             if reconcile.liveness_overdue(since, now, self._liveness_threshold):
                 logger.warning(f"[{exchange}] WS unready past threshold; reconnecting")
                 try:
-                    connector.reconnect()
+                    reconnected = connector.reconnect()
                 except Exception:
                     logger.exception(f"reconnect failed for {exchange}")
-                self._liveness_unready_since.pop(exchange, None)
+                    continue
+                if reconnected:
+                    # Clear only on success; on failure keep the timestamp so the next
+                    # tick retries instead of restarting the full threshold.
+                    self._liveness_unready_since.pop(exchange, None)
+                else:
+                    logger.warning(f"[{exchange}] reconnect failed; will retry on next liveness tick")
 
 
 class SimulatedAccountManager(AccountManager):

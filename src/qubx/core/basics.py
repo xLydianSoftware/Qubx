@@ -967,6 +967,15 @@ class Position:
         self.last_funding_time = pos.last_funding_time if hasattr(pos, "last_funding_time") else np.datetime64("NaT")
         self.__pos_incr_qty = pos.__pos_incr_qty
 
+    def reconcile_size(self, quantity: float, avg_price: float) -> None:
+        """Authoritative size/avg-price correction (venue snapshot reconcile). Touches
+        sizing fields only — accumulated accounting (r_pnl, commissions, funding) is
+        locally owned and must survive a snapshot."""
+        self.quantity = quantity
+        self.position_avg_price = avg_price
+        self.position_avg_price_funds = avg_price  # conversion seam is fixed at 1.0 (AccountState.conversion_rate)
+        self.__pos_incr_qty = abs(quantity)
+
     @property
     def notional_value(self) -> float:
         return self.quantity * self._qty_multiplier * self.last_update_price / self.last_update_conversion_rate

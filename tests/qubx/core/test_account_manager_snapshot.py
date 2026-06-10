@@ -5,6 +5,7 @@ import numpy as np
 from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import (
     Balance,
+    Deal,
     Instrument,
     MarketType,
     Order,
@@ -12,7 +13,7 @@ from qubx.core.basics import (
     OrderStatus,
     Position,
 )
-from qubx.core.events import AccountSnapshot, AccountSnapshotEvent
+from qubx.core.events import AccountSnapshot, AccountSnapshotEvent, DealEvent, OrderFilledEvent
 
 
 class _T:
@@ -96,16 +97,85 @@ def _snap_event(
     )
 
 
-def test_missing_order_past_grace_transitions_terminal():
+def _exhaust_fetch_budget(state, cid, n=5):
+    # n matches AccountManagerConfig.inflight_check_retries default — the shared
+    # per-order fetch budget reconcile reuses for missing orders.
+    for _ in range(n):
+        state.bump_retry(cid)
+
+
+def test_missing_order_past_grace_requests_status_fetch_not_terminalized():
+    # F7: a missing-past-grace order may have FILLED during a WS gap — the first response
+    # is a status fetch through the connector, never a blind terminalization.
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
     # order submitted at t0, vid V1, now snapshot at t0+1h with no open orders -> past grace
     state.add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
     am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
+
+    order = state.get_order("cid-1")
+    assert order.status is OrderStatus.SUBMITTED  # untouched until the venue answers
+    am._connectors["binance"].request_order_status.assert_called_once_with(client_order_id="cid-1", venue_order_id="V1")
+    assert state.get_retry("cid-1") == 1
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.missing == [order]
+    assert result.reconcile_diff.terminated == []
+
+
+def test_missing_order_exhausted_fetch_budget_terminalized():
+    # Give-up: once the fetch budget is exhausted the order terminalizes exactly as the
+    # pre-F7 behavior (REJECTED for never-acked SUBMITTED, reason recorded, no fetch).
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    _exhaust_fetch_budget(state, "cid-1")
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
+
+    order = state.get_order("cid-1")
+    assert order.status is OrderStatus.REJECTED
+    assert order.rejected_reason == "reconcile: missing from snapshot"
+    am._connectors["binance"].request_order_status.assert_not_called()
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.terminated == [order]
+    assert result.reconcile_diff.missing == []
+
+
+def test_missing_order_resolved_via_fetch_applies_true_status():
+    # The connector's answer to the status fetch replays through the normal event path:
+    # the true FILLED lands (no false CANCELED) and the fetch budget resets.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
-    assert state.get_order("cid-1").status is OrderStatus.REJECTED
-    assert state.get_order("cid-1").rejected_reason == "reconcile: missing from snapshot"
+    assert state.get_order("cid-1").status is OrderStatus.ACCEPTED
+    assert state.get_retry("cid-1") == 1
+
+    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=None))
+    assert state.get_order("cid-1").status is OrderStatus.FILLED
+    assert state.get_retry("cid-1") == 0  # transition_order reset the budget
+
+
+def test_missing_order_terminalizes_after_n_snapshot_cycles():
+    # The loop: every snapshot cycle that still misses the order burns one fetch attempt;
+    # after inflight_check_retries cycles the give-up terminalizes (ACCEPTED -> CANCELED).
+    cfg = AccountManagerConfig(snapshot_check_threshold_ms=5_000, inflight_check_retries=2)
+    am = _am(cfg=cfg)
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+
+    for hour in ("01", "02", "03"):
+        am._time.t = np.datetime64(f"2026-05-28T{hour}:00:00")
+        am.apply(_snap_event(as_of=f"2026-05-28T{hour}:00:00", open_orders=[]))
+
+    assert state.get_order("cid-1").status is OrderStatus.CANCELED
+    assert am._connectors["binance"].request_order_status.call_count == 2
 
 
 def test_missing_order_within_grace_not_terminated():
@@ -117,6 +187,98 @@ def test_missing_order_within_grace_not_terminated():
     # snapshot as_of is 1s after order.submitted_at which is below the 5s grace window
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
     assert state.get_order("cid-1").status is OrderStatus.ACCEPTED
+
+
+def test_open_orders_none_failed_fetch_leg_skips_missing_handling():
+    # F16: open_orders=None means the connector's order-fetch leg FAILED — it must never
+    # be treated as "venue has no orders". Live orders past grace stay untouched: no fetch
+    # rescue, no budget burn, no give-up terminalization (even with the budget already
+    # spent). A regression to `if snapshot.open_orders:` flips this to mass-handling.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-fresh", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VF", instrument=inst))
+    state.add_order(_order("cid-spent", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="VS", instrument=inst))
+    _exhaust_fetch_budget(state, "cid-spent")
+    snap_bal = Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=None, balances=[snap_bal]))
+
+    assert state.get_order("cid-fresh").status is OrderStatus.ACCEPTED
+    assert state.get_order("cid-spent").status is OrderStatus.SUBMITTED
+    am._connectors["binance"].request_order_status.assert_not_called()
+    assert state.get_retry("cid-fresh") == 0
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.missing == []
+    assert result.reconcile_diff.terminated == []
+    # only the orders leg is absent — the rest of the snapshot still applies
+    assert state.get_balance("USDT").total == 1000.0
+
+
+def test_open_orders_empty_list_engages_missing_handling():
+    # F16, the [] half of the None-vs-[] matrix: an empty list IS the venue's answer
+    # ("no open orders"), so missing-handling engages — fetch rescue while budget lasts,
+    # give-up terminalization once it is spent.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-fresh", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VF", instrument=inst))
+    state.add_order(_order("cid-spent", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="VS", instrument=inst))
+    _exhaust_fetch_budget(state, "cid-spent")
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
+
+    fresh = state.get_order("cid-fresh")
+    assert fresh.status is OrderStatus.ACCEPTED  # fetch rescue, not terminalized
+    am._connectors["binance"].request_order_status.assert_called_once_with(
+        client_order_id="cid-fresh", venue_order_id="VF"
+    )
+    assert state.get_retry("cid-fresh") == 1
+    spent = state.get_order("cid-spent")
+    assert spent.status is OrderStatus.REJECTED  # budget gone -> give-up
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.missing == [fresh]
+    assert result.reconcile_diff.terminated == [spent]
+
+
+def test_missing_accepted_order_gives_up_to_canceled():
+    # F16: give-up terminalization is status-aware — a venue-acked ACCEPTED order resolves
+    # to CANCELED (only never-acked SUBMITTED becomes REJECTED).
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    _exhaust_fetch_budget(state, "cid-1")
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
+
+    order = state.get_order("cid-1")
+    assert order.status is OrderStatus.CANCELED
+    assert order.rejected_reason == "reconcile: missing from snapshot"
+    am._connectors["binance"].request_order_status.assert_not_called()
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.terminated == [order]
+
+
+def test_missing_order_without_timestamps_skipped():
+    # F16: an order with neither last_updated_at nor submitted_at cannot be aged — it is
+    # treated as just-seen and skipped before any missing handling (no fetch, no give-up
+    # even with the budget spent), so a just-submitted order racing the snapshot survives.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    order = _order("cid-u", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VU", instrument=inst)
+    order.submitted_at = None
+    state.add_order(order)
+    _exhaust_fetch_budget(state, "cid-u")
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[]))
+
+    assert state.get_order("cid-u").status is OrderStatus.ACCEPTED
+    am._connectors["binance"].request_order_status.assert_not_called()
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.missing == []
+    assert result.reconcile_diff.terminated == []
 
 
 def test_stale_snapshot_does_not_clobber_fresh_state():
@@ -141,6 +303,7 @@ def test_out_of_order_snapshot_skipped():
     state = am._states["binance"]
     inst = _instrument()
     state.add_order(_order("cid-1", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+    _exhaust_fetch_budget(state, "cid-1")  # fetch budget spent -> the applied snapshot terminalizes
     am._time.t = np.datetime64("2026-05-28T03:00:00")
     am.apply(_snap_event(as_of="2026-05-28T02:00:00", open_orders=[]))
     assert state.get_order("cid-1").status is OrderStatus.REJECTED
@@ -177,6 +340,45 @@ def test_recovered_order_materialized_from_snapshot():
     assert materialized is not None
     assert materialized.origin is OrderOrigin.RECOVERED
     assert materialized.client_order_id == "qubx_BTCUSDT_1"
+
+
+def test_unacked_order_within_grace_matched_by_cid_captures_venue_id():
+    # F11 regression: a framework order whose create ack was lost (venue_order_id=None)
+    # appears in the snapshot under our own cid. It must match by cid — capturing the
+    # venue id and updating in place — never materialize a RECOVERED twin.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("qubx_BTCUSDT_7", OrderStatus.SUBMITTED, "2026-05-28T00:59:59", instrument=inst))
+    snap_order = _order("qubx_BTCUSDT_7", OrderStatus.ACCEPTED, "2026-05-28T00:59:59", vid="V7", instrument=inst)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    order = state.get_active_order("qubx_BTCUSDT_7")
+    assert order is not None
+    assert order.venue_order_id == "V7"
+    assert order.status is OrderStatus.ACCEPTED  # no false REJECTED
+    assert order.origin is OrderOrigin.FRAMEWORK  # the strategy's order, not a twin
+    assert len(state.get_orders()) == 1
+    assert state.get_order_by_venue_id("V7") is order
+
+
+def test_unacked_order_past_grace_matched_by_cid_not_terminalized():
+    # F11 regression, past-grace flavor: the cid match must keep the order out of the
+    # missing-from-snapshot terminalization even though its venue id never matched.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("qubx_BTCUSDT_8", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", instrument=inst))
+    snap_order = _order("qubx_BTCUSDT_8", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V8", instrument=inst)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    order = state.get_active_order("qubx_BTCUSDT_8")
+    assert order is not None
+    assert order.status is OrderStatus.ACCEPTED
+    assert order.venue_order_id == "V8"
+    assert len(state.get_orders()) == 1
 
 
 def test_existing_order_updated_from_fresh_snapshot():
@@ -306,6 +508,88 @@ def test_snapshot_resurrects_locally_terminal_order_and_unregisters_eviction():
     assert state.get_active_order("cid-1") is not None  # NOT evicted — it is live again
 
 
+def test_late_deal_already_counted_by_snapshot_not_double_booked():
+    # F31 split-stream regression: the snapshot raises filled_quantity (its position/
+    # balance legs already incorporate the execution), then the late DealEvent for the
+    # SAME execution arrives. The trade id must be recorded for dedup, but the deal must
+    # NOT re-book position/balance; a genuinely-new deal after the snapshot still books.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+
+    snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 0.4
+    snap_order.avg_fill_price = 50_000.0
+    snap_pos = Position(instrument=inst, quantity=0.4, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+    assert state.get_position(inst).quantity == 0.4
+
+    late_deal = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:59:00"),  # at/before the snapshot as_of -> already counted
+        amount=0.4,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=1.0,
+    )
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=late_deal))
+    assert result.deal is None and result.position is None
+    assert state.get_position(inst).quantity == 0.4  # not double-booked
+    assert state.get_balance("USDT").total == 1000.0  # no fee/pnl re-applied
+    assert state.get_order("cid-1").filled_quantity == 0.4  # not pushed past the snapshot figure
+
+    # genuinely-new execution after the snapshot books normally
+    new_deal = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:01"),
+        amount=0.3,
+        price=50_000.0,
+        aggressive=True,
+    )
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=new_deal))
+    assert result.deal is new_deal
+    assert state.get_position(inst).quantity == 0.7
+    assert state.get_order("cid-1").filled_quantity == 0.7
+
+    # the skipped trade id WAS recorded: a re-delivery embedded on the order stream dedups
+    result = am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=late_deal))
+    assert result.deal is None
+    assert state.get_position(inst).quantity == 0.7
+    assert state.get_order("cid-1").filled_quantity == 0.7
+
+
+def test_late_deal_for_snapshot_materialized_order_not_double_booked():
+    # Same window, materialize flavor: an order first seen via snapshot with fills already
+    # counted (position leg included) must not re-book when its late DealEvent arrives.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    snap_order = _order("manual-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="VX", instrument=inst)
+    snap_order.filled_quantity = 0.4
+    snap_pos = Position(instrument=inst, quantity=0.4, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+    assert state.get_order_by_venue_id("VX").filled_quantity == 0.4
+
+    late_deal = Deal(
+        trade_id="t1",
+        order_id="VX",
+        time=np.datetime64("2026-05-28T00:59:00"),
+        amount=0.4,
+        price=50_000.0,
+        aggressive=True,
+    )
+    result = am.apply(DealEvent(instrument=inst, client_order_id="manual-1", venue_order_id="VX", deal=late_deal))
+    assert result.deal is None and result.position is None
+    assert state.get_position(inst).quantity == 0.4
+    assert state.get_order_by_venue_id("VX").filled_quantity == 0.4
+
+
 def test_position_updated_from_snapshot():
     am = _am()
     state = am._states["binance"]
@@ -353,14 +637,119 @@ def test_snapshot_updates_existing_position_and_balance_in_place():
     assert state.get_balance("USDT").total == 500.0
 
 
+def test_identical_size_snapshot_preserves_position_accounting():
+    # F1 regression: the periodic snapshot must NOT wipe locally accumulated accounting.
+    # Snapshot legs are built from venue data with r_pnl/commissions/funding defaulting to
+    # zero — routing them through reset_by_position zeroed the local ledger every ~30s.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0, r_pnl=123.45, cumulative_funding=9.99)
+    pos.commissions = 6.78
+    state.set_position(inst, pos)
+
+    snap_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos]))
+
+    assert state.get_position(inst) is pos
+    assert pos.r_pnl == 123.45
+    assert pos.commissions == 6.78
+    assert pos.cumulative_funding == 9.99
+    # unchanged size/avg-price -> not reported in the reconcile diff
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.positions == []
+
+
+def test_size_drift_snapshot_corrects_size_but_preserves_accounting():
+    # The snapshot is authoritative for size/avg-price; the local ledger
+    # (r_pnl/commissions/funding) is ours and must survive the correction.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0, r_pnl=123.45, cumulative_funding=9.99)
+    pos.commissions = 6.78
+    state.set_position(inst, pos)
+
+    snap_pos = Position(instrument=inst, quantity=2.0, pos_average_price=49_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos]))
+
+    assert state.get_position(inst) is pos
+    assert pos.quantity == 2.0
+    assert pos.position_avg_price == 49_000.0
+    assert pos.r_pnl == 123.45
+    assert pos.commissions == 6.78
+    assert pos.cumulative_funding == 9.99
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.positions == [snap_pos]
+
+
+def test_snapshot_margin_and_mark_refresh_even_when_size_unchanged():
+    # The changed predicate gates only the size/avg-price correction and the diff entry;
+    # venue margin and mark keep moving regardless and must always refresh.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0, r_pnl=100.0)
+    state.set_position(inst, pos)
+
+    snap_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    snap_pos.update_market_price(np.datetime64("2026-05-28T01:00:00"), 51_000.0, 1)
+    snap_pos.set_external_maint_margin(12.5)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos]))
+
+    assert state.get_position(inst) is pos
+    assert pos.maint_margin == 12.5
+    assert pos.last_update_price == 51_000.0
+    assert pos.pnl == 1_000.0 + 100.0  # re-marked: unrealized at the new mark + preserved r_pnl
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.positions == []
+
+
+def test_restored_positions_first_snapshot_updates_present_keeps_absent():
+    # F63: restoration seeds positions (with persisted accounting) via set_position before
+    # the first venue snapshot arrives. The snapshot reconciles surgically: the position it
+    # carries is corrected in place (identity + restored accounting preserved per F1); a
+    # restored position the snapshot omits is left entirely untouched.
+    am = _am()
+    state = am._states["binance"]
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    btc_pos = Position(instrument=btc, quantity=1.0, pos_average_price=50_000.0, r_pnl=11.0, cumulative_funding=2.5)
+    btc_pos.commissions = 3.0
+    eth_pos = Position(instrument=eth, quantity=5.0, pos_average_price=3_000.0, r_pnl=7.0)
+    state.set_position(btc, btc_pos)
+    state.set_position(eth, eth_pos)
+
+    snap_pos = Position(instrument=btc, quantity=2.0, pos_average_price=49_500.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos]))
+
+    assert state.get_position(btc) is btc_pos
+    assert btc_pos.quantity == 2.0
+    assert btc_pos.position_avg_price == 49_500.0
+    assert btc_pos.r_pnl == 11.0
+    assert btc_pos.commissions == 3.0
+    assert btc_pos.cumulative_funding == 2.5
+    assert state.get_position(eth) is eth_pos
+    assert eth_pos.quantity == 5.0
+    assert eth_pos.position_avg_price == 3_000.0
+    assert eth_pos.r_pnl == 7.0
+    assert result.reconcile_diff is not None
+    assert result.reconcile_diff.positions == [snap_pos]
+
+
 def test_reconcile_applies_to_state():
     # Reconcile mutates AccountState silently (no per-event callback) — the strategy is
     # notified once via on_account_update at the PM layer. Here we assert the state effects.
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    # one missing (-> terminal), one unknown (-> materialized), plus position and balance
+    # one missing with spent fetch budget (-> terminal), one unknown (-> materialized),
+    # plus position and balance
     state.add_order(_order("cid-gone", OrderStatus.SUBMITTED, "2026-05-28T00:00:00", vid="VG", instrument=inst))
+    _exhaust_fetch_budget(state, "cid-gone")
     snap_order = _order("manual-9", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="VNEW", instrument=inst)
     snap_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
     snap_bal = Balance(exchange="binance", currency="USDT", total=1000.0)

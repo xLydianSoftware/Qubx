@@ -241,9 +241,7 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Order cache (connector-local venue-call metadata)
     # ------------------------------------------------------------------ #
-    def _resolve_cached(
-        self, client_order_id: str | None, venue_order_id: str | None
-    ) -> _CachedOrder | None:
+    def _resolve_cached(self, client_order_id: str | None, venue_order_id: str | None) -> _CachedOrder | None:
         """Resolve a cached order by cid (preferred) or venue id, else None."""
         if client_order_id is not None and client_order_id in self._orders:
             return self._orders[client_order_id]
@@ -638,9 +636,7 @@ class CcxtConnector(ChannelEmitter):
         # reject without touching the live order. TODO(account-mgmt): wire the recreate.
         raise ccxt.NotSupported("cancel+recreate update requires the original order parameters")
 
-    def _emit_update_rejected(
-        self, client_order_id: str | None, venue_order_id: str | None, error: Exception
-    ) -> None:
+    def _emit_update_rejected(self, client_order_id: str | None, venue_order_id: str | None, error: Exception) -> None:
         logger.warning(f"[{self.exchange_name}] Update for {client_order_id or venue_order_id} rejected: {error}")
         self.send(
             OrderUpdateRejectedEvent(
@@ -804,16 +800,23 @@ class CcxtConnector(ChannelEmitter):
         # ack before the fill so the strategy's on_order_update sees ACCEPTED and the order
         # lifecycle stays ordered. AM dedups ACCEPTED, so this is safe alongside the REST
         # immediate-ack. Skipped when the venue id is missing (can't index the order).
-        if not had_prior_ack and order.venue_order_id is not None and status in (
-            OrderStatus.PARTIALLY_FILLED,
-            OrderStatus.FILLED,
+        if (
+            not had_prior_ack
+            and order.venue_order_id is not None
+            and status
+            in (
+                OrderStatus.PARTIALLY_FILLED,
+                OrderStatus.FILLED,
+            )
         ):
-            self.send(OrderAcceptedEvent(
-                instrument=instrument,
-                client_order_id=order.client_order_id,
-                venue_order_id=order.venue_order_id,
-                accepted_at=order.submitted_at,
-            ))
+            self.send(
+                OrderAcceptedEvent(
+                    instrument=instrument,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
+                    accepted_at=order.submitted_at,
+                )
+            )
 
         if status == OrderStatus.PARTIALLY_FILLED:
             self._handle_partial_fill_status(instrument, order, raw)
@@ -822,16 +825,25 @@ class CcxtConnector(ChannelEmitter):
             self._handle_filled_status(instrument, order, raw)
             return
         if status == OrderStatus.CANCELED:
-            self.send(OrderCanceledEvent(
-                instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id))
+            self.send(
+                OrderCanceledEvent(
+                    instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+                )
+            )
             return
         if status == OrderStatus.EXPIRED:
-            self.send(OrderExpiredEvent(
-                instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id))
+            self.send(
+                OrderExpiredEvent(
+                    instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+                )
+            )
             return
         if status == OrderStatus.REJECTED:
-            self.send(OrderRejectedEvent(
-                instrument=instrument, client_order_id=order.client_order_id, reason="rejected by venue"))
+            self.send(
+                OrderRejectedEvent(
+                    instrument=instrument, client_order_id=order.client_order_id, reason="rejected by venue"
+                )
+            )
             return
         # ACCEPTED (mapped from new/open, and the safe default for any status the
         # utils mapper couldn't recognize — it already logged that) → first venue ack
@@ -848,12 +860,14 @@ class CcxtConnector(ChannelEmitter):
                     "skipping ACCEPTED emit"
                 )
                 return
-            self.send(OrderAcceptedEvent(
-                instrument=instrument,
-                client_order_id=order.client_order_id,
-                venue_order_id=order.venue_order_id,
-                accepted_at=order.submitted_at,
-            ))
+            self.send(
+                OrderAcceptedEvent(
+                    instrument=instrument,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
+                    accepted_at=order.submitted_at,
+                )
+            )
 
     def _handle_partial_fill_status(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
         """Emit the PARTIALLY_FILLED fill(s) for a watch_orders report (base / Binance).
@@ -878,19 +892,36 @@ class CcxtConnector(ChannelEmitter):
         """Emit one fill event per extracted deal (AM dedups by trade_id).
 
         This is the combined-stream (Binance) path: the deal rides embedded on the fill
-        event, so when the venue update carries no per-trade detail there is nothing to
-        emit here. The venues that omit ``trades`` on a ``watch_orders`` report (OKX,
+        event. The venues that omit ``trades`` on a ``watch_orders`` report (OKX,
         Bitfinex) feed their fills through a separate ``watch_my_trades`` stream — the
         two-stream subclass overrides these seams to emit status-only fill events
-        (``fill=None``) plus one ``DealEvent`` per trade. (Reconcile does NOT recover a
-        missed fill: a snapshot taken after a fully-filled order leaves the open-orders
-        set would see it gone and transition it to CANCELED, not FILLED — so the trade
-        stream, not reconcile, is the mitigation.)
+        (``fill=None``) plus one ``DealEvent`` per trade.
+
+        A FILLED report with no trades still emits a status-only fill: reconcile rescues
+        an order that filled during a WS gap by re-fetching it (request_order_status →
+        this path), and Binance ``fetch_order`` payloads typically carry no embedded
+        trades. Limitation: only the STATUS is rescued — the executions are not re-booked
+        here (no DealEvents), so position/balance converge via the next snapshot's
+        position reconcile rather than per-deal booking.
         """
         if not deals:
-            logger.debug(
-                f"[{self.exchange_name}] {order.client_order_id} {order.status} WS update carried no trades; "
-                "fill detail expected from the watch_my_trades stream"
+            if partial:
+                logger.debug(
+                    f"[{self.exchange_name}] {order.client_order_id} {order.status} update carried no trades; "
+                    "fill detail expected from the watch_my_trades stream"
+                )
+                return
+            logger.warning(
+                f"[{self.exchange_name}] {order.client_order_id} FILLED report carried no trades; "
+                "emitting status-only fill — executions may need the next snapshot's position correction"
+            )
+            self.send(
+                OrderFilledEvent(
+                    instrument=instrument,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
+                    fill=None,
+                )
             )
             return
         last = len(deals) - 1
@@ -899,19 +930,23 @@ class CcxtConnector(ChannelEmitter):
             # terminal); earlier deals are partials. On a partial-fill report every
             # deal is a partial.
             if partial or i < last:
-                self.send(OrderPartiallyFilledEvent(
-                    instrument=instrument,
-                    client_order_id=order.client_order_id,
-                    venue_order_id=order.venue_order_id,
-                    fill=deal,
-                ))
+                self.send(
+                    OrderPartiallyFilledEvent(
+                        instrument=instrument,
+                        client_order_id=order.client_order_id,
+                        venue_order_id=order.venue_order_id,
+                        fill=deal,
+                    )
+                )
             else:
-                self.send(OrderFilledEvent(
-                    instrument=instrument,
-                    client_order_id=order.client_order_id,
-                    venue_order_id=order.venue_order_id,
-                    fill=deal,
-                ))
+                self.send(
+                    OrderFilledEvent(
+                        instrument=instrument,
+                        client_order_id=order.client_order_id,
+                        venue_order_id=order.venue_order_id,
+                        fill=deal,
+                    )
+                )
 
     # ------------------------------------------------------------------ #
     # Reconciliation primitives — READ side
@@ -946,13 +981,15 @@ class CcxtConnector(ChannelEmitter):
         self, client_order_id: str | None, venue_order_id: str | None, cached: _CachedOrder | None
     ) -> None:
         """Emit the reconcile not-found reject, carrying both ids so AM routes by either."""
-        self.send(OrderRejectedEvent(
-            instrument=cached.instrument if cached is not None else None,
-            client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]  # cid if known, else venue id
-            venue_order_id=venue_order_id,
-            reason="reconcile: order not present at venue",
-            code="OrderNotFound",
-        ))
+        self.send(
+            OrderRejectedEvent(
+                instrument=cached.instrument if cached is not None else None,
+                client_order_id=client_order_id or venue_order_id,  # type: ignore[arg-type]  # cid if known, else venue id
+                venue_order_id=venue_order_id,
+                reason="reconcile: order not present at venue",
+                code="OrderNotFound",
+            )
+        )
 
     def request_snapshot(self) -> None:
         self._spawn(self._snapshot_async())
@@ -1001,19 +1038,21 @@ class CcxtConnector(ChannelEmitter):
             balances = self._convert_balances(raw_balance)
             equity, available_margin, margin_ratio = self._extract_venue_figures(raw_balance)
 
-        self.send(AccountSnapshotEvent(
-            instrument=None,
-            snapshot=AccountSnapshot(
-                exchange=self.exchange_name,
-                as_of=as_of,
-                open_orders=open_orders,
-                positions=positions,
-                balances=balances,
-                equity=equity,
-                available_margin=available_margin,
-                margin_ratio=margin_ratio,
-            ),
-        ))
+        self.send(
+            AccountSnapshotEvent(
+                instrument=None,
+                snapshot=AccountSnapshot(
+                    exchange=self.exchange_name,
+                    as_of=as_of,
+                    open_orders=open_orders,
+                    positions=positions,
+                    balances=balances,
+                    equity=equity,
+                    available_margin=available_margin,
+                    margin_ratio=margin_ratio,
+                ),
+            )
+        )
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         """Convert a ccxt fetch_balance response to framework Balances.

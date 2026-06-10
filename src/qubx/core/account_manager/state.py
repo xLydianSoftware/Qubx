@@ -77,6 +77,7 @@ class AccountState:
         "_inflight_index",
         "_pending_evict_index",
         "_seen_trade_ids",
+        "_snapshot_fill_as_of",
         "_terminal_history",
         "_retry_count",
         "_pre_pending_status",
@@ -106,6 +107,11 @@ class AccountState:
         # fill (resting/canceled orders never allocate a set), dropped on
         # eviction so the memory dies with the order.
         self._seen_trade_ids: dict[str, set[str]] = {}
+        # cid -> as_of of the last snapshot that raised the order's filled_quantity:
+        # deals at or before it were already counted by the snapshot (order totals AND
+        # position/balance legs) and must not book again. Same lifecycle as
+        # _seen_trade_ids: dropped on remove/evict.
+        self._snapshot_fill_as_of: dict[str, np.datetime64] = {}
         # bounded ring buffer of evicted terminals (FIFO); slow-path lookups
         self._terminal_history: deque[Order] = deque(maxlen=terminal_history_size)
         # cid -> in-flight sweep poll count; reset on any status change
@@ -180,6 +186,9 @@ class AccountState:
     def get_last_snapshot_as_of(self) -> np.datetime64 | None:
         return self._last_snapshot_as_of
 
+    def get_snapshot_fill_as_of(self, cid: str) -> np.datetime64 | None:
+        return self._snapshot_fill_as_of.get(cid)
+
     def get_transition_counts(self) -> dict[str, int]:
         """Audit counter snapshot: status.value -> number of transitions into it."""
         return dict(self._transition_counts)
@@ -251,6 +260,10 @@ class AccountState:
 
     def add_order(self, order: Order) -> None:
         cid = order.client_order_id
+        if cid in self._active_orders:
+            # Silent overwrite orphaned the caller's Order reference and left stale
+            # index entries behind; duplicates indicate a framework bug — fail loudly.
+            raise ValueError(f"[{self.exchange}] duplicate active order cid {cid}; refusing to overwrite")
         self._active_orders[cid] = order
         if order.venue_order_id is not None:
             self._venue_id_index[order.venue_order_id] = cid
@@ -318,6 +331,14 @@ class AccountState:
         order.last_updated_at = now
         return True
 
+    def record_trade_id(self, cid: str, trade_id: str) -> None:
+        """Mark a trade id as seen WITHOUT booking it — for executions a snapshot already
+        counted, so a later re-delivery (DealEvent or embedded fill) dedups via apply_fill."""
+        self._seen_trade_ids.setdefault(cid, set()).add(trade_id)
+
+    def mark_snapshot_fill(self, cid: str, as_of: np.datetime64) -> None:
+        self._snapshot_fill_as_of[cid] = as_of
+
     def remove_order(self, cid: str) -> None:
         # Drop an order from state entirely (e.g. a submit that raised before reaching the
         # venue) — distinct from evict_to_history, which retains it in the ring buffer.
@@ -329,6 +350,7 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
+        self._snapshot_fill_as_of.pop(cid, None)
         self._retry_count.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
 
@@ -345,6 +367,7 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
+        self._snapshot_fill_as_of.pop(cid, None)
         self._retry_count.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
         self._terminal_history.append(order)
@@ -377,16 +400,37 @@ class AccountState:
         else:
             existing.reset_by_balance(balance)
 
-    def apply_position_snapshot(self, position: Position) -> bool:
-        # Reconcile a snapshot position into state; returns True if it was new or its
-        # size/price changed (so the caller records it in the reconcile diff).
-        existing = self._positions.get(position.instrument)
-        changed = (
-            existing is None
-            or existing.quantity != position.quantity
-            or existing.position_avg_price != position.position_avg_price
-        )
-        self.set_position(position.instrument, position)
+    def reconcile_position_from_snapshot(self, snapshot: Position) -> bool:
+        """Reconcile a venue snapshot position into state. The snapshot is authoritative
+        for size/avg-price and venue-reported margin/mark ONLY — locally accumulated
+        accounting (r_pnl, commissions, cumulative_funding) always survives, so this
+        never routes through reset_by_position. Returns True when the position is new
+        or its size/avg-price changed (the caller records it in the reconcile diff);
+        the margin/mark refresh is unconditional and never reported as a change.
+        """
+        existing = self._positions.get(snapshot.instrument)
+        if existing is None:
+            self._positions[snapshot.instrument] = snapshot
+            return True
+
+        changed = existing.quantity != snapshot.quantity or existing.position_avg_price != snapshot.position_avg_price
+        if changed:
+            existing.reconcile_size(snapshot.quantity, snapshot.position_avg_price)
+
+        # external margins first, so the mark refresh below skips recalculating them
+        if snapshot._maint_margin_external:
+            existing.set_external_maint_margin(snapshot.maint_margin)
+        if snapshot._initial_margin_external:
+            existing.set_external_initial_margin(snapshot.initial_margin)
+        if not np.isnan(snapshot.last_update_price):
+            existing.update_market_price(
+                snapshot.last_update_time, snapshot.last_update_price, snapshot.last_update_conversion_rate
+            )
+        elif changed and not np.isnan(existing.last_update_price):
+            # size changed but the snapshot carried no mark: re-derive pnl/value at the held mark
+            existing.update_market_price(
+                existing.last_update_time, existing.last_update_price, existing.last_update_conversion_rate
+            )
         return changed
 
     def apply_balance_snapshot(self, balance: Balance) -> bool:

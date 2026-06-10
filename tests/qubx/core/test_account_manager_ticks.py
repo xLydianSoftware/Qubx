@@ -271,6 +271,47 @@ def test_liveness_tick_resets_when_ws_recovers():
     conn.reconnect.assert_not_called()
 
 
+def test_liveness_tick_retries_when_reconnect_fails():
+    conn = MagicMock()
+    conn.is_ws_ready.return_value = False
+    conn.reconnect.return_value = False
+    am = _am({"binance": conn}, cfg=AccountManagerConfig(liveness_check_threshold_ms=5_000))
+    am._on_liveness_tick(None)
+    am._time.adv(6_000)
+    am._on_liveness_tick(None)
+    # Failed reconnect keeps the timestamp -> the very next tick retries without
+    # waiting out the full threshold again.
+    assert "binance" in am._liveness_unready_since
+    am._time.adv(1_000)
+    am._on_liveness_tick(None)
+    assert conn.reconnect.call_count == 2
+
+
+def test_liveness_tick_retries_when_reconnect_raises():
+    conn = MagicMock()
+    conn.is_ws_ready.return_value = False
+    conn.reconnect.side_effect = RuntimeError("boom")
+    am = _am({"binance": conn}, cfg=AccountManagerConfig(liveness_check_threshold_ms=5_000))
+    am._on_liveness_tick(None)
+    am._time.adv(6_000)
+    am._on_liveness_tick(None)
+    assert "binance" in am._liveness_unready_since
+    am._time.adv(1_000)
+    am._on_liveness_tick(None)
+    assert conn.reconnect.call_count == 2
+
+
+def test_liveness_tick_clears_timestamp_on_successful_reconnect():
+    conn = MagicMock()
+    conn.is_ws_ready.return_value = False
+    conn.reconnect.return_value = True
+    am = _am({"binance": conn}, cfg=AccountManagerConfig(liveness_check_threshold_ms=5_000))
+    am._on_liveness_tick(None)
+    am._time.adv(6_000)
+    am._on_liveness_tick(None)
+    assert "binance" not in am._liveness_unready_since
+
+
 def test_init_registers_three_ticks_via_pm_schedule():
     pm = MagicMock()
     conn = MagicMock()

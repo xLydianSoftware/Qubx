@@ -310,6 +310,24 @@ async def test_request_order_status_emits_event() -> None:
 
 
 @pytest.mark.asyncio
+async def test_request_order_status_filled_without_trades_emits_status_only_fill() -> None:
+    # F7 rescue: Binance fetch_order payloads typically carry no embedded trades — the
+    # FILLED status must still be rescued via a fill=None terminal event (nothing is
+    # booked; the next snapshot's position reconcile corrects the ledger).
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_order = AsyncMock(return_value=_ws_order(status="closed"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    await _drive(conn)
+
+    assert isinstance(sent[0], OrderAcceptedEvent)
+    assert isinstance(sent[1], OrderFilledEvent)
+    assert sent[1].fill is None
+
+
+@pytest.mark.asyncio
 async def test_request_order_status_not_found_emits_reject_with_both_ids() -> None:
     # A reconcile fetch that comes back OrderNotFound emits OrderRejectedEvent carrying both
     # ids, so AM can resolve the order by client_order_id or venue_order_id and terminate it.
