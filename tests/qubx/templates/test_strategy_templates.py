@@ -33,8 +33,8 @@ def _load_strategy_class(strategy_file: Path, module_name: str) -> type[IStrateg
     ],
 )
 def test_rendered_strategy_passes_callback_signature_check(tmp_path, template_name, strategy_relpath):
-    # A template shipping a stale callback arity (e.g. the old 2-arg on_order_update) would
-    # make every scaffolded strategy's callback die in a swallowed TypeError at dispatch.
+    # A template shipping a removed callback name or a stale on_order/on_execution/on_position_change
+    # arity would make every scaffolded strategy fail this construction-time guard.
     out = TemplateManager().generate_strategy(template_name=template_name, output_dir=tmp_path, name="my_strategy")
     cls = _load_strategy_class(out / strategy_relpath, f"rendered_{template_name}_strategy")
     validate_account_callback_signatures(cls())

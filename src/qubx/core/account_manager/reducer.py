@@ -53,7 +53,7 @@ from qubx.core.events import (
 
 @dataclass
 class ApplyResult:
-    order: Order | None = None  # status changed -> on_order_update(order, event)
+    order: Order | None = None  # status changed -> on_order(order, change)
     order_change: OrderChange | None = None  # paired with order
     deal: Deal | None = None  # new deal applied -> downstream fill consumers
     position: Position | None = None  # position changed
@@ -352,8 +352,8 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
 
 def _handle_position_balance_noop(state: AccountState, event: AccountMessage, now: np.datetime64) -> ApplyResult:
     # No connector emits PositionUpdate/BalanceUpdate yet; positions/balances are derived
-    # from fills and corrected by snapshot reconcile. PM still fires on_account_update
-    # off the event payload.
+    # from fills and corrected by snapshot reconcile. PM still fires on_position_change
+    # off a PositionUpdateEvent's payload; balance pushes fire no strategy callback.
     # TODO(account-mgmt): apply venue WS position/balance to AccountState here (via
     # set_position/update_balance) once the live connectors emit them, with the same
     # freshness/ratchet guard as snapshot reconcile.

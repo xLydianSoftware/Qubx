@@ -166,19 +166,21 @@ class TestFundingPaymentSubscription:
 
     def test_process_event_routes_funding_payment_to_account_path(self, mock_instrument, sample_funding_payment):
         """FundingPaymentEvent is an AccountMessage: process_event books it via AM and
-        surfaces it to the strategy through on_account_update. Market data rides tuples
+        surfaces it to the strategy through on_position_change. Market data rides tuples
         through process_data, not process_event, so there is no market-data half here."""
         pm = make_pm()
-        pm._account_manager.apply.return_value = ApplyResult(position=Mock())
+        position = Mock()
+        pm._account_manager.apply.return_value = ApplyResult(position=position)
 
         event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
         pm.process_event(event)
 
-        # - AM books the payment and fires on_account_update; that is the only path
+        # - AM books the payment and fires on_position_change; that is the only path
         pm._account_manager.apply.assert_called_once_with(event)
-        pm._strategy.on_account_update.assert_called_once()
-        assert pm._strategy.on_account_update.call_args.args[1] is event
-        pm._strategy.on_order_update.assert_not_called()
+        pm._strategy.on_position_change.assert_called_once()
+        assert pm._strategy.on_position_change.call_args.args[1] is position
+        pm._strategy.on_order.assert_not_called()
+        pm._strategy.on_execution.assert_not_called()
 
     # -----------------------------------------------------------------------
     # SimulatedDataIterator tests

@@ -30,6 +30,7 @@ from qubx.core.basics import (
     MarketEvent,
     MarketType,
     Order,
+    OrderChange,
     OrderOrigin,
     OrderRequest,
     OrderTransition,
@@ -44,7 +45,7 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.errors import BaseErrorEvent
-from qubx.core.events import AccountMessage, ChannelMessage, OrderEvent
+from qubx.core.events import ChannelMessage
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.data.storage import IReader, IStorage
@@ -488,17 +489,6 @@ class IAccountViewer:
             int | None: ADL queue index (typically 0-3), or None if unknown.
         """
         return self.get_position(instrument).adl_level
-
-    def get_reserved(self, instrument: Instrument) -> float:
-        """[Deprecated] Get reserved margin for a specific instrument.
-
-        Args:
-            instrument: The instrument to check
-
-        Returns:
-            float: Reserved margin for the instrument
-        """
-        return 0.0
 
 
 class IDataProvider:
@@ -2278,32 +2268,37 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
-    def on_order_update(self, ctx: IStrategyContext, order: Order, event: OrderEvent) -> None:
-        """Called on any order-lifecycle event for one order.
+    def on_order(self, ctx: IStrategyContext, order: Order, change: OrderChange) -> None:
+        """Called once per applied order-lifecycle change — the single order callback.
 
-        ``order`` is the affected order in its post-event state; ``event`` is the concrete
-        ``OrderEvent`` subclass (OrderAcceptedEvent / OrderFilledEvent / OrderRejectedEvent /
-        OrderCanceledEvent / OrderUpdatedEvent / OrderCancelRejectedEvent / ...). Inspect it to
-        react to a specific kind, e.g.::
+        ``order`` is the affected order in its post-change state; ``change`` says what just
+        happened: ACCEPTED / PARTIALLY_FILLED / FILLED / CANCELED / EXPIRED / REJECTED /
+        UPDATED (price/quantity amended, status unchanged) / CANCEL_REJECTED /
+        UPDATE_REJECTED. Suppressed events (late, duplicate, already-terminal) never reach
+        here. For REJECTED inspect ``order.rejected_reason`` / ``order.error_code``. On
+        CANCEL_REJECTED / UPDATE_REJECTED the order is STILL ALIVE at the venue with its
+        prior status and parameters reverted; the venue's reject reason is warning-logged
+        by the framework, not stored on the order.
 
-            if isinstance(event, OrderFilledEvent):
-                deal = event.fill  # may be None on split-stream venues (OKX/Bitfinex);
-                # the deal then arrives via the deduped execution path
-            elif isinstance(event, OrderRejectedEvent):
-                reason = event.reason
-
-        Single entry point for the whole order lifecycle — no per-event callbacks.
+        Fill details are not delivered here — implement :meth:`on_execution` for deals.
         """
         ...
 
-    def on_account_update(self, ctx: IStrategyContext, event: AccountMessage) -> None:
-        """Called on any non-order account event: position / balance / funding / snapshot.
+    def on_execution(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal) -> None:
+        """Called once per newly applied fill, deduplicated: a venue re-delivering the same
+        trade (reconnect replay, split order/execution streams) fires this exactly once.
+        Position and balances are already updated when this runs.
+        """
+        ...
 
-        Inspect ``event`` to react to a specific kind, e.g. ``PositionUpdateEvent.position``,
-        ``BalanceUpdateEvent.balance``, ``FundingPaymentEvent.payment``,
-        ``AccountSnapshotEvent.snapshot``. Note: no live connector currently emits
-        ``PositionUpdateEvent``/``BalanceUpdateEvent`` — position/balance changes (including
-        liquidations) reach the strategy via fills and the periodic ``AccountSnapshotEvent``.
+    def on_position_change(self, ctx: IStrategyContext, position: Position) -> None:
+        """Called whenever a position changed: every fill (so expect a high fire rate —
+        keep this cheap), funding payments, venue position pushes, and each position
+        corrected by a snapshot reconcile.
+
+        There is deliberately no balance callback — read balances via
+        ``ctx.get_balances()`` / ``ctx.get_balance()``; balance pushes are applied to
+        account state silently.
         """
         ...
 

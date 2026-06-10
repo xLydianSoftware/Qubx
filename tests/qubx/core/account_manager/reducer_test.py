@@ -267,8 +267,9 @@ def test_dedup_across_deal_and_order_stream():
 
 def test_position_balance_update_events_apply_as_noop():
     # No connector emits these yet (see _handle_position_balance_noop): the reducer leaves
-    # state untouched and returns an empty ApplyResult; the PM still fires on_account_update
-    # off the raw event payload (the documented fire-through, pinned in dispatch tests).
+    # state untouched and returns an empty ApplyResult; the PM still fires on_position_change
+    # off a raw PositionUpdateEvent payload (the documented fire-through, pinned in dispatch
+    # tests); balance pushes fire no strategy callback.
     state = _state()
     r = apply(state, PositionUpdateEvent(instrument=None, position=Position(BTC)), T1)
     assert r.is_empty()

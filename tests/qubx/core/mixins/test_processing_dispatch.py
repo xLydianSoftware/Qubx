@@ -28,25 +28,31 @@ def _fill() -> Deal:
     return Deal(trade_id="t1", order_id="V1", time=np.datetime64("now"), amount=1.0, price=50_000.0, aggressive=True)
 
 
-def test_filled_event_routes_through_am_then_strategy():
+def test_filled_event_routes_to_all_three_callbacks():
+    # Full field->callback mapping for a fill: order -> on_order(order, change),
+    # deal -> on_execution(instrument, deal) + downstream consumers, position -> on_position_change.
     pm = make_pm()
     fill = _fill()
-    order = MagicMock()
+    order, position, instrument = MagicMock(), MagicMock(), MagicMock()
     pm._account_manager.apply.return_value = ApplyResult(
-        order=order, order_change=OrderChange.FILLED, deal=fill, position=MagicMock()
+        order=order, order_change=OrderChange.FILLED, deal=fill, position=position
     )
-    pm.process_event(OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=fill))
+    pm.process_event(OrderFilledEvent(instrument=instrument, client_order_id="cid", venue_order_id="V1", fill=fill))
     pm._account_manager.apply.assert_called_once()
-    # unified callback receives (ctx, order, event)
-    pm._strategy.on_order_update.assert_called_once()
-    assert pm._strategy.on_order_update.call_args.args[1] is order
-    assert isinstance(pm._strategy.on_order_update.call_args.args[2], OrderFilledEvent)
+    pm._strategy.on_order.assert_called_once()
+    assert pm._strategy.on_order.call_args.args[1] is order
+    assert pm._strategy.on_order.call_args.args[2] is OrderChange.FILLED
+    pm._strategy.on_execution.assert_called_once()
+    assert pm._strategy.on_execution.call_args.args[1] is instrument
+    assert pm._strategy.on_execution.call_args.args[2] is fill
+    pm._strategy.on_position_change.assert_called_once()
+    assert pm._strategy.on_position_change.call_args.args[1] is position
     # downstream per-fill notification ran with the AM-confirmed deal
     pm._position_gathering.on_execution_report.assert_called_once()
     pm._logging.save_deals.assert_called_once()
 
 
-def test_accepted_event_routes_through_am_then_strategy():
+def test_accepted_event_fires_on_order_with_change():
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult(order=MagicMock(), order_change=OrderChange.ACCEPTED)
     pm.process_event(
@@ -54,12 +60,16 @@ def test_accepted_event_routes_through_am_then_strategy():
             instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
         )
     )
-    pm._strategy.on_order_update.assert_called_once()
+    pm._strategy.on_order.assert_called_once()
+    assert pm._strategy.on_order.call_args.args[0] is pm._context
+    assert pm._strategy.on_order.call_args.args[2] is OrderChange.ACCEPTED
+    pm._strategy.on_execution.assert_not_called()
+    pm._strategy.on_position_change.assert_not_called()
 
 
 def test_suppressed_result_fires_no_callbacks():
     # None-as-suppress: an empty ApplyResult (late/duplicate/terminal/unknown event)
-    # must fire neither the strategy callback nor any downstream fill consumer.
+    # must fire no strategy callback and no downstream fill consumer.
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult()
     pm.process_event(
@@ -68,45 +78,58 @@ def test_suppressed_result_fires_no_callbacks():
         )
     )
     pm._account_manager.apply.assert_called_once()
-    pm._strategy.on_order_update.assert_not_called()
+    assert pm._strategy.mock_calls == []
     pm._position_gathering.on_execution_report.assert_not_called()
     pm._logging.save_deals.assert_not_called()
 
 
-def test_deduped_fill_skips_downstream_delivery():
+def test_deduped_fill_skips_execution_and_downstream():
     # A venue re-sends an order report whose embedded deal the AM already applied: it reports
     # the status change (result.order set) but suppresses the deal (result.deal None), so
-    # save_deals/gatherer/trackers must NOT receive the same Deal twice.
+    # neither on_execution nor save_deals/gatherer/trackers may see the same Deal twice.
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult(order=MagicMock(), order_change=OrderChange.FILLED)
     pm.process_event(OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=_fill()))
-    pm._strategy.on_order_update.assert_called_once()
+    pm._strategy.on_order.assert_called_once()
+    pm._strategy.on_execution.assert_not_called()
     pm._position_gathering.on_execution_report.assert_not_called()
     pm._logging.save_deals.assert_not_called()
 
 
-def test_execution_only_result_notifies_downstream_without_strategy_callback():
+def test_execution_only_result_fires_execution_without_on_order():
     # A fill with no status change (subsequent partial, fill while PENDING_*) carries a
-    # deal but no order: downstream consumers run, on_order_update does not fire.
+    # deal but no order: on_execution + downstream + on_position_change run, on_order does not.
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult(deal=_fill(), position=MagicMock())
     pm.process_event(OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=_fill()))
-    pm._strategy.on_order_update.assert_not_called()
+    pm._strategy.on_order.assert_not_called()
+    pm._strategy.on_execution.assert_called_once()
+    pm._strategy.on_position_change.assert_called_once()
     pm._position_gathering.on_execution_report.assert_called_once()
     pm._logging.save_deals.assert_called_once()
 
 
-def test_callback_exception_does_not_halt_dispatch():
+def test_fill_for_unknown_instrument_skips_on_execution():
+    # No instrument on the event -> on_execution cannot be delivered; dispatch must not crash
+    # (downstream skip is handled inside _notify_downstream_fill).
     pm = make_pm()
-    pm._strategy.on_order_update.side_effect = RuntimeError("boom")
-    pm._account_manager.apply.return_value = ApplyResult(order=MagicMock(), order_change=OrderChange.ACCEPTED)
-    # the bad callback is swallowed (logged, not raised); reaching here proves dispatch survived
-    pm.process_event(
-        OrderAcceptedEvent(
-            instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
-        )
+    pm._account_manager.apply.return_value = ApplyResult(deal=_fill())
+    pm.process_event(OrderFilledEvent(instrument=None, client_order_id="cid", venue_order_id="V1", fill=_fill()))
+    pm._strategy.on_execution.assert_not_called()
+    pm._logging.save_deals.assert_not_called()
+
+
+def test_callback_exception_does_not_halt_dispatch():
+    # _safe_call isolation: a raising on_order must not stop on_execution/on_position_change.
+    pm = make_pm()
+    pm._strategy.on_order.side_effect = RuntimeError("boom")
+    pm._account_manager.apply.return_value = ApplyResult(
+        order=MagicMock(), order_change=OrderChange.FILLED, deal=_fill(), position=MagicMock()
     )
-    pm._strategy.on_order_update.assert_called_once()
+    pm.process_event(OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=_fill()))
+    pm._strategy.on_order.assert_called_once()
+    pm._strategy.on_execution.assert_called_once()
+    pm._strategy.on_position_change.assert_called_once()
 
 
 class _FakeEmitter:
@@ -120,8 +143,8 @@ class _FakeEmitter:
 
 
 def test_am_apply_error_swallowed_and_emits_error_metric():
-    # AM.apply raising is logged and swallowed: the callback must not fire on a failed
-    # apply, and the error counter is emitted with the event type as a tag.
+    # AM.apply raising is logged and swallowed: no callback fires on a failed apply,
+    # and the error counter is emitted with the event type as a tag.
     pm = make_pm()
     emitter = _FakeEmitter()
     pm._context.emitter = emitter
@@ -132,7 +155,7 @@ def test_am_apply_error_swallowed_and_emits_error_metric():
         )
     )
     pm._account_manager.apply.assert_called_once()
-    pm._strategy.on_order_update.assert_not_called()
+    assert pm._strategy.mock_calls == []
     matches = [c for c in emitter.calls if c[0] == "account_manager_apply_errors"]
     assert len(matches) == 1
     name, value, tags = matches[0]
@@ -144,8 +167,8 @@ def test_strategy_callback_exception_emits_error_metric():
     pm = make_pm()
     emitter = _FakeEmitter()
     pm._context.emitter = emitter
-    pm._strategy.on_order_update.side_effect = RuntimeError("boom")
-    pm._strategy.on_order_update.__name__ = "on_order_update"
+    pm._strategy.on_order.side_effect = RuntimeError("boom")
+    pm._strategy.on_order.__name__ = "on_order"
     pm._account_manager.apply.return_value = ApplyResult(order=MagicMock(), order_change=OrderChange.ACCEPTED)
     pm.process_event(
         OrderAcceptedEvent(
@@ -156,12 +179,12 @@ def test_strategy_callback_exception_emits_error_metric():
     assert len(matches) == 1
     name, value, tags = matches[0]
     assert value == 1.0
-    assert tags == {"callback": "on_order_update"}
+    assert tags == {"callback": "on_order"}
 
 
 def test_cancel_rejected_logs_warning_in_dispatch():
     # The venue-rejection warning lives in the dispatch (keyed off result.order_change),
-    # so it fires regardless of whether the strategy reacts in on_order_update.
+    # so it fires regardless of whether the strategy reacts in on_order.
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult(
         order=MagicMock(client_order_id="C-1"), order_change=OrderChange.CANCEL_REJECTED
@@ -173,8 +196,8 @@ def test_cancel_rejected_logs_warning_in_dispatch():
     finally:
         logger.remove(sink)
     assert any(m.record["level"].name == "WARNING" and "C-1" in m for m in messages)
-    pm._strategy.on_order_update.assert_called_once()
-    assert isinstance(pm._strategy.on_order_update.call_args.args[2], OrderCancelRejectedEvent)
+    pm._strategy.on_order.assert_called_once()
+    assert pm._strategy.on_order.call_args.args[2] is OrderChange.CANCEL_REJECTED
 
 
 def test_update_rejected_logs_warning_in_dispatch():
@@ -189,8 +212,8 @@ def test_update_rejected_logs_warning_in_dispatch():
     finally:
         logger.remove(sink)
     assert any(m.record["level"].name == "WARNING" and "C-2" in m for m in messages)
-    pm._strategy.on_order_update.assert_called_once()
-    assert isinstance(pm._strategy.on_order_update.call_args.args[2], OrderUpdateRejectedEvent)
+    pm._strategy.on_order.assert_called_once()
+    assert pm._strategy.on_order.call_args.args[2] is OrderChange.UPDATE_REJECTED
 
 
 def test_suppressed_reject_logs_no_warning():
@@ -205,7 +228,7 @@ def test_suppressed_reject_logs_no_warning():
     finally:
         logger.remove(sink)
     assert not any("C-3" in m for m in messages)
-    pm._strategy.on_order_update.assert_not_called()
+    pm._strategy.on_order.assert_not_called()
 
 
 def _funding_event() -> FundingPaymentEvent:
@@ -219,14 +242,16 @@ def _snapshot_event() -> AccountSnapshotEvent:
     )
 
 
-def test_applied_funding_fires_on_account_update_once():
+def test_applied_funding_fires_on_position_change_once():
+    # No dedicated funding callback: funding routes through on_position_change.
     pm = make_pm()
-    pm._account_manager.apply.return_value = ApplyResult(position=MagicMock())
-    event = _funding_event()
-    pm.process_event(event)
-    pm._strategy.on_account_update.assert_called_once()
-    assert pm._strategy.on_account_update.call_args.args[1] is event
-    pm._strategy.on_order_update.assert_not_called()
+    position = MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(position=position)
+    pm.process_event(_funding_event())
+    pm._strategy.on_position_change.assert_called_once()
+    assert pm._strategy.on_position_change.call_args.args[1] is position
+    pm._strategy.on_order.assert_not_called()
+    pm._strategy.on_execution.assert_not_called()
 
 
 def test_suppressed_funding_fires_no_callback():
@@ -236,45 +261,68 @@ def test_suppressed_funding_fires_no_callback():
     pm._account_manager.apply.return_value = ApplyResult()
     pm.process_event(_funding_event())
     pm._account_manager.apply.assert_called_once()
-    pm._strategy.on_account_update.assert_not_called()
+    assert pm._strategy.mock_calls == []
 
 
-@pytest.mark.parametrize(
-    "event",
-    [
-        PositionUpdateEvent(instrument=MagicMock(), position=MagicMock()),
-        BalanceUpdateEvent(instrument=None, balance=MagicMock()),
-    ],
-    ids=["position", "balance"],
-)
-def test_position_balance_updates_fire_through_on_empty_result(event):
-    # The documented fire-through pair: the reducer is a no-op for these until WS
-    # application lands, but the venue push still reaches the strategy.
+def test_position_update_fires_through_on_empty_result():
+    # The reducer is a no-op for venue position pushes until WS application lands, but
+    # the push must still reach the strategy — off the event payload.
+    pm = make_pm()
+    position = MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult()
+    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=position))
+    pm._strategy.on_position_change.assert_called_once()
+    assert pm._strategy.on_position_change.call_args.args[1] is position
+
+
+def test_applied_position_update_fires_once_off_result():
+    # Once the reducer applies the push (F26), the applied position wins over the event
+    # payload and on_position_change fires exactly once.
+    pm = make_pm()
+    applied = MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(position=applied)
+    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock()))
+    pm._strategy.on_position_change.assert_called_once()
+    assert pm._strategy.on_position_change.call_args.args[1] is applied
+
+
+def test_balance_update_fires_no_strategy_callback():
+    # Deliberate contract: there is NO balance callback — balances are read via ctx.
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult()
-    pm.process_event(event)
-    pm._strategy.on_account_update.assert_called_once()
-    assert pm._strategy.on_account_update.call_args.args[1] is event
+    pm.process_event(BalanceUpdateEvent(instrument=None, balance=MagicMock()))
+    pm._account_manager.apply.assert_called_once()
+    assert pm._strategy.mock_calls == []
 
 
 def test_stale_snapshot_is_suppressed():
     # A snapshot rejected by the as_of ratchet returns an empty ApplyResult: nothing
-    # was applied, so on_account_update must not fire.
+    # was applied, so no callback fires.
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult()
     pm.process_event(_snapshot_event())
     pm._account_manager.apply.assert_called_once()
-    pm._strategy.on_account_update.assert_not_called()
+    assert pm._strategy.mock_calls == []
 
 
-def test_applied_snapshot_fires_on_account_update():
+def test_applied_snapshot_fires_on_position_change_per_corrected_position():
     pm = make_pm()
-    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=ReconcileDiff())
-    event = _snapshot_event()
-    pm.process_event(event)
-    pm._strategy.on_account_update.assert_called_once()
-    assert pm._strategy.on_account_update.call_args.args[1] is event
-    pm._strategy.on_order_update.assert_not_called()
+    p1, p2 = MagicMock(), MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=ReconcileDiff(positions=[p1, p2]))
+    pm.process_event(_snapshot_event())
+    assert pm._strategy.on_position_change.call_count == 2
+    assert [c.args[1] for c in pm._strategy.on_position_change.call_args_list] == [p1, p2]
+    pm._strategy.on_order.assert_not_called()
+    pm._strategy.on_execution.assert_not_called()
+
+
+def test_snapshot_with_order_only_corrections_is_callback_silent():
+    # Reconcile order corrections carry no strategy callback (pending on_reconcile_complete).
+    pm = make_pm()
+    diff = ReconcileDiff(terminated=[MagicMock()], materialized=[MagicMock()], updated=[MagicMock()])
+    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=diff)
+    pm.process_event(_snapshot_event())
+    assert pm._strategy.mock_calls == []
 
 
 def test_reconcile_terminations_emit_counters():
@@ -303,32 +351,50 @@ def test_clean_reconcile_emits_no_counters():
     assert not any(name.startswith("reconcile_orders") for name, _, _ in emitter.calls)
 
 
-class _LegacyOrderCallbackStrategy(IStrategy):
-    def on_order_update(self, ctx, order) -> None: ...
-
-
-class _LegacyAccountCallbackStrategy(IStrategy):
-    def on_account_update(self, ctx) -> None: ...
-
-
-class _CurrentCallbacksStrategy(IStrategy):
+class _RemovedOrderCallbackStrategy(IStrategy):
     def on_order_update(self, ctx, order, event) -> None: ...
 
+
+class _RemovedAccountCallbackStrategy(IStrategy):
     def on_account_update(self, ctx, event) -> None: ...
 
 
-def test_legacy_two_arg_on_order_update_raises():
-    with pytest.raises(TypeError, match=r"on_order_update.*on_order_update\(self, ctx, order, event\)"):
-        validate_account_callback_signatures(_LegacyOrderCallbackStrategy())
+class _CurrentCallbacksStrategy(IStrategy):
+    def on_order(self, ctx, order, change) -> None: ...
+
+    def on_execution(self, ctx, instrument, deal) -> None: ...
+
+    def on_position_change(self, ctx, position) -> None: ...
 
 
-def test_legacy_on_account_update_raises():
-    with pytest.raises(TypeError, match=r"on_account_update\(self, ctx, event\)"):
-        validate_account_callback_signatures(_LegacyAccountCallbackStrategy())
+def test_removed_on_order_update_raises_with_migration_message():
+    with pytest.raises(TypeError, match=r"on_order_update.*replaced by on_order/on_execution/on_position_change"):
+        validate_account_callback_signatures(_RemovedOrderCallbackStrategy())
+
+
+def test_removed_on_account_update_raises_with_migration_message():
+    with pytest.raises(TypeError, match=r"on_account_update.*replaced by on_order/on_execution/on_position_change"):
+        validate_account_callback_signatures(_RemovedAccountCallbackStrategy())
 
 
 def test_current_callback_signatures_pass():
     validate_account_callback_signatures(_CurrentCallbacksStrategy())
+
+
+def test_stale_arity_on_order_raises():
+    class _TwoArg(IStrategy):
+        def on_order(self, ctx, order) -> None: ...
+
+    with pytest.raises(TypeError, match=r"on_order.*on_order\(self, ctx, order, change\)"):
+        validate_account_callback_signatures(_TwoArg())
+
+
+def test_stale_arity_on_position_change_raises():
+    class _Extra(IStrategy):
+        def on_position_change(self, ctx, position, extra) -> None: ...
+
+    with pytest.raises(TypeError, match=r"on_position_change\(self, ctx, position\)"):
+        validate_account_callback_signatures(_Extra())
 
 
 def test_non_overriding_strategy_passes():
@@ -339,24 +405,24 @@ def test_non_overriding_strategy_passes():
 
 def test_var_positional_override_passes():
     class _Wildcard(IStrategy):
-        def on_order_update(self, ctx, *args) -> None: ...
+        def on_order(self, ctx, *args) -> None: ...
 
     validate_account_callback_signatures(_Wildcard())
 
 
 def test_extra_defaulted_param_passes():
     class _Extra(IStrategy):
-        def on_order_update(self, ctx, order, event, extra=None) -> None: ...
+        def on_order(self, ctx, order, change, extra=None) -> None: ...
 
     validate_account_callback_signatures(_Extra())
 
 
-def test_legacy_override_fails_loudly_at_pm_construction():
+def test_removed_callback_fails_loudly_at_pm_construction():
     # the guard runs first in __init__, so all-mock collaborators never get touched
     with pytest.raises(TypeError, match="on_order_update"):
         ProcessingManager(
             context=MagicMock(),
-            strategy=_LegacyOrderCallbackStrategy(),
+            strategy=_RemovedOrderCallbackStrategy(),
             logging=MagicMock(),
             market_data=MagicMock(),
             subscription_manager=MagicMock(),
@@ -393,7 +459,7 @@ def test_on_warmup_finished_runs_synchronously_on_processing_thread():
         calls.append("on_warmup_finished")
 
     pm._strategy.on_warmup_finished.side_effect = _warmup
-    pm._strategy.on_order_update.side_effect = lambda *a: calls.append("on_order_update")
+    pm._strategy.on_order.side_effect = lambda *a: calls.append("on_order")
     pm._account_manager.apply.return_value = ApplyResult(order=MagicMock(), order_change=OrderChange.ACCEPTED)
 
     pm._handle_warmup_finished()
@@ -407,7 +473,7 @@ def test_on_warmup_finished_runs_synchronously_on_processing_thread():
             instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
         )
     )
-    assert calls == ["on_warmup_finished", "on_order_update"]
+    assert calls == ["on_warmup_finished", "on_order"]
 
 
 def test_on_fit_pumping_events_does_not_retrigger_fit():

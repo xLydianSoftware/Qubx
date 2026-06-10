@@ -741,8 +741,8 @@ def test_restored_positions_first_snapshot_updates_present_keeps_absent():
 def test_reconcile_applies_to_state():
     # The one combined-integration case: every facet (terminalize / materialize / position /
     # balance) is pinned individually above; this pins them landing together in ONE snapshot.
-    # Reconcile mutates AccountState silently (no per-event callback) — the strategy is
-    # notified once via on_account_update at the PM layer. Here we assert the state effects.
+    # Reconcile mutates AccountState silently (no per-event callback) — the PM fires
+    # on_position_change per corrected position off the diff. Here we assert the state effects.
     am = _am()
     state = am._states["binance"]
     inst = _instrument()

@@ -4,8 +4,7 @@ import numpy as np
 
 from qubx import logger
 from qubx.core.account_manager import AccountManager, AccountManagerConfig
-from qubx.core.basics import Order, OrderOrigin, OrderStatus
-from qubx.core.events import OrderCancelRejectedEvent, OrderRejectedEvent, OrderUpdateRejectedEvent
+from qubx.core.basics import Order, OrderChange, OrderOrigin, OrderStatus
 from qubx.core.mixins.processing import ProcessingManager
 from tests.qubx.core.conftest import make_pm
 
@@ -98,8 +97,8 @@ def test_inflight_exhausted_submitted_transitions_rejected():
     # the synthetic reconcile reject carries no venue code -> error_code stays None
     assert o.error_code is None
     # the synthetic reject reaches the strategy through the PM dispatch
-    am._pm._strategy.on_order_update.assert_called_once()
-    assert isinstance(am._pm._strategy.on_order_update.call_args.args[2], OrderRejectedEvent)
+    am._pm._strategy.on_order.assert_called_once()
+    assert am._pm._strategy.on_order.call_args.args[2] is OrderChange.REJECTED
 
 
 def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
@@ -113,12 +112,11 @@ def test_inflight_exhausted_pending_cancel_reverts_and_fires_callback():
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.ACCEPTED
     assert am._states["binance"].get_pre_pending("cid-1") is None
-    # callback fired through the PM dispatch (ctx-first signature), not by the AM directly
-    am._pm._strategy.on_order_update.assert_called_once()
-    assert am._pm._strategy.on_order_update.call_args.args[0] is am._pm._context
-    event = am._pm._strategy.on_order_update.call_args.args[2]
-    assert isinstance(event, OrderCancelRejectedEvent)
-    assert event.reason == "reconcile: no venue ack after 3 retries"
+    # callback fired through the PM dispatch (ctx-first signature), not by the AM directly;
+    # the synthetic give-up reason is PM-log-only on cancel/update rejects
+    am._pm._strategy.on_order.assert_called_once()
+    assert am._pm._strategy.on_order.call_args.args[0] is am._pm._context
+    assert am._pm._strategy.on_order.call_args.args[2] is OrderChange.CANCEL_REJECTED
 
 
 def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
@@ -131,9 +129,9 @@ def test_inflight_exhausted_pending_update_reverts_and_fires_callback():
     am._on_inflight_tick(None)
     o = am._states["binance"].get_order("cid-1")
     assert o.status is OrderStatus.PARTIALLY_FILLED
-    am._pm._strategy.on_order_update.assert_called_once()
-    assert am._pm._strategy.on_order_update.call_args.args[0] is am._pm._context
-    assert isinstance(am._pm._strategy.on_order_update.call_args.args[2], OrderUpdateRejectedEvent)
+    am._pm._strategy.on_order.assert_called_once()
+    assert am._pm._strategy.on_order.call_args.args[0] is am._pm._context
+    assert am._pm._strategy.on_order.call_args.args[2] is OrderChange.UPDATE_REJECTED
 
 
 def test_inflight_giveup_logs_warning_with_cid():
@@ -292,7 +290,7 @@ def test_inflight_sweep_isolates_raising_callback():
     # isolation now lives in the PM's _safe_call, which the give-up path routes through.
     conn = MagicMock()
     am = _am({"binance": conn})
-    am._pm._strategy.on_order_update.side_effect = RuntimeError("boom")
+    am._pm._strategy.on_order.side_effect = RuntimeError("boom")
     state = am._states["binance"]
 
     a = _mk_order("cid-a", OrderStatus.ACCEPTED, "VA")

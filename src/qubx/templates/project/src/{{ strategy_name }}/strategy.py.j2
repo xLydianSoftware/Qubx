@@ -3,8 +3,7 @@
 import numpy as np
 
 from qubx import logger
-from qubx.core.basics import DataType, Order, Signal, TriggerEvent
-from qubx.core.events import AccountMessage, OrderEvent
+from qubx.core.basics import DataType, Order, OrderChange, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
 
 
@@ -157,13 +156,13 @@ class {{ strategy_class }}(IStrategy):
         """Handle real-time market data updates (optional)."""
         pass
     
-    def on_order_update(self, ctx: IStrategyContext, order: Order, event: OrderEvent) -> None:
-        """Handle order lifecycle events. Inspect `event` for the concrete kind."""
-        logger.info(f"Order update: {order.instrument.symbol} {order.status}")
+    def on_order(self, ctx: IStrategyContext, order: Order, change: OrderChange) -> None:
+        """Handle order lifecycle changes.
 
-    def on_account_update(self, ctx: IStrategyContext, event: AccountMessage) -> None:
-        """Handle non-order account events: position / balance / funding / snapshot (optional)."""
-        pass
+        Also available: on_execution(ctx, instrument, deal) for fills and
+        on_position_change(ctx, position) for position updates.
+        """
+        logger.info(f"Order {change}: {order.instrument.symbol} {order.status}")
     
     def on_error(self, ctx: IStrategyContext, error) -> None:
         """Handle strategy errors."""

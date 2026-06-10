@@ -113,8 +113,8 @@ legality, runs no reconcile rules, fires no callbacks, depends on no clock.
 - `get_available_margin = total_capital − total_initial_margin` (old parity). The
   `get_capital` alias is **removed** (it only aliased available margin).
 - `total_capital = venue.equity ?? base.total + Σ market_value_funds` (old formula).
-- `get_reserved` survives only as a `0.0` stub on the read facade (viewer-interface
-  compatibility); the reservation concept itself is gone.
+- `get_reserved` is **removed** end-to-end (viewer interface, AM, rebalancer tracker);
+  the reservation concept itself is gone.
 - **Capital locking deferred.** The old limit-order lock only moved `base.free ↔
   base.locked`, which no capital query reads; it was inert. In live, `free`/`locked` come
   from the venue anyway. Reintroduce **sim-only** if a consumer ever appears.
@@ -170,25 +170,37 @@ Order **status** events drive the lifecycle; a **`DealEvent`** drives the ledger
   set), so venue + simulated re-deliveries apply once. No mark yet → skip *without*
   consuming the bucket, so a re-delivery can apply later.
 - `PositionUpdateEvent` / `BalanceUpdateEvent` are declared but have **no producer yet**
-  (see Deferred); the reducer handler is a no-op and the PM still fires
-  `on_account_update` off the event payload.
+  (see Deferred); the reducer handler is a no-op. The PM fires `on_position_change` off
+  the position-push payload; balance pushes fire no strategy callback (see Strategy
+  callbacks).
 
 ## Strategy callbacks
 
-PR #302's collapse into `on_order` / `on_execution` / `on_position_change` is **not
-adopted** (deferred — the kept surface works). Two unified entrypoints:
+The PR #302 callback collapse is **adopted**: `on_order_update` / `on_account_update`
+are hard-removed (a strategy defining either fails at construction with a migration
+TypeError — no deprecation period, dual surfaces would double-fire), replaced by three
+callbacks:
 
-- `on_order_update(ctx, order, event: OrderEvent)` — fires when an order's state changed.
-- `on_account_update(ctx, event: AccountMessage)` — everything else (funding, snapshot,
-  position/balance pushes); the strategy inspects the concrete event type.
+- `on_order(ctx, order, change: OrderChange)` — once per applied order-lifecycle change;
+  `change` is the reducer's vocabulary (ACCEPTED / PARTIALLY_FILLED / FILLED / CANCELED /
+  EXPIRED / REJECTED / UPDATED / CANCEL_REJECTED / UPDATE_REJECTED).
+- `on_execution(ctx, instrument, deal)` — once per newly applied, deduplicated fill
+  (`Deal` carries no instrument field, hence the explicit parameter).
+- `on_position_change(ctx, position)` — position changed: every fill, funding payments,
+  venue position pushes, and each position corrected by a snapshot reconcile. High fire
+  rate by design — keep it cheap.
+
+There is deliberately **no balance callback**: balances are read via
+`ctx.get_balances()` / `ctx.get_balance()`, and `BalanceUpdateEvent` applies to account
+state silently — a contract fixed now, while the event still has zero producers.
 
 The dead-callback class of bug (a stale-arity override dying in a swallowed TypeError on
 every dispatch) is addressed at the root: a one-time **signature guard at strategy
-construction** fails loudly on incompatible overrides, and the `qubx init` templates ship
-the current signatures. `OrderChange` survives as the reducer's change vocabulary on
-`ApplyResult` (drives PM logging, e.g. the STILL-ALIVE warnings on cancel/update
-rejections). Framework-internal fill consumers (trackers, gatherers, logging, export)
-are fed off `result.deal` — the deduped truth — independent of the strategy callback.
+construction** fails loudly on incompatible overrides and on the removed pre-collapse
+names, and the `qubx init` templates ship the current signatures. Cancel/update reject
+reasons stay PM-log-only (the STILL-ALIVE warnings), not stored on the order.
+Framework-internal fill consumers (trackers, gatherers, logging, export) are fed off
+`result.deal` — the deduped truth — independent of the strategy callback.
 
 ## `apply` contract
 
@@ -197,11 +209,11 @@ def apply(state, event, now, *, snapshot_grace) -> ApplyResult: ...
 
 @dataclass
 class ApplyResult:
-    order: Order | None = None              # status changed -> on_order_update(order, event)
+    order: Order | None = None              # status changed -> on_order(order, change)
     order_change: OrderChange | None = None # paired with order
-    deal: Deal | None = None                # new deal applied -> downstream fill consumers
-    position: Position | None = None        # position changed
-    reconcile_diff: ReconcileDiff | None = None  # a snapshot reconcile applied
+    deal: Deal | None = None                # new deal applied -> on_execution + downstream fill consumers
+    position: Position | None = None        # position changed -> on_position_change
+    reconcile_diff: ReconcileDiff | None = None  # snapshot reconcile -> on_position_change per corrected position
 ```
 
 - The reducer **mutates state and returns the result**; it fires no callbacks (testable
@@ -212,10 +224,12 @@ class ApplyResult:
   the PM; the AM holds no emitter.
 - **None-as-suppress:** an empty result means the AM suppressed the event (late/
   duplicate/terminal/unknown/deduped funding/stale snapshot — already logged) and nothing
-  fires. `on_order_update` fires iff `result.order` is set; `on_account_update` fires iff
-  the result is non-empty. Sole exception: `PositionUpdateEvent`/`BalanceUpdateEvent`
-  fire through on an empty result — the reducer doesn't apply them yet, but the venue
-  push must still reach the strategy.
+  fires. Each set field fires its callback: `order` + `order_change` → `on_order`,
+  `deal` → `on_execution` (plus downstream fill consumers), `position` →
+  `on_position_change`, `reconcile_diff` → `on_position_change` per corrected position.
+  Sole exception: `PositionUpdateEvent` fires `on_position_change` through on an empty
+  result — the reducer doesn't apply venue position pushes yet, but the push must still
+  reach the strategy. `BalanceUpdateEvent` fires nothing (see Strategy callbacks).
 
 ## Reconciler
 
@@ -358,19 +372,17 @@ Sanctioned departures, detailed in the sections above:
 13. `SimulatedAccountManager` for paper/backtest.
 14. Restoration/seeding via AM-level `seed_*`/`adjust_balance`.
 15. Unbounded channel instead of bounded-with-drop-protection.
-16. Kept `on_order_update`/`on_account_update` callback surface (no collapse) + the
-    construction-time signature guard.
-17. `on_account_update` gated on a non-empty ApplyResult (Position/Balance fire-through).
-18. Cancel/update synchronous-raise contract: synthetic reject through the PM + re-raise.
-19. Fetch-before-terminalize for orders missing from snapshots.
-20. Surgical position reconcile (local accounting always survives a snapshot).
-21. `get_reserved` kept as a `0.0` stub (PR removed it outright).
+16. Cancel/update synchronous-raise contract: synthetic reject through the PM + re-raise.
+17. Fetch-before-terminalize for orders missing from snapshots.
+18. Surgical position reconcile (local accounting always survives a snapshot).
 
 ## Deferred / open
 
-- **Callback collapse** (`on_order` / `on_execution` / `on_position_change`): the kept
-  surface works; revisit only with a deliberate strategy-API revision.
-- **`get_reserved`**: remove the stub from the viewer interface or implement reservations.
+- **`on_reconcile_complete(ctx, diff)`**: snapshot order-corrections stay callback-silent
+  beyond the per-position `on_position_change` fan-out. Precondition: `ReconcileDiff`
+  lives in `core/account_manager/reconcile.py` while `manager.py` imports
+  `core.interfaces`, so declaring the signature on `IStrategy` requires relocating
+  `ReconcileDiff` first.
 - **Venue figures beyond Binance**: only Binance's snapshot leg extracts
   equity/available-margin today; other venues derive (sound fallback).
 - **Real multi-currency `conversion_rate`**: currently 1.0 — see the single-base-currency

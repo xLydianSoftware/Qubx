@@ -124,7 +124,7 @@ def test_accepted_sets_venue_and_transitions():
 
 def test_accepted_double_ack_fires_once():
     # Routine REST-ack + WS-ack double delivery: the first ACCEPTED transitions and
-    # reports, the second is suppressed (empty result -> no on_order_update re-fire).
+    # reports, the second is suppressed (empty result -> no on_order re-fire).
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), instrument=inst)

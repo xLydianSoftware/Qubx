@@ -95,9 +95,9 @@ def reconcile_snapshot(
     """Reconcile one venue snapshot into ``state``; returns what changed, or None when
     the snapshot is rejected by the as_of ratchet.
 
-    Reconcile mutates state silently; the strategy is notified once via
-    on_account_update (the PM routes the AccountSnapshotEvent there) rather than per
-    applied change.
+    Reconcile mutates state silently; the PM fires on_position_change per corrected
+    position off the returned diff — order corrections stay callback-silent (pending
+    on_reconcile_complete).
     """
     if is_snapshot_stale(state, snapshot.as_of):
         return None

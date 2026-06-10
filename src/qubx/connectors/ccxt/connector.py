@@ -803,7 +803,7 @@ class CcxtConnector(ChannelEmitter):
 
         # A fill can be the FIRST event we observe for an order (fast aggressive fills,
         # or a venue that sends no separate "open" report). Synthesize the venue ACCEPTED
-        # ack before the fill so the strategy's on_order_update sees ACCEPTED and the order
+        # ack before the fill so the strategy's on_order sees ACCEPTED and the order
         # lifecycle stays ordered. AM dedups ACCEPTED, so this is safe alongside the REST
         # immediate-ack. Skipped when the venue id is missing (can't index the order).
         if (

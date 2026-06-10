@@ -30,7 +30,6 @@ from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
     AccountMessage,
-    BalanceUpdateEvent,
     ChannelMessage,
     OrderCancelRejectedEvent,
     OrderEvent,
@@ -64,13 +63,21 @@ from qubx.utils.time import interval_to_cron
 def validate_account_callback_signatures(strategy: IStrategy) -> None:
     """One-time construction guard for the unified account callbacks.
 
-    A strategy overriding ``on_order_update`` / ``on_account_update`` with a stale arity
-    (e.g. the legacy 2-arg ``on_order_update(self, ctx, order)``) would die in a TypeError
-    on every dispatch, swallowed by ``_safe_call`` — fail loudly here instead.
+    A strategy overriding ``on_order`` / ``on_execution`` / ``on_position_change`` with a
+    stale arity would die in a TypeError on every dispatch, swallowed by ``_safe_call`` —
+    fail loudly here instead. Same for the removed pre-collapse callback names: they would
+    silently never fire.
     """
     if not isinstance(strategy, IStrategy):
         return
-    for name in ("on_order_update", "on_account_update"):
+    for removed in ("on_order_update", "on_account_update"):
+        if callable(getattr(type(strategy), removed, None)):
+            raise TypeError(
+                f"{type(strategy).__name__} defines {removed}, which no longer exists: "
+                "on_order_update/on_account_update were replaced by on_order/on_execution/on_position_change "
+                "— see docs/account-management/design.md"
+            )
+    for name in ("on_order", "on_execution", "on_position_change"):
         impl = getattr(type(strategy), name)
         base = getattr(IStrategy, name)
         if impl is base:
@@ -1246,14 +1253,14 @@ class ProcessingManager(IProcessingManager):
             self._emit_error_metric("strategy_callback_errors", callback=getattr(fn, "__name__", "unknown"))
 
     def _safe_fire_account_callback(self, event: AccountMessage, result: ApplyResult) -> None:
-        # Two unified strategy callbacks: on_order_update for OrderEvents, on_account_update
-        # for everything else (funding/snapshot/position/balance). The strategy inspects the
-        # concrete event type itself. The ApplyResult fields are the fire signals — an empty
-        # result means the AM suppressed the event (late/duplicate/terminal/unknown/deduped
-        # funding/stale snapshot — already logged) and nothing fires. Sole exception:
-        # PositionUpdateEvent/BalanceUpdateEvent fire through even on an empty result — the
-        # reducer doesn't apply them yet (reducer._handle_position_balance_noop), but the
-        # venue push must still reach the strategy off the event payload.
+        # Purely ApplyResult-driven dispatch onto the three strategy callbacks: each set
+        # field fires its callback, an empty result means the AM suppressed the event
+        # (late/duplicate/terminal/unknown/deduped funding/stale snapshot — already logged)
+        # and nothing fires. Sole exception: PositionUpdateEvent fires through on an empty
+        # result — the reducer doesn't apply venue position pushes yet
+        # (reducer._handle_position_balance_noop), but the push must still reach the
+        # strategy off the event payload. BalanceUpdateEvent deliberately fires NO callback:
+        # balances are read via ctx.
         if isinstance(event, OrderEvent):
             # Cancel/update rejections are dangerous-but-recoverable (order still alive at the
             # venue): surface loudly here so they aren't lost if the strategy ignores them.
@@ -1267,17 +1274,23 @@ class ProcessingManager(IProcessingManager):
                     f"[{event.client_order_id}] update rejected by venue: {event.reason}; "
                     f"order is STILL ALIVE with prior parameters"
                 )
-            if result.order is not None:
-                self._safe_call(self._strategy.on_order_update, result.order, event)
-            # A newly applied deal also drives framework-internal downstream consumers
-            # (trackers, gatherers, logging, export) — independent of the strategy callback.
-            # Keyed off result.deal, NOT event.fill: a re-delivered fill the AM deduped
-            # must not reach save_deals/gatherers/trackers twice.
+            if result.order is not None and result.order_change is not None:
+                self._safe_call(self._strategy.on_order, result.order, result.order_change)
             if result.deal is not None:
+                if event.instrument is not None:
+                    self._safe_call(self._strategy.on_execution, event.instrument, result.deal)
+                # A newly applied deal also drives framework-internal downstream consumers
+                # (trackers, gatherers, logging, export) — independent of the strategy callback.
+                # Keyed off result.deal, NOT event.fill: a re-delivered fill the AM deduped
+                # must not reach save_deals/gatherers/trackers twice.
                 self._notify_downstream_fill(event.instrument, result.deal)
-        else:
-            if not result.is_empty() or isinstance(event, (PositionUpdateEvent, BalanceUpdateEvent)):
-                self._safe_call(self._strategy.on_account_update, event)
+        if result.position is not None:
+            self._safe_call(self._strategy.on_position_change, result.position)
+        elif isinstance(event, PositionUpdateEvent) and result.is_empty():
+            self._safe_call(self._strategy.on_position_change, event.position)
+        if result.reconcile_diff is not None:
+            for position in result.reconcile_diff.positions:
+                self._safe_call(self._strategy.on_position_change, position)
 
     def _notify_downstream_fill(self, instrument: Instrument | None, fill: Deal) -> None:
         if instrument is None:

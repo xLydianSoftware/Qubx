@@ -475,9 +475,6 @@ class AccountManager:
         pos = self.get_position(instrument)
         return pos.adl_level if pos is not None else None
 
-    def get_reserved(self, instrument: Instrument) -> float:
-        return 0.0
-
     # ---- periodic ticks (thin: reconcile.py decides, the manager acts) ----- #
 
     def _sweep_terminal_evictions(self) -> None:

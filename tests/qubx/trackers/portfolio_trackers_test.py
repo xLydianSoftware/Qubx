@@ -135,9 +135,6 @@ class DebugStratageyCtx(IStrategyContext):
     def time(self) -> np.datetime64:
         return np.datetime64(self._c_time, "ns")
 
-    def get_reserved(self, instrument: Instrument) -> float:
-        return 0.0
-
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         """Return the minimum trade size for an instrument."""
         return instrument.min_size
@@ -182,7 +179,9 @@ class DebugStratageyCtx(IStrategyContext):
         self._o_id += 1
         q = self.quote(instrument)
         assert q is not None
-        d = Deal(str(self.time()), order.venue_order_id or order.client_order_id, self.time(), amount, q.mid_price(), True)
+        d = Deal(
+            str(self.time()), order.venue_order_id or order.client_order_id, self.time(), amount, q.mid_price(), True
+        )
         self.acc.process_deals(instrument, [d])
         return order
 
@@ -263,7 +262,7 @@ class TestPortfolioRelatedStuff:
         )
 
         # - 'trade'
-        c_positions = g.alter_positions(
+        g.alter_positions(
             ctx,
             prt.process_signals(
                 ctx,
@@ -369,7 +368,7 @@ class TestPortfolioRelatedStuff:
         )
 
         # - 'trade'
-        c_positions = g.alter_positions(
+        g.alter_positions(
             ctx,
             prt.process_signals(
                 ctx,
