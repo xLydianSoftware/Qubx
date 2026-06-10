@@ -636,14 +636,14 @@ class SimulationRunner:
             time=time_provider,
             cfg=AccountManagerConfig(),
             account_id=self.account_id,
-            tcc=_exchange_to_tcc[self.setup.exchanges[0]],
+            tcc=_exchange_to_tcc,
         )
 
         # - seed initial capital per exchange into the account state
         assert isinstance(self.setup.capital, dict)
         for exchange, capital in self.setup.capital.items():
-            am.get_state(exchange).update_balance(
-                self.setup.base_currency,
+            am.seed_balance(
+                exchange,
                 Balance(
                     exchange=exchange,
                     currency=self.setup.base_currency,

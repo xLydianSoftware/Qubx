@@ -169,7 +169,7 @@ class StrategyContext(IStrategyContext):
         # self.account exposes the read-only IAccountViewer surface (the strategy and
         # mixins read positions/balances/capital through it); self._account_manager is
         # the same object kept under its concrete type for the state-machine operations
-        # (apply/add_order/transition_order/set_context) that are not on the viewer.
+        # (apply/add_order/transition_order/set_processing_manager) that are not on the viewer.
         self.account = account_manager
         self.strategy = self.__instantiate_strategy(strategy, config)
         self.emitter = emitter if emitter is not None else IMetricEmitter()
@@ -278,9 +278,9 @@ class StrategyContext(IStrategyContext):
             data_throttler=data_throttler,
         )
 
-        # Wire the context into the account manager so AM-fired callbacks
-        # (reconcile, inflight-exhaustion) receive a real ctx, never None.
-        self._account_manager.set_context(self)
+        # Late-wire the processing manager into the account manager (the AM is built
+        # before the PM exists) so its periodic ticks can register.
+        self._account_manager.set_processing_manager(self._processing_manager)
 
         self.__post_init__()
 
@@ -893,6 +893,8 @@ class StrategyContext(IStrategyContext):
                 # - waiting for incoming data (with timeout so commands are checked regularly).
                 #   The channel carries two payload shapes: typed ChannelMessages (order/account
                 #   events from connectors) and market-data tuples (instrument, d_type, data, hist).
+                #   The event-vs-data dispatch rule below is mirrored (bare, without monitor/
+                #   notifier/stop handling) by SimulatedCtrlChannel.send for backtests.
                 msg = channel.receive(timeout=1)
 
                 if isinstance(msg, ChannelMessage):

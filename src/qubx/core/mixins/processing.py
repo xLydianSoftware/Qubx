@@ -26,7 +26,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
-from qubx.core.connector import IConnector
+from qubx.core.connector import IConnector, IMarketDataSink
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
@@ -1203,8 +1203,15 @@ class ProcessingManager(IProcessingManager):
         if self._is_simulation or not self._context.is_paper_trading:
             return
         connector = self._connectors.get(instrument.exchange)
-        if connector is not None:
-            connector.process_market_data(instrument, payload)
+        if connector is None:
+            return
+        if not isinstance(connector, IMarketDataSink):
+            logger.warning(
+                f"paper connector for {instrument.exchange} is not an IMarketDataSink "
+                f"({type(connector).__name__}); skipping market-data feed"
+            )
+            return
+        connector.process_market_data(instrument, payload)
 
     def _dispatch_account(self, event: AccountMessage) -> None:
         try:

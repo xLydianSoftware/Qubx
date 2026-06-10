@@ -66,9 +66,7 @@ class SimulatedConnector(ChannelEmitter):
             # rejection boundary: the same logical failure must take the same path
             # everywhere, so venue refusals are always async events, not exceptions.
             self.send(
-                OrderRejectedEvent(
-                    instrument=request.instrument, client_order_id=request.client_id, reason=str(e)
-                )
+                OrderRejectedEvent(instrument=request.instrument, client_order_id=request.client_id, reason=str(e))
             )
             return
         self._emit_from_report(report)
@@ -134,27 +132,8 @@ class SimulatedConnector(ChannelEmitter):
         # the Updated, diverging order/position state). We emit ONLY the fill, not a full
         # _emit_from_report(new): the OrderUpdatedEvent above already covers the resting
         # (non-crossed) case, so feeding the report through would emit a redundant
-        # OrderAcceptedEvent on the already-ACCEPTED order. A FILLED/PARTIALLY_FILLED report
-        # carries report.exec; a still-resting one does not.
-        if new.exec is not None:
-            if new.order.status == OrderStatus.FILLED:
-                self.send(
-                    OrderFilledEvent(
-                        instrument=new.instrument,
-                        client_order_id=new.order.client_order_id,
-                        venue_order_id=new.order.venue_order_id,
-                        fill=new.exec,
-                    )
-                )
-            else:
-                self.send(
-                    OrderPartiallyFilledEvent(
-                        instrument=new.instrument,
-                        client_order_id=new.order.client_order_id,
-                        venue_order_id=new.order.venue_order_id,
-                        fill=new.exec,
-                    )
-                )
+        # OrderAcceptedEvent on the already-ACCEPTED order.
+        self._emit_exec(new)
 
     def request_order_status(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
         oid = venue_order_id or client_order_id
@@ -228,30 +207,25 @@ class SimulatedConnector(ChannelEmitter):
                     venue_order_id=order.venue_order_id,
                 )
             )
-        if report.exec is not None:
-            # A FILLED order is fully filled; a still-live order with an exec is a partial
-            # fill (resting remainder stays in the book).
-            if status == OrderStatus.FILLED:
-                self.send(
-                    OrderFilledEvent(
-                        instrument=report.instrument,
-                        client_order_id=order.client_order_id,
-                        venue_order_id=order.venue_order_id,
-                        fill=report.exec,
-                    )
-                )
-            else:
-                # The current OME fills atomically (always CLOSED on fill), so this branch is
-                # presently unreachable. It is forward-compatibility scaffolding for exchanges
-                # that emit partial fills with a resting remainder.
-                self.send(
-                    OrderPartiallyFilledEvent(
-                        instrument=report.instrument,
-                        client_order_id=order.client_order_id,
-                        venue_order_id=order.venue_order_id,
-                        fill=report.exec,
-                    )
-                )
+        self._emit_exec(report)
+
+    def _emit_exec(self, report: SimulatedExecutionReport) -> None:
+        """Emit the fill leg of a report: a FILLED order is fully filled; a still-live order
+        with an exec is a partial fill (resting remainder stays in the book — the current OME
+        fills atomically, so that branch is forward-compatibility scaffolding). No-op when
+        the report carries no exec (resting/canceled)."""
+        if report.exec is None:
+            return
+        order = report.order
+        event_type = OrderFilledEvent if order.status == OrderStatus.FILLED else OrderPartiallyFilledEvent
+        self.send(
+            event_type(
+                instrument=report.instrument,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                fill=report.exec,
+            )
+        )
 
     def is_ws_ready(self) -> bool:
         return True

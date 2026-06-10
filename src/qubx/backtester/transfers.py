@@ -3,7 +3,7 @@ from typing import Any
 
 from qubx import logger
 from qubx.core.account_manager import AccountManager
-from qubx.core.basics import Balance, ITimeProvider
+from qubx.core.basics import ITimeProvider
 from qubx.core.interfaces import ITransferManager
 
 
@@ -29,18 +29,11 @@ class SimulationTransferManager(ITransferManager):
                 f"{from_balance.free:.8f} {currency} available, {amount:.8f} requested"
             )
 
-        # Instant transfer: debit the source and credit the destination. update_balance is
-        # identity-preserving, so holders of either Balance keep a live reference.
-        from_balance.total -= amount
-        from_balance.free -= amount
-        self._account.get_state(from_exchange).update_balance(currency, from_balance)
-
-        to_balance = self._account.get_balance(currency, exchange=to_exchange)
-        if to_balance is None:
-            to_balance = Balance(exchange=to_exchange, currency=currency)
-        to_balance.total += amount
-        to_balance.free += amount
-        self._account.get_state(to_exchange).update_balance(currency, to_balance)
+        # Instant transfer: debit the source and credit the destination. adjust_balance
+        # mutates the held Balance in place (holders keep a live reference) and creates
+        # the destination Balance if missing.
+        self._account.adjust_balance(from_exchange, currency, -amount)
+        self._account.adjust_balance(to_exchange, currency, amount)
 
         transaction_id = f"sim_{uuid.uuid4().hex[:12]}"
         self._transfers[transaction_id] = {

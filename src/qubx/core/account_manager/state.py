@@ -26,28 +26,6 @@ from qubx.core.basics import Balance, Deal, Instrument, Order, OrderStatus, Orde
 # sessions. A re-delivered funding event only needs RECENT buckets to dedup against.
 _FUNDING_BUCKET_CAP: int = 4096
 
-_INFLIGHT_STATUSES: frozenset[OrderStatus] = frozenset(
-    {
-        OrderStatus.SUBMITTED,
-        OrderStatus.PENDING_CANCEL,
-        OrderStatus.PENDING_UPDATE,
-    }
-)
-_TERMINAL_STATUSES: frozenset[OrderStatus] = frozenset(
-    {
-        OrderStatus.FILLED,
-        OrderStatus.CANCELED,
-        OrderStatus.REJECTED,
-        OrderStatus.EXPIRED,
-    }
-)
-_PENDING_STATUSES: frozenset[OrderStatus] = frozenset(
-    {
-        OrderStatus.PENDING_CANCEL,
-        OrderStatus.PENDING_UPDATE,
-    }
-)
-
 
 @dataclass
 class VenueAccountFigures:
@@ -269,9 +247,9 @@ class AccountState:
         self._active_orders[cid] = order
         if order.venue_order_id is not None:
             self._venue_id_index[order.venue_order_id] = cid
-        if order.status in _INFLIGHT_STATUSES:
+        if order.status.is_inflight:
             self._inflight_index.add(cid)
-        elif order.status in _TERMINAL_STATUSES:
+        elif order.status.is_terminal:
             if order.last_updated_at is None:
                 raise ValueError("terminal orders must have last_updated_at set for eviction")
             self._pending_evict_index[cid] = order.last_updated_at
@@ -288,19 +266,19 @@ class AccountState:
         order.status = new_status
         order.last_updated_at = now
 
-        if new_status in _INFLIGHT_STATUSES:
+        if new_status.is_inflight:
             self._inflight_index.add(cid)
         else:
             self._inflight_index.discard(cid)
 
-        if new_status in _TERMINAL_STATUSES:
+        if new_status.is_terminal:
             self._pending_evict_index[cid] = now
         else:
             self._pending_evict_index.pop(cid, None)
 
-        if new_status in _PENDING_STATUSES:
+        if new_status.is_pending:
             # capture only on first entry, so PENDING_UPDATE -> PENDING_CANCEL keeps the original
-            if old_status not in _PENDING_STATUSES:
+            if not old_status.is_pending:
                 self._pre_pending_status[cid] = old_status
         else:
             self._pre_pending_status.pop(cid, None)

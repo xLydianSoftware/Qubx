@@ -216,6 +216,8 @@ class TestRunStrategyYaml:
         # - no warmup: focus the test on construction-time wiring (warmup is exercised elsewhere)
         config = load_strategy_config_from_yaml(temp_config_file)
         config.live.warmup = None
+        # - non-default AM knob to assert config threading into the constructed AM
+        config.live.account_manager.inflight_check_retries = 7
 
         class MockStrategy(IStrategy):
             def on_init(self, initializer: IStrategyInitializer) -> None:
@@ -258,6 +260,9 @@ class TestRunStrategyYaml:
 
         # - the AM holds no strategy reference: every callback routes through the PM
         assert not hasattr(ctx._account_manager, "_strategy")
+
+        # - the live.account_manager block is threaded into the AM's config
+        assert ctx._account_manager._cfg.inflight_check_retries == 7
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")

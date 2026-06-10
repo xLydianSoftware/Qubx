@@ -3,7 +3,7 @@
 Pure state mutation: no connectors, no strategy callbacks, no clock reads (``now`` is a
 parameter). The ProcessingManager fires callbacks from the returned ApplyResult; routing
 the event to the right state is the AccountManager's job. Every status change goes
-through ``_transition`` (the legality chokepoint), and every handler short-circuits on a
+through ``reconcile.transition`` (the legality chokepoint), and every handler short-circuits on a
 terminal order so late venue events are no-ops. None fields on ApplyResult are the
 suppress signal — deduped duplicate fills, late events on terminal orders, and
 rejects/lifecycle events for unknown orders all return empty results, so no callback
@@ -18,8 +18,9 @@ from qubx import logger
 from qubx.core.account_manager import reconcile
 from qubx.core.account_manager.reconcile import ReconcileDiff
 from qubx.core.account_manager.state import AccountState
-from qubx.core.account_manager.state_machine import can_transition, validate_transition
+from qubx.core.account_manager.state_machine import can_transition
 from qubx.core.basics import (
+    EXTERNAL_CID_PREFIX,
     Deal,
     Instrument,
     Order,
@@ -69,14 +70,6 @@ class ApplyResult:
         )
 
 
-def _transition(state: AccountState, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
-    order = state.get_active_order(cid)
-    if order is None:
-        raise KeyError(f"order {cid} not found in {state.exchange}")
-    validate_transition(cid, order.status, new_status)
-    return state.transition_order(cid, new_status, now)
-
-
 def _resolve(state: AccountState, event: OrderEvent) -> Order | None:
     # Known by cid (active or terminal-history) or by the venue id it was assigned.
     if (order := state.get_order(event.client_order_id)) is not None:
@@ -102,7 +95,7 @@ def _materialize_external(state: AccountState, event: OrderEvent, instrument: In
     # for a stable identity only in the (malformed) case where it doesn't.
     venue_id = event.venue_order_id
     order = Order(
-        client_order_id=f"ext:{venue_id or event.client_order_id}",
+        client_order_id=f"{EXTERNAL_CID_PREFIX}{venue_id or event.client_order_id}",
         venue_order_id=venue_id,
         origin=OrderOrigin.EXTERNAL,
         type=OrderType.LIMIT,
@@ -158,7 +151,7 @@ def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.dat
         return ApplyResult()
     if not can_transition(order.status, OrderStatus.ACCEPTED):
         return ApplyResult()
-    order = _transition(state, order.client_order_id, OrderStatus.ACCEPTED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.ACCEPTED, now)
     return ApplyResult(order=order, order_change=OrderChange.ACCEPTED)
 
 
@@ -166,7 +159,7 @@ def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.dat
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
-    order = _transition(state, order.client_order_id, OrderStatus.CANCELED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.CANCELED, now)
     return ApplyResult(order=order, order_change=OrderChange.CANCELED)
 
 
@@ -174,7 +167,7 @@ def _handle_expired(state: AccountState, event: OrderExpiredEvent, now: np.datet
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
-    order = _transition(state, order.client_order_id, OrderStatus.EXPIRED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.EXPIRED, now)
     return ApplyResult(order=order, order_change=OrderChange.EXPIRED)
 
 
@@ -184,7 +177,7 @@ def _handle_rejected(state: AccountState, event: OrderRejectedEvent, now: np.dat
         return ApplyResult()
     order.rejected_reason = event.reason
     order.error_code = event.code
-    order = _transition(state, order.client_order_id, OrderStatus.REJECTED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.REJECTED, now)
     return ApplyResult(order=order, order_change=OrderChange.REJECTED)
 
 
@@ -221,7 +214,7 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
     new_deal = event.fill is not None and state.apply_fill(order.client_order_id, event.fill, now)
     deal = event.fill if new_deal else None
     position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
-    order = _transition(state, order.client_order_id, OrderStatus.FILLED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.FILLED, now)
     return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
 
 
@@ -237,7 +230,7 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
     deal = event.fill if new_deal else None
     position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
     # a pending cancel/update is resolved by the venue separately — don't disturb its status
-    pending = order.status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE)
+    pending = order.status.is_pending
     if pending:
         # filled_quantity mirrors real, irreversible fills (and the position),
         # so it is NEVER reduced. A fill that races a pending modify can push it
@@ -252,7 +245,7 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
             )
         return ApplyResult(deal=deal, position=position)
     if can_transition(order.status, OrderStatus.PARTIALLY_FILLED):
-        order = _transition(state, order.client_order_id, OrderStatus.PARTIALLY_FILLED, now)
+        order = reconcile.transition(state, order.client_order_id, OrderStatus.PARTIALLY_FILLED, now)
         return ApplyResult(order=order, order_change=OrderChange.PARTIALLY_FILLED, deal=deal, position=position)
     return ApplyResult(deal=deal, position=position)  # no status change -> execution only
 
@@ -300,7 +293,7 @@ def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datet
     order.last_updated_at = now
     if order.status == OrderStatus.PENDING_UPDATE:
         target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
-        order = _transition(state, order.client_order_id, target, now)
+        order = reconcile.transition(state, order.client_order_id, target, now)
     return ApplyResult(order=order, order_change=OrderChange.UPDATED)
 
 
@@ -310,7 +303,7 @@ def _revert_from_pending(state: AccountState, order: Order, change: OrderChange,
     # is the safe default for the rare order with no captured status. The transition
     # itself clears the capture (the target is non-pending).
     target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
-    order = _transition(state, order.client_order_id, target, now)
+    order = reconcile.transition(state, order.client_order_id, target, now)
     return ApplyResult(order=order, order_change=change)
 
 

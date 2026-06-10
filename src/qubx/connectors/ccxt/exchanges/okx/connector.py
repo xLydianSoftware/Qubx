@@ -2,11 +2,11 @@
 
 Adds the OKX-specific behavior on top of the generic ``CcxtConnector``:
 
-- **Split orders/fills streams** (via ``_TwoStreamExecutionsMixin``): OKX's
+- **Split orders/fills streams** (via ``_TwoStreamCcxtConnector``): OKX's
   ``watch_orders`` carries only status, not fills; the fills come on a separate
-  ``watch_my_trades`` stream. The mixin runs both concurrently — status events ride
+  ``watch_my_trades`` stream. The base runs both concurrently — status events ride
   with ``fill=None`` and each trade arrives as a ``DealEvent``; the AccountManager
-  correlates them by trade id (see the mixin docstring).
+  correlates them by trade id (see the two-stream base docstring).
 - **Balance extraction**: ccxt maps OKX's ``eq`` (= cashBal + unrealizedPnL) onto
   the canonical ``total``; the framework wants the cash leg, so we read per-currency
   ``cashBal`` / ``frozenBal`` from the raw ``info.data[0].details`` instead.
@@ -24,16 +24,15 @@ stream — AM's snapshot cadence covers balance refresh.
 import re
 from typing import Any
 
-from qubx.connectors.ccxt.connector import CcxtConnector
 from qubx.core.basics import Balance
 
-from .._two_stream import _TwoStreamExecutionsMixin
+from .._two_stream import _TwoStreamCcxtConnector
 
 _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
 _OKX_CLIENT_ID_MAX_LEN = 32
 
 
-class OkxCcxtConnector(_TwoStreamExecutionsMixin, CcxtConnector):
+class OkxCcxtConnector(_TwoStreamCcxtConnector):
     """OKX connector: split orders/fills streams + OKX balance/clOrdId rules."""
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
@@ -68,7 +67,7 @@ class OkxCcxtConnector(_TwoStreamExecutionsMixin, CcxtConnector):
         Enforce the base ``qubx_`` prefix first, then strip the underscore (and any
         other non-alphanumeric character) and truncate to 32. The ``qubx`` lead
         survives the strip (alphanumeric), preserving the origin marker as far as the
-        venue allows. Caveat: the downstream origin check (`ccxt_convert_order_info`)
+        venue allows. Caveat: the downstream origin check (``classify_origin``)
         keys on the literal ``qubx_`` *with* the underscore, which OKX bans — so OKX
         framework orders are mis-detected as EXTERNAL (a pre-existing venue limitation).
         """

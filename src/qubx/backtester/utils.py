@@ -146,7 +146,10 @@ class SimulatedCtrlChannel(CtrlChannel):
 
     def send(self, data):
         # - dispatch synchronously: typed connector events go to process_event,
-        #   legacy market-data tuples go to process_data.
+        #   legacy market-data tuples go to process_data. Mirrors the live dispatch rule in
+        #   StrategyContext.__process_incoming_data_loop, deliberately WITHOUT its
+        #   health-monitor labels / error notifier / stop-on-True handling: this is the
+        #   backtest hot path and must stay a bare callback invocation.
         if isinstance(data, ChannelMessage):
             return self._callback.process_event(data)
         return self._callback.process_data(*data)

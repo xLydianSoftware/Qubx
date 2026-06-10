@@ -1,11 +1,11 @@
 import asyncio
 from collections import defaultdict
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from typing import Dict, List, Optional, Set, Tuple
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
-from qubx.connectors.registry import data_provider
+from qubx.connectors.registry import CredentialsProvider, data_provider
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
@@ -21,9 +21,6 @@ from .subscription_manager import SubscriptionManager
 from .subscription_orchestrator import SubscriptionOrchestrator
 from .warmup_service import WarmupService
 
-if TYPE_CHECKING:
-    from qubx.utils.runner.accounts import AccountConfigurationManager
-
 
 @data_provider("ccxt")
 class CcxtDataProvider(IDataProvider):
@@ -38,7 +35,7 @@ class CcxtDataProvider(IDataProvider):
         time_provider: ITimeProvider,
         channel: CtrlChannel,
         health_monitor: IHealthMonitor,
-        account_manager: "AccountConfigurationManager",
+        credentials: CredentialsProvider,
         loop: asyncio.AbstractEventLoop | None = None,
         max_ws_retries: int = 10,
         warmup_timeout: int = 120,
@@ -49,7 +46,7 @@ class CcxtDataProvider(IDataProvider):
 
         rate_limiter = kwargs.pop("rate_limiter", None)
 
-        settings = account_manager.get_exchange_settings(exchange_name)
+        settings = credentials.get_exchange_settings(exchange_name)
         self._exchange_manager = get_ccxt_exchange_manager(
             exchange=exchange_name,
             use_testnet=settings.testnet,

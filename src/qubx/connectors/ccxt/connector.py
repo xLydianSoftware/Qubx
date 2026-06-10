@@ -31,13 +31,14 @@ Design contract (see docs/account-management/account-management-design.md
 import asyncio
 from asyncio.exceptions import CancelledError
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any
+from typing import Any, Literal
 
 import ccxt
 from ccxt import ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
 from qubx import logger
 from qubx.core.basics import (
+    FRAMEWORK_CID_PREFIX,
     Balance,
     CtrlChannel,
     Deal,
@@ -68,6 +69,7 @@ from qubx.utils.misc import AsyncThreadLoop
 from qubx.utils.time import to_timedelta
 
 from .exceptions import CcxtSymbolNotRecognized
+from .exchange_manager import ExchangeManager
 from .utils import (
     ccxt_convert_balance,
     ccxt_convert_order_info,
@@ -77,9 +79,6 @@ from .utils import (
     instrument_to_ccxt_symbol,
     prepare_ccxt_order_payload,
 )
-
-if TYPE_CHECKING:
-    from .exchange_manager import ExchangeManager
 
 # Venue-verdict exceptions: every one of these is the venue refusing the order,
 # so it rides the channel as a rejection event rather than being raised. Listed
@@ -105,8 +104,6 @@ _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
 # catch, otherwise those three are swallowed as "transient" and never emit a reject.
 # A bare NetworkError (RequestTimeout, connection reset) is a genuine UNKNOWN outcome —
 # the order is left inflight for AM to reconcile, never terminal-rejected.
-
-_CLIENT_ID_PREFIX = "qubx_"
 
 
 def _info_float(info: dict[str, Any], key: str) -> float | None:
@@ -155,7 +152,7 @@ class CcxtConnector(ChannelEmitter):
         exchange_name: str,
         channel: CtrlChannel,
         time_provider: ITimeProvider,
-        exchange_manager: "ExchangeManager",
+        exchange_manager: ExchangeManager,
         data_provider: IDataProvider,
         read_only: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
@@ -487,27 +484,22 @@ class CcxtConnector(ChannelEmitter):
                 r = await self._em.exchange.cancel_order(venue_order_id, symbol)
                 return True, r
             except ccxt.OperationRejected as err:
-                err_msg = str(err).lower()
-                if "unknown order" in err_msg or "order does not exist" in err_msg or "order not found" in err_msg:
-                    logger.debug(f"[{venue_order_id}] Order not found for cancellation, might retry: {err}")
-                    last_network_error = None
-                elif "filled" in err_msg or "partially filled" in err_msg:
-                    logger.debug(f"[{venue_order_id}] Order cannot be cancelled - already executed: {err}")
-                    return False, None
-                else:
+                if self._classify_cancel_error(err) == "reject":
                     logger.debug(f"[{venue_order_id}] Could not cancel order: {err}")
                     return False, None
+                logger.debug(f"[{venue_order_id}] Order not found for cancellation, might retry: {err}")
+                last_network_error = None
             except ccxt.NetworkError as e:
                 # Transient connectivity (incl. ExchangeNotAvailable / rate-limit): retry,
                 # and raise on exhaustion so the UNKNOWN outcome leaves the order inflight.
-                if "Mandatory parameter 'orderId' was not sent" in str(e):
+                if self._classify_cancel_error(e) == "reject":
                     logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
                     return False, None
                 last_network_error = e
                 logger.warning(f"[{venue_order_id}] Network error while cancelling: {e}")
             except ccxt.ExchangeError as e:
                 # Definitive venue refusal (non-network) → cancel-reject after retries.
-                if "Mandatory parameter 'orderId' was not sent" in str(e):
+                if self._classify_cancel_error(e) == "reject":
                     logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
                     return False, None
                 last_network_error = None
@@ -528,6 +520,25 @@ class CcxtConnector(ChannelEmitter):
             backoff_time = min(self.cancel_retry_interval * (2 ** (retries - 1)), 30)
             logger.debug(f"Retrying cancel for {venue_order_id} in {backoff_time}s (retry {retries})")
             await asyncio.sleep(backoff_time)
+
+    def _classify_cancel_error(self, err: Exception) -> Literal["retry", "reject"]:
+        """Venue-specific triage of one failed cancel attempt (mirrors the
+        ``_extract_venue_figures`` seam): ``"retry"`` when the venue may still produce a
+        definitive answer, ``"reject"`` on a definitive refusal. The base impl matches
+        Binance's error strings; venue subclasses override.
+        """
+        if isinstance(err, ccxt.OperationRejected):
+            msg = str(err).lower()
+            if "unknown order" in msg or "order does not exist" in msg or "order not found" in msg:
+                # Not visible at the venue yet (submit/cancel race) — may appear shortly.
+                return "retry"
+            # e.g. already filled — cancelling is permanently impossible.
+            return "reject"
+        if "Mandatory parameter 'orderId' was not sent" in str(err):
+            # Binance's refusal of a missing/invalid orderId — retrying cannot help
+            # (ccxt surfaces it as either NetworkError or ExchangeError).
+            return "reject"
+        return "retry"
 
     def _emit_canceled_from_response(
         self, client_order_id: str | None, venue_order_id: str | None, response: dict[str, Any] | None
@@ -652,16 +663,16 @@ class CcxtConnector(ChannelEmitter):
     # Client id
     # ------------------------------------------------------------------ #
     def make_client_id(self, suggested: str) -> str:
-        """Return the framework client id, ensuring the ``qubx_`` prefix.
+        """Return the framework client id, ensuring the ``FRAMEWORK_CID_PREFIX``.
 
-        ``ccxt_convert_order_info`` keys order-origin detection on the ``qubx_``
-        prefix (FRAMEWORK vs EXTERNAL), so the connector guarantees it. The generic
-        base impl only enforces the prefix; venue-specific sanitization (OKX char
-        set / length) is overridden in the subclass.
+        ``classify_origin`` keys order-origin detection on the prefix, so the
+        connector guarantees it. The generic base impl only enforces the prefix;
+        venue-specific sanitization (OKX char set / length) is overridden in the
+        subclass.
         """
-        if suggested.startswith(_CLIENT_ID_PREFIX):
+        if suggested.startswith(FRAMEWORK_CID_PREFIX):
             return suggested
-        return _CLIENT_ID_PREFIX + suggested
+        return FRAMEWORK_CID_PREFIX + suggested
 
     # ------------------------------------------------------------------ #
     # Leverage / margin
@@ -874,7 +885,7 @@ class CcxtConnector(ChannelEmitter):
 
         Binance carries the trade inline on the order report, so the deals are
         extracted straight from ``raw``. Two-stream venues (OKX/Bitfinex) override this
-        in ``_TwoStreamExecutionsMixin``: their watch_orders report carries no trades,
+        in ``_TwoStreamCcxtConnector``: their watch_orders report carries no trades,
         and the partials arrive on the separate watch_my_trades stream instead.
         """
         self._emit_fills(instrument, order, ccxt_extract_deals_from_exec(raw), partial=True)

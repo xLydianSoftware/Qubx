@@ -174,6 +174,24 @@ class RateLimitingConfig(StrictBaseModel):
     metrics_interval: str = "60s"  # Interval for emitting rate limit metrics (None to disable)
 
 
+class AccountManagerConfig(StrictBaseModel):
+    """Tuning knobs for the central AccountManager. Mirrors
+    ``qubx.core.account_manager.AccountManagerConfig`` 1:1 (fields and defaults)."""
+
+    inflight_check_interval_ms: int = 2_000
+    inflight_check_threshold_ms: int = 5_000
+    inflight_check_retries: int = 5
+
+    snapshot_check_interval_ms: int = 30_000
+    snapshot_check_threshold_ms: int = 5_000
+
+    liveness_check_interval_ms: int = 5_000
+    liveness_check_threshold_ms: int = 30_000
+
+    terminal_order_retention_ms: int = 30_000
+    terminal_order_history_size: int = 10_000
+
+
 class LiveConfig(StrictBaseModel):
     read_only: bool = False
     base_currency: str | None = None
@@ -189,6 +207,7 @@ class LiveConfig(StrictBaseModel):
     prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
     state: StatePersistenceConfig | None = None
     rate_limiting: RateLimitingConfig | None = None
+    account_manager: AccountManagerConfig = Field(default_factory=AccountManagerConfig)
 
 
 class SimulationConfig(StrictBaseModel):

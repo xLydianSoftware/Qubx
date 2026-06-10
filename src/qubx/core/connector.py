@@ -1,6 +1,6 @@
 from typing import Protocol, runtime_checkable
 
-from qubx.core.basics import CtrlChannel, Instrument, OrderRequest
+from qubx.core.basics import CtrlChannel, Instrument, OrderRequest, Timestamped
 from qubx.core.events import ChannelMessage
 
 
@@ -20,6 +20,18 @@ class ChannelEmitter:
 
 
 @runtime_checkable
+class IMarketDataSink(Protocol):
+    """Connector that consumes market data locally — a simulated venue feeding its OME.
+
+    Not part of the IConnector contract: live connectors execute at the venue and never
+    see market data. The processing manager narrows to this protocol before feeding a
+    paper-trading connector.
+    """
+
+    def process_market_data(self, instrument: Instrument, data: Timestamped) -> None: ...
+
+
+@runtime_checkable
 class IConnector(Protocol):
     exchange_name: str
 
@@ -31,16 +43,20 @@ class IConnector(Protocol):
     # id (the only id known before the venue acks). The caller passes whatever it has and the
     # connector picks the id the venue accepts, so the id choice stays in the connector (which
     # knows the venue). Resulting events carry both ids, so the AM routes by either.
-    def cancel_order(self, *, client_order_id: str | None = None,
-                     venue_order_id: str | None = None) -> None: ...
+    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None: ...
 
-    def update_order(self, *, client_order_id: str | None = None,
-                     venue_order_id: str | None = None,
-                     price: float | None = None,
-                     quantity: float | None = None) -> None: ...
+    def update_order(
+        self,
+        *,
+        client_order_id: str | None = None,
+        venue_order_id: str | None = None,
+        price: float | None = None,
+        quantity: float | None = None,
+    ) -> None: ...
 
-    def request_order_status(self, *, client_order_id: str | None = None,
-                             venue_order_id: str | None = None) -> None: ...
+    def request_order_status(
+        self, *, client_order_id: str | None = None, venue_order_id: str | None = None
+    ) -> None: ...
 
     def request_snapshot(self) -> None: ...
 
@@ -57,6 +73,5 @@ class IConnector(Protocol):
     @property
     def read_only(self) -> bool: ...
 
-    def set_instrument_leverage(self, instrument: Instrument,
-                                 leverage: float) -> bool: ...
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool: ...
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool: ...

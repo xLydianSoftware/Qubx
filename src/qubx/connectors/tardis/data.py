@@ -3,13 +3,13 @@ import json
 import threading
 import urllib.parse
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, Tuple
+from typing import Any, Dict, Tuple
 
 import aiohttp
 import pandas as pd
 
 from qubx import logger
-from qubx.connectors.registry import data_provider
+from qubx.connectors.registry import CredentialsProvider, data_provider
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote, Trade
@@ -23,9 +23,6 @@ from .utils import (
     tardis_convert_trade,
     tardis_extract_timeframe,
 )
-
-if TYPE_CHECKING:
-    from qubx.utils.runner.accounts import AccountConfigurationManager
 
 TARDIS_EXCHANGE_MAPPERS = {
     "bitfinex.f": "bitfinex-derivatives",
@@ -49,7 +46,7 @@ class TardisDataProvider(IDataProvider):
         time_provider: ITimeProvider,
         channel: CtrlChannel,
         health_monitor: IHealthMonitor,
-        account_manager: "AccountConfigurationManager | None" = None,
+        credentials: CredentialsProvider | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         host: str = "localhost",
         port: int = 8011,
@@ -675,7 +672,6 @@ class TardisDataProvider(IDataProvider):
 
                 # Send orderbooks as historical data
                 if orderbooks:
-                    params = {"tick_size_pct": tick_size_pct, "depth": depth}
                     sub_type = f"{DataType.ORDERBOOK}({tick_size_pct}, {depth})"
                     self.channel.send((instrument, sub_type, orderbooks, True))
                     logger.info(f"{self.__prefix()} Loaded {len(orderbooks)} orderbooks for {symbol}")

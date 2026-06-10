@@ -1,19 +1,16 @@
 import asyncio
 from threading import Thread
-from typing import TYPE_CHECKING, Any
+from typing import Any
 
 import ccxt.pro as cxp
 
-from qubx.connectors.registry import connector
+from qubx.connectors.registry import CredentialsProvider, connector
 from qubx.core.basics import CtrlChannel
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ITimeProvider
 
 from .connector import CcxtConnector
 from .exchange_manager import ExchangeManager
 from .exchanges import CUSTOM_CONNECTORS, EXCHANGE_ALIASES
-
-if TYPE_CHECKING:
-    from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
 def get_ccxt_exchange(
@@ -162,7 +159,7 @@ def create_ccxt_connector(
     exchange_name: str,
     time_provider: ITimeProvider,
     channel: CtrlChannel,
-    account_manager: "AccountConfigurationManager",
+    credentials: CredentialsProvider,
     data_provider: IDataProvider,
     health_monitor: IHealthMonitor,
     read_only: bool = False,
@@ -176,7 +173,7 @@ def create_ccxt_connector(
     (the manager cache keys on api_key/secret) — and resolves the per-exchange
     ``CcxtConnector`` subclass via ``get_ccxt_connector``.
     """
-    creds = account_manager.get_exchange_credentials(exchange_name)
+    creds = credentials.get_exchange_credentials(exchange_name)
     exchange_manager = get_ccxt_exchange_manager(
         exchange=exchange_name,
         use_testnet=creds.testnet,

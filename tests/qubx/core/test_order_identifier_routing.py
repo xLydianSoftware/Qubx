@@ -68,7 +68,7 @@ def test_cancel_order_routes_client_order_id(trading_manager):
     trading_manager._account_manager.transition_order.assert_called_once_with(
         "BINANCE.UM", "cid_1", OrderStatus.PENDING_CANCEL
     )
-    trading_manager._connectors["BINANCE.UM"].cancel_order.assert_called_once_with(
+    trading_manager._exchange_to_connector["BINANCE.UM"].cancel_order.assert_called_once_with(
         client_order_id="cid_1", venue_order_id="exchange_order_1"
     )
 
@@ -80,7 +80,7 @@ def test_cancel_order_routes_order_id(trading_manager):
 
     trading_manager.cancel_order(order_id="exchange_order_2", exchange="BINANCE.UM")
 
-    trading_manager._connectors["BINANCE.UM"].cancel_order.assert_called_once_with(
+    trading_manager._exchange_to_connector["BINANCE.UM"].cancel_order.assert_called_once_with(
         client_order_id="cid_2", venue_order_id="exchange_order_2"
     )
 
@@ -102,7 +102,7 @@ def test_update_order_routes_client_order_id(trading_manager):
     trading_manager._account_manager.transition_order.assert_called_once_with(
         "BINANCE.UM", "cid_1", OrderStatus.PENDING_UPDATE
     )
-    trading_manager._connectors["BINANCE.UM"].update_order.assert_called_once_with(
+    trading_manager._exchange_to_connector["BINANCE.UM"].update_order.assert_called_once_with(
         client_order_id="cid_1", venue_order_id="exchange_order_1", price=123.0, quantity=1.0
     )
 

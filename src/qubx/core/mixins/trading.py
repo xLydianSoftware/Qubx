@@ -3,6 +3,7 @@ from typing import Any, cast
 from qubx import logger
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
+    FRAMEWORK_CID_PREFIX,
     Instrument,
     MarketType,
     Order,
@@ -64,21 +65,13 @@ class ClientIdStore:
         return time_provider.time().astype("int64") // 100_000_000
 
     def _create_id(self, symbol: str, order_id: int) -> str:
-        """Create the ID from symbol and order ID.
-
-        Args:
-            symbol: Trading symbol
-            order_id: Current order ID counter
-
-        Returns:
-            Client ID string
-        """
-        return "_".join(["qubx", symbol, str(order_id)])
+        """Create the client id; the FRAMEWORK_CID_PREFIX is load-bearing for
+        order-origin classification (``classify_origin``)."""
+        return f"{FRAMEWORK_CID_PREFIX}{symbol}_{order_id}"
 
 
 class TradingManager(ITradingManager):
     _context: IStrategyContext
-    _connectors: dict[str, IConnector]
     _account_manager: AccountManager
     _health_monitor: IHealthMonitor
     _strategy_name: str
@@ -95,7 +88,6 @@ class TradingManager(ITradingManager):
         strategy_name: str,
     ) -> None:
         self._context = context
-        self._connectors = connectors
         self._account_manager = account_manager
         self._health_monitor = health_monitor
         self._strategy_name = strategy_name

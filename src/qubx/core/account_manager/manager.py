@@ -6,7 +6,7 @@ Periodic ticks (reconcile, sweep, liveness) call the reconcile.py decision helpe
 fire the connector requests — connector calls stay manager-only, as does PM wiring.
 """
 
-from typing import TYPE_CHECKING, Callable, Literal
+from typing import Callable, Literal
 
 import numpy as np
 import pandas as pd
@@ -16,7 +16,6 @@ from qubx.core.account_manager import reconcile, reducer
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.account_manager.state import AccountState
-from qubx.core.account_manager.state_machine import validate_transition
 from qubx.core.basics import (
     ZERO_COSTS,
     Balance,
@@ -34,13 +33,6 @@ from qubx.core.events import AccountMessage, AccountSnapshotEvent, OrderEvent
 from qubx.core.interfaces import IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
 
-# StrategyContext and ProcessingManager both import AccountManager (the context builds it,
-# the PM holds/schedules for it), so importing them here at runtime is a circular import —
-# they're type-only forward refs.
-if TYPE_CHECKING:
-    from qubx.core.context import StrategyContext
-    from qubx.core.mixins.processing import ProcessingManager
-
 
 class AccountManager:
     _pm: IProcessingManager | None
@@ -48,7 +40,7 @@ class AccountManager:
     _time: ITimeProvider
     _cfg: AccountManagerConfig
     account_id: str
-    _tcc: TransactionCostsCalculator | None
+    _tcc: dict[str, TransactionCostsCalculator]
     _states: dict[str, AccountState]
     # Derived timedeltas, precomputed once in _init_state (config is fixed for the AM's life).
     _snapshot_grace: np.timedelta64
@@ -62,13 +54,13 @@ class AccountManager:
     def __init__(
         self,
         *,
-        pm: "ProcessingManager | None" = None,
+        pm: IProcessingManager | None = None,
         connectors: dict[str, IConnector],
         base_currencies: dict[str, str],
         time: ITimeProvider,
         cfg: AccountManagerConfig | None = None,
         account_id: str = "AccountManager",
-        tcc: TransactionCostsCalculator | None = None,
+        tcc: dict[str, TransactionCostsCalculator] | None = None,
     ):
         self._pm = pm
         self._init_state(
@@ -81,20 +73,20 @@ class AccountManager:
         )
         # The live runner builds the AM before the ProcessingManager (which lives inside
         # StrategyContext and needs the AM), so pm is None there — ticks register later in
-        # set_context once ctx._processing_manager exists. Direct-construction callers
-        # (tests) still pass pm and get ticks immediately.
+        # set_processing_manager once the PM exists. Direct-construction callers (tests)
+        # still pass pm and get ticks immediately.
         if self._pm is not None:
             self._register_ticks()
 
-    def set_context(self, ctx: "StrategyContext") -> None:
-        """Late wiring hook, called by StrategyContext once it exists.
+    def set_processing_manager(self, pm: IProcessingManager) -> None:
+        """Late wiring hook, called by StrategyContext once its ProcessingManager exists.
 
-        Live: the AM is built before the ProcessingManager (the AM↔pm cycle — pm lives
-        inside StrategyContext, which takes the AM), so pm is None at construction and
-        the periodic ticks register HERE, once ctx._processing_manager exists.
+        Live: the AM is built before the ProcessingManager (the AM↔pm cycle — the PM lives
+        inside StrategyContext, which takes the AM), so pm is None at construction and the
+        periodic ticks register HERE. Idempotent: a second call is a no-op.
         """
         if self._pm is None:
-            self._pm = ctx._processing_manager
+            self._pm = pm
             self._register_ticks()
 
     def _init_state(
@@ -105,7 +97,7 @@ class AccountManager:
         time: ITimeProvider,
         cfg: AccountManagerConfig | None,
         account_id: str,
-        tcc: TransactionCostsCalculator | None,
+        tcc: dict[str, TransactionCostsCalculator] | None,
     ) -> None:
         # Shared field init for both the live and simulation managers, so the
         # subclass can't silently drift from the parent's field set.
@@ -113,7 +105,8 @@ class AccountManager:
         self._time = time
         self._cfg = cfg or AccountManagerConfig()
         self.account_id = account_id
-        self._tcc = tcc
+        # Per-exchange fee schedules, keyed like connectors/base_currencies.
+        self._tcc = tcc or {}
         # Derived timedeltas (config is fixed for the AM's lifetime) — computed once
         # here rather than rebuilt on every tick/snapshot.
         self._snapshot_grace = np.timedelta64(self._cfg.snapshot_check_threshold_ms, "ms")
@@ -156,17 +149,39 @@ class AccountManager:
         self._states[order.instrument.exchange].add_order(order)
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
-        state = self._states[exchange]
-        order = state.get_active_order(cid)
-        if order is None:
-            raise KeyError(f"order {cid} not found in {exchange}")
-        validate_transition(cid, order.status, new_status)
-        state.transition_order(cid, new_status, self._time.time())
+        reconcile.transition(self._states[exchange], cid, new_status, self._time.time())
 
     def remove_order(self, exchange: str, cid: str) -> None:
         # Drop an order from state entirely (e.g. a submit that raised before reaching the
         # venue) — distinct from a terminal transition, which keeps it in history.
         self._states[exchange].remove_order(cid)
+
+    # ---- state seeding & cash adjustments (runner/transfer boundary) ------ #
+    # The only sanctioned out-of-AM mutation paths: AccountState mutators stay
+    # AM-internal, callers go through these.
+
+    def seed_balance(self, exchange: str, balance: Balance) -> bool:
+        """Seed a startup balance (restored state, initial paper/backtest capital).
+        Returns False when this AM doesn't manage the exchange (record skipped)."""
+        state = self._states.get(exchange)
+        if state is None:
+            return False
+        state.update_balance(balance.currency, balance)
+        return True
+
+    def seed_position(self, position: Position) -> bool:
+        """Seed a restored position (exchange derived from the instrument).
+        Returns False when this AM doesn't manage the exchange (record skipped)."""
+        state = self._states.get(position.instrument.exchange)
+        if state is None:
+            return False
+        state.set_position(position.instrument, position)
+        return True
+
+    def adjust_balance(self, exchange: str, currency: str, delta: float) -> None:
+        """Apply a cash delta (e.g. a simulated transfer leg) to an exchange balance,
+        creating the Balance if missing."""
+        self._states[exchange].adjust_balance(currency, delta)
 
     # ---- event path ------------------------------------------------------ #
 
@@ -348,11 +363,12 @@ class AccountManager:
         return [b for s in self._states.values() for b in s.get_balances()]
 
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
-        # `exchange` is accepted for IStrategyContext symmetry but unused: the AM models a
-        # single TCC that applies to every exchange (no per-exchange fee modeling).
-        # No TCC configured => zero-fee calculator (rather than raising), so callers that
-        # only need fee arithmetic still work in fee-agnostic setups.
-        return self._tcc if self._tcc is not None else ZERO_COSTS
+        # No exchange => the first configured one (single-exchange callers omit it).
+        # No TCC configured for the exchange => zero-fee calculator (rather than raising),
+        # so callers that only need fee arithmetic still work in fee-agnostic setups.
+        if exchange is None:
+            exchange = next(iter(self._states))
+        return self._tcc.get(exchange, ZERO_COSTS)
 
     def find_order_by_id(self, order_id: str) -> Order | None:
         for state in self._states.values():
@@ -558,10 +574,10 @@ class SimulatedAccountManager(AccountManager):
         time,
         cfg: AccountManagerConfig | None = None,
         account_id: str = "SimulatedAccountManager",
-        tcc: TransactionCostsCalculator | None = None,
+        tcc: dict[str, TransactionCostsCalculator] | None = None,
     ):
-        self._pm = None
-        self._init_state(
+        # pm stays None and set_processing_manager below is a no-op, so no ticks ever register.
+        super().__init__(
             connectors=connectors,
             base_currencies=base_currencies,
             time=time,
@@ -569,10 +585,8 @@ class SimulatedAccountManager(AccountManager):
             account_id=account_id,
             tcc=tcc,
         )
-        # Backtest has no asyncio/WS/periodic scheduling — no ticks registered.
 
-    def set_context(self, ctx: "StrategyContext") -> None:
+    def set_processing_manager(self, pm: IProcessingManager) -> None:
         # Backtest is synchronous: NEVER register periodic ticks (no PM scheduler drives
-        # them in simulation). Overrides the base, which would otherwise pull pm from ctx
-        # and schedule.
+        # them in simulation). Overrides the base, which would otherwise store pm and schedule.
         pass

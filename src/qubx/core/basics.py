@@ -689,6 +689,10 @@ class OrderStatus(StrEnum):
     def is_inflight(self) -> bool:
         return self in _INFLIGHT_ORDER_STATUSES
 
+    @property
+    def is_pending(self) -> bool:
+        return self in _PENDING_ORDER_STATUSES
+
 
 _TERMINAL_ORDER_STATUSES = frozenset(
     {
@@ -705,12 +709,36 @@ _INFLIGHT_ORDER_STATUSES = frozenset(
         OrderStatus.PENDING_UPDATE,
     }
 )
+_PENDING_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.PENDING_UPDATE,
+    }
+)
+
+
+# Client-id prefixes shared by every producer/classifier of order client ids.
+# FRAMEWORK_CID_PREFIX marks an order as framework-originated (ClientIdStore._create_id,
+# connector make_client_id); EXTERNAL_CID_PREFIX marks a cid synthesized for an order the
+# framework discovered at the venue but never placed.
+FRAMEWORK_CID_PREFIX = "qubx_"
+EXTERNAL_CID_PREFIX = "ext:"
 
 
 class OrderOrigin(StrEnum):
     FRAMEWORK = "FRAMEWORK"
     RECOVERED = "RECOVERED"
     EXTERNAL = "EXTERNAL"
+
+
+def classify_origin(client_order_id: str) -> OrderOrigin:
+    """Classify an order observed in venue data by its client id: the framework cid
+    prefix marks a framework order seen back from the venue (RECOVERED), anything
+    else is EXTERNAL. Orders the framework places itself are FRAMEWORK at creation
+    and never pass through here."""
+    if client_order_id.startswith(FRAMEWORK_CID_PREFIX):
+        return OrderOrigin.RECOVERED
+    return OrderOrigin.EXTERNAL
 
 
 class OrderChange(StrEnum):

@@ -13,8 +13,9 @@ fetches its true status first and terminalizes (``terminalize_missing``) only on
 the per-order fetch budget is exhausted.
 
 Import rule: this module must never import the reducer (or the manager) — that is
-the cycle-relevant rule; state, state_machine and the leaf event/basics modules are fine. The tiny validate+transition helper is deliberately
-duplicated here instead of being imported from the reducer.
+the cycle-relevant rule; state, state_machine and the leaf event/basics modules are
+fine. The validate+transition helper (``transition``) lives HERE for that reason:
+the reducer and the manager import it from this module, never the other way around.
 """
 
 from dataclasses import dataclass, field
@@ -24,7 +25,15 @@ import numpy as np
 from qubx import logger
 from qubx.core.account_manager.state import AccountState, VenueAccountFigures
 from qubx.core.account_manager.state_machine import can_transition, validate_transition
-from qubx.core.basics import Balance, Order, OrderOrigin, OrderStatus, Position
+from qubx.core.basics import (
+    EXTERNAL_CID_PREFIX,
+    Balance,
+    Order,
+    OrderOrigin,
+    OrderStatus,
+    Position,
+    classify_origin,
+)
 from qubx.core.events import (
     AccountSnapshot,
     OrderCancelRejectedEvent,
@@ -33,11 +42,6 @@ from qubx.core.events import (
     OrderUpdateRejectedEvent,
 )
 from qubx.core.exceptions import InvalidOrderTransition
-
-# Client-id prefix that marks an order as framework-originated. MUST match the prefix
-# ClientIdStore._create_id produces in qubx.core.mixins.trading ("qubx_<symbol>_<n>");
-# a snapshot order carrying it is a RECOVERED framework order, anything else is EXTERNAL.
-_FRAMEWORK_CID_PREFIX = "qubx_"
 
 
 @dataclass
@@ -61,8 +65,9 @@ class ReconcileDiff:
     venue_figures: VenueAccountFigures | None = None
 
 
-def _transition(state: AccountState, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
-    # Duplicated from the reducer on purpose (import rule above): validate then apply.
+def transition(state: AccountState, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
+    """Validate-then-apply for an active order's status — the single legality chokepoint
+    (the reducer and the manager delegate here; see the import rule above)."""
     order = state.get_active_order(cid)
     if order is None:
         raise KeyError(f"order {cid} not found in {state.exchange}")
@@ -183,15 +188,11 @@ def _materialize_from_snapshot(state: AccountState, snap_order: Order, as_of: np
     # cid prefix classifies origin: our prefix → a recovered framework order;
     # anything else → external. Keep an already-synthesized ext: cid as-is,
     # otherwise synthesize one from the venue id.
-    if snap_order.client_order_id.startswith(_FRAMEWORK_CID_PREFIX):
-        origin = OrderOrigin.RECOVERED
-        cid = snap_order.client_order_id
-    elif snap_order.client_order_id.startswith("ext:"):
-        origin = OrderOrigin.EXTERNAL
+    origin = classify_origin(snap_order.client_order_id)
+    if origin is OrderOrigin.RECOVERED or snap_order.client_order_id.startswith(EXTERNAL_CID_PREFIX):
         cid = snap_order.client_order_id
     else:
-        origin = OrderOrigin.EXTERNAL
-        cid = f"ext:{snap_order.venue_order_id}"
+        cid = f"{EXTERNAL_CID_PREFIX}{snap_order.venue_order_id}"
     order = Order(
         client_order_id=cid,
         venue_order_id=snap_order.venue_order_id,
@@ -241,7 +242,7 @@ def _reconcile_status_from_snapshot(
     # a bare ``existing.status =`` write, which left snapshot-terminalized orders as
     # permanent hidden residents of active state with a stale inflight entry.
     cid = existing.client_order_id
-    if existing.status in (OrderStatus.PENDING_CANCEL, OrderStatus.PENDING_UPDATE) and not venue_status.is_terminal:
+    if existing.status.is_pending and not venue_status.is_terminal:
         # The snapshot is a poll of venue state: our cancel/update request may still be
         # in flight, so a live venue status must not wipe the pending marker (same
         # rationale as the accept-during-PENDING_CANCEL guard). The venue resolves the
@@ -266,7 +267,7 @@ def terminalize_missing(state: AccountState, order: Order, now: np.datetime64) -
     terminal = OrderStatus.REJECTED if order.status == OrderStatus.SUBMITTED else OrderStatus.CANCELED
     order.rejected_reason = "reconcile: missing from snapshot"
     try:
-        _transition(state, cid, terminal, now)
+        transition(state, cid, terminal, now)
         return True
     except InvalidOrderTransition:
         logger.warning(f"reconcile: cannot terminate {cid} from {order.status}")

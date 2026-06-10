@@ -1,4 +1,4 @@
-"""Shared two-stream executions mixin for split orders/fills venues.
+"""Shared two-stream executions connector base for split orders/fills venues.
 
 Most venues (Binance) carry an order's fills inline on the ``watch_orders`` report,
 so the base ``CcxtConnector`` reads everything from a single stream. OKX and Bitfinex
@@ -8,7 +8,7 @@ instead split the account feed:
   Rejected, and a terminal Filled flag) — NO fill/trade detail.
 - ``watch_my_trades`` carries the executions (the per-trade fills).
 
-``_TwoStreamExecutionsMixin`` adapts the base connector to that split by staying dumb
+``_TwoStreamCcxtConnector`` adapts the base connector to that split by staying dumb
 (hybrid event model — the AccountManager correlates the two streams, not the connector):
 
 1. Running TWO ``_run_ws_loop`` loops concurrently (one per stream), reusing the
@@ -30,16 +30,16 @@ from qubx import logger
 from qubx.core.basics import Instrument, Order
 from qubx.core.events import DealEvent, OrderFilledEvent, OrderPartiallyFilledEvent
 
+from ..connector import CcxtConnector
 from ..exceptions import CcxtSymbolNotRecognized
 from ..utils import ccxt_convert_deal_info
 
 
-class _TwoStreamExecutionsMixin:
-    """Mixin overriding the base connector's execution-stream seams for split venues.
+class _TwoStreamCcxtConnector(CcxtConnector):
+    """CcxtConnector overriding the execution-stream seams for split venues.
 
-    Mixed into a ``CcxtConnector`` subclass (it relies on the base's ``_run_ws_loop``,
-    ``_instrument_for_symbol``, ``_venue_to_cid`` and ``send``). Stateless: each stream
-    forwards what it sees; the AccountManager correlates deals to orders.
+    Stateless on top of the base: each stream forwards what it sees; the
+    AccountManager correlates deals to orders.
     """
 
     async def _subscribe_executions(self) -> None:
@@ -50,20 +50,20 @@ class _TwoStreamExecutionsMixin:
         loop marks WS readiness — a trade-only feed must not flip liveness on its own.
         """
         await asyncio.gather(
-            self._run_ws_loop(  # type: ignore[attr-defined]
-                watch=self._em.exchange.watch_orders,  # type: ignore[attr-defined]
-                handle=self._handle_ws_order,  # type: ignore[attr-defined]
+            self._run_ws_loop(
+                watch=self._em.exchange.watch_orders,
+                handle=self._handle_ws_order,
                 stream="orders",
                 mark_ready=True,
             ),
-            self._run_ws_loop(  # type: ignore[attr-defined]
-                watch=self._em.exchange.watch_my_trades,  # type: ignore[attr-defined]
+            self._run_ws_loop(
+                watch=self._em.exchange.watch_my_trades,
                 handle=self._handle_ws_trade,
                 stream="my_trades",
                 mark_ready=False,
             ),
         )
-        logger.debug(f"[{self.exchange_name}] split executions streams ended")  # type: ignore[attr-defined]
+        logger.debug(f"[{self.exchange_name}] split executions streams ended")
 
     # ------------------------------------------------------------------ #
     # Trade stream → deals
@@ -78,25 +78,23 @@ class _TwoStreamExecutionsMixin:
         delivered first, deduped by trade_id.
         """
         try:
-            instrument = self._instrument_for_symbol(raw["symbol"])  # type: ignore[attr-defined]
+            instrument = self._instrument_for_symbol(raw["symbol"])
         except CcxtSymbolNotRecognized:  # unknown symbol: skip the trade
-            logger.warning(
-                f"[{self.exchange_name}] WS trade for unknown symbol {raw.get('symbol')}; skipped"  # type: ignore[attr-defined]
-            )
+            logger.warning(f"[{self.exchange_name}] WS trade for unknown symbol {raw.get('symbol')}; skipped")
             return
         deal = ccxt_convert_deal_info(raw)
         venue_order_id = raw.get("order")
-        cid = self._venue_to_cid.get(venue_order_id) if venue_order_id is not None else None  # type: ignore[attr-defined]
+        cid = self._venue_to_cid.get(venue_order_id) if venue_order_id is not None else None
         if cid is None:
             # The order's open/new report (which seeds the venue->cid index) may not have
             # arrived yet, the order may already be evicted (terminal status beat the
             # trade), or this is an external order. Emit routed by venue id — AM resolves
             # (or materializes) the order from it.
             logger.debug(
-                f"[{self.exchange_name}] trade {deal.trade_id} for venue id {venue_order_id}: "  # type: ignore[attr-defined]
+                f"[{self.exchange_name}] trade {deal.trade_id} for venue id {venue_order_id}: "
                 "no cid in index; emitting deal by venue id"
             )
-        self.send(  # type: ignore[attr-defined]
+        self.send(
             DealEvent(
                 instrument=instrument,
                 client_order_id=cid,  # None when not indexed — AM resolves by venue id
@@ -110,7 +108,7 @@ class _TwoStreamExecutionsMixin:
     # ------------------------------------------------------------------ #
     def _handle_partial_fill_status(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
         """Emit the PARTIALLY_FILLED status with no fill — the deal rides the trade stream."""
-        self.send(  # type: ignore[attr-defined]
+        self.send(
             OrderPartiallyFilledEvent(
                 instrument=instrument,
                 client_order_id=order.client_order_id,
@@ -121,7 +119,7 @@ class _TwoStreamExecutionsMixin:
 
     def _handle_filled_status(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
         """Emit the terminal FILLED status with no fill — the deal rides the trade stream."""
-        self.send(  # type: ignore[attr-defined]
+        self.send(
             OrderFilledEvent(
                 instrument=instrument,
                 client_order_id=order.client_order_id,

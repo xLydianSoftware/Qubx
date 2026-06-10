@@ -301,9 +301,15 @@ class TestStrats:
 
 def _raw_order(**overrides):
     raw = {
-        "info": {}, "amount": 1.0, "price": 50_000.0, "status": "open",
-        "side": "buy", "type": "limit", "timestamp": 1_716_854_400_000,
-        "id": "VENUE-999", "cost": 0.0,
+        "info": {},
+        "amount": 1.0,
+        "price": 50_000.0,
+        "status": "open",
+        "side": "buy",
+        "type": "limit",
+        "timestamp": 1_716_854_400_000,
+        "id": "VENUE-999",
+        "cost": 0.0,
     }
     raw.update(overrides)
     return raw
@@ -320,10 +326,12 @@ def test_convert_order_info_without_client_order_id_falls_back_to_ext():
 
 
 def test_convert_order_info_with_framework_client_order_id():
+    # A framework cid parsed back from venue data classifies as RECOVERED (classify_origin);
+    # FRAMEWORK is reserved for orders the trading mixin creates itself.
     instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
     order = ccxt_convert_order_info(instrument, _raw_order(clientOrderId="qubx_BTCUSDT_1"))
     assert order.client_order_id == "qubx_BTCUSDT_1"
-    assert order.origin == OrderOrigin.FRAMEWORK
+    assert order.origin == OrderOrigin.RECOVERED
 
 
 def test_convert_order_info_market_order_price_is_none():

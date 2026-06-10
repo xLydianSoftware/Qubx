@@ -6,13 +6,42 @@ to register custom data providers and ``IConnector`` execution connectors using
 decorators (like readers and storages).
 """
 
-from typing import Any, Callable, Type, TypeVar
+from typing import Any, Callable, Protocol, Type, TypeVar
 
 from qubx import logger
 from qubx.core.connector import IConnector
 from qubx.core.interfaces import IDataProvider
 
 T = TypeVar("T")
+
+
+class ExchangeSettingsLike(Protocol):
+    """The slice of per-exchange settings that registered factories actually read."""
+
+    testnet: bool
+
+
+class ExchangeCredentialsLike(Protocol):
+    """The slice of per-exchange credentials that registered factories actually read."""
+
+    testnet: bool
+    api_key: str
+    secret: str
+
+    @property
+    def model_extra(self) -> dict[str, Any] | None: ...
+
+
+class CredentialsProvider(Protocol):
+    """Structural view of the runner's ``AccountConfigurationManager``.
+
+    Registered factories receive it as the standardized ``credentials`` argument; typing it
+    structurally keeps connector code free of a connectors->runner import back-edge.
+    """
+
+    def get_exchange_settings(self, exchange: str) -> ExchangeSettingsLike: ...
+
+    def get_exchange_credentials(self, exchange: str) -> ExchangeCredentialsLike: ...
 
 
 class ConnectorRegistry:
@@ -70,10 +99,7 @@ class ConnectorRegistry:
         """
         provider_cls = cls._data_providers.get(name.lower())
         if provider_cls is None:
-            raise ValueError(
-                f"Data provider '{name}' is not registered. "
-                f"Available: {list(cls._data_providers.keys())}"
-            )
+            raise ValueError(f"Data provider '{name}' is not registered. Available: {list(cls._data_providers.keys())}")
         return provider_cls(**kwargs)
 
     @classmethod
@@ -110,9 +136,7 @@ class ConnectorRegistry:
         """
         factory = cls._connectors.get(name.lower())
         if factory is None:
-            raise ValueError(
-                f"Connector '{name}' is not registered. Available: {list(cls._connectors.keys())}"
-            )
+            raise ValueError(f"Connector '{name}' is not registered. Available: {list(cls._connectors.keys())}")
         return factory(**kwargs)
 
     @classmethod

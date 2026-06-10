@@ -525,7 +525,7 @@ def create_strategy_context(
     # Rate limiting (backend, IP discovery, per-exchange limiters)
     _rl_manager = RateLimitManager(config.live.rate_limiting, loop)
 
-    _exchange_to_tcc = {}
+    _exchange_to_tcc: dict[str, TransactionCostsCalculator] = {}
     _exchange_to_data_provider = {}
     _connectors: dict[str, IConnector] = {}
     _instruments = []
@@ -563,7 +563,7 @@ def create_strategy_context(
                 exchange_name=exchange_name,
                 time_provider=_time,
                 channel=_chan,
-                account_manager=account_manager,
+                credentials=account_manager,
                 data_provider=_data_provider,
                 health_monitor=_health_monitor,
                 read_only=config.live.read_only,
@@ -604,8 +604,8 @@ def create_strategy_context(
     # - central account manager. Paper's simulated execution is synchronous (no pm/ticks),
     #   so it uses SimulatedAccountManager. Live builds the real AccountManager WITHOUT a
     #   pm — the ProcessingManager lives inside StrategyContext (which takes the AM), so the
-    #   AM↔pm cycle is resolved by registering the periodic ticks in AccountManager.set_context
-    #   once ctx._processing_manager exists. The function param `account_manager` is the
+    #   AM↔pm cycle is resolved by registering the periodic ticks in
+    #   AccountManager.set_processing_manager once the PM exists. The function param `account_manager` is the
     #   credentials manager — keep them distinct (`_am`).
     _am_cls = SimulatedAccountManager if paper else AccountManager
     _base_currencies = {
@@ -616,9 +616,9 @@ def create_strategy_context(
         connectors=_connectors,
         base_currencies=_base_currencies,
         time=_time,
-        cfg=AccountManagerConfig(),
+        cfg=AccountManagerConfig(**config.live.account_manager.model_dump()),
         account_id=stg_name,
-        tcc=_exchange_to_tcc[exchanges[0]],
+        tcc=_exchange_to_tcc,
     )
     # Paper seeds the configured initial capital per exchange (no venue to query); live seeds
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions
@@ -764,7 +764,7 @@ def _create_data_provider(
         time_provider=time_provider,
         channel=channel,
         health_monitor=health_monitor,
-        account_manager=account_manager,
+        credentials=account_manager,
         loop=loop,
         **exchange_config.params,
     )
@@ -806,18 +806,14 @@ def _inject_restored_state(account_manager: AccountManager, restored_state: Rest
     """Seed the central AccountManager's per-exchange state from restored state.
 
     RestoredState carries persisted positions and balances (no open orders — the venue
-    snapshot reconciles those live). Positions are seeded via set_position (carrying the
-    persisted accounting fields: commissions, r_pnl, cumulative_funding, funding history),
-    balances via update_balance. Records for exchanges the AM doesn't manage are skipped.
+    snapshot reconciles those live). Positions keep the persisted accounting fields
+    (commissions, r_pnl, cumulative_funding, funding history). Records for exchanges
+    the AM doesn't manage are skipped (seed_* returns False).
     """
-    for instrument, position in restored_state.positions.items():
-        state = account_manager._states.get(instrument.exchange)
-        if state is not None:
-            state.set_position(instrument, position)
+    for position in restored_state.positions.values():
+        account_manager.seed_position(position)
     for balance in restored_state.balances:
-        state = account_manager._states.get(balance.exchange)
-        if state is not None:
-            state.update_balance(balance.currency, balance)
+        account_manager.seed_balance(balance.exchange, balance)
 
 
 def _seed_paper_capital(
@@ -830,10 +826,10 @@ def _seed_paper_capital(
     The base currency comes from the AM's state — already resolved from config at
     construction — so seeding can't drift from the AM's own base-currency view.
     """
-    base_currency = account_manager.get_state(exchange_name).base_currency
+    base_currency = account_manager.get_base_currency(exchange_name)
     capital = credentials_manager.get_exchange_settings(exchange_name).initial_capital
-    account_manager.get_state(exchange_name).update_balance(
-        base_currency,
+    account_manager.seed_balance(
+        exchange_name,
         Balance(exchange=exchange_name, currency=base_currency, total=capital, free=capital, locked=0.0),
     )
 
