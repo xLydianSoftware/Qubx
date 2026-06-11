@@ -146,13 +146,13 @@ class ActiveInstrument:
     def cancel(self):
         for o in ctx.get_orders(self._instrument).values():
             try:
-                ctx.cancel_order(order_id=o.id)
+                ctx.cancel_order(client_order_id=o.client_order_id)
             except OrderNotFound:
                 pass  # Order already cancelled
 
     def orders(self):
         for i, o in ctx.get_orders(self._instrument).items():
-            print("\t" + green(i) + " " + o.status + " " + o.side + " " + green(o.instrument.symbol) + " " +  str(o.quantity) + " @ " + str(o.price) + " - " +  blue(str(o.time)))
+            print("\t" + green(i) + " " + o.status + " " + o.side + " " + green(o.instrument.symbol) + " " +  str(o.quantity) + " @ " + str(o.price) + " - " +  blue(str(o.submitted_at)))
 
     def ohlc(self, timeframe: str, length: int = 50):
         return ctx.ohlc(self._instrument, timeframe, length)
@@ -178,7 +178,7 @@ def orders(instrument: Instrument | ActiveInstrument | None=None):
     if (_orders:=ctx.get_orders()):
         print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
         for k, (i, o) in enumerate(_orders.items()):
-            print(" [" + str(k) + "] " + "\t" + green(i) + " " + blue(o.status) + " " + green(o.side) + " " + red(o.instrument.symbol) + " " +  str(o.quantity) + " @ " + str(o.price) + " - " +  blue(str(o.time)))
+            print(" [" + str(k) + "] " + "\t" + green(i) + " " + blue(o.status) + " " + green(o.side) + " " + red(o.instrument.symbol) + " " +  str(o.quantity) + " @ " + str(o.price) + " - " +  blue(str(o.submitted_at)))
         print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
     # return ctx.get_orders(instrument if isinstance(instrument, Instrument) or instrument is None else instrument._instrument)
 
@@ -263,9 +263,9 @@ class IntMagics(Magics):
 
         if (_orders:=ctx.get_orders()):
             for k, (i, o) in enumerate(_orders.items()):
-                if order_n == k or order_n == o.id:
+                if order_n == k or order_n == o.venue_order_id:
                     try:
-                        ctx.cancel_order(order_id=o.id)
+                        ctx.cancel_order(client_order_id=o.client_order_id)
                     except OrderNotFound:
                         pass  # Order already cancelled
                     break
