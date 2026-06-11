@@ -173,6 +173,7 @@ class AccountSnapshot:
     equity: float | None = None
     available_margin: float | None = None
     margin_ratio: float | None = None
+    withdrawable: float | None = None
 
 
 @msg

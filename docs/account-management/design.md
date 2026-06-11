@@ -114,6 +114,10 @@ legality, runs no reconcile rules, fires no callbacks, depends on no clock.
 - `get_available_margin = total_capital − total_initial_margin` (old parity). The
   `get_capital` alias is **removed** (it only aliased available margin).
 - `total_capital = venue.equity ?? base.total + Σ market_value_funds` (old formula).
+  The derived branch counts **only base-currency cash** — non-base cash balances are
+  excluded until the multi-currency conversion seam is filled; live is shielded because
+  venue equity (e.g. Binance `totalMarginBalance`, which values all collateral assets in
+  multi-asset mode) is preferred when reported.
 - `get_reserved` is **removed** end-to-end (viewer interface, AM, rebalancer tracker);
   the reservation concept itself is gone.
 - **Capital locking deferred.** The old limit-order lock only moved `base.free ↔
@@ -129,12 +133,17 @@ legality, runs no reconcile rules, fires no callbacks, depends on no clock.
 ### Venue-reported figures (option 2)
 
 `AccountState` holds an optional `VenueAccountFigures{equity, available_margin,
-margin_ratio, as_of}`. Each metric prefers its venue counterpart when present, else
-derives. The figures ride **flat on `AccountSnapshot`** (optional fields next to
-`as_of`/orders/positions/balances) and are set only by snapshot reconcile; the connector
-extracts them via the `_extract_venue_figures` seam (Binance and OKX wired; Bitfinex
-documented derive-only — `fetch_balance` carries no account figures; other venues return
-None and always derive — as does sim).
+margin_ratio, withdrawable, as_of}`. Each metric prefers its venue counterpart when
+present, else derives. The figures ride **flat on `AccountSnapshot`** (optional fields
+next to `as_of`/orders/positions/balances) and are set only by snapshot reconcile; the
+connector extracts them via the `_extract_venue_figures` seam (Binance and OKX wired;
+Bitfinex documented derive-only — `fetch_balance` carries no account figures; other
+venues return None and always derive — as does sim).
+
+- `withdrawable` maps Binance fapi `maxWithdrawAmount`; OKX exposes max-withdrawal only
+  on a separate endpoint (outside the snapshot seam) so it stays None there. The derived
+  fallback equals available margin (withdrawable ≤ available conceptually; equality is
+  the documented sim/no-venue simplification).
 
 - **Freshness = WS liveness, not a TTL.** Venue figures arrive in lockstep with the
   events that would change them; the only staleness is a dead WS, which the liveness →

@@ -449,17 +449,33 @@ class IAccountViewer:
         ...
 
     def get_available_margin(self, exchange: str | None = None) -> float:
-        """Get available margin for new positions.
+        """Get the available balance: capital free for opening new positions.
 
-        Available margin is ``total_capital - total_initial_margin``. For accurate
-        results, the connector must populate ``Position.initial_margin`` either
-        via ``set_external_initial_margin(...)`` from venue data (e.g. HPL
+        In live this is the venue-reported figure when the venue provides one
+        (e.g. Binance ``availableBalance``); otherwise it derives as
+        ``total_capital - total_initial_margin``. For an accurate derivation,
+        the connector must populate ``Position.initial_margin`` either via
+        ``set_external_initial_margin(...)`` from venue data (e.g. HPL
         ``marginUsed``) or via ``instrument.initial_margin`` in the metadata.
         Connectors that populate neither will see this method return the full
         capital.
 
         Returns:
-            float: Available margin
+            float: Available balance
+        """
+        ...
+
+    def get_withdrawable_balance(self, exchange: str | None = None) -> float:
+        """Get the balance that could be withdrawn/transferred out of the account.
+
+        In live this is the venue-reported figure when the venue provides one
+        (e.g. Binance ``maxWithdrawAmount``); otherwise it falls back to
+        ``get_available_margin`` (withdrawable <= available conceptually;
+        equality is the documented simplification used in simulation and on
+        venues that report no withdrawable figure).
+
+        Returns:
+            float: Withdrawable balance
         """
         ...
 

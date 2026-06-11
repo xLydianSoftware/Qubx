@@ -100,6 +100,9 @@ class SimulationSetup:
     enable_funding: bool = False
 
     def __post_init__(self) -> None:
+        # Normalize once at the config boundary: AccountState stores base_currency upper-cased,
+        # so a lowercase value here would seed capital under a key total_capital never reads.
+        self.base_currency = self.base_currency.upper()
         # Normalize capital to a per-exchange dict: split evenly when a single float is given
         if isinstance(self.capital, (int, float)):
             n = len(self.exchanges)

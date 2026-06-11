@@ -186,12 +186,18 @@ def reconcile_snapshot(
     # Venue-reported account figures: prefer-venue-else-derive happens per metric in
     # AccountState. A snapshot with no figures (sim, or a failed balance leg) keeps the
     # previous capture rather than clearing — absence means "not observed", not "gone".
-    if snapshot.equity is not None or snapshot.available_margin is not None or snapshot.margin_ratio is not None:
+    if (
+        snapshot.equity is not None
+        or snapshot.available_margin is not None
+        or snapshot.margin_ratio is not None
+        or snapshot.withdrawable is not None
+    ):
         figures = VenueAccountFigures(
             as_of=snapshot.as_of,
             equity=snapshot.equity,
             available_margin=snapshot.available_margin,
             margin_ratio=snapshot.margin_ratio,
+            withdrawable=snapshot.withdrawable,
         )
         state.set_venue_figures(figures)
         diff.venue_figures = figures

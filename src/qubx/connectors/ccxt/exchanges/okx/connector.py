@@ -85,7 +85,9 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             )
         return balances
 
-    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> tuple[float | None, float | None, float | None]:
+    def _extract_venue_figures(
+        self, raw_balance: dict[str, Any]
+    ) -> tuple[float | None, float | None, float | None, float | None]:
         """OKX account-level figures from ``info.data[0]`` of the trading-balance payload.
 
         - equity: ``totalEq`` — total account equity. USD-denominated; reported as-is
@@ -94,6 +96,9 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
           requirement) — both populated only in multi-currency/portfolio margin modes.
         - margin_ratio: ``mgnRatio`` — same coverage-multiple convention as the derived
           ``AccountState.margin_ratio``, but the venue value is not capped at 100.
+        - withdrawable: deliberately None — OKX reports max-withdrawal only on a
+          separate ``account/max-withdrawal`` endpoint, outside the snapshot seam,
+          so AM derives it (= available).
 
         Not-applicable fields arrive as ``""`` → None → AM derives that metric.
         """
@@ -103,7 +108,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         adj_eq = info_float(acct, "adjEq")
         imr = info_float(acct, "imr")
         available_margin = adj_eq - imr if adj_eq is not None and imr is not None else None
-        return equity, available_margin, margin_ratio
+        return equity, available_margin, margin_ratio, None
 
     def make_client_id(self, suggested: str) -> str:
         """OKX clOrdId: case-sensitive alphanumeric only, 1-32 chars.

@@ -36,6 +36,7 @@ class VenueAccountFigures:
     equity: float | None = None
     available_margin: float | None = None
     margin_ratio: float | None = None
+    withdrawable: float | None = None
 
 
 def _notional(position: Position) -> float:
@@ -222,6 +223,14 @@ class AccountState:
         if venue is not None and venue.available_margin is not None:
             return venue.available_margin
         return self.total_capital() - self.total_initial_margin()
+
+    def withdrawable_balance(self) -> float:
+        # Derived fallback equals available_margin (withdrawable <= available conceptually;
+        # equality is the documented sim/no-venue simplification).
+        venue = self._venue_figures
+        if venue is not None and venue.withdrawable is not None:
+            return venue.withdrawable
+        return self.available_margin()
 
     def margin_ratio(self) -> float:
         venue = self._venue_figures

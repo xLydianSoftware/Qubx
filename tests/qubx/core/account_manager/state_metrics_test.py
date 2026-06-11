@@ -105,6 +105,24 @@ def test_available_margin_derives_from_venue_equity_when_only_equity_reported():
     assert state.available_margin() == 4990.0
 
 
+def test_withdrawable_prefers_venue():
+    state = _state(1000.0)
+    state.set_venue_figures(_venue(available_margin=777.0, withdrawable=500.0))
+    assert state.withdrawable_balance() == 500.0
+
+
+def test_withdrawable_derives_equal_available():
+    # No venue withdrawable -> equals available_margin (the documented simplification),
+    # including the venue-preferred available figure when only that one is reported.
+    state = _state(1000.0)
+    pos = Position(_instrument())
+    pos.initial_margin = 10.0
+    state.set_position(pos.instrument, pos)
+    assert state.withdrawable_balance() == state.available_margin() == 990.0
+    state.set_venue_figures(_venue(available_margin=777.0))
+    assert state.withdrawable_balance() == 777.0
+
+
 def test_margin_ratio_no_maint_is_100():
     assert _state(1000.0).margin_ratio() == 100.0
 

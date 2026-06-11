@@ -86,6 +86,7 @@ def _snap_event(
     equity=None,
     available_margin=None,
     margin_ratio=None,
+    withdrawable=None,
 ):
     return AccountSnapshotEvent(
         instrument=None,
@@ -98,6 +99,7 @@ def _snap_event(
             equity=equity,
             available_margin=available_margin,
             margin_ratio=margin_ratio,
+            withdrawable=withdrawable,
         ),
     )
 
@@ -1338,6 +1340,31 @@ def test_snapshot_balance_leg_skipped_when_push_at_least_as_fresh():
     assert r.reconcile_diff.balances == [snap_btc]
 
 
+def test_snapshot_multi_currency_wallet_kept_capital_counts_base_only():
+    # The ignored-assets contract: every snapshot currency lands in get_balances
+    # regardless of base; the DERIVED total_capital counts base cash + position
+    # market values only (non-base cash excluded — design.md Capital/margin);
+    # venue-reported equity, when present, overrides the derivation entirely.
+    am = _am()
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(
+        _snap_event(
+            as_of="2026-05-28T01:00:00",
+            balances=[
+                Balance(exchange="binance", currency="USDT", free=1_000.0, locked=0.0, total=1_000.0),
+                Balance(exchange="binance", currency="BTC", free=0.5, locked=0.0, total=0.5),
+                Balance(exchange="binance", currency="ETH", free=10.0, locked=0.0, total=10.0),
+            ],
+        )
+    )
+    assert {b.currency for b in am.get_balances("binance")} == {"USDT", "BTC", "ETH"}
+    assert am.get_total_capital("binance") == 1_000.0
+
+    am._time.t = np.datetime64("2026-05-28T01:01:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:01:00", equity=50_000.0))
+    assert am.get_total_capital("binance") == 50_000.0
+
+
 def test_snapshot_balance_leg_applies_when_newer_than_push():
     am = _am()
     state = am._states["binance"]
@@ -1523,17 +1550,19 @@ def test_snapshot_sets_venue_figures_and_metrics_prefer_them():
     am = _am()
     state = am._states["binance"]
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
-    am.apply(_snap_event(equity=5000.0, available_margin=4000.0, margin_ratio=42.0))
+    am.apply(_snap_event(equity=5000.0, available_margin=4000.0, margin_ratio=42.0, withdrawable=3500.0))
     figures = state.get_venue_figures()
     assert figures is not None
     assert figures.equity == 5000.0
     assert figures.available_margin == 4000.0
     assert figures.margin_ratio == 42.0
+    assert figures.withdrawable == 3500.0
     assert figures.as_of == np.datetime64("2026-05-28T01:00:00")
     # per-metric prefer-venue over the derived values
     assert am.get_total_capital("binance") == 5000.0
     assert am.get_available_margin("binance") == 4000.0
     assert am.get_margin_ratio("binance") == 42.0
+    assert am.get_withdrawable_balance("binance") == 3500.0
 
 
 def test_snapshot_without_figures_keeps_previous_capture():
@@ -1559,6 +1588,26 @@ def test_sim_snapshot_never_sets_venue_figures():
     assert state.get_venue_figures() is None
     assert am.get_total_capital("binance") == 1000.0
     assert am.get_margin_ratio("binance") == 100.0
+
+
+def test_sim_capital_getters_derive_consistently():
+    # Sim sets no venue figures, so the three wallet getters derive from one another:
+    # available = total - initial margin, withdrawable = available (documented
+    # simplification), and with no margin used all three coincide.
+    am = _am()
+    state = am._states["binance"]
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
+    am.apply(_snap_event(open_orders=[]))
+    assert am.get_total_capital("binance") == 1000.0
+    assert am.get_available_margin("binance") == 1000.0
+    assert am.get_withdrawable_balance("binance") == 1000.0
+
+    pos = Position(_instrument())
+    pos.initial_margin = 100.0
+    state.set_position(pos.instrument, pos)
+    assert am.get_total_capital("binance") == 1000.0
+    assert am.get_available_margin("binance") == 900.0
+    assert am.get_withdrawable_balance("binance") == am.get_available_margin("binance") == 900.0
 
 
 def test_reconcile_termination_logs_warning_with_cid():

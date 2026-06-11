@@ -457,6 +457,9 @@ class AccountManager(IAccountViewer):
     def get_available_margin(self, exchange: str | None = None) -> float:
         return self._sum(AccountState.available_margin, exchange)
 
+    def get_withdrawable_balance(self, exchange: str | None = None) -> float:
+        return self._sum(AccountState.withdrawable_balance, exchange)
+
     def get_total_initial_margin(self, exchange: str | None = None) -> float:
         return self._sum(AccountState.total_initial_margin, exchange)
 

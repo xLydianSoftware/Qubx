@@ -661,6 +661,9 @@ class StrategyContext(IStrategyContext):
     def get_available_margin(self, exchange: str | None = None) -> float:
         return self.account.get_available_margin(exchange)
 
+    def get_withdrawable_balance(self, exchange: str | None = None) -> float:
+        return self.account.get_withdrawable_balance(exchange)
+
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         return self.account.get_margin_ratio(exchange)
 
