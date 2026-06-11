@@ -21,8 +21,6 @@ class SimulationTransferManager(ITransferManager):
 
     def transfer_funds(self, from_exchange: str, to_exchange: str, currency: str, amount: float) -> str:
         from_balance = self._account.get_balance(currency, exchange=from_exchange)
-        if from_balance is None:
-            raise ValueError(f"Currency '{currency}' not found in {from_exchange}")
         if from_balance.free < amount:
             raise ValueError(
                 f"Insufficient funds in {from_exchange}: "

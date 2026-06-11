@@ -416,7 +416,7 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
 def _handle_position_update(state: AccountState, event: PositionUpdateEvent, now: np.datetime64) -> ApplyResult:
     # Positions are tracked from fills (the deal ledger). A venue position push never
     # writes size — it only VERIFIES local state: on drift the AccountManager refetches
-    # a snapshot to correct it (see design.md, Event model).
+    # a snapshot to correct it.
     instrument = event.position.instrument
     last = state.get_position_push_as_of(instrument)
     if last is not None and event.as_of <= last:

@@ -66,7 +66,7 @@ def test_insufficient_funds_raises_and_leaves_balances_untouched():
 def test_unknown_currency_raises():
     am = _am()
     tm = SimulationTransferManager(am, _T())
-    with pytest.raises(ValueError, match="not found"):
+    with pytest.raises(ValueError, match="Insufficient funds"):
         tm.transfer_funds("E1", "E2", "DOGE", 1.0)
 
 

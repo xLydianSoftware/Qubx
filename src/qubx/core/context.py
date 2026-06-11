@@ -164,10 +164,10 @@ class StrategyContext(IStrategyContext):
         event_loop: asyncio.AbstractEventLoop | None = None,
     ) -> None:
         self._account_manager = account_manager
-        # self.account exposes the read-only IAccountViewer surface (the strategy and
-        # mixins read positions/balances/capital through it); self._account_manager is
-        # the same object kept under its concrete type for the state-machine operations
-        # (apply/add_order/transition_order/set_processing_manager) that are not on the viewer.
+        # self.account is the read-only IAccountViewer surface (AccountManager implements
+        # it; the strategy and mixins read positions/balances/capital through it).
+        # self._account_manager is the same object kept under its concrete type for the
+        # state-machine operations (apply/add_order/set_processing_manager) not on the viewer.
         self.account = account_manager
         self.strategy = self.__instantiate_strategy(strategy, config)
         self.emitter = emitter if emitter is not None else IMetricEmitter()

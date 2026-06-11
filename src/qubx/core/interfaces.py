@@ -225,7 +225,8 @@ class IAccountViewer:
             exchange: The exchange to get the balance for
 
         Returns:
-            Balance: The Balance object
+            Balance: The Balance object. A currency the account never held reads as a
+                zero Balance — never None.
         """
         ...
 

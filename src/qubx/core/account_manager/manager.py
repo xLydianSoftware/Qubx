@@ -30,11 +30,11 @@ from qubx.core.basics import (
 )
 from qubx.core.connector import IConnector
 from qubx.core.events import AccountMessage, AccountSnapshotEvent, BalanceUpdateEvent, OrderEvent
-from qubx.core.interfaces import IProcessingManager
+from qubx.core.interfaces import IAccountViewer, IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
 
 
-class AccountManager:
+class AccountManager(IAccountViewer):
     _pm: IProcessingManager | None
     _connectors: dict[str, IConnector]
     _time: ITimeProvider
@@ -383,13 +383,16 @@ class AccountManager:
     def positions(self) -> dict[Instrument, Position]:
         return self.get_positions()
 
-    def get_balance(self, currency: str, exchange: str | None = None):
+    def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
+        # IAccountViewer contract: never None — a currency the account never held reads
+        # as a detached zero Balance (mirrors get_position's materialize-flat rule,
+        # without storing it).
         if exchange is not None:
-            return self._states[exchange].get_balance(currency)
+            return self._states[exchange].get_balance(currency) or Balance(exchange, currency)
         for state in self._states.values():
             if (b := state.get_balance(currency)) is not None:
                 return b
-        return None
+        return Balance(next(iter(self._states)), currency)
 
     def get_balances(self, exchange: str | None = None) -> list[Balance]:
         if exchange is not None:

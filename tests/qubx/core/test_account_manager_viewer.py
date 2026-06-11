@@ -10,6 +10,7 @@ from qubx.core.basics import (
     OrderStatus,
     Position,
 )
+from qubx.core.interfaces import IAccountViewer
 
 
 class _T:
@@ -118,3 +119,19 @@ def test_position_report():
     assert "BTCUSDT" in report
     assert set(report["BTCUSDT"]) == {"Qty", "Price", "PnL", "MktValue", "Leverage"}
     assert report["BTCUSDT"]["Qty"] == 1.0
+
+
+def test_account_manager_is_an_account_viewer():
+    # ctx.account is typed IAccountViewer (IStrategyContext contract); the AM is the
+    # implementation — nominal, so signature drift fails type checks, not reviews.
+    assert isinstance(_am(), IAccountViewer)
+
+
+def test_get_balance_unknown_currency_reads_as_zero_balance():
+    am = _am()
+    for b in (am.get_balance("DOGE", exchange="binance"), am.get_balance("DOGE")):
+        assert isinstance(b, Balance)
+        assert (b.currency, b.total, b.free, b.locked) == ("DOGE", 0.0, 0.0, 0.0)
+        assert b.exchange == "binance"
+    # detached: reading does not create a tracked balance
+    assert all(b.currency != "DOGE" for b in am.get_balances("binance"))
