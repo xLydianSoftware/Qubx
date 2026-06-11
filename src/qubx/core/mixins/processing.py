@@ -34,7 +34,6 @@ from qubx.core.events import (
     OrderCancelRejectedEvent,
     OrderEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
@@ -70,12 +69,12 @@ def validate_account_callback_signatures(strategy: IStrategy) -> None:
     """
     if not isinstance(strategy, IStrategy):
         return
-    for removed in ("on_order_update", "on_account_update"):
+    for removed in ("on_order_update", "on_deals", "on_account_update"):
         if callable(getattr(type(strategy), removed, None)):
             raise TypeError(
                 f"{type(strategy).__name__} defines {removed}, which no longer exists: "
-                "on_order_update/on_account_update were replaced by on_order/on_execution/on_position_change "
-                "— see docs/account-management/design.md"
+                "on_order_update/on_deals/on_account_update were replaced by "
+                "on_order/on_execution/on_position_change — see docs/account-management/design.md"
             )
     for name in ("on_order", "on_execution", "on_position_change"):
         impl = getattr(type(strategy), name)
@@ -660,7 +659,6 @@ class ProcessingManager(IProcessingManager):
                 )
                 logger.opt(colors=False).error(traceback.format_exc())
             finally:
-                self._fit_is_running = False
                 self._context._strategy_state.is_on_fit_called = True
 
     def __invoke_on_warmup_finished(self) -> None:
@@ -680,7 +678,6 @@ class ProcessingManager(IProcessingManager):
                 )
                 logger.opt(colors=False).error(traceback.format_exc())
             finally:
-                self._warmup_finished_is_running = False
                 self._context._strategy_state.is_on_warmup_finished_called = True
 
     def __preprocess_and_log_target_positions(self, target_positions: list[TargetPosition]) -> list[TargetPosition]:
@@ -1024,10 +1021,15 @@ class ProcessingManager(IProcessingManager):
     def _handle_warmup_finished(self) -> None:
         if not self._is_data_ready():
             return
+        # The flag reset lives in an outer finally so no raise (health monitor included)
+        # can strand it True — a stranded flag silently disables the strategy forever.
         self._warmup_finished_is_running = True
-        # Runs inline on the processing thread (single-mutator invariant): account events
-        # queue in the channel until the callback returns.
-        self.__invoke_on_warmup_finished()
+        try:
+            # Runs inline on the processing thread (single-mutator invariant): account events
+            # queue in the channel until the callback returns.
+            self.__invoke_on_warmup_finished()
+        finally:
+            self._warmup_finished_is_running = False
 
     def _handle_fit(self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]) -> None:
         """
@@ -1035,12 +1037,18 @@ class ProcessingManager(IProcessingManager):
         """
         if not self._is_data_ready():
             return
+        # The flag reset lives in an outer finally so no raise (finalize_ohlc or the health
+        # monitor) can strand it True — a stranded flag silently disables the strategy
+        # forever; on a raise is_on_fit_called stays False, so the next tick retries the fit.
         self._fit_is_running = True
-        current_time = data[1]
-        self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
-        # Runs inline on the processing thread (single-mutator invariant): a long fit
-        # blocks event processing until it returns.
-        self.__invoke_on_fit()
+        try:
+            current_time = data[1]
+            self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
+            # Runs inline on the processing thread (single-mutator invariant): a long fit
+            # blocks event processing until it returns.
+            self.__invoke_on_fit()
+        finally:
+            self._fit_is_running = False
 
     def _handle_delisting_check(
         self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]
@@ -1255,12 +1263,11 @@ class ProcessingManager(IProcessingManager):
     def _safe_fire_account_callback(self, event: AccountMessage, result: ApplyResult) -> None:
         # Purely ApplyResult-driven dispatch onto the three strategy callbacks: each set
         # field fires its callback, an empty result means the AM suppressed the event
-        # (late/duplicate/terminal/unknown/deduped funding/stale snapshot — already logged)
-        # and nothing fires. Sole exception: PositionUpdateEvent fires through on an empty
-        # result — the reducer never writes size off a venue push (size-equal pushes are
-        # metadata no-ops, drift triggers a snapshot correction), but the push must still
-        # reach the strategy off the event payload. BalanceUpdateEvent deliberately fires
-        # NO callback: balances are read via ctx.
+        # (late/duplicate/stale/terminal/unknown/deduped funding — already logged) and
+        # nothing fires. A size-equal venue position push carries the LOCAL position in
+        # result.position (the reducer never writes size off a push; drift triggers a
+        # snapshot correction, firing nothing strategy-side). BalanceUpdateEvent
+        # deliberately fires NO callback: balances are read via ctx.
         if isinstance(event, OrderEvent):
             # Cancel/update rejections are dangerous-but-recoverable (order still alive at the
             # venue): surface loudly here so they aren't lost if the strategy ignores them.
@@ -1286,8 +1293,6 @@ class ProcessingManager(IProcessingManager):
                 self._notify_downstream_fill(event.instrument, result.deal)
         if result.position is not None:
             self._safe_call(self._strategy.on_position_change, result.position)
-        elif isinstance(event, PositionUpdateEvent) and result.is_empty():
-            self._safe_call(self._strategy.on_position_change, event.position)
         if result.reconcile_diff is not None:
             for position in result.reconcile_diff.positions:
                 self._safe_call(self._strategy.on_position_change, position)
@@ -1297,7 +1302,14 @@ class ProcessingManager(IProcessingManager):
             logger.debug(f"[<y>{self.__class__.__name__}</y>] :: fill for unknown instrument; skipping downstream")
             return
 
-        self._logging.save_deals(instrument, [fill])
+        # Every consumer here is error-isolated: a persistent failure in one (e.g. an
+        # I/O-backed deals writer) must not suppress the rest or the position callbacks
+        # that the dispatcher fires after this method returns.
+        try:
+            self._logging.save_deals(instrument, [fill])
+        except Exception:
+            logger.exception("deals writer raised")
+            self._emit_error_metric("downstream_fill_errors", consumer="save_deals")
 
         try:
             self._position_gathering.on_execution_report(self._context, instrument, fill)
@@ -1318,8 +1330,11 @@ class ProcessingManager(IProcessingManager):
             except Exception:
                 logger.exception("exporter raised")
 
-        # - notify universe manager about position change
-        self._universe_manager.on_alter_position(instrument)
+        try:
+            self._universe_manager.on_alter_position(instrument)
+        except Exception:
+            logger.exception("universe manager on_alter_position raised")
+            self._emit_error_metric("downstream_fill_errors", consumer="on_alter_position")
 
         if self._context.emitter is not None:
             try:

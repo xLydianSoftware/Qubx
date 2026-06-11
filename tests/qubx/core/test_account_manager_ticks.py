@@ -187,6 +187,29 @@ def test_snapshot_tick_skips_when_fresh():
     conn.request_snapshot.assert_not_called()
 
 
+def test_snapshot_tick_isolates_raising_connector():
+    # R9: one connector raising synchronously (e.g. dead loop in request_snapshot) must
+    # not abort the 30s backstop for the healthy exchanges that follow it.
+    bad, good = MagicMock(), MagicMock()
+    bad.request_snapshot.side_effect = RuntimeError("dead loop")
+    am = _am({"binance": bad, "kraken": good})
+    am._on_snapshot_tick(None)  # must not raise
+    good.request_snapshot.assert_called_once()
+
+
+def test_liveness_tick_isolates_raising_ws_check():
+    # Same isolation rule for the liveness loop: a raising is_ws_ready on one connector
+    # must not skip the health check of the rest.
+    bad, good = MagicMock(), MagicMock()
+    bad.is_ws_ready.side_effect = RuntimeError("boom")
+    good.is_ws_ready.return_value = False
+    am = _am({"binance": bad, "kraken": good}, cfg=AccountManagerConfig(liveness_check_threshold_ms=5_000))
+    am._on_liveness_tick(None)  # must not raise
+    am._time.adv(6_000)
+    am._on_liveness_tick(None)
+    good.reconnect.assert_called_once()
+
+
 def test_liveness_tick_forces_reconnect_after_threshold():
     conn = MagicMock()
     conn.is_ws_ready.return_value = False

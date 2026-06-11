@@ -282,12 +282,17 @@ def _total_push(total: float, currency: str = "USDT") -> Balance:
     return Balance(exchange="binance", currency=currency, free=np.nan, locked=np.nan, total=total)
 
 
-def test_position_push_size_equal_is_metadata_only():
+def test_position_push_size_equal_returns_local_position():
+    # Size-equal push carries the LOCAL position (never the venue payload), so the
+    # purely field-driven dispatch fires on_position_change off local state.
     state = _state()
     _order(state, status=OrderStatus.ACCEPTED)
     apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5)), T1)
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.5), as_of=T1), T1)
-    assert r.is_empty()  # fire-through dispatch still notifies the strategy (Item 6 rule)
+    venue = _venue_position(0.5)
+    r = apply(state, PositionUpdateEvent(instrument=BTC, position=venue, as_of=T1), T1)
+    assert r.position is _present(state.get_position(BTC))
+    assert r.position is not venue
+    assert r.position_drift is None
     assert state.get_position_push_as_of(BTC) == T1
     assert _present(state.get_position(BTC)).quantity == 0.5
 
@@ -314,6 +319,8 @@ def test_position_push_drift_flags_without_mutation():
 
 
 def test_position_push_stale_as_of_suppressed():
+    # Ratchet-dropped pushes return empty -> NOTHING fires (no fire-through off the
+    # event payload — that would deliver data older than already delivered).
     state = _state()
     apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.0), as_of=T1), T1)
     # older AND same-time pushes are stale (<= ratchet), even when they would drift
@@ -531,6 +538,21 @@ def test_update_rejected_reverts_to_pre_pending():
     state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
     r = apply(state, OrderUpdateRejectedEvent(instrument=None, client_order_id="c1", reason="x"), T1)
     assert r.order is not None and r.order.status is OrderStatus.PARTIALLY_FILLED
+    assert r.order_change is OrderChange.UPDATE_REJECTED
+
+
+def test_accept_during_pending_update_preserves_marker():
+    # The ccxt connector emits ACCEPTED twice by design (REST ack + WS ack): a duplicate
+    # accept racing a pending update must not wipe PENDING_UPDATE, so the venue's later
+    # verdict (here a rejection) still reverts via the preserved pre-pending capture.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="V1")
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+    r = apply(state, OrderAcceptedEvent(instrument=None, client_order_id="c1", venue_order_id="V1", accepted_at=T0), T1)
+    assert r.order is None  # suppressed — no callback fires
+    assert _present(state.get_active_order("c1")).status is OrderStatus.PENDING_UPDATE
+    r = apply(state, OrderUpdateRejectedEvent(instrument=None, client_order_id="c1", reason="below filled"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.ACCEPTED
     assert r.order_change is OrderChange.UPDATE_REJECTED
 
 

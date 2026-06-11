@@ -177,8 +177,10 @@ Order **status** events drive the lifecycle; a **`DealEvent`** drives the ledger
   The venue's per-fill ordering of `ORDER_TRADE_UPDATE` vs `ACCOUNT_UPDATE` is not
   reliably documented, so application is **ordering-agnostic**:
   - **Position pushes never write size on the event path** — sizes are owned by the deal
-    ledger. A push size-equal to local (within one lot) is a metadata no-op that advances
-    the per-instrument push `as_of` ratchet; size drift sets `ApplyResult.position_drift`
+    ledger. A push size-equal to local (within one lot) advances the per-instrument push
+    `as_of` ratchet and returns the **local** position in `ApplyResult.position`, so
+    `on_position_change` fires off local state; a stale push (at/behind the ratchet)
+    returns empty and fires nothing. Size drift sets `ApplyResult.position_drift`
     with **zero mutation**, and the AccountManager fires a rate-limited (~2 s per
     exchange) `request_snapshot()` + WARNING — the race-safe snapshot reconcile corrects
     the size. Venue upnl/mark are not taken from pushes (positions stay locally marked);
@@ -196,9 +198,10 @@ Order **status** events drive the lifecycle; a **`DealEvent`** drives the ledger
     convergence to identical qty/r_pnl/balances), and it fixes the funding double-count
     (our computed `FundingPaymentEvent` vs the venue's actual `FUNDING_FEE` debit).
     Position size, `r_pnl` and `cumulative_funding` always book.
-  - Dispatch: applied position pushes and the size-equal fire-through both reach
-    `on_position_change`; balance pushes fire **no** strategy callback (see Strategy
-    callbacks).
+  - Dispatch: a size-equal push reaches `on_position_change` with the local position
+    through the purely field-driven path (no PM special case); stale and drift pushes
+    fire no strategy callback; balance pushes fire **no** strategy callback either (see
+    Strategy callbacks).
 
   With this, liquidation/ADL and venue balance changes reach state at WS latency instead
   of the ~30 s snapshot tick — **leveraged live (Binance UM) is ready pending a testnet
@@ -261,9 +264,10 @@ class ApplyResult:
   fires. Each set field fires its callback: `order` + `order_change` → `on_order`,
   `deal` → `on_execution` (plus downstream fill consumers), `position` →
   `on_position_change`, `reconcile_diff` → `on_position_change` per corrected position.
-  Sole exception: `PositionUpdateEvent` fires `on_position_change` through on an empty
-  result — the reducer never writes size off a venue push (a size-equal push is a
-  metadata no-op), but the push must still reach the strategy. `position_drift` fires
+  There is no event-type special case: a size-equal venue position push carries the
+  local position in `position` (the reducer never writes size off a push), so it
+  reaches `on_position_change` through the same field-driven path, while a stale
+  ratchet-dropped push returns empty and fires nothing. `position_drift` fires
   nothing strategy-side (the AM reacts with the rate-limited snapshot request);
   `BalanceUpdateEvent` fires nothing either way (see Strategy callbacks).
 

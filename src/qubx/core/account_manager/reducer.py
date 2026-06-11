@@ -155,9 +155,11 @@ def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.dat
     if event.venue_order_id is not None:
         state.set_venue_id(order.client_order_id, event.venue_order_id)
     order.accepted_at = event.accepted_at
-    if order.status == OrderStatus.PENDING_CANCEL:
-        # A late accept racing an outstanding cancel must NOT wipe PENDING_CANCEL:
-        # the sweep keeps polling the cancel and a later cancel-rejected still reverts.
+    if order.status.is_pending:
+        # A late/duplicate accept (the ccxt connector emits REST + WS acks by design)
+        # racing an outstanding cancel/update must NOT wipe PENDING_*: the sweep keeps
+        # polling, and a later cancel/update-rejected still reverts via the preserved
+        # pre-pending capture.
         return ApplyResult()
     if not can_transition(order.status, OrderStatus.ACCEPTED):
         return ApplyResult()
@@ -404,12 +406,14 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
 def _handle_position_update(state: AccountState, event: PositionUpdateEvent, now: np.datetime64) -> ApplyResult:
     # Venue position pushes NEVER write size on the event path: sizes are owned by the
     # deal ledger, and the venue's ORDER_TRADE_UPDATE vs ACCOUNT_UPDATE ordering is not
-    # reliably documented. Size-equal (within one lot) -> metadata no-op that advances
-    # the push ratchet; the empty result still fires through to on_position_change off
-    # the event payload (the Item 6 dispatch rule). Size drift -> position_drift flag,
-    # zero mutation: the AccountManager reacts with a rate-limited snapshot request, and
-    # the race-safe snapshot reconcile corrects the size. Hedge-mode pushes are filtered
-    # connector-side, so the payload here is always net.
+    # reliably documented. Stale pushes (ratchet-dropped) return empty — nothing fires.
+    # Size-equal (within one lot) advances the push ratchet and carries the LOCAL
+    # position, so on_position_change fires off local state through the purely
+    # field-driven dispatch (None when no position is tracked — nothing fires). Size
+    # drift -> position_drift flag, zero mutation: the AccountManager reacts with a
+    # rate-limited snapshot request, and the race-safe snapshot reconcile corrects the
+    # size. Hedge-mode pushes are filtered connector-side, so the payload here is
+    # always net.
     instrument = event.position.instrument
     last = state.get_position_push_as_of(instrument)
     if last is not None and event.as_of <= last:
@@ -418,7 +422,7 @@ def _handle_position_update(state: AccountState, event: PositionUpdateEvent, now
     local = state.get_position(instrument)
     local_qty = local.quantity if local is not None else 0.0
     if abs(event.position.quantity - local_qty) < instrument.lot_size:
-        return ApplyResult()
+        return ApplyResult(position=local)
     return ApplyResult(position_drift=event.position)
 
 

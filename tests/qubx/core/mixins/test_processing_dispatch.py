@@ -141,6 +141,8 @@ class _FakeEmitter:
     def emit(self, name, value, tags=None, timestamp=None, instrument=None) -> None:
         self.calls.append((name, value, tags))
 
+    def emit_deals(self, time, instrument, deals, account) -> None: ...
+
 
 def test_am_apply_error_swallowed_and_emits_error_metric():
     # AM.apply raising is logged and swallowed: no callback fires on a failed apply,
@@ -264,26 +266,26 @@ def test_suppressed_funding_fires_no_callback():
     assert pm._strategy.mock_calls == []
 
 
-def test_position_update_fires_through_on_empty_result():
-    # A size-equal venue push is a metadata no-op in the reducer (empty result), but the
-    # push must still reach the strategy — off the event payload.
+def test_stale_position_push_fires_nothing():
+    # A ratchet-dropped (stale/duplicate) push returns an empty result: nothing may reach
+    # the strategy — there is no fire-through off the event payload, which would deliver
+    # data older than already delivered.
     pm = make_pm()
-    position = MagicMock()
     pm._account_manager.apply.return_value = ApplyResult()
-    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=position, as_of=np.datetime64("now")))
-    pm._strategy.on_position_change.assert_called_once()
-    assert pm._strategy.on_position_change.call_args.args[1] is position
+    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock(), as_of=np.datetime64("now")))
+    pm._account_manager.apply.assert_called_once()
+    assert pm._strategy.mock_calls == []
 
 
-def test_applied_position_update_fires_once_off_result():
-    # Once the reducer applies the push (F26), the applied position wins over the event
-    # payload and on_position_change fires exactly once.
+def test_size_equal_position_push_fires_local_position():
+    # A size-equal push carries the LOCAL position in result.position: on_position_change
+    # fires exactly once, off local state, never off the event payload.
     pm = make_pm()
-    applied = MagicMock()
-    pm._account_manager.apply.return_value = ApplyResult(position=applied)
+    local = MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(position=local)
     pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock(), as_of=np.datetime64("now")))
     pm._strategy.on_position_change.assert_called_once()
-    assert pm._strategy.on_position_change.call_args.args[1] is applied
+    assert pm._strategy.on_position_change.call_args.args[1] is local
 
 
 def test_position_drift_result_fires_no_strategy_callback():
@@ -376,6 +378,10 @@ class _RemovedOrderCallbackStrategy(IStrategy):
     def on_order_update(self, ctx, order, event) -> None: ...
 
 
+class _RemovedDealsCallbackStrategy(IStrategy):
+    def on_deals(self, ctx, instrument, deals) -> None: ...
+
+
 class _RemovedAccountCallbackStrategy(IStrategy):
     def on_account_update(self, ctx, event) -> None: ...
 
@@ -393,8 +399,15 @@ def test_removed_on_order_update_raises_with_migration_message():
         validate_account_callback_signatures(_RemovedOrderCallbackStrategy())
 
 
+def test_removed_on_deals_raises_with_migration_message():
+    # R12: on_deals existed on IStrategy at merge-base — a migrating strategy overriding it
+    # would otherwise construct cleanly and silently never receive fills.
+    with pytest.raises(TypeError, match=r"on_deals.*replaced by"):
+        validate_account_callback_signatures(_RemovedDealsCallbackStrategy())
+
+
 def test_removed_on_account_update_raises_with_migration_message():
-    with pytest.raises(TypeError, match=r"on_account_update.*replaced by on_order/on_execution/on_position_change"):
+    with pytest.raises(TypeError, match=r"on_account_update.*replaced by"):
         validate_account_callback_signatures(_RemovedAccountCallbackStrategy())
 
 
@@ -438,12 +451,16 @@ def test_extra_defaulted_param_passes():
     validate_account_callback_signatures(_Extra())
 
 
-def test_removed_callback_fails_loudly_at_pm_construction():
+@pytest.mark.parametrize(
+    "strategy_cls, removed_name",
+    [(_RemovedOrderCallbackStrategy, "on_order_update"), (_RemovedDealsCallbackStrategy, "on_deals")],
+)
+def test_removed_callback_fails_loudly_at_pm_construction(strategy_cls, removed_name):
     # the guard runs first in __init__, so all-mock collaborators never get touched
-    with pytest.raises(TypeError, match="on_order_update"):
+    with pytest.raises(TypeError, match=removed_name):
         ProcessingManager(
             context=MagicMock(),
-            strategy=_RemovedOrderCallbackStrategy(),
+            strategy=strategy_cls(),
             logging=MagicMock(),
             market_data=MagicMock(),
             subscription_manager=MagicMock(),
@@ -495,6 +512,76 @@ def test_on_warmup_finished_runs_synchronously_on_processing_thread():
         )
     )
     assert calls == ["on_warmup_finished", "on_order"]
+
+
+def test_raising_save_deals_does_not_suppress_position_callback():
+    # R40: a persistent deals-writer failure (I/O-backed) must not break callback delivery —
+    # the remaining downstream consumers and on_position_change still fire, and the error
+    # is logged + counted.
+    pm = make_pm()
+    emitter = _FakeEmitter()
+    pm._context.emitter = emitter
+    pm._logging.save_deals.side_effect = RuntimeError("disk full")
+    pm._account_manager.apply.return_value = ApplyResult(deal=_fill(), position=MagicMock())
+    pm.process_event(OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=_fill()))
+    pm._strategy.on_execution.assert_called_once()
+    pm._strategy.on_position_change.assert_called_once()
+    pm._position_gathering.on_execution_report.assert_called_once()
+    pm._universe_manager.on_alter_position.assert_called_once()
+    assert ("downstream_fill_errors", 1.0, {"consumer": "save_deals"}) in emitter.calls
+
+
+def test_raising_on_alter_position_does_not_suppress_position_callback():
+    pm = make_pm()
+    emitter = _FakeEmitter()
+    pm._context.emitter = emitter
+    pm._universe_manager.on_alter_position.side_effect = RuntimeError("boom")
+    pm._account_manager.apply.return_value = ApplyResult(deal=_fill(), position=MagicMock())
+    pm.process_event(OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=_fill()))
+    pm._strategy.on_position_change.assert_called_once()
+    assert ("downstream_fill_errors", 1.0, {"consumer": "on_alter_position"}) in emitter.calls
+
+
+def test_fit_flag_resets_when_finalize_raises_and_next_tick_retries():
+    # R14: finalize_ohlc_for_instruments raising after _fit_is_running is set must not strand
+    # the flag True (which would permanently disable fit/on_event) — the next tick retries.
+    pm = make_pm()
+    pm._time_provider = MagicMock()
+    pm._cache = MagicMock()
+    pm._health_monitor = MagicMock()
+    pm._subscription_manager = MagicMock()
+    pm._strategy_name = "FitRetry"
+    pm._emitted_signals = []
+    pm._context.instruments = []
+    pm._context._strategy_state.is_on_start_called = True
+    pm._context._strategy_state.is_on_warmup_finished_called = True
+    pm._context._strategy_state.is_on_fit_called = False
+    pm._cache.finalize_ohlc_for_instruments.side_effect = RuntimeError("finalize boom")
+
+    with pytest.raises(RuntimeError, match="finalize boom"):
+        pm._run_strategy_pipeline(None)
+
+    assert pm._fit_is_running is False
+    assert pm._context._strategy_state.is_on_fit_called is False
+    pm._strategy.on_fit.assert_not_called()
+
+    pm._cache.finalize_ohlc_for_instruments.side_effect = None
+    pm._run_strategy_pipeline(None)
+    assert pm._strategy.on_fit.call_count == 1
+    assert pm._context._strategy_state.is_on_fit_called is True
+
+
+def test_warmup_flag_resets_when_invoke_raises():
+    # R14 (warmup shape): a raise outside __invoke_on_warmup_finished's internal except —
+    # e.g. the health monitor context — must not strand _warmup_finished_is_running True.
+    pm = make_pm()
+    pm._health_monitor = MagicMock(side_effect=RuntimeError("monitor boom"))
+    pm._context.instruments = []
+
+    with pytest.raises(RuntimeError, match="monitor boom"):
+        pm._handle_warmup_finished()
+
+    assert pm._warmup_finished_is_running is False
 
 
 def test_on_fit_pumping_events_does_not_retrigger_fit():

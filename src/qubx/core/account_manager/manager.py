@@ -571,12 +571,23 @@ class AccountManager:
         now = self._time.time()
         for exchange, state in self._states.items():
             if reconcile.snapshot_due(state, now, self._snapshot_interval):
-                self._connectors[exchange].request_snapshot()
+                try:
+                    self._connectors[exchange].request_snapshot()
+                except Exception:
+                    # One bad connector must not abort the snapshot backstop for the rest.
+                    logger.exception(f"[{exchange}] periodic snapshot request failed")
 
     def _on_liveness_tick(self, ctx) -> None:
         now = self._time.time()
         for exchange, connector in self._connectors.items():
-            if connector.is_ws_ready():
+            try:
+                ws_ready = connector.is_ws_ready()
+            except Exception:
+                # Same isolation rule: a raising liveness check on one connector must not
+                # abort the checks for the rest. The unready timer is left as-is.
+                logger.exception(f"[{exchange}] liveness check failed")
+                continue
+            if ws_ready:
                 self._liveness_unready_since.pop(exchange, None)
                 continue
             since = self._liveness_unready_since.setdefault(exchange, now)

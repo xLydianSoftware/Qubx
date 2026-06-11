@@ -157,7 +157,9 @@ def test_accepted_during_pending_cancel_is_side_effect_only():
     assert o.venue_order_id == "V1"
 
 
-def test_accepted_during_pending_update_transitions_to_accepted():
+def test_accepted_during_pending_update_is_side_effect_only():
+    # A duplicate accept (REST + WS acks) racing a pending update must NOT wipe
+    # PENDING_UPDATE — a later update-rejected still reverts via pre-pending.
     am = _am()
     inst = _Inst()
     add_order(am.get_state("binance"), status=OrderStatus.ACCEPTED, instrument=inst)
@@ -170,9 +172,9 @@ def test_accepted_during_pending_update_transitions_to_accepted():
             accepted_at=np.datetime64("2026-05-28"),
         )
     )
-    assert r.order is not None and r.order_change is OrderChange.ACCEPTED
+    _assert_empty(r)
     o = am.get_state("binance").get_order("cid-1")
-    assert o.status is OrderStatus.ACCEPTED
+    assert o.status is OrderStatus.PENDING_UPDATE
     assert o.venue_order_id == "V2"
 
 
