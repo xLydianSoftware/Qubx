@@ -414,16 +414,9 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
 
 
 def _handle_position_update(state: AccountState, event: PositionUpdateEvent, now: np.datetime64) -> ApplyResult:
-    # Venue position pushes NEVER write size on the event path: sizes are owned by the
-    # deal ledger, and the venue's ORDER_TRADE_UPDATE vs ACCOUNT_UPDATE ordering is not
-    # reliably documented. Stale pushes (ratchet-dropped) return empty — nothing fires.
-    # Size-equal (within one lot) advances the push ratchet and carries the LOCAL
-    # position, so on_position_change fires off local state through the purely
-    # field-driven dispatch (None when no position is tracked — nothing fires). Size
-    # drift -> position_drift flag, zero mutation: the AccountManager reacts with a
-    # rate-limited snapshot request, and the race-safe snapshot reconcile corrects the
-    # size. Hedge-mode pushes are filtered connector-side, so the payload here is
-    # always net.
+    # Positions are tracked from fills (the deal ledger). A venue position push never
+    # writes size — it only VERIFIES local state: on drift the AccountManager refetches
+    # a snapshot to correct it (see design.md, Event model).
     instrument = event.position.instrument
     last = state.get_position_push_as_of(instrument)
     if last is not None and event.as_of <= last:
