@@ -674,6 +674,28 @@ async def test_ws_ready_clears_on_persistent_network_errors() -> None:
 
 
 @pytest.mark.asyncio
+async def test_ws_ready_clears_on_persistent_non_ccxt_errors() -> None:
+    # The generic except branch must mirror the ccxt branch: a non-ccxt raise (e.g. a
+    # handler bug) clears readiness for the backoff window — otherwise a dead stream
+    # reads healthy for minutes — and the loop still gives up at max retries.
+    conn, _sent, exchange = _make_connector()
+    exchange.watch_orders = AsyncMock(side_effect=ValueError("handler bug"))
+    _arm_control(conn)
+
+    backoff_ready: list[bool] = []
+
+    async def _backoff(_delay):
+        backoff_ready.append(conn.is_ws_ready())
+
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=_backoff)):
+        await conn._subscribe_executions()
+
+    assert backoff_ready and not any(backoff_ready)  # unready during every backoff window
+    assert exchange.watch_orders.await_count == conn.max_ws_retries
+    assert conn.is_ws_ready() is False
+
+
+@pytest.mark.asyncio
 async def test_ws_ready_clears_and_logs_loud_on_auth_error() -> None:
     # A revoked key is unrecoverable by retrying — readiness must clear AND the
     # operator must see an explicit ERROR pointing at the keys.

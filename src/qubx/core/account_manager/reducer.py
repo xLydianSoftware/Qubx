@@ -228,7 +228,7 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
     return pos
 
 
-def _apply_execution(state: AccountState, cid: str, deal: Deal, now: np.datetime64) -> Deal | None:
+def _apply_execution(state: AccountState, order: Order, deal: Deal, now: np.datetime64) -> Deal | None:
     """Shared already-counted gate for all three execution paths (DealEvent and the
     embedded fills on OrderFilled/OrderPartiallyFilled). Returns the deal to book —
     trimmed to the uncovered part when a snapshot partially covers it — or None when
@@ -239,20 +239,30 @@ def _apply_execution(state: AccountState, cid: str, deal: Deal, now: np.datetime
     filled_quantity (position/balance legs reconciled with it) that we never booked as
     deals — suppresses the arriving execution up to the counted amount: a fully covered
     one records its trade id (re-deliveries still dedup) and books nothing; a larger one
-    books only the excess, fee pro-rated. The rule is clock-free (quantity is the only
-    signal — no venue-vs-local time comparison), so a genuinely-new execution that fits
-    the deficit window is suppressed in place of the covered one it stands in for:
-    quantity totals stay exact either way, only per-deal price/fee attribution can
-    shift, and the next snapshot re-syncs sizes regardless.
+    books only the excess, fee pro-rated. Excess/remaining-deficit comparisons use the
+    half-lot epsilon (reconcile.fill_qty_epsilon): the deficit is float-subtraction
+    arithmetic, and an exact 0.0 gate booked ~1e-16 phantom dust deals. The rule is
+    clock-free (quantity is the only signal — no venue-vs-local time comparison), so a
+    genuinely-new execution that fits the deficit window is suppressed in place of the
+    covered one it stands in for: quantity totals stay exact either way, only per-deal
+    price/fee attribution can shift, and the next snapshot re-syncs sizes regardless.
     """
+    cid = order.client_order_id
     deficit = state.get_snapshot_fill_deficit(cid)
     if deficit > 0.0 and not state.is_trade_seen(cid, deal.trade_id):
+        eps = reconcile.fill_qty_epsilon(order.instrument)
         qty = abs(deal.amount)
         covered = min(qty, deficit)
-        state.set_snapshot_fill_deficit(cid, deficit - covered)
+        remaining = deficit - covered
+        state.set_snapshot_fill_deficit(cid, 0.0 if remaining <= eps else remaining)
         state.set_snapshot_fill_suppressed(cid, state.get_snapshot_fill_suppressed(cid) + covered)
+        # The suppression IS an order-state observation: bump freshness so a snapshot
+        # FETCHED before it fails the per-order guard in reconcile — otherwise that
+        # stale snapshot resets the suppressed marker / mis-absorbs the deficit
+        # (apply_fill bumps the booked paths; this covers the suppressed ones).
+        order.last_updated_at = now
         excess = qty - covered
-        if excess <= 0.0:
+        if excess <= eps:
             state.record_trade_id(cid, deal.trade_id)
             return None
         fee = deal.fee_amount * (excess / qty) if deal.fee_amount is not None else None
@@ -268,7 +278,7 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
         state.set_venue_id(order.client_order_id, event.venue_order_id)
     # fill is None on split-stream venues (the deal arrives separately via DealEvent):
     # the terminal transition still happens, only the booking is skipped.
-    deal = _apply_execution(state, order.client_order_id, event.fill, now) if event.fill is not None else None
+    deal = _apply_execution(state, order, event.fill, now) if event.fill is not None else None
     position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
     order = reconcile.transition(state, order.client_order_id, OrderStatus.FILLED, now)
     return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
@@ -282,7 +292,7 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
         state.set_venue_id(order.client_order_id, event.venue_order_id)
     # fill is None on split-stream venues (the deal arrives separately via DealEvent):
     # the status transition still happens, only the booking is skipped.
-    deal = _apply_execution(state, order.client_order_id, event.fill, now) if event.fill is not None else None
+    deal = _apply_execution(state, order, event.fill, now) if event.fill is not None else None
     position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
     # a pending cancel/update is resolved by the venue separately — don't disturb its status
     pending = order.status.is_pending
@@ -321,7 +331,7 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
         return ApplyResult()
     if event.venue_order_id is not None:
         state.set_venue_id(order.client_order_id, event.venue_order_id)
-    deal = _apply_execution(state, order.client_order_id, event.deal, now)
+    deal = _apply_execution(state, order, event.deal, now)
     if deal is None:
         return ApplyResult()
     position = _book_deal(state, order.instrument, deal) if order.instrument is not None else None

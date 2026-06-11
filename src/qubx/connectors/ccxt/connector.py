@@ -885,6 +885,10 @@ class CcxtConnector(ChannelEmitter):
             except Exception as e:  # noqa: BLE001
                 if not self.channel.control.is_set():
                     break
+                if mark_ready:
+                    self._ws_ready = False
+                if time.monotonic() - watch_started > 60.0:
+                    n_retry = 0
                 logger.error(f"[{self.exchange_name}] exception in {stream} stream: {e}")
                 logger.exception(e)
                 n_retry += 1

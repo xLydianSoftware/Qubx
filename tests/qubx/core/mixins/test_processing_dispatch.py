@@ -531,6 +531,21 @@ def test_raising_save_deals_does_not_suppress_position_callback():
     assert ("downstream_fill_errors", 1.0, {"consumer": "save_deals"}) in emitter.calls
 
 
+def test_raising_gatherer_does_not_suppress_tracker_notification():
+    # R40 isolation between fill consumers: a persistently raising gatherer must not
+    # suppress the tracker — risk-controller stop cancellation rides on its
+    # on_execution_report — and the failure is counted per consumer.
+    pm = make_pm()
+    emitter = _FakeEmitter()
+    pm._context.emitter = emitter
+    pm._position_gathering.on_execution_report.side_effect = RuntimeError("gatherer boom")
+    pm._account_manager.apply.return_value = ApplyResult(deal=_fill(), position=MagicMock())
+    pm.process_event(OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=_fill()))
+    pm._position_tracker.on_execution_report.assert_called_once()
+    pm._strategy.on_position_change.assert_called_once()
+    assert ("downstream_fill_errors", 1.0, {"consumer": "gatherer"}) in emitter.calls
+
+
 def test_raising_on_alter_position_does_not_suppress_position_callback():
     pm = make_pm()
     emitter = _FakeEmitter()
@@ -571,16 +586,37 @@ def test_fit_flag_resets_when_finalize_raises_and_next_tick_retries():
     assert pm._context._strategy_state.is_on_fit_called is True
 
 
-def test_warmup_flag_resets_when_invoke_raises():
+def test_warmup_flag_resets_when_invoke_raises_and_next_tick_retries():
     # R14 (warmup shape): a raise outside __invoke_on_warmup_finished's internal except —
-    # e.g. the health monitor context — must not strand _warmup_finished_is_running True.
+    # e.g. the health monitor context — must not strand _warmup_finished_is_running True
+    # (which would permanently disable the strategy) — the next tick retries the warmup
+    # and on_warmup_finished eventually fires.
     pm = make_pm()
+    pm._time_provider = MagicMock()
     pm._health_monitor = MagicMock(side_effect=RuntimeError("monitor boom"))
+    pm._subscription_manager = MagicMock()
+    pm._strategy_name = "WarmupRetry"
+    pm._emitted_signals = []
     pm._context.instruments = []
+    pm._context.get_warmup_positions.return_value = []
+    pm._context.get_warmup_orders.return_value = []
+    pm._context.get_restored_state.return_value = None
+    pm._context._strategy_state.is_on_start_called = True
+    pm._context._strategy_state.is_warmup_in_progress = False
+    pm._context._strategy_state.is_on_warmup_finished_called = False
+    pm._context._strategy_state.is_on_fit_called = True
 
     with pytest.raises(RuntimeError, match="monitor boom"):
-        pm._handle_warmup_finished()
+        pm._run_strategy_pipeline(None)
 
+    assert pm._warmup_finished_is_running is False
+    assert pm._context._strategy_state.is_on_warmup_finished_called is False
+    pm._strategy.on_warmup_finished.assert_not_called()
+
+    pm._health_monitor = MagicMock()
+    pm._run_strategy_pipeline(None)
+    assert pm._strategy.on_warmup_finished.call_count == 1
+    assert pm._context._strategy_state.is_on_warmup_finished_called is True
     assert pm._warmup_finished_is_running is False
 
 

@@ -1050,6 +1050,256 @@ def test_suppressed_new_fill_does_not_rearm_deficit_on_next_snapshot():
     assert state.get_order("cid-1").filled_quantity == 1.25
 
 
+def test_float_dust_excess_does_not_emit_phantom_deal():
+    # Float-dust regression: 0.4 booked locally, the snapshot raises filled to 0.6 —
+    # the deficit is armed via float subtraction (0.6 - 0.4 = 0.19999999999999998).
+    # The 0.2 execution then arrives: covering leaves excess ~5.6e-17, and an exact
+    # `excess <= 0.0` gate booked a phantom dust deal into trackers/save_deals/export.
+    # The half-lot epsilon must swallow the dust: NO deal fires, the trade id dedups.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+
+    booked = Deal(
+        trade_id="t0",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:30:00"),
+        amount=0.4,
+        price=50_000.0,
+        aggressive=True,
+    )
+    am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=booked))
+    assert state.get_order("cid-1").filled_quantity == 0.4
+
+    snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 0.6
+    snap_pos = Position(instrument=inst, quantity=0.6, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+
+    covered = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:59:00"),
+        amount=0.2,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=1.0,
+    )
+    am._time.t = np.datetime64("2026-05-28T01:00:01")
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=covered))
+    assert result.deal is None  # fully covered up to float dust — no phantom deal
+    assert state.get_position(inst).quantity == 0.6
+    assert state.get_order("cid-1").filled_quantity == 0.6
+    assert state.get_balance("USDT").total == 1000.0  # no dust fee debited
+
+    # no residual dust deficit lingers: the next genuine execution books untrimmed
+    new_deal = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:02"),
+        amount=0.1,
+        price=50_000.0,
+        aggressive=True,
+    )
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=new_deal))
+    assert result.deal is new_deal
+    assert state.get_order("cid-1").filled_quantity == 0.7
+
+
+def test_genuine_excess_just_above_epsilon_still_books():
+    # Epsilon boundary: same dust-laden deficit (0.6 - 0.4), but the execution genuinely
+    # exceeds the covered quantity by one lot (the smallest real excess a venue can
+    # produce, above the half-lot epsilon). It must book — trimmed, fee pro-rated.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+
+    booked = Deal(
+        trade_id="t0",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:30:00"),
+        amount=0.4,
+        price=50_000.0,
+        aggressive=True,
+    )
+    am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=booked))
+
+    snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 0.6
+    snap_pos = Position(instrument=inst, quantity=0.6, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+
+    deal = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:01"),
+        amount=0.2 + inst.lot_size,  # one lot beyond the snapshot-counted quantity
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=0.201,
+    )
+    am._time.t = np.datetime64("2026-05-28T01:00:01")
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=deal))
+    assert result.deal is not None
+    assert abs(result.deal.amount - inst.lot_size) < 1e-12  # trimmed to the one-lot excess
+    assert abs(result.deal.fee_amount - 0.001) < 1e-9  # fee pro-rated to the booked part
+    assert abs(state.get_order("cid-1").filled_quantity - 0.601) < 1e-12
+
+
+def test_pre_suppression_snapshot_cannot_reset_suppressed_marker():
+    # Fetch-window twin P4: a snapshot FETCHED before a suppression but applied after it
+    # used to pass the per-order freshness guard (suppression never bumped
+    # last_updated_at) and reset the suppressed marker; the next snapshot's raise then
+    # re-armed the deficit and a genuinely-new execution was suppressed — its deal/
+    # r_pnl/fee dropped forever. The suppression is an order-state observation: it bumps
+    # freshness, the stale snapshot is rejected, the raise is absorbed.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0))
+
+    snap_order = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    snap_order.filled_quantity = 0.5  # deficit 0.5 armed (the covered execution is lost in a WS gap)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    stand_in = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:02"),
+        amount=0.5,
+        price=50_000.0,
+        aggressive=True,
+    )
+    am._time.t = np.datetime64("2026-05-28T01:00:02")
+    result = am.apply(
+        OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=stand_in)
+    )
+    assert result.deal is None  # genuinely-new fill suppressed in place of the lost one
+
+    # fetched at 01:00:01 (BEFORE the suppression at 01:00:02), applied after: stale for
+    # this order — it must NOT reset the suppressed marker
+    stale_order = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    stale_order.filled_quantity = 0.5
+    am._time.t = np.datetime64("2026-05-28T01:00:03")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:01", open_orders=[stale_order]))
+
+    # the fresh snapshot's raise (the suppressed quantity, now in the venue figure) is
+    # absorbed against the surviving marker — NOT re-armed as fresh deficit
+    snap_order2 = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    snap_order2.filled_quantity = 1.0
+    am._time.t = np.datetime64("2026-05-28T01:00:05")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:04", open_orders=[snap_order2]))
+    assert state.get_order("cid-1").filled_quantity == 1.0
+
+    next_fill = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:06"),
+        amount=0.25,
+        price=50_000.0,
+        aggressive=True,
+    )
+    am._time.t = np.datetime64("2026-05-28T01:00:06")
+    result = am.apply(
+        OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=next_fill)
+    )
+    assert result.deal is next_fill  # would be the permanent P4 drop with a re-armed deficit
+    assert state.get_order("cid-1").filled_quantity == 1.25
+
+
+def test_pre_suppression_snapshot_cannot_misabsorb_deficit():
+    # Fetch-window twin P5: a snapshot fetched before a suppression but carrying a NEW
+    # fill's raise (its execution still in flight) used to consume the suppressed marker
+    # against that raise (mis-absorb at the deficit-arming step) — the in-flight,
+    # snapshot-counted execution then booked ON TOP of the snapshot's synced figures
+    # (filled_quantity past the venue figure, fee/r_pnl double-booked against the
+    # reconciled legs). With the freshness bump the stale snapshot is rejected: the
+    # in-flight execution books exactly once and filled matches the venue figure.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0))
+
+    snap_order = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    snap_order.filled_quantity = 0.5  # deficit 0.5 armed (the counted execution o1 is delayed, in flight)
+    snap_pos = Position(instrument=inst, quantity=0.5, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+
+    # the venue fills a further 0.5 (figure now 1.0); the next snapshot is fetched at
+    # 01:00:01 with that figure while BOTH executions are still in flight. The delayed
+    # original arrives first and is suppressed against the S1 deficit.
+    o1 = Deal(
+        trade_id="o1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:59:00"),
+        amount=0.5,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=1.0,
+    )
+    am._time.t = np.datetime64("2026-05-28T01:00:02")
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=o1))
+    assert result.deal is None  # suppressed: marker now stands in for S1's counted quantity
+
+    # the pre-fetch snapshot applies now: stale for this order — its raise must NOT be
+    # absorbed against the marker (positions still reconcile: no freshness on size)
+    stale_order = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    stale_order.filled_quantity = 1.0
+    stale_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:03")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:01", open_orders=[stale_order], positions=[stale_pos]))
+    assert state.get_order("cid-1").filled_quantity == 0.5  # order leg rejected as stale
+
+    # the new fill's execution arrives: books exactly once — with the mis-absorbed
+    # marker it landed on top of the stale snapshot's synced figure (filled 1.5 vs the
+    # venue's 1.0, its fee double-counted against the snapshot-reconciled legs)
+    t_a = Deal(
+        trade_id="tA",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:01.500"),
+        amount=0.5,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=1.0,
+    )
+    am._time.t = np.datetime64("2026-05-28T01:00:04")
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=t_a))
+    assert result.deal is t_a
+    assert state.get_order("cid-1").filled_quantity == 1.0  # == venue figure (1.5 on the bug)
+    assert state.get_balance("USDT").total == 999.0  # tA's fee debited exactly once
+
+    # a fresh snapshot converges sizes; no residual deficit or marker drift remains
+    snap_order2 = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    snap_order2.filled_quantity = 1.0
+    snap_pos2 = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:06")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:05", open_orders=[snap_order2], positions=[snap_pos2]))
+    assert state.get_order("cid-1").filled_quantity == 1.0
+    assert state.get_position(inst).quantity == 1.0
+    assert state.get_snapshot_fill_deficit("cid-1") == 0.0
+    assert state.get_snapshot_fill_suppressed("cid-1") == 0.0
+
+
 def test_position_updated_from_snapshot():
     am = _am()
     state = am._states["binance"]

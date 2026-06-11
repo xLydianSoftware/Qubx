@@ -314,7 +314,11 @@ drives the ticks** and makes every connector call.
    one). Residual ambiguity: a genuinely-new post-snapshot execution that fits the
    deficit window is indistinguishable from a redelivered covered one and is suppressed
    in its place — quantity totals stay exact either way (total suppression is bounded by
-   what snapshots counted), only per-deal price/fee attribution can shift.
+   what snapshots counted), only per-deal price/fee attribution can shift. The mirror
+   case (a post-suppression snapshot whose raise belongs to a different in-flight fill
+   mis-absorbing the marker) has the same envelope: sizes transiently overshoot and
+   fully re-sync on the next snapshot; per-deal attribution may shift. Both are inherent
+   to the clock-free design and self-healing — rollout note, not a defect.
 5. **Positions — surgical** (`reconcile_position_from_snapshot`): the snapshot is
    authoritative for size/avg-price and venue-reported margin/mark **only**; locally
    accumulated accounting (`r_pnl`, commissions, funding) always survives. Never routes

@@ -63,9 +63,32 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
         """
         await self.load_markets()
         symbols = self.market_symbols(symbols, None, True, False, True)
-        return await self.watch_multi_ticker_helper(
-            "watchBidsAsks", "bookTicker", symbols, params, isUnsubscribe=True
-        )
+        return await self.watch_multi_ticker_helper("watchBidsAsks", "bookTicker", symbols, params, isUnsubscribe=True)
+
+    def edit_contract_order_request(
+        self, id: str, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}
+    ):
+        """
+        ccxt's base edit_order_with_client_order_id routes here with id='' and the
+        client order id in params, but upstream puts ``orderId`` into the request
+        unconditionally — an empty ``orderId=`` alongside ``origClientOrderId`` is
+        rejected by Binance REST (-1102 family). Mirror ccxt's own conditional in
+        binance.cancel_order: send orderId only when no client order id identifies
+        the order.
+
+        Upstream's builder also fails to scrub the cid aliases from the shared params
+        dict (its ``omit`` only rebinds a local), so edit_contract_order would extend
+        the undocumented ``clientOrderId`` onto the wire request alongside
+        ``origClientOrderId`` (-1104 UNREAD_PARAMETERS class). Pop them here: this
+        dict is by-reference the one later extended into the request, and on the
+        cid path it is a fresh ccxt-internal copy, never the caller's dict.
+        """
+        request = super().edit_contract_order_request(id, symbol, type, side, amount, price, params)
+        if not id and "origClientOrderId" in request:
+            del request["orderId"]
+        params.pop("clientOrderId", None)
+        params.pop("newClientOrderId", None)
+        return request
 
     def parse_ohlcv(self, ohlcv, market=None):
         """
@@ -381,11 +404,11 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
             super().describe(),
             {
                 "has": {
-                    "watchOHLCV": True,                # handlers/ohlc.py:61
-                    "watchOHLCVForSymbols": True,      # handlers/ohlc.py:60
+                    "watchOHLCV": True,  # handlers/ohlc.py:61
+                    "watchOHLCVForSymbols": True,  # handlers/ohlc.py:60
                     "watchOrderBookForSymbols": True,  # handlers/orderbook.py:101
-                    "watchTradesForSymbols": True,     # handlers/trade.py:76
-                    "watchBidsAsks": True,             # handlers/quote.py:46
+                    "watchTradesForSymbols": True,  # handlers/trade.py:76
+                    "watchBidsAsks": True,  # handlers/quote.py:46
                 },
                 "options": {
                     "watchTrades": {
@@ -508,8 +531,6 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
         return cast(dict[str, float], self._funding_intervals)
 
     async def watch_funding_rates(self, symbols: List[str] | None = None):
-        symbol_count = len(symbols) if symbols else 0
-
         try:
             await self.load_markets()
             await self._update_funding_intervals()
@@ -543,7 +564,7 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
                     }
                     processed_count += 1
 
-                except Exception as e:
+                except Exception:
                     continue
 
             if processed_count == 0:
@@ -551,7 +572,7 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
 
             return funding_rates
 
-        except Exception as e:
+        except Exception:
             raise
 
     async def _update_funding_intervals(self):

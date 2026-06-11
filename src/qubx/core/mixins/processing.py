@@ -1313,9 +1313,15 @@ class ProcessingManager(IProcessingManager):
 
         try:
             self._position_gathering.on_execution_report(self._context, instrument, fill)
+        except Exception:
+            logger.exception("position gatherer raised")
+            self._emit_error_metric("downstream_fill_errors", consumer="gatherer")
+
+        try:
             self._get_tracker_for(instrument).on_execution_report(self._context, instrument, fill)
         except Exception:
-            logger.exception("downstream fill consumer raised")
+            logger.exception("position tracker raised")
+            self._emit_error_metric("downstream_fill_errors", consumer="tracker")
 
         if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
             try:

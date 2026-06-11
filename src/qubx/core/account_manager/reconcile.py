@@ -28,6 +28,7 @@ from qubx.core.account_manager.state_machine import can_transition, validate_tra
 from qubx.core.basics import (
     EXTERNAL_CID_PREFIX,
     Balance,
+    Instrument,
     Order,
     OrderOrigin,
     OrderStatus,
@@ -86,6 +87,19 @@ def _last_seen_at(order: Order) -> np.datetime64 | None:
     # Age base for grace/staleness decisions: the freshest of last_updated_at and
     # submitted_at (both are dt_64 | None). None means we cannot age the order at all.
     return order.last_updated_at or order.submitted_at
+
+
+def fill_qty_epsilon(instrument: Instrument | None) -> float:
+    """Float-dust tolerance for the snapshot-fill-deficit quantity comparisons.
+
+    The deficit is armed and consumed via float subtraction of venue quantities
+    (e.g. 0.6 - 0.4 -> 0.19999999999999998), so exact compares against 0.0 read
+    ~1e-16 dust as a genuine excess and emit phantom dust deals. Any genuine
+    quantity difference is at least one lot, so half a lot cleanly separates dust
+    (many orders of magnitude below, at any quantity scale) from real fills.
+    0.0 (exact compare, the prior behavior) for an order without an instrument.
+    """
+    return instrument.lot_size * 0.5 if instrument is not None else 0.0
 
 
 def reconcile_snapshot(
@@ -232,7 +246,9 @@ def _update_from_snapshot(
     if snap_order.status != existing.status:
         _reconcile_status_from_snapshot(state, existing, snap_order.status, now)
     cid = existing.client_order_id
-    if snap_order.filled_quantity > existing.filled_quantity:
+    eps = fill_qty_epsilon(existing.instrument)
+    raise_qty = snap_order.filled_quantity - existing.filled_quantity
+    if raise_qty > eps:
         # The snapshot counted executions we never booked as deals (its position/balance
         # legs incorporate them) — grow the covered-quantity deficit by the raise so the
         # executions, when delivered, don't book again (reducer._apply_execution). The
@@ -240,9 +256,9 @@ def _update_from_snapshot(
         # absorbed, not re-armed: the venue's filled figure now includes that quantity,
         # and re-arming it would keep suppressing fresh fills forever after a real WS
         # loss whose executions never get delivered.
-        raise_qty = snap_order.filled_quantity - existing.filled_quantity
         absorbed = min(raise_qty, state.get_snapshot_fill_suppressed(cid))
-        state.set_snapshot_fill_deficit(cid, state.get_snapshot_fill_deficit(cid) + raise_qty - absorbed)
+        new_deficit = state.get_snapshot_fill_deficit(cid) + raise_qty - absorbed
+        state.set_snapshot_fill_deficit(cid, 0.0 if new_deficit <= eps else new_deficit)
     # this snapshot's filled figure reflects everything suppressed so far — reset the marker
     state.set_snapshot_fill_suppressed(cid, 0.0)
     existing.filled_quantity = snap_order.filled_quantity
