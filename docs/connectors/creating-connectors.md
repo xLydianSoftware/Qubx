@@ -90,7 +90,7 @@ packages = ["src/my_connector"]
 The data provider streams market data from the exchange:
 
 ```python
-from qubx.connectors.registry import data_provider
+from qubx.connectors.registry import CredentialsProvider, data_provider
 from qubx.core.interfaces import IDataProvider
 
 @data_provider("myexchange")
@@ -107,12 +107,14 @@ class MyDataProvider(IDataProvider):
         time_provider: ITimeProvider,
         channel: CtrlChannel,
         health_monitor: IHealthMonitor,
-        account_manager: "AccountConfigurationManager",
+        credentials: CredentialsProvider,
+        loop: asyncio.AbstractEventLoop | None = None,
         **kwargs,
     ):
-        # Get credentials from account manager
-        creds = account_manager.get_exchange_credentials(exchange_name)
-        settings = account_manager.get_exchange_settings(exchange_name)
+        # The runner passes its AccountConfigurationManager as `credentials` (typed
+        # structurally as CredentialsProvider) and the shared asyncio loop as `loop`
+        creds = credentials.get_exchange_credentials(exchange_name)
+        settings = credentials.get_exchange_settings(exchange_name)
 
         # Initialize client and WebSocket
         self.client = get_my_client(creds.api_key, creds.secret)
@@ -154,7 +156,7 @@ framework's `AccountManager` consumes them to maintain account state.
 Connectors are registered as factory functions:
 
 ```python
-from qubx.connectors.registry import connector
+from qubx.connectors.registry import CredentialsProvider, connector
 from qubx.core.connector import ChannelEmitter, IConnector
 
 
@@ -187,7 +189,7 @@ class MyConnector(ChannelEmitter):
         ...
 
     # ... plus connect/disconnect, is_ws_ready/reconnect, make_client_id,
-    # is_simulated_trading, read_only, set_instrument_leverage, set_margin_mode
+    # is_simulated_trading, set_instrument_leverage, set_margin_mode
 
 
 @connector("myexchange")
@@ -195,13 +197,14 @@ def create_myexchange_connector(
     exchange_name: str,
     time_provider: ITimeProvider,
     channel: CtrlChannel,
-    account_manager: "AccountConfigurationManager",
+    credentials: CredentialsProvider,
     data_provider: IDataProvider,
     health_monitor: IHealthMonitor,
     read_only: bool = False,
+    loop: asyncio.AbstractEventLoop | None = None,
     **kwargs,
 ) -> IConnector:
-    creds = account_manager.get_exchange_credentials(exchange_name)
+    creds = credentials.get_exchange_credentials(exchange_name)
     client = get_my_client(creds.api_key, creds.secret)
     return MyConnector(
         exchange_name=exchange_name,
@@ -211,6 +214,12 @@ def create_myexchange_connector(
         read_only=read_only,
     )
 ```
+
+The runner calls the factory with exactly these keyword arguments: its
+`AccountConfigurationManager` arrives as `credentials` (typed structurally as
+`CredentialsProvider` so plugins need no runner import), `read_only` comes from the
+live config, and `loop` is the runner-managed asyncio event loop shared with the data
+provider. Keep `**kwargs` so new framework arguments don't break your factory.
 
 ### 3. Data Reader
 
@@ -548,8 +557,8 @@ live:
       universe:
         - BTCUSDC
         - ETHUSDC
-      extra:
-        # Connector-specific options
+      params:
+        # Extra keyword args, forwarded to the data provider
         account_index: 12345
 
 # Optional: Configure data reader for historical data
@@ -636,7 +645,6 @@ plugins:
 
 ## Examples
 
-See these connectors for reference implementations:
-
-- **CCXT Connector**: General-purpose connector using CCXT library (`qubx.connectors.ccxt`)
-- **XLighter Connector**: WebSocket-based connector for Lighter exchange (`qubx_lighter` package)
+See the **CCXT Connector** (`qubx.connectors.ccxt`) for a reference implementation —
+`factory.py` shows the registered `@connector` factory and `connector.py` the
+`IConnector` implementation.

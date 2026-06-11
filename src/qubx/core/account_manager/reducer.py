@@ -430,7 +430,7 @@ def _handle_balance_update(state: AccountState, event: BalanceUpdateEvent, now: 
     # Absolute apply through the per-currency as_of ratchet; total-only pushes (futures
     # carry no free/locked split -> NaN) preserve locked. Producer contract: a push
     # without a real split MUST carry free/locked = NaN, not 0. The balance field on the
-    # result is internal visibility only — no strategy callback fires (Item 6 contract).
+    # result is internal visibility only — no strategy callback fires (design.md: deliberately no balance callback).
     bal = event.balance
     if not state.apply_balance_push(bal.currency, bal.total, event.as_of, free=bal.free, locked=bal.locked):
         return ApplyResult()

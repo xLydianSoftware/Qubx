@@ -19,6 +19,7 @@ from qubx.core.events import (
     OrderFilledEvent,
     OrderRejectedEvent,
     OrderUpdatedEvent,
+    OrderUpdateRejectedEvent,
 )
 from qubx.core.exceptions import InvalidOrder
 from qubx.core.lookups import lookup
@@ -263,6 +264,46 @@ def test_update_to_crossing_price_emits_fill(setup):
     updated_idx = next(i for i, e in enumerate(events) if isinstance(e, OrderUpdatedEvent))
     fill_idx = next(i for i, e in enumerate(events) if isinstance(e, OrderFilledEvent))
     assert updated_idx < fill_idx, events
+
+
+def test_update_rejected_replace_emits_update_rejected_then_canceled(setup):
+    # The re-place leg of cancel+recreate can draw a venue verdict (here: the new BUY stop
+    # price is below the ask, "would trigger immediately") AFTER the original was already
+    # canceled in the OME. It must not raise (rejection boundary) — it must emit
+    # UpdateRejected then Canceled so the AM converges with OME truth instead of stranding
+    # the order ACCEPTED forever (no sweeps in sim).
+    conn, collector, exchange, instr, _time = setup
+    request = OrderRequest(
+        client_id="qubx-update-reject",
+        instrument=instr,
+        quantity=0.1,
+        price=32500.0,  # above ask 32001: BUY stop rests
+        side="BUY",
+        order_type="STOP_MARKET",
+        time_in_force="gtc",
+    )
+    conn.submit_order(request)
+    accepted = _drain(collector)[0]
+    assert isinstance(accepted, OrderAcceptedEvent)
+
+    conn.update_order(  # must not raise
+        client_order_id=accepted.client_order_id,
+        venue_order_id=accepted.venue_order_id,
+        price=31500.0,  # below ask: the re-placed stop would trigger immediately
+    )
+    events = _drain(collector)
+    assert [type(e) for e in events] == [OrderUpdateRejectedEvent, OrderCanceledEvent], events
+    rejected, canceled = events
+    assert rejected.client_order_id == "qubx-update-reject"
+    assert rejected.venue_order_id == accepted.venue_order_id
+    assert "would trigger" in rejected.reason.lower()
+    assert canceled.client_order_id == "qubx-update-reject"
+    assert canceled.venue_order_id == accepted.venue_order_id
+    assert not exchange.get_open_orders()
+
+    # A later cancel finds nothing at the venue — swallowed, no events, no raise.
+    conn.cancel_order(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
+    assert _drain(collector) == []
 
 
 def test_process_market_data_translates_fill(setup):

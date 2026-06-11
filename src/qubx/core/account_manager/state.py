@@ -111,7 +111,7 @@ class AccountState:
         self._transition_counts: Counter = Counter()
         # exchange-reported account figures; None in sim, set from venue snapshots in live
         self._venue_figures: VenueAccountFigures | None = None
-        # applied funding buckets ((instrument, bucket-index) keys), LRU-bounded dedup
+        # applied funding buckets ((instrument, bucket-index) keys), FIFO-bounded dedup
         # side-table — same family as _seen_trade_ids, but keyed per funding interval
         self._applied_funding_buckets: OrderedDict[tuple, None] = OrderedDict()
         # venue event time of the last applied WS push, per instrument / per currency

@@ -278,6 +278,81 @@ class TestRunStrategyYaml:
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner._create_data_provider")
+    def test_paper_context_canonicalizes_binance_pm(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """R13 regression: a BINANCE.PM (portfolio margin) config is canonicalized to
+        BINANCE.UM at the runner boundary, so the connector dict and AM states are keyed
+        by the exchange the instruments carry — ctx.trade() and on_market_quote route
+        instead of KeyError-ing / silently skipping."""
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+        # Faithful to live: the PM data provider self-reports the venue name (the
+        # data-side EXCHANGE_MAPPINGS fallback bridges quote lookups by BINANCE.UM).
+        mock_data_provider.exchange.return_value = "BINANCE.PM"
+
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+        config.live.exchanges = {"BINANCE.PM": config.live.exchanges["BINANCE.UM"]}
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions=None, testnet=False
+        )
+
+        with patch(
+            "qubx.utils.runner.runner.class_import",
+            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+        ):
+            ctx = create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="pm_canonical_test",
+            )
+
+        assert isinstance(ctx, StrategyContext)
+
+        # - every framework-facing key is canonical; the venue name survives only in
+        #   the settings lookups (initial capital / base currency / commissions)
+        assert set(ctx._connectors.keys()) == {"BINANCE.UM"}
+        assert ctx._connectors["BINANCE.UM"].exchange_name == "BINANCE.UM"
+        assert {i.exchange for i in ctx._initial_instruments} == {"BINANCE.UM"}
+        acc_manager.get_exchange_settings.assert_any_call("BINANCE.PM")
+
+        # - paper capital seeded into the canonical AM state
+        balance = ctx.account.get_balance("USDT", exchange="BINANCE.UM")
+        assert balance is not None
+        assert balance.total == 100_000.0
+
+        # - ctx.trade() routes: AM.add_order keys by instrument.exchange (KeyError pre-fix)
+        btc = self._find_instrument("BINANCE.UM", "BTCUSDT")
+        quote = Quote(time=np.datetime64("now"), bid=100_000.0, ask=100_001.0, bid_size=1.0, ask_size=1.0)
+        ctx._connectors["BINANCE.UM"].process_market_data(btc, quote)
+        order = ctx.trade(btc, 0.01)
+        assert order.client_order_id
+
+        # - on_market_quote routes: position marking keys by instrument.exchange
+        #   (silently skipped pre-fix; seed_position returned False)
+        assert ctx.account.seed_position(Position(btc, quantity=1.0, pos_average_price=90_000.0))
+        ctx.account.on_market_quote(btc, quote)
+        assert ctx.account.get_position(btc).last_update_price == quote.mid_price()
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner._create_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
     @patch("qubx.utils.runner.runner._restore_state")
     def test_run_strategy_yaml_with_restored_positions(

@@ -541,6 +541,21 @@ def test_update_rejected_reverts_to_pre_pending():
     assert r.order_change is OrderChange.UPDATE_REJECTED
 
 
+def test_update_rejected_then_canceled_lands_terminal():
+    # The simulated connector's failed cancel+recreate emits UpdateRejected then Canceled
+    # (the original is gone at the venue): the order must converge to terminal CANCELED,
+    # not strand at the reverted pre-pending status.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="V1")
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+    r = apply(state, OrderUpdateRejectedEvent(instrument=None, client_order_id="c1", reason="would trigger"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.ACCEPTED
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="V1"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.CANCELED
+    assert r.order_change is OrderChange.CANCELED
+    assert _present(state.get_active_order("c1")).status.is_terminal  # later cancels no-op on terminal
+
+
 def test_accept_during_pending_update_preserves_marker():
     # The ccxt connector emits ACCEPTED twice by design (REST ack + WS ack): a duplicate
     # accept racing a pending update must not wipe PENDING_UPDATE, so the venue's later

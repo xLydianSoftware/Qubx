@@ -310,8 +310,8 @@ def test_am_holds_no_strategy_reference():
 
 def test_inflight_sweep_isolates_raising_callback():
     # A raising strategy callback (or connector error) on one order must not abort the
-    # rest of the sweep — design §1260 "one bad callback never blocks the next". The
-    # isolation now lives in the PM's _safe_call, which the give-up path routes through.
+    # rest of the sweep (design.md "Ticks & sweeps"). The isolation lives in the PM's
+    # _safe_call, which the give-up path routes through.
     conn = MagicMock()
     am = _am({"binance": conn})
     am._pm._strategy.on_order.side_effect = RuntimeError("boom")

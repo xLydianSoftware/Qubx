@@ -47,7 +47,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup, register_accounts
-from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
+from qubx.core.mixins.utils import canonical_exchange
 from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.storages.stub import NoConfiguredStorage
 from qubx.health import BaseHealthMonitor
@@ -84,8 +84,6 @@ from qubx.utils.throttler import InstrumentThrottler
 from qubx.utils.time import convert_seconds_to_str, to_timedelta, to_timestamp
 
 from .accounts import AccountConfigurationManager
-
-INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE_MAPPINGS.items()}
 
 
 def _inject_warmup_rate_limiters(warmup: WarmupConfig | None, rate_limiters: dict | None) -> None:
@@ -520,25 +518,35 @@ def create_strategy_context(
         _time, emitter=_metric_emitter, channel=_chan, **config.live.health.model_dump()
     )
 
-    exchanges = list(config.live.exchanges.keys())
-
     # Rate limiting (backend, IP discovery, per-exchange limiters)
     _rl_manager = RateLimitManager(config.live.rate_limiting, loop)
 
     _exchange_to_tcc: dict[str, TransactionCostsCalculator] = {}
     _exchange_to_data_provider = {}
     _connectors: dict[str, IConnector] = {}
+    _base_currencies: dict[str, str] = {}
     _instruments = []
 
-    for exchange_name, exchange_config in config.live.exchanges.items():
-        rate_limiter = _rl_manager.get_or_create(exchange_name, exchange_config.connector)
+    for venue_name, exchange_config in config.live.exchanges.items():
+        # Canonicalize ONCE at the config boundary: BINANCE.PM is a portfolio-margin
+        # account trading BINANCE.UM instruments, so every framework-facing dict
+        # (connectors/tcc/base currencies -> AM states) is keyed by the canonical
+        # (instrument-universe) exchange the instruments carry. The configured venue
+        # name survives only for credentials/settings lookups and venue plumbing.
+        exchange_name = canonical_exchange(venue_name)
+        if exchange_name in _connectors:
+            raise ValueError(
+                f"Exchange {venue_name} maps to canonical exchange {exchange_name}, "
+                "which is already configured — configure only one of them"
+            )
+        rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector)
         if rate_limiter is not None:
             exchange_config.params["rate_limiter"] = rate_limiter
-        _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, account_manager))
+        _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager))
         # Both paper and live use a REAL market-data provider (live quotes/OHLC); only
         # paper's *execution* is simulated.
         _data_provider = _create_data_provider(
-            exchange_name,
+            venue_name,
             exchange_config,
             time_provider=_time,
             channel=_chan,
@@ -560,7 +568,7 @@ def create_strategy_context(
             # factory builds the venue's authenticated client and picks any per-exchange subclass.
             _connectors[exchange_name] = ConnectorRegistry.get_connector(
                 exchange_config.connector.lower(),
-                exchange_name=exchange_name,
+                exchange_name=venue_name,
                 time_provider=_time,
                 channel=_chan,
                 credentials=account_manager,
@@ -570,6 +578,9 @@ def create_strategy_context(
                 loop=loop,
             )
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
+        _base_currencies[exchange_name] = _resolve_base_currency(
+            venue_name, exchange_config, config.live, account_manager
+        )
 
     # Use provided aux_configs or resolve if not provided (for backwards compatibility)
     if aux_configs is None:
@@ -604,10 +615,6 @@ def create_strategy_context(
     # - central account manager: paper uses SimulatedAccountManager (synchronous execution, no ticks).
     #   NB: the `account_manager` function param is the credentials manager — keep them distinct (`_am`).
     _am_cls = SimulatedAccountManager if paper else AccountManager
-    _base_currencies = {
-        exchange_name: _resolve_base_currency(exchange_name, exchange_config, config.live, account_manager)
-        for exchange_name, exchange_config in config.live.exchanges.items()
-    }
     _am = _am_cls(
         connectors=_connectors,
         base_currencies=_base_currencies,
@@ -620,12 +627,12 @@ def create_strategy_context(
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions
     # + balances persisted across restarts) is injected into the AM for both modes.
     if paper:
-        for exchange_name in config.live.exchanges:
-            _seed_paper_capital(_am, exchange_name, account_manager)
+        for venue_name in config.live.exchanges:
+            _seed_paper_capital(_am, canonical_exchange(venue_name), venue_name, account_manager)
     if restored_state is not None:
         _inject_restored_state(_am, restored_state)
 
-    _initializer = BasicStrategyInitializer(simulation=_exchange_to_data_provider[exchanges[0]].is_simulation)
+    _initializer = BasicStrategyInitializer(simulation=next(iter(_exchange_to_data_provider.values())).is_simulation)
 
     # Create exporters if configured
     if no_exporters:
@@ -733,11 +740,12 @@ def _setup_strategy_logging(
     return stg_logging
 
 
-def _create_tcc(exchange_name: str, account_manager: AccountConfigurationManager) -> TransactionCostsCalculator:
-    if exchange_name == "BINANCE.PM":
-        # TODO: clean this up
-        exchange_name = "BINANCE.UM"
-    settings = account_manager.get_exchange_settings(exchange_name)
+def _create_tcc(
+    exchange_name: str, venue_name: str, account_manager: AccountConfigurationManager
+) -> TransactionCostsCalculator:
+    # Settings (commission tier) live under the configured venue name (e.g. BINANCE.PM);
+    # the fee schedule is looked up by the canonical exchange whose instruments are traded.
+    settings = account_manager.get_exchange_settings(venue_name)
     tcc = lookup.find_fees(exchange_name, settings.commissions)
     assert tcc is not None, f"Can't find fees calculator for {exchange_name} exchange"
     return tcc
@@ -815,15 +823,18 @@ def _inject_restored_state(account_manager: AccountManager, restored_state: Rest
 def _seed_paper_capital(
     account_manager: SimulatedAccountManager,
     exchange_name: str,
+    venue_name: str,
     credentials_manager: AccountConfigurationManager,
 ) -> None:
     """Seed the per-exchange account state with the configured initial capital (paper mode).
 
     The base currency comes from the AM's state — already resolved from config at
     construction — so seeding can't drift from the AM's own base-currency view.
+    ``exchange_name`` is the canonical AM state key; ``venue_name`` is the configured
+    name the settings (initial capital) live under.
     """
     base_currency = account_manager.get_base_currency(exchange_name)
-    capital = credentials_manager.get_exchange_settings(exchange_name).initial_capital
+    capital = credentials_manager.get_exchange_settings(venue_name).initial_capital
     account_manager.seed_balance(
         exchange_name,
         Balance(exchange=exchange_name, currency=base_currency, total=capital, free=capital, locked=0.0),
@@ -831,10 +842,7 @@ def _seed_paper_capital(
 
 
 def _create_instruments_for_exchange(exchange_name: str, exchange_config: ExchangeConfig) -> list[Instrument]:
-    exchange_name = exchange_name.upper()
-    if exchange_name == "BINANCE.PM":
-        # TODO: clean this up
-        exchange_name = "BINANCE.UM"
+    exchange_name = canonical_exchange(exchange_name)
     symbols = exchange_config.universe
     instruments = []
     for symbol in symbols:
@@ -873,22 +881,6 @@ def _create_data_throttler(throttling_config):
         return None
 
     return InstrumentThrottler(throttle_cfg_dict)
-
-
-def _apply_inverse_exchange_mapping(exchanges: list[str]) -> list[str]:
-    """
-    Apply inverse exchange mapping to the list of exchanges.
-
-    This converts mapped exchanges (like BINANCE.PM) back to their original form (like BINANCE.UM)
-    so that SimulationRunner doesn't need to handle EXCHANGE_MAPPINGS.
-    """
-    mapped_exchanges = []
-    for exchange in exchanges:
-        if exchange in INVERSE_EXCHANGE_MAPPINGS:
-            mapped_exchanges.append(INVERSE_EXCHANGE_MAPPINGS[exchange])
-        else:
-            mapped_exchanges.append(exchange)
-    return mapped_exchanges
 
 
 @dataclass(frozen=True)
@@ -1041,8 +1033,8 @@ def _run_warmup(
             generator=ctx.strategy,
             tracker=None,
             instruments=instruments,
-            # Apply inverse exchange mapping so SimulationRunner doesn't need EXCHANGE_MAPPINGS
-            exchanges=_apply_inverse_exchange_mapping(ctx.exchanges),
+            # ctx.exchanges are already canonical (the runner canonicalizes at the config boundary)
+            exchanges=list(ctx.exchanges),
             capital=ctx.account.get_total_capital(),
             base_currency=ctx.account.get_base_currency(),
             commissions=None,  # TODO: get commissions from somewhere

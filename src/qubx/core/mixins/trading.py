@@ -23,8 +23,6 @@ from qubx.core.interfaces import (
     ITradingManager,
 )
 
-from .utils import EXCHANGE_MAPPINGS
-
 
 class ClientIdStore:
     """Manages generation of unique client order IDs."""
@@ -444,10 +442,9 @@ class TradingManager(ITradingManager):
         return "limit"
 
     def _get_connector(self, exchange: str) -> IConnector:
+        # Connectors are keyed by the canonical exchange (the runner canonicalizes
+        # venue names like BINANCE.PM at the config boundary), so instrument.exchange
+        # always hits directly.
         if exchange in self._exchange_to_connector:
             return self._exchange_to_connector[exchange]
-        # TODO(account-mgmt): drop the EXCHANGE_MAPPINGS fallback when every exchange
-        # is keyed by its canonical name across connectors and AccountManager states.
-        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_connector:
-            return self._exchange_to_connector[EXCHANGE_MAPPINGS[exchange]]
         raise ValueError(f"Connector for exchange {exchange} not found")

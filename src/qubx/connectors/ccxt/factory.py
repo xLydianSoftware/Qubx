@@ -7,6 +7,7 @@ import ccxt.pro as cxp
 from qubx.connectors.registry import CredentialsProvider, connector
 from qubx.core.basics import CtrlChannel
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ITimeProvider
+from qubx.core.mixins.utils import canonical_exchange
 
 from .connector import CcxtConnector
 from .exchange_manager import ExchangeManager
@@ -184,8 +185,12 @@ def create_ccxt_connector(
         loop=loop,
         **(creds.model_extra or {}),
     )
+    # The connector self-reports the canonical (instrument-universe) exchange so the
+    # account events it stamps (balances/snapshots) route to the same AM state its
+    # instruments do: a BINANCE.PM account trades BINANCE.UM instruments — the venue
+    # name is plumbing only (credentials lookup + ccxt exchange class, both above).
     return get_ccxt_connector(
-        exchange_name,
+        canonical_exchange(exchange_name),
         channel=channel,
         time_provider=time_provider,
         exchange_manager=exchange_manager,

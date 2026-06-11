@@ -108,16 +108,40 @@ class SimulatedConnector(ChannelEmitter):
         old_order = old.order
         # cancel+recreate keeps the original client_order_id, so the strategy sees a
         # single OrderUpdatedEvent rather than a Canceled+Accepted pair.
-        new = self._exchange.place_order(
-            instrument=old_order.instrument,
-            order_side=old_order.side,
-            order_type=old_order.type,
-            amount=quantity if quantity is not None else old_order.quantity,
-            price=price if price is not None else old_order.price,
-            client_id=old_order.client_order_id,
-            time_in_force=old_order.time_in_force,
-            **(old_order.options or {}),
-        )
+        try:
+            new = self._exchange.place_order(
+                instrument=old_order.instrument,
+                order_side=old_order.side,
+                order_type=old_order.type,
+                amount=quantity if quantity is not None else old_order.quantity,
+                price=price if price is not None else old_order.price,
+                client_id=old_order.client_order_id,
+                time_in_force=old_order.time_in_force,
+                **(old_order.options or {}),
+            )
+        except ExchangeError as e:
+            # The re-place was rejected AFTER the original was canceled in the OME, so the
+            # synchronous-raise contract no longer applies (even for InvalidOrder, a subclass):
+            # TM's rollback would revert the order to ACCEPTED while the venue holds nothing,
+            # stranding it forever (no sweeps in sim). Converge the AM with OME truth instead —
+            # update rejected, then the original canceled (the live cancel+recreate failure
+            # contract: the strategy learns the update failed AND the order is gone).
+            self.send(
+                OrderUpdateRejectedEvent(
+                    instrument=old_order.instrument,
+                    client_order_id=old_order.client_order_id,
+                    venue_order_id=old_order.venue_order_id,
+                    reason=str(e),
+                )
+            )
+            self.send(
+                OrderCanceledEvent(
+                    instrument=old_order.instrument,
+                    client_order_id=old_order.client_order_id,
+                    venue_order_id=old_order.venue_order_id,
+                )
+            )
+            return
         self.send(
             OrderUpdatedEvent(
                 instrument=new.order.instrument,

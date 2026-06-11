@@ -583,3 +583,32 @@ def test_get_ccxt_connector_resolves_subclass(name: str, expected: type) -> None
     conn = get_ccxt_connector(name, **_factory_kwargs())
     assert type(conn) is expected
     assert conn.exchange_name == name
+
+
+def test_create_ccxt_connector_binance_pm_reports_canonical_exchange(monkeypatch) -> None:
+    """R13: the registered factory keeps the venue name (BINANCE.PM) for credentials and
+    the ccxt exchange class, but the connector self-reports the canonical exchange its
+    instruments carry (BINANCE.UM) — so the events it stamps route to the right AM state."""
+    from qubx.connectors.ccxt import factory as factory_module
+    from qubx.connectors.ccxt.factory import create_ccxt_connector
+
+    em = Mock()
+    em.exchange = Mock()
+    mock_get_em = Mock(return_value=em)
+    monkeypatch.setattr(factory_module, "get_ccxt_exchange_manager", mock_get_em)
+
+    credentials = Mock()
+    credentials.get_exchange_credentials.return_value = Mock(testnet=False, api_key="k", secret="s", model_extra=None)
+
+    conn = create_ccxt_connector(
+        exchange_name="BINANCE.PM",
+        time_provider=DummyTimeProvider(),
+        channel=Mock(),
+        credentials=credentials,
+        data_provider=Mock(),
+        health_monitor=Mock(),
+    )
+
+    assert conn.exchange_name == "BINANCE.UM"
+    credentials.get_exchange_credentials.assert_called_once_with("BINANCE.PM")
+    assert mock_get_em.call_args.kwargs["exchange"] == "BINANCE.PM"

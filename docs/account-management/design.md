@@ -453,3 +453,11 @@ Sanctioned departures, detailed in the sections above:
 - **`qubx_lighter` plugin port**: the external plugin targets the removed
   `IBroker`/`IAccountProcessor` registry API and must be ported to
   IConnector + ConnectorRegistry before any Lighter deployment.
+- **Binance `priceMatch` support**: regressed vs main in the IBroker→IConnector cutover.
+  The generic submit path forwards the `priceMatch` option but keeps `price` set, which
+  Binance rejects — restoring it needs main's rule that `priceMatch` orders are sent with
+  the price cleared.
+- **Hyperliquid broker port**: main's Hyperliquid-specific broker behavior —
+  slippage-priced market orders and order-response enrichment — was dropped in the
+  cutover; HL live trading regresses to the generic ccxt path until reimplemented as a
+  `CcxtConnector` subclass.
