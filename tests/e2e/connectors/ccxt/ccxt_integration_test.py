@@ -1,6 +1,7 @@
 import asyncio
 import time
 from collections import defaultdict
+from pathlib import Path
 from typing import Callable
 
 import pytest
@@ -88,14 +89,12 @@ class TestCcxtOhlcResubscription:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_ohlc_resubscription_universe_change_binance(self):
         """Test that OHLC resubscription works when universe is changed for Binance spot"""
         await self._test_ohlc_resubscription_universe_change("BINANCE", ["BTCUSDT"], ["ETHUSDT"])
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_ohlc_resubscription_universe_change_binance_um(self):
         """Test that OHLC resubscription works when universe is changed for Binance futures"""
         await self._test_ohlc_resubscription_universe_change(
@@ -104,7 +103,6 @@ class TestCcxtOhlcResubscription:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_ohlc_resubscription_universe_change_binance_um_twice(self):
         """Test that OHLC resubscription works when universe is changed twice for Binance futures"""
         await self._test_ohlc_resubscription_universe_change_twice(
@@ -363,14 +361,12 @@ class TestCcxtDataProvider:
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_binance_reader(self):
         exchange = "BINANCE"
         await self._test_exchange_reading(exchange, ["BTCUSDT", "ETHUSDT"])
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    @pytest.mark.skip(reason="Skip by default, run manually if needed")
     async def test_binance_um_reader(self):
         """Smoke test: paper-mode binance UM OHLC subscription end-to-end.
 
@@ -455,23 +451,40 @@ class TestCcxtTrading:
         QubxLogConfig.set_log_level("DEBUG")
         self._creds = exchange_credentials
 
+    def _account_manager_with_credentials(self, exchange: str, tmp_path: Path) -> AccountConfigurationManager:
+        """Build an AccountConfigurationManager from the exchange_credentials fixture, or skip.
+
+        Live-trading tests need real API keys; the fixture reads them from the file passed
+        via ``--env`` (default ``.env.integration``). Without keys for the exchange the test
+        skips instead of failing against the venue.
+        """
+        creds = self._creds.get(exchange)
+        if not creds or not creds.get("api_key") or not creds.get("secret"):
+            pytest.skip(f"No {exchange} API credentials in --env file (.env.integration) — live trading test")
+        account_config = tmp_path / "accounts.toml"
+        account_config.write_text(
+            "[[accounts]]\n"
+            f'exchange = "{exchange}"\n'
+            'name = "e2e"\n'
+            f'api_key = "{creds["api_key"]}"\n'
+            f'secret = "{creds["secret"]}"\n'
+        )
+        return AccountConfigurationManager(account_config=account_config)
+
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    @pytest.mark.skip(reason="Skip by default, run manually if needed")
-    async def test_basic_binance(self):
+    async def test_basic_binance(self, tmp_path: Path):
         exchange = "BINANCE"
-        await self._test_basic_exchange_functions(exchange, ["BTCUSDT"])
+        await self._test_basic_exchange_functions(exchange, ["BTCUSDT"], tmp_path)
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    @pytest.mark.skip(reason="Skip by default, run manually if needed")
-    async def test_basic_binance_um(self):
+    async def test_basic_binance_um(self, tmp_path: Path):
         exchange = "BINANCE.UM"
-        await self._test_basic_exchange_functions(exchange, ["BTCUSDT"])
+        await self._test_basic_exchange_functions(exchange, ["BTCUSDT"], tmp_path)
 
     @pytest.mark.asyncio
     @pytest.mark.e2e
-    @pytest.mark.skip(reason="Skip by default, run manually if needed (network, no credentials)")
     async def test_paper_trading_binance_um(self):
         """Paper-mode trading end-to-end (network, NO credentials).
 
@@ -544,10 +557,8 @@ class TestCcxtTrading:
         await wait(lambda: not ctx.positions[i1].is_open(), timeout=15)
         ctx.stop()
 
-    async def _test_basic_exchange_functions(self, exchange: str, symbols: list[str]):
-        # Convert credentials format
-        account_manager = AccountConfigurationManager()
-        # TODO: Add proper credential management for the new API
+    async def _test_basic_exchange_functions(self, exchange: str, symbols: list[str], tmp_path: Path):
+        account_manager = self._account_manager_with_credentials(exchange, tmp_path)
 
         ctx = run_strategy(
             config=StrategyConfig(
@@ -569,7 +580,7 @@ class TestCcxtTrading:
                 ),
             ),
             account_manager=account_manager,
-            paper=False,  # This would require proper credentials setup
+            paper=False,
             blocking=False,
         )
 
@@ -595,14 +606,14 @@ class TestCcxtTrading:
         order1 = ctx.trade(i1, amount=amount)
         assert order1 is not None and order1.price is not None
 
-        await wait(lambda pos=pos: not self._is_size_similar(pos.quantity, qty1, i1))
+        await wait(lambda pos=pos: not self._is_size_similar(pos.quantity, qty1, i1), timeout=30)
 
         # 2. Close position
         assert self._is_size_similar(pos.quantity, amount, i1)
         logger.info("Closing position")
         ctx.trade(i1, -pos.quantity)
 
-        await wait(lambda pos=pos: not pos.is_open())
+        await wait(lambda pos=pos: not pos.is_open(), timeout=30)
 
         # Stop strategy
         ctx.stop()
@@ -612,7 +623,7 @@ class TestCcxtTrading:
             return
         logger.info(f"Found existing position quantity {pos.quantity}")
         ctx.trade(pos.instrument, -pos.quantity)
-        await wait(lambda pos=pos: not pos.is_open())
+        await wait(lambda pos=pos: not pos.is_open(), timeout=30)
         logger.info("Closed position")
 
     def _is_size_similar(self, a: float, b: float, i: Instrument) -> bool:
