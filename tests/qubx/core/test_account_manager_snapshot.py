@@ -3,6 +3,7 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from qubx import logger
+from qubx.connectors.ccxt.utils import ccxt_convert_order_info
 from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import (
     Balance,
@@ -14,7 +15,13 @@ from qubx.core.basics import (
     OrderStatus,
     Position,
 )
-from qubx.core.events import AccountSnapshot, AccountSnapshotEvent, DealEvent, OrderFilledEvent
+from qubx.core.events import (
+    AccountSnapshot,
+    AccountSnapshotEvent,
+    DealEvent,
+    OrderFilledEvent,
+    OrderPartiallyFilledEvent,
+)
 
 
 class _T:
@@ -429,6 +436,84 @@ def test_existing_order_updated_from_fresh_snapshot():
     assert updated.last_updated_at == np.datetime64("2026-05-28T01:00:00")
 
 
+def _raw_ccxt_open_order(cid="qubx_BTCUSDT_9", vid="900001"):
+    # Realistic Binance UM fetch_open_orders unified order: partially-filled limit SELL.
+    return {
+        "info": {
+            "orderId": vid,
+            "symbol": "BTCUSDT",
+            "status": "PARTIALLY_FILLED",
+            "clientOrderId": cid,
+            "price": "50200.00",
+            "avgPrice": "50100.00",
+            "origQty": "2.000",
+            "executedQty": "0.500",
+            "side": "SELL",
+            "type": "LIMIT",
+            "timeInForce": "GTC",
+        },
+        "id": vid,
+        "clientOrderId": cid,
+        "symbol": "BTC/USDT:USDT",
+        "timestamp": 1_716_854_400_000,
+        "type": "limit",
+        "timeInForce": "GTC",
+        "side": "sell",
+        "price": 50_200.0,
+        "amount": 2.0,
+        "filled": 0.5,
+        "remaining": 1.5,
+        "average": 50_100.0,
+        "status": "open",
+        "reduceOnly": False,
+    }
+
+
+def test_raw_ccxt_snapshot_order_keeps_fill_state_through_reconcile():
+    # R2 seam regression: a raw ccxt payload routed converter -> AccountSnapshot ->
+    # reconcile must not wipe a tracked order's fill state. Main's converter emitted
+    # signed quantity and never mapped filled/average, so every periodic snapshot
+    # overwrote SELL quantity with -q and reset filled_quantity/avg_fill_price.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    existing = _order(
+        "qubx_BTCUSDT_9", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:59:00", vid="900001", instrument=inst, qty=2.0
+    )
+    existing.side = "SELL"
+    existing.filled_quantity = 0.5
+    existing.avg_fill_price = 50_100.0
+    state.add_order(existing)
+
+    snap_order = ccxt_convert_order_info(inst, _raw_ccxt_open_order())
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    order = state.get_order("qubx_BTCUSDT_9")
+    assert order is existing
+    assert order.status is OrderStatus.PARTIALLY_FILLED
+    assert order.quantity == 2.0  # unsigned, never sign-flipped for SELL
+    assert order.filled_quantity == 0.5
+    assert order.avg_fill_price == 50_100.0
+
+
+def test_raw_ccxt_snapshot_order_materializes_with_fill_state():
+    # Same seam, materialize path: an untracked partially-filled order from a raw ccxt
+    # payload must arrive in AM with real fill state and unsigned quantity.
+    am = _am()
+    state = am._states["binance"]
+    snap_order = ccxt_convert_order_info(_instrument(), _raw_ccxt_open_order())
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+
+    order = state.get_order_by_venue_id("900001")
+    assert order is not None
+    assert order.status is OrderStatus.PARTIALLY_FILLED
+    assert order.quantity == 2.0
+    assert order.filled_quantity == 0.5
+    assert order.avg_fill_price == 50_100.0
+
+
 def test_snapshot_terminalization_runs_full_transition_machinery():
     # D8 regression: a snapshot that terminalizes an active order must go through
     # transition_order — audit trail, counters, inflight cleared, eviction registered —
@@ -540,8 +625,9 @@ def test_snapshot_resurrects_locally_terminal_order_and_unregisters_eviction():
 def test_late_deal_already_counted_by_snapshot_not_double_booked():
     # F31 split-stream regression: the snapshot raises filled_quantity (its position/
     # balance legs already incorporate the execution), then the late DealEvent for the
-    # SAME execution arrives. The trade id must be recorded for dedup, but the deal must
-    # NOT re-book position/balance; a genuinely-new deal after the snapshot still books.
+    # SAME execution arrives and fits the covered-quantity deficit. The trade id must be
+    # recorded for dedup, but the deal must NOT re-book position/balance; once the
+    # deficit is consumed, a genuinely-new deal after the snapshot still books.
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
@@ -559,7 +645,7 @@ def test_late_deal_already_counted_by_snapshot_not_double_booked():
     late_deal = Deal(
         trade_id="t1",
         order_id="V1",
-        time=np.datetime64("2026-05-28T00:59:00"),  # at/before the snapshot as_of -> already counted
+        time=np.datetime64("2026-05-28T00:59:00"),  # quantity matches the deficit -> already counted
         amount=0.4,
         price=50_000.0,
         aggressive=True,
@@ -571,7 +657,7 @@ def test_late_deal_already_counted_by_snapshot_not_double_booked():
     assert state.get_balance("USDT").total == 1000.0  # no fee/pnl re-applied
     assert state.get_order("cid-1").filled_quantity == 0.4  # not pushed past the snapshot figure
 
-    # genuinely-new execution after the snapshot books normally
+    # the deficit is consumed -> a genuinely-new execution books normally
     new_deal = Deal(
         trade_id="t2",
         order_id="V1",
@@ -617,6 +703,349 @@ def test_late_deal_for_snapshot_materialized_order_not_double_booked():
     assert result.deal is None and result.position is None
     assert state.get_position(inst).quantity == 0.4
     assert state.get_order_by_venue_id("VX").filled_quantity == 0.4
+
+
+def test_embedded_fill_already_counted_by_snapshot_not_double_booked():
+    # R1 (embedded mirror of the DealEvent test above): Binance delivers fills embedded
+    # on order events, never as separate DealEvents. The snapshot raised filled_quantity
+    # to 0.4 and reconciled the position; the SAME execution arriving embedded must not
+    # re-book position/balance and must not surface a phantom deal to on_execution —
+    # while a genuinely-new embedded execution after the snapshot still books. The
+    # suppressed fill's venue time is deliberately AFTER the snapshot's local as_of:
+    # the guard is clock-free (R8) — the old venue-vs-local time proxy booked exactly
+    # this case twice.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+
+    snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 0.4
+    snap_order.avg_fill_price = 50_000.0
+    snap_pos = Position(instrument=inst, quantity=0.4, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+    assert state.get_position(inst).quantity == 0.4
+
+    late_fill = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:00.150"),  # venue clock past the local as_of: time is no signal
+        amount=0.4,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=1.0,
+    )
+    result = am.apply(
+        OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=late_fill)
+    )
+    assert result.deal is None and result.position is None  # no phantom on_execution
+    assert state.get_position(inst).quantity == 0.4  # not double-booked
+    assert state.get_balance("USDT").total == 1000.0  # fee/pnl not re-applied
+    assert state.get_order("cid-1").filled_quantity == 0.4
+
+    # genuinely-new embedded execution after the snapshot books normally
+    new_fill = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:01"),
+        amount=0.3,
+        price=50_000.0,
+        aggressive=True,
+    )
+    result = am.apply(
+        OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=new_fill)
+    )
+    assert result.deal is new_fill
+    assert state.get_position(inst).quantity == 0.7
+    assert state.get_order("cid-1").filled_quantity == 0.7
+
+    # the suppressed trade id WAS recorded: a re-delivery (either path) still dedups
+    result = am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=late_fill))
+    assert result.deal is None
+    assert state.get_position(inst).quantity == 0.7
+    assert state.get_order("cid-1").filled_quantity == 0.7
+
+
+def test_embedded_fill_suppressed_but_status_still_advances():
+    # Status events drive the lifecycle: suppressing the snapshot-counted booking must
+    # NOT swallow the terminal transition the embedded FILLED event carries.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=0.4))
+
+    snap_order = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=0.4
+    )
+    snap_order.filled_quantity = 0.4
+    snap_order.avg_fill_price = 50_000.0
+    snap_pos = Position(instrument=inst, quantity=0.4, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+
+    final_fill = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:59:00"),
+        amount=0.4,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=1.0,
+    )
+    result = am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=final_fill))
+    assert result.order is not None and result.order.status is OrderStatus.FILLED  # lifecycle advanced
+    assert result.deal is None  # booking suppressed
+    assert state.get_position(inst).quantity == 0.4
+    assert state.get_balance("USDT").total == 1000.0
+    assert state.get_order("cid-1").filled_quantity == 0.4
+
+
+def test_embedded_fill_then_snapshot_books_once():
+    # Mirror ordering: the embedded fill books normally first; a snapshot then reporting
+    # the same execution must reconcile to the same figures, not add on top — and a
+    # re-delivered embedded fill after the snapshot still dedups.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+
+    fill = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:59:00"),
+        amount=0.4,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=1.0,
+    )
+    result = am.apply(
+        OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=fill)
+    )
+    assert result.deal is fill
+    assert state.get_position(inst).quantity == 0.4
+    assert state.get_balance("USDT").total == 999.0  # r_pnl(0) - fee(1.0) debited exactly once
+
+    snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 0.4
+    snap_order.avg_fill_price = 50_000.0
+    snap_pos = Position(instrument=inst, quantity=0.4, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+    assert state.get_position(inst).quantity == 0.4  # reconcile, not re-add
+    assert state.get_order("cid-1").filled_quantity == 0.4
+    assert state.get_balance("USDT").total == 999.0
+
+    result = am.apply(
+        OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=fill)
+    )
+    assert result.deal is None
+    assert state.get_position(inst).quantity == 0.4
+    assert state.get_balance("USDT").total == 999.0
+    assert state.get_order("cid-1").filled_quantity == 0.4
+
+
+def test_execution_larger_than_deficit_books_only_excess():
+    # Deficit boundary: one execution larger than the snapshot-counted quantity. Only
+    # the uncovered excess may book (deal trimmed, fee pro-rated) — booking it in full
+    # would re-book the covered part, suppressing it all would lose the excess forever.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+
+    snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 0.25
+    snap_order.avg_fill_price = 50_000.0
+    snap_pos = Position(instrument=inst, quantity=0.25, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+
+    deal = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:01"),
+        amount=0.5,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=2.0,
+    )
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=deal))
+    assert result.deal is not None
+    assert result.deal.amount == 0.25  # trimmed to the uncovered excess
+    assert result.deal.fee_amount == 1.0  # fee pro-rated to the booked part
+    assert state.get_position(inst).quantity == 0.5
+    assert state.get_order("cid-1").filled_quantity == 0.5
+    assert state.get_balance("USDT").total == 999.0  # only the pro-rated fee debited
+
+    # the deficit is fully consumed: the next execution books in full
+    next_deal = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:02"),
+        amount=0.25,
+        price=50_000.0,
+        aggressive=True,
+    )
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=next_deal))
+    assert result.deal is next_deal
+    assert state.get_position(inst).quantity == 0.75
+    assert state.get_order("cid-1").filled_quantity == 0.75
+
+
+def test_deficit_consumed_across_multiple_executions_then_books_fully():
+    # Deficit boundary: consumption is cumulative — two executions that together equal
+    # the snapshot-counted quantity are both suppressed; the next one books in full.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0))
+
+    snap_order = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    snap_order.filled_quantity = 0.75
+    snap_pos = Position(instrument=inst, quantity=0.75, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+
+    for trade_id, amount in (("t1", 0.25), ("t2", 0.5)):
+        deal = Deal(
+            trade_id=trade_id,
+            order_id="V1",
+            time=np.datetime64("2026-05-28T01:00:01"),
+            amount=amount,
+            price=50_000.0,
+            aggressive=True,
+        )
+        result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=deal))
+        assert result.deal is None
+    assert state.get_position(inst).quantity == 0.75
+    assert state.get_order("cid-1").filled_quantity == 0.75
+
+    new_deal = Deal(
+        trade_id="t3",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:02"),
+        amount=0.5,
+        price=50_000.0,
+        aggressive=True,
+    )
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=new_deal))
+    assert result.deal is new_deal  # untrimmed: the consumed deficit no longer suppresses
+    assert state.get_position(inst).quantity == 1.25
+    assert state.get_order("cid-1").filled_quantity == 1.25
+
+
+def test_redelivered_booked_trade_does_not_consume_deficit():
+    # Trade-id dedup is first-line: a re-delivery of a trade we already BOOKED must not
+    # eat into the deficit armed for a different (covered) execution — otherwise that
+    # covered execution would later book its tail on top of the snapshot's legs.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=1000.0, total=1000.0))
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
+
+    booked = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:30:00"),
+        amount=0.25,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=1.0,
+    )
+    am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=booked))
+    assert state.get_balance("USDT").total == 999.0
+
+    # snapshot counts a further 0.5 we never saw (deficit armed over the booked 0.25)
+    snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
+    snap_order.filled_quantity = 0.75
+    snap_pos = Position(instrument=inst, quantity=0.75, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=booked))
+    assert result.deal is None  # plain duplicate, deficit untouched
+
+    covered = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:59:00"),
+        amount=0.5,
+        price=50_000.0,
+        aggressive=True,
+        fee_amount=2.0,
+    )
+    result = am.apply(DealEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", deal=covered))
+    assert result.deal is None  # the full deficit was still there to cover it
+    assert state.get_position(inst).quantity == 0.75
+    assert state.get_balance("USDT").total == 999.0  # the covered fee never re-books
+    assert state.get_order("cid-1").filled_quantity == 0.75
+
+
+def test_suppressed_new_fill_does_not_rearm_deficit_on_next_snapshot():
+    # The constrained residual edge (R8): with the covered execution lost forever (real
+    # WS gap), a genuinely-new fill is suppressed in its place — clock-free, the guard
+    # cannot tell them apart. The next snapshot's filled raise (which now includes the
+    # suppressed fill) must be ABSORBED, not re-armed as fresh deficit, or every later
+    # fill on the order would keep being suppressed.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0))
+
+    snap_order = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    snap_order.filled_quantity = 0.5
+    snap_pos = Position(instrument=inst, quantity=0.5, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order], positions=[snap_pos]))
+
+    new_fill = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T01:00:01"),
+        amount=0.5,
+        price=50_000.0,
+        aggressive=True,
+    )
+    result = am.apply(
+        OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=new_fill)
+    )
+    assert result.deal is None  # suppressed in place of the lost covered fill
+    assert state.get_position(inst).quantity == 0.5  # lags venue truth until the next snapshot
+
+    snap_order2 = _order(
+        "cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst, qty=2.0
+    )
+    snap_order2.filled_quantity = 1.0  # the raise is exactly the suppressed quantity
+    snap_pos2 = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T02:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T02:00:00", open_orders=[snap_order2], positions=[snap_pos2]))
+    assert state.get_position(inst).quantity == 1.0
+    assert state.get_order("cid-1").filled_quantity == 1.0
+
+    next_fill = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T02:00:01"),
+        amount=0.25,
+        price=50_000.0,
+        aggressive=True,
+    )
+    result = am.apply(
+        OrderPartiallyFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=next_fill)
+    )
+    assert result.deal is next_fill  # no re-armed deficit left to suppress it
+    assert state.get_position(inst).quantity == 1.25
+    assert state.get_order("cid-1").filled_quantity == 1.25
 
 
 def test_position_updated_from_snapshot():

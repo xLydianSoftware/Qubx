@@ -219,9 +219,10 @@ def _materialize_from_snapshot(state: AccountState, snap_order: Order, as_of: np
     )
     state.add_order(order)
     if order.filled_quantity > 0.0:
-        # The snapshot's filled_quantity (and its position/balance legs) already count
-        # executions up to as_of — a late DealEvent for one of them must not book again.
-        state.mark_snapshot_fill(order.client_order_id, as_of)
+        # The snapshot already counted these executions (position/balance legs included)
+        # and none were booked locally — arm the full covered-quantity deficit so the
+        # executions, when delivered, don't book on top (reducer._apply_execution).
+        state.set_snapshot_fill_deficit(order.client_order_id, order.filled_quantity)
     return order
 
 
@@ -230,11 +231,20 @@ def _update_from_snapshot(
 ) -> None:
     if snap_order.status != existing.status:
         _reconcile_status_from_snapshot(state, existing, snap_order.status, now)
+    cid = existing.client_order_id
     if snap_order.filled_quantity > existing.filled_quantity:
-        # The snapshot counted executions we haven't seen as deals yet (and its
-        # position/balance legs incorporate them) — remember as_of so a late DealEvent
-        # at or before it isn't booked twice (_handle_deal checks this).
-        state.mark_snapshot_fill(existing.client_order_id, as_of)
+        # The snapshot counted executions we never booked as deals (its position/balance
+        # legs incorporate them) — grow the covered-quantity deficit by the raise so the
+        # executions, when delivered, don't book again (reducer._apply_execution). The
+        # part of the raise the reducer already suppressed since the last sync is
+        # absorbed, not re-armed: the venue's filled figure now includes that quantity,
+        # and re-arming it would keep suppressing fresh fills forever after a real WS
+        # loss whose executions never get delivered.
+        raise_qty = snap_order.filled_quantity - existing.filled_quantity
+        absorbed = min(raise_qty, state.get_snapshot_fill_suppressed(cid))
+        state.set_snapshot_fill_deficit(cid, state.get_snapshot_fill_deficit(cid) + raise_qty - absorbed)
+    # this snapshot's filled figure reflects everything suppressed so far — reset the marker
+    state.set_snapshot_fill_suppressed(cid, 0.0)
     existing.filled_quantity = snap_order.filled_quantity
     existing.avg_fill_price = snap_order.avg_fill_price
     existing.price = snap_order.price

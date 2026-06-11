@@ -86,10 +86,10 @@ def _add_order(am: AccountManager, cid: str) -> None:
     )
 
 
-def _push(total: float) -> BalanceUpdateEvent:
+def _push(total: float, as_of: np.datetime64 = T_PUSH) -> BalanceUpdateEvent:
     # futures push: total-only, free/locked NaN by producer contract
     bal = Balance(exchange=EX, currency="USDT", free=np.nan, locked=np.nan, total=total)
-    return BalanceUpdateEvent(instrument=None, balance=bal, as_of=T_PUSH)
+    return BalanceUpdateEvent(instrument=None, balance=bal, as_of=as_of)
 
 
 def _balances(am: AccountManager) -> tuple[float, float, float]:
@@ -136,6 +136,19 @@ def test_same_fill_converges_under_both_event_orderings():
     assert qty == 0.0
     assert r_pnl == 50.0
     assert (total, free, locked) == (1048.0, 1048.0, 0.0)
+
+
+def test_deal_at_equal_venue_time_is_covered_by_push():
+    # R51: the dominant Binance production case — the fill's ORDER_TRADE_UPDATE and the
+    # wallet ACCOUNT_UPDATE share ONE transaction time. The covered-delta guard is `>=`:
+    # with the push applied first, a deal at the SAME venue time must skip the cash leg
+    # (a >= -> > regression would double-book the cash leg of essentially every fill).
+    qty, r_pnl, (total, free, locked) = _run_fill_matrix(
+        [_push(1048.0, as_of=T_EVENT), _closing_deal_event()]  # deal time == push as_of
+    )
+    assert qty == 0.0
+    assert r_pnl == 50.0
+    assert (total, free, locked) == (1048.0, 1048.0, 0.0)  # delta leg skipped, push figure stands
 
 
 # --------------------------------------------------------------------------- #

@@ -55,7 +55,8 @@ class AccountState:
         "_inflight_index",
         "_pending_evict_index",
         "_seen_trade_ids",
-        "_snapshot_fill_as_of",
+        "_snapshot_fill_deficit",
+        "_snapshot_fill_suppressed",
         "_terminal_history",
         "_retry_count",
         "_pre_pending_status",
@@ -87,11 +88,15 @@ class AccountState:
         # fill (resting/canceled orders never allocate a set), dropped on
         # eviction so the memory dies with the order.
         self._seen_trade_ids: dict[str, set[str]] = {}
-        # cid -> as_of of the last snapshot that raised the order's filled_quantity:
-        # deals at or before it were already counted by the snapshot (order totals AND
-        # position/balance legs) and must not book again. Same lifecycle as
-        # _seen_trade_ids: dropped on remove/evict.
-        self._snapshot_fill_as_of: dict[str, np.datetime64] = {}
+        # cid -> execution quantity a snapshot counted (order totals AND position/balance
+        # legs) that was never booked locally: arriving executions are suppressed up to
+        # this deficit and book only the excess (reducer._apply_execution owns the rule).
+        # Same lifecycle as _seen_trade_ids: dropped on remove/evict.
+        self._snapshot_fill_deficit: dict[str, float] = {}
+        # cid -> quantity suppressed against the deficit since the order's last snapshot
+        # sync; the next snapshot's filled raise is absorbed by this before re-arming the
+        # deficit (reconcile._update_from_snapshot owns the rule). Same lifecycle.
+        self._snapshot_fill_suppressed: dict[str, float] = {}
         # bounded ring buffer of evicted terminals (FIFO); slow-path lookups
         self._terminal_history: deque[Order] = deque(maxlen=terminal_history_size)
         # cid -> in-flight sweep poll count; reset on any status change
@@ -174,8 +179,11 @@ class AccountState:
     def get_last_snapshot_as_of(self) -> np.datetime64 | None:
         return self._last_snapshot_as_of
 
-    def get_snapshot_fill_as_of(self, cid: str) -> np.datetime64 | None:
-        return self._snapshot_fill_as_of.get(cid)
+    def get_snapshot_fill_deficit(self, cid: str) -> float:
+        return self._snapshot_fill_deficit.get(cid, 0.0)
+
+    def get_snapshot_fill_suppressed(self, cid: str) -> float:
+        return self._snapshot_fill_suppressed.get(cid, 0.0)
 
     def get_position_push_as_of(self, instrument: Instrument) -> np.datetime64 | None:
         return self._position_push_as_of.get(instrument)
@@ -325,13 +333,28 @@ class AccountState:
         order.last_updated_at = now
         return True
 
+    def is_trade_seen(self, cid: str, trade_id: str) -> bool:
+        seen = self._seen_trade_ids.get(cid)
+        return seen is not None and trade_id in seen
+
     def record_trade_id(self, cid: str, trade_id: str) -> None:
-        """Mark a trade id as seen WITHOUT booking it — for executions a snapshot already
-        counted, so a later re-delivery (DealEvent or embedded fill) dedups via apply_fill."""
+        """Mark a trade id as seen WITHOUT booking it. The reducer's shared snapshot
+        guard (_apply_execution — every execution path: DealEvent and embedded fills)
+        calls this when a snapshot already counted the execution, so any later
+        re-delivery on any path dedups via apply_fill."""
         self._seen_trade_ids.setdefault(cid, set()).add(trade_id)
 
-    def mark_snapshot_fill(self, cid: str, as_of: np.datetime64) -> None:
-        self._snapshot_fill_as_of[cid] = as_of
+    def set_snapshot_fill_deficit(self, cid: str, qty: float) -> None:
+        if qty > 0.0:
+            self._snapshot_fill_deficit[cid] = qty
+        else:
+            self._snapshot_fill_deficit.pop(cid, None)
+
+    def set_snapshot_fill_suppressed(self, cid: str, qty: float) -> None:
+        if qty > 0.0:
+            self._snapshot_fill_suppressed[cid] = qty
+        else:
+            self._snapshot_fill_suppressed.pop(cid, None)
 
     def remove_order(self, cid: str) -> None:
         # Drop an order from state entirely (e.g. a submit that raised before reaching the
@@ -344,7 +367,8 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
-        self._snapshot_fill_as_of.pop(cid, None)
+        self._snapshot_fill_deficit.pop(cid, None)
+        self._snapshot_fill_suppressed.pop(cid, None)
         self._retry_count.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
 
@@ -361,7 +385,8 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
-        self._snapshot_fill_as_of.pop(cid, None)
+        self._snapshot_fill_deficit.pop(cid, None)
+        self._snapshot_fill_suppressed.pop(cid, None)
         self._retry_count.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
         self._terminal_history.append(order)
@@ -429,7 +454,7 @@ class AccountState:
 
     def mark_position_push(self, instrument: Instrument, as_of: np.datetime64) -> None:
         """Record the venue event time of an applied position push. Staleness checks
-        live in the reducer (this setter is dumb, like mark_snapshot_fill)."""
+        live in the reducer (this setter is dumb, like set_snapshot_fill_deficit)."""
         self._position_push_as_of[instrument] = as_of
 
     def apply_balance_push(

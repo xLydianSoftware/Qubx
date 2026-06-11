@@ -91,8 +91,9 @@ legality, runs no reconcile rules, fires no callbacks, depends on no clock.
 - `add_order` **refuses a duplicate active cid** (raises): silent overwrite orphaned the
   caller's Order reference and left stale index entries behind.
 - Indices (mutator-maintained): venue-id, in-flight, pending-evict, `seen_trade_ids`
-  (fill dedup), snapshot-fill `as_of` (late-deal suppression, see Reconciler),
-  terminal-history ring buffer, applied-funding buckets (bounded, oldest-evicted).
+  (fill dedup), snapshot-fill deficit/suppressed (covered-execution suppression, see
+  Reconciler), terminal-history ring buffer, applied-funding buckets (bounded,
+  oldest-evicted).
 - Side-tables (maintained by `transition_order`): `retry_count` (sweep/fetch budget),
   `pre_pending_status` (revert target). Captured on first entry to a PENDING_* state, so
   `PENDING_UPDATE → PENDING_CANCEL` keeps the original; cleared on leaving pending.
@@ -296,10 +297,20 @@ drives the ticks** and makes every connector call.
    `ext:<venue_id>` → `EXTERNAL`). Known orders update under a freshness guard
    (`as_of > last_updated_at`, so a fresh live fill isn't clobbered); a pending marker
    is never wiped by a live venue status (the venue resolves the race; a terminal status
-   *is* the resolution). When a snapshot raises `filled_quantity`, its `as_of` is
-   remembered per order: a late `DealEvent` at or before it records the trade id (dedup
-   stays intact) but does **not** book again — the snapshot's position/balance legs
-   already counted it.
+   *is* the resolution). When a snapshot raises `filled_quantity`, the raise is held per
+   order as a **covered-quantity deficit** — the snapshot's position/balance legs
+   already counted those executions. An arriving execution on any path (`DealEvent` or
+   embedded fill) is suppressed up to the remaining deficit: fully covered records the
+   trade id (dedup stays intact) and books nothing; one larger than the deficit books
+   only the excess, fee pro-rated. The deficit is consumed as it suppresses, and the
+   quantity suppressed since the last sync is absorbed from the next snapshot's raise
+   before re-arming (the venue's filled figure already includes it). The rule is
+   deliberately **clock-free** — quantity is the only signal, never a venue-vs-local
+   time comparison (the balance tie-break below stays the sole sanctioned cross-domain
+   one). Residual ambiguity: a genuinely-new post-snapshot execution that fits the
+   deficit window is indistinguishable from a redelivered covered one and is suppressed
+   in its place — quantity totals stay exact either way (total suppression is bounded by
+   what snapshots counted), only per-deal price/fee attribution can shift.
 5. **Positions — surgical** (`reconcile_position_from_snapshot`): the snapshot is
    authoritative for size/avg-price and venue-reported margin/mark **only**; locally
    accumulated accounting (`r_pnl`, commissions, funding) always survives. Never routes

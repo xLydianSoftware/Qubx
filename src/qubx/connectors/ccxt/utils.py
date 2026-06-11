@@ -115,7 +115,17 @@ def ccxt_convert_order_info(
     amnt = float(amnt_raw)
     # None for market orders (no limit price) — matches Order.price: float | None.
     price = raw.get("price")
+    # ccxt's unified fill fields; None-safe (venues omit them on fresh acks).
+    _filled = raw.get("filled")
+    filled_quantity = abs(float(_filled)) if _filled is not None else 0.0
+    _average = raw.get("average")
+    avg_fill_price = float(_average) if _average is not None else None
     status = ccxt_status_to_order_status(raw.get("status"), ri)
+    if status is OrderStatus.ACCEPTED and filled_quantity > 0.0:
+        # ccxt's unified status collapses partial fills into "open", and the info.status
+        # refinement is venue-specific (OKX carries the state under info.state) — the
+        # unified `filled` field is the venue-agnostic partial-fill signal.
+        status = OrderStatus.PARTIALLY_FILLED
     side_raw = raw["side"]
     if side_raw is None:
         side = "UNKNOWN"
@@ -147,10 +157,13 @@ def ccxt_convert_order_info(
         type=_type,
         instrument=instrument,
         submitted_at=recognize_time(raw["timestamp"]),
-        quantity=abs(amnt) * (-1 if side == "SELL" else 1),
+        # Unsigned, per the framework's positive-amount rule (direction lives in side).
+        quantity=abs(amnt),
         price=float(price) if price is not None else None,
         side=side,
         status=status,
+        filled_quantity=filled_quantity,
+        avg_fill_price=avg_fill_price,
         time_in_force=tif,
         options=options,
     )

@@ -27,12 +27,13 @@ class TestStrats:
     def test_ccxt_exec_report_conversion(self):
         instrument = lookup.find_symbol("BINANCE", "ACAUSDT")
         assert instrument is not None
-        # - execution reports: (raw, status, side, signed qty, price, type)
+        # - execution reports: (raw, status, side, unsigned qty, price, type) — quantity is
+        #   unsigned for SELL too (the framework's positive-amount rule; direction lives in side)
         expected = [
             (C1, OrderStatus.ACCEPTED, "BUY", 50.0, None, "MARKET"),
             (C2, OrderStatus.FILLED, "BUY", 50.0, 0.1612, "MARKET"),
-            (C3, OrderStatus.ACCEPTED, "SELL", -50.0, None, "MARKET"),
-            (C4, OrderStatus.FILLED, "SELL", -50.0, 0.1606, "MARKET"),
+            (C3, OrderStatus.ACCEPTED, "SELL", 50.0, None, "MARKET"),
+            (C4, OrderStatus.FILLED, "SELL", 50.0, 0.1606, "MARKET"),
             (C5new, OrderStatus.ACCEPTED, "BUY", 51.0, 0.1611, "LIMIT"),
             (C6ex, OrderStatus.FILLED, "BUY", 51.0, 0.1611, "LIMIT"),
             (C7cancel, OrderStatus.CANCELED, "BUY", 50.0, 0.1, "LIMIT"),
@@ -46,6 +47,9 @@ class TestStrats:
             assert o.quantity == quantity
             assert o.price == price
             assert o.type == order_type
+            # fill state rides the unified ccxt fields (R2: snapshots must carry real fills)
+            assert o.filled_quantity == (raw.get("filled") or 0.0)
+            assert o.avg_fill_price == raw.get("average")
 
         # - historical records (spot ACAUSDT order history) all convert to recognized statuses
         hist_orders = [ccxt_convert_order_info(instrument, h) for h in HIST]
@@ -339,6 +343,33 @@ def test_convert_order_info_with_framework_client_order_id():
     order = ccxt_convert_order_info(instrument, _raw_order(clientOrderId="qubx_BTCUSDT_1"))
     assert order.client_order_id == "qubx_BTCUSDT_1"
     assert order.origin == OrderOrigin.RECOVERED
+
+
+def test_convert_order_info_maps_fill_state_and_unsigned_quantity():
+    # R2: a partially-filled SELL must keep an unsigned quantity (positive-amount rule)
+    # and carry the unified filled/average fields into the framework Order.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(side="sell", filled=0.4, average=49_900.0))
+    assert order.quantity == 1.0
+    assert order.side == "SELL"
+    assert order.filled_quantity == 0.4
+    assert order.avg_fill_price == 49_900.0
+    assert order.status is OrderStatus.PARTIALLY_FILLED
+
+
+def test_convert_order_info_open_with_fills_maps_partially_filled_venue_agnostic():
+    # ccxt's unified status collapses partial fills into "open"; OKX carries the venue
+    # state under info.state (not info.status), so the refinement must not be the only
+    # path — filled > 0 on an open order is the venue-agnostic signal (R2, OKX leg).
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    okx_like = _raw_order(side="buy", filled=0.25, average=50_010.0, info={"state": "partially_filled"})
+    order = ccxt_convert_order_info(instrument, okx_like)
+    assert order.status is OrderStatus.PARTIALLY_FILLED
+    # an open order with no fills stays ACCEPTED
+    untouched = ccxt_convert_order_info(instrument, _raw_order(filled=0.0, average=None))
+    assert untouched.status is OrderStatus.ACCEPTED
+    assert untouched.filled_quantity == 0.0
+    assert untouched.avg_fill_price is None
 
 
 def test_convert_order_info_market_order_price_is_none():
