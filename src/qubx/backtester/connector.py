@@ -135,7 +135,15 @@ class SimulatedConnector(ChannelEmitter):
         # OrderAcceptedEvent on the already-ACCEPTED order.
         self._emit_exec(new)
 
-    def request_order_status(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def request_order_status(
+        self,
+        *,
+        client_order_id: str | None = None,
+        venue_order_id: str | None = None,
+        instrument: Instrument | None = None,
+    ) -> None:
+        # `instrument` is for live venues that need a symbol on the REST fetch;
+        # the simulated OME resolves orders by id alone.
         oid = venue_order_id or client_order_id
         if not oid:
             raise ValueError("request_order_status: client_order_id or venue_order_id is required")

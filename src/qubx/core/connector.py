@@ -54,8 +54,15 @@ class IConnector(Protocol):
         quantity: float | None = None,
     ) -> None: ...
 
+    # ``instrument`` lets the connector resolve the venue symbol for orders it never
+    # cached (snapshot-materialized RECOVERED/EXTERNAL) — most venues (e.g. Binance)
+    # refuse a status fetch without one. The AM always has it; pass it.
     def request_order_status(
-        self, *, client_order_id: str | None = None, venue_order_id: str | None = None
+        self,
+        *,
+        client_order_id: str | None = None,
+        venue_order_id: str | None = None,
+        instrument: Instrument | None = None,
     ) -> None: ...
 
     def request_snapshot(self) -> None: ...

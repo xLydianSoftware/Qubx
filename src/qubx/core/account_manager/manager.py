@@ -249,7 +249,9 @@ class AccountManager:
                     if reconcile.terminalize_missing(state, order, now):
                         diff.terminated.append(order)
                 else:
-                    connector.request_order_status(client_order_id=cid, venue_order_id=order.venue_order_id)
+                    connector.request_order_status(
+                        client_order_id=cid, venue_order_id=order.venue_order_id, instrument=order.instrument
+                    )
                     state.bump_retry(cid)
                     unresolved.append(order)
             except Exception:
@@ -554,6 +556,7 @@ class AccountManager:
                         self._connectors[exchange].request_order_status(
                             client_order_id=cid,
                             venue_order_id=order.venue_order_id,
+                            instrument=order.instrument,
                         )
                         state.bump_retry(cid)
                         order.last_updated_at = now

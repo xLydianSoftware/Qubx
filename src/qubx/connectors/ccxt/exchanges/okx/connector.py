@@ -33,6 +33,23 @@ _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
 _OKX_CLIENT_ID_MAX_LEN = 32
 
 
+def _account_data(raw_balance: dict[str, Any]) -> dict[str, Any]:
+    """First element of ``info.data`` from an OKX balance payload, ``{}`` when absent/malformed.
+
+    ccxt's own ``parse_trading_balance`` treats ``data: []`` / missing ``data`` as a valid
+    response shape (``safe_dict(data, 0, {})``), so it reaches us; these extractors run
+    outside ``_snapshot_async``'s per-leg isolation, so raising here would sink the whole
+    snapshot — degrade to empty instead.
+    """
+    info = raw_balance.get("info")
+    if not isinstance(info, dict):
+        return {}
+    data = info.get("data")
+    if not isinstance(data, list) or not data or not isinstance(data[0], dict):
+        return {}
+    return data[0]
+
+
 class OkxCcxtConnector(_TwoStreamCcxtConnector):
     """OKX connector: split orders/fills streams + OKX balance/clOrdId rules."""
 
@@ -50,7 +67,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         straight from ``info.data[0].details``. Currencies with a zero cash balance are
         skipped.
         """
-        details = raw_balance.get("info", {}).get("data", [{}])[0].get("details", [])
+        details = _account_data(raw_balance).get("details") or []
         balances: list[Balance] = []
         for detail in details:
             cash_bal = float(detail.get("cashBal", 0) or 0)
@@ -80,7 +97,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
 
         Not-applicable fields arrive as ``""`` → None → AM derives that metric.
         """
-        acct = raw_balance.get("info", {}).get("data", [{}])[0]
+        acct = _account_data(raw_balance)
         equity = info_float(acct, "totalEq")
         margin_ratio = info_float(acct, "mgnRatio")
         adj_eq = info_float(acct, "adjEq")

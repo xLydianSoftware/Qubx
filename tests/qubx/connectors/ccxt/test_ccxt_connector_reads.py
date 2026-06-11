@@ -7,6 +7,8 @@ crossed. WS updates are exercised by feeding raw ccxt order dicts straight into 
 synchronous ``_handle_ws_order`` handler.
 """
 
+import asyncio
+import contextlib
 import math
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -15,6 +17,7 @@ import ccxt.pro
 import numpy as np
 import pytest
 
+from qubx import logger
 from qubx.connectors.ccxt.connector import CcxtConnector
 from qubx.connectors.ccxt.exchanges._two_stream import _TwoStreamCcxtConnector
 from qubx.core.account_manager import SimulatedAccountManager
@@ -28,6 +31,7 @@ from qubx.core.events import (
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
+    OrderUpdatedEvent,
     PositionUpdateEvent,
 )
 from qubx.core.series import Quote
@@ -386,6 +390,82 @@ def test_request_order_status_raises_when_no_id_given() -> None:
         conn.request_order_status(client_order_id="")
 
 
+@pytest.mark.asyncio
+async def test_request_order_status_cid_only_uncached_uses_cloid_variant_with_instrument() -> None:
+    # R7 lost-ack case: only the cloid is known and the connector never cached the order
+    # (snapshot-materialized RECOVERED order). The fetch must go through ccxt's
+    # client-order-id variant (Binance rejects a cloid passed as orderId with -1102) with
+    # the symbol resolved from the caller-provided instrument.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_order_with_client_order_id = AsyncMock(return_value=_ws_order(status="open"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", instrument=_instrument())
+    await _drive(conn)
+
+    exchange.fetch_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1", CCXT_SYMBOL)
+    exchange.fetch_order.assert_not_called()
+    assert isinstance(sent[0], OrderAcceptedEvent)
+    assert sent[0].venue_order_id == "VENUE123"  # venue id recovered from the cloid fetch
+
+
+@pytest.mark.asyncio
+async def test_request_order_status_cid_only_upgrades_to_cached_venue_id() -> None:
+    # When the cache already learned the venue id (WS ack seen), a cid-only request is
+    # upgraded to the plain venue-id fetch — the more reliable path across venues.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_order = AsyncMock(return_value=_ws_order(status="open"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._handle_ws_order(_ws_order(status="open"))  # cache learns VENUE123 + symbol
+    sent.clear()
+
+    conn.request_order_status(client_order_id="qubx_BTCUSDT_1")
+    await _drive(conn)
+
+    exchange.fetch_order.assert_awaited_once_with("VENUE123", CCXT_SYMBOL)
+
+
+@pytest.mark.asyncio
+async def test_request_order_status_cid_only_not_found_emits_reject() -> None:
+    # Venue says the cloid is unknown -> the existing OrderNotFound reject synthesis path.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_order_with_client_order_id = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", instrument=_instrument())
+    await _drive(conn)
+
+    assert len(sent) == 1
+    ev = sent[0]
+    assert isinstance(ev, OrderRejectedEvent)
+    assert ev.code == "OrderNotFound"
+    assert ev.client_order_id == "qubx_BTCUSDT_1"
+
+
+@pytest.mark.asyncio
+async def test_request_order_status_venue_refusal_logs_warning_no_event() -> None:
+    # A BadRequest-family refusal means the fetch itself was unanswerable — state UNKNOWN,
+    # so nothing may be emitted, but it must be operator-visible (WARNING, not silent).
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_order = AsyncMock(side_effect=ccxt.BadRequest("binance -1102 bad orderId"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    records: list = []
+    sink_id = logger.add(lambda m: records.append(m.record), level="WARNING")
+    try:
+        conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+        await _drive(conn)
+    finally:
+        logger.remove(sink_id)
+
+    assert sent == []
+    assert any("refused by venue" in r["message"] for r in records)
+
+
 # --------------------------------------------------------------------------- #
 # (d) order cache: submit populates it; cancel/update resolve the cached symbol;
 #     terminal WS update evicts it
@@ -438,6 +518,76 @@ async def test_update_edit_resolves_cached_symbol_and_side() -> None:
     assert kwargs["type"] == "limit"
 
 
+@pytest.mark.asyncio
+async def test_update_cid_only_uses_cloid_edit_variant() -> None:
+    # R7 mirror on the write side: an update before the venue ack (no venue id anywhere)
+    # must go through ccxt's client-order-id edit variant with the cached
+    # symbol/type/side — a cloid passed to edit_order as orderId is Binance -1102.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.create_order = AsyncMock(return_value={})
+    exchange.edit_order_with_client_order_id = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.submit_order(_order_request())
+    await _drive(conn)
+    sent.clear()
+    conn.update_order(client_order_id="qubx_BTCUSDT_1", price=101.0, quantity=2.0)
+    await _drive(conn)
+
+    exchange.edit_order_with_client_order_id.assert_awaited_once_with(
+        "qubx_BTCUSDT_1", CCXT_SYMBOL, "limit", "buy", 2.0, 101.0
+    )
+    exchange.edit_order.assert_not_called()
+    assert isinstance(sent[0], OrderUpdatedEvent)
+    assert sent[0].venue_order_id == "VENUE123"  # venue id recovered from the edit response
+
+
+@pytest.mark.asyncio
+async def test_update_cid_only_upgrades_to_cached_venue_id() -> None:
+    # When the cache already knows the venue id, a cid-only update edits by venue id.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    conn, _sent, _ = _make_connector(exchange=exchange)
+    conn._handle_ws_order(_ws_order(status="open"))  # cache learns VENUE123 + symbol
+
+    conn.update_order(client_order_id="qubx_BTCUSDT_1", price=101.0, quantity=2.0)
+    await _drive(conn)
+
+    assert exchange.edit_order.await_args.kwargs["id"] == "VENUE123"
+    exchange.edit_order_with_client_order_id.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_seeds_order_cache() -> None:
+    # R7 third leg: a snapshot can be the only place the connector sees a RECOVERED/
+    # EXTERNAL order — it must seed the venue-call cache so later cancel/update/status
+    # calls resolve the symbol and venue id instead of dying on ArgumentsRequired.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_open_orders = AsyncMock(return_value=[_ws_order(status="open", cid="recovered-1", venue_id="V9")])
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {}, "used": {}})
+    exchange.markets = {}
+    exchange.cancel_order = AsyncMock(return_value={"id": "V9"})
+    exchange.cancel_order_with_client_order_id = AsyncMock(return_value={"id": "V9"})
+    conn, _sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert "recovered-1" in conn._orders
+    assert conn._orders["recovered-1"].ccxt_symbol == CCXT_SYMBOL
+    assert conn._venue_to_cid.get("V9") == "recovered-1"
+
+    # A cid-only cancel of the snapshot-seen order now resolves venue id + symbol.
+    conn.cancel_order(client_order_id="recovered-1")
+    await _drive(conn)
+    exchange.cancel_order.assert_not_called()  # cid-only cancel stays on the cloid path
+    exchange.cancel_order_with_client_order_id.assert_awaited_once_with("recovered-1", CCXT_SYMBOL)
+
+
 def test_terminal_ws_update_evicts_cache() -> None:
     conn, _sent, _ = _make_connector()
     # First an open update populates the cache + venue index.
@@ -482,31 +632,121 @@ def test_connect_triggers_initial_snapshot_and_subscription() -> None:
     conn._captured[0].close()  # type: ignore[attr-defined]
 
 
-@pytest.mark.asyncio
-async def test_is_ws_ready_reflects_stream_state() -> None:
-    conn, _sent, exchange = _make_connector()
-    assert conn.is_ws_ready() is False  # not connected yet
-
-    # One successful watch_orders round-trip flips readiness; then channel closes.
-    calls = {"n": 0}
-    ready_during_run: list[bool] = []
-
-    async def _watch():
-        calls["n"] += 1
-        if calls["n"] == 1:
-            return [_ws_order(status="open")]
-        # Call 2: the first successful round-trip has already flipped readiness.
-        ready_during_run.append(conn.is_ws_ready())
-        conn.channel.control.is_set = Mock(return_value=False)
-        return []
-
-    exchange.watch_orders = AsyncMock(side_effect=_watch)
+def _arm_control(conn) -> None:
     conn.channel.control = Mock()
     conn.channel.control.is_set = Mock(return_value=True)
 
-    await conn._subscribe_executions()
-    assert ready_during_run == [True]  # ready while the stream was live
+
+@pytest.mark.asyncio
+async def test_is_ws_ready_true_on_quiet_stream() -> None:
+    # R4: ccxt's watch_orders future resolves only on actual order traffic — a quiet
+    # account never gets a message. Readiness must be optimistic (set once the loop
+    # drives the watch), or AM liveness reconnects every threshold window forever.
+    conn, _sent, exchange = _make_connector()
+    assert conn.is_ws_ready() is False  # not connected yet
+
+    block = asyncio.Event()
+    exchange.watch_orders = AsyncMock(side_effect=block.wait)  # never yields a message
+    _arm_control(conn)
+
+    task = asyncio.ensure_future(conn._subscribe_executions())
+    await asyncio.sleep(0.01)
+    assert conn.is_ws_ready() is True  # ready with zero messages delivered
+
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
+
+
+@pytest.mark.asyncio
+async def test_ws_ready_clears_on_persistent_network_errors() -> None:
+    # R6: a stream that keeps erroring must stop reporting ready (so AM liveness can
+    # reconnect) and must give up after max retries instead of spinning forever.
+    conn, _sent, exchange = _make_connector()
+    exchange.watch_orders = AsyncMock(side_effect=ccxt.NetworkError("connection reset"))
+    _arm_control(conn)
+
+    with patch("asyncio.sleep", new=AsyncMock()):
+        await conn._subscribe_executions()
+
+    assert conn.is_ws_ready() is False
+    assert exchange.watch_orders.await_count == conn.max_ws_retries
+
+
+@pytest.mark.asyncio
+async def test_ws_ready_clears_and_logs_loud_on_auth_error() -> None:
+    # A revoked key is unrecoverable by retrying — readiness must clear AND the
+    # operator must see an explicit ERROR pointing at the keys.
+    conn, _sent, exchange = _make_connector()
+    exchange.watch_orders = AsyncMock(side_effect=ccxt.AuthenticationError("key revoked"))
+    _arm_control(conn)
+
+    records: list = []
+    sink_id = logger.add(lambda m: records.append(m.record), level="ERROR")
+    try:
+        with patch("asyncio.sleep", new=AsyncMock()):
+            await conn._subscribe_executions()
+    finally:
+        logger.remove(sink_id)
+
+    assert conn.is_ws_ready() is False
+    assert any("authentication failed" in r["message"] for r in records)
+
+
+@pytest.mark.asyncio
+async def test_ws_ready_recovers_after_transient_error() -> None:
+    # A transient error clears readiness only for the backoff window: the loop re-arms
+    # it when it re-drives the watch, before any message arrives. Clean exit resets it.
+    conn, _sent, exchange = _make_connector()
+    observed: list[tuple[str, bool]] = []
+
+    async def _watch():
+        if exchange.watch_orders.await_count == 1:
+            raise ccxt.NetworkError("blip")
+        observed.append(("rearmed", conn.is_ws_ready()))
+        conn.channel.control.is_set = Mock(return_value=False)
+        return []
+
+    async def _backoff(_delay):
+        observed.append(("backoff", conn.is_ws_ready()))
+
+    exchange.watch_orders = AsyncMock(side_effect=_watch)
+    _arm_control(conn)
+
+    with patch("asyncio.sleep", new=AsyncMock(side_effect=_backoff)):
+        await conn._subscribe_executions()
+
+    assert observed == [("backoff", False), ("rearmed", True)]
     assert conn.is_ws_ready() is False  # reset on clean exit
+
+
+@pytest.mark.asyncio
+async def test_ws_ready_true_while_quiet_after_transient_error() -> None:
+    # The R4/R6 composition pin: ccxt rejects pending watch futures with NetworkError on
+    # every routine WS connection close (Binance drops user-data streams ~daily). On a
+    # quiet account the silent re-subscription delivers no message, so readiness must
+    # re-arm on the re-drive itself — or AM liveness recreates the exchange per drop.
+    conn, _sent, exchange = _make_connector()
+    block = asyncio.Event()
+
+    async def _watch():
+        if exchange.watch_orders.await_count == 1:
+            raise ccxt.NetworkError("connection closed by remote server")
+        await block.wait()  # re-watch parks forever: no order traffic
+
+    exchange.watch_orders = AsyncMock(side_effect=_watch)
+    _arm_control(conn)
+
+    real_sleep = asyncio.sleep
+    try:
+        with patch("asyncio.sleep", new=AsyncMock()):
+            task = asyncio.ensure_future(conn._subscribe_executions())
+            await real_sleep(0.01)
+            assert conn.is_ws_ready() is True  # re-armed while parked, no message needed
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 # --------------------------------------------------------------------------- #

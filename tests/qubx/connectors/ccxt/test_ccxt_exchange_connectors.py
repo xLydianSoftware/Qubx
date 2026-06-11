@@ -449,6 +449,33 @@ async def test_okx_snapshot_single_ccy_empty_fields_yield_none() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "info",
+    [
+        {"data": []},  # ccxt's safe_dict(data, 0, {}) sanctions this shape
+        {},  # data key missing
+        None,  # info itself absent/null
+        {"data": [None]},  # non-dict first element
+    ],
+)
+async def test_okx_snapshot_survives_malformed_balance_payload(info) -> None:
+    # The balance extractors run outside _snapshot_async's per-leg isolation: a raise
+    # here would suppress the whole snapshot (orders/positions legs included). Malformed
+    # info.data must degrade to empty balances / all-None figures, not IndexError.
+    exchange = _snapshot_exchange({"total": {}, "used": {}, "info": info})
+    conn, sent, _ = _make_connector(OkxCcxtConnector, exchange=exchange)
+
+    snap = await _snapshot_from(conn, sent)
+    assert snap.balances == []
+    assert snap.equity is None
+    assert snap.available_margin is None
+    assert snap.margin_ratio is None
+    # The good legs still made it into the snapshot.
+    assert snap.open_orders == []
+    assert snap.positions == []
+
+
+@pytest.mark.asyncio
 async def test_okx_snapshot_order_round_trips_as_recovered() -> None:
     # End-to-end: OKX echoes a framework cid with "_" stripped; the snapshot leg
     # classifies it RECOVERED (venue-aware prefix) and AM's reconcile trusts the
