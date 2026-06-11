@@ -123,8 +123,19 @@ def test_position_report():
 
 def test_account_manager_is_an_account_viewer():
     # ctx.account is typed IAccountViewer (IStrategyContext contract); the AM is the
-    # implementation — nominal, so signature drift fails type checks, not reviews.
-    assert isinstance(_am(), IAccountViewer)
+    # implementation. The interface has concrete ... stubs (not abstractmethods), so a
+    # missing override would silently return None — the reflective check below is what
+    # actually enforces full coverage.
+    am = _am()
+    assert isinstance(am, IAccountViewer)
+    stubs = [
+        name
+        for name in vars(IAccountViewer)
+        if callable(getattr(IAccountViewer, name))
+        and not name.startswith("_")
+        and getattr(type(am), name, None) is getattr(IAccountViewer, name)
+    ]
+    assert not stubs, f"IAccountViewer members not implemented on AccountManager: {stubs}"
 
 
 def test_get_balance_unknown_currency_reads_as_zero_balance():

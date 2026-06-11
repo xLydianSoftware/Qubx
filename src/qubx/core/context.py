@@ -5,7 +5,7 @@ import traceback
 from functools import wraps
 from queue import Empty, Queue
 from threading import Lock, Thread
-from typing import Any, Callable
+from typing import Any, Callable, Literal
 
 import pandas as pd
 
@@ -28,6 +28,7 @@ from qubx.core.basics import (
     RestoredState,
     Signal,
     TargetPosition,
+    TransactionCostsCalculator,
     dt_64,
     td_64,
 )
@@ -657,9 +658,33 @@ class StrategyContext(IStrategyContext):
     def get_gross_leverage(self, exchange: str | None = None) -> float:
         return self.account.get_gross_leverage(exchange)
 
+    def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
+        return self.account.get_fees_calculator(exchange)
+
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return self.account.get_instrument_leverage(instrument)
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return self.account.get_max_instrument_leverage(instrument)
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        return self.account.get_max_instrument_notional(instrument)
+
+    def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
+        return self.account.get_margin_mode(instrument)
+
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        return self.account.get_adl_level(instrument)
+
     # margin information
     def get_available_margin(self, exchange: str | None = None) -> float:
         return self.account.get_available_margin(exchange)
+
+    def get_total_initial_margin(self, exchange: str | None = None) -> float:
+        return self.account.get_total_initial_margin(exchange)
+
+    def get_total_maint_margin(self, exchange: str | None = None) -> float:
+        return self.account.get_total_maint_margin(exchange)
 
     def get_withdrawable_balance(self, exchange: str | None = None) -> float:
         return self.account.get_withdrawable_balance(exchange)

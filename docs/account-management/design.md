@@ -460,6 +460,10 @@ Sanctioned departures, detailed in the sections above:
 - **Cancel+recreate update fallback**: `_update_via_cancel_recreate` raises NotSupported
   (fail-safe: rejects before canceling); all current target venues have `editOrder`, so
   it is unreachable until a venue without it is onboarded.
+- **Binance SPOT cid-only edits**: the empty-id scrub override covers the futures path
+  (`edit_contract_order_request`); spot's `edit_spot_order_request` still sends
+  `cancelOrderId=""` for cid-only edits — graceful venue reject; override when spot
+  trading matters.
 - **`set_instrument_leverage` / `set_margin_mode` delegation**: connector methods exist
   but are unwired from the strategy surface; the AM returns neutral per-instrument
   settings until venue-sourced leverage/margin-mode is held in `AccountState`.

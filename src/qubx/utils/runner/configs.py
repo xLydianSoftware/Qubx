@@ -480,7 +480,8 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
                 result.valid = False
                 result.errors.append(f"Exchange '{exchange_name}' has no symbols in universe")
 
-            if exchange_config.connector.lower() not in ["ccxt", "tardis", "xlighter"]:
+            # "xlighter" returns here when the plugin is ported to IConnector (see design.md Deferred)
+            if exchange_config.connector.lower() not in ["ccxt", "tardis"]:
                 result.warnings.append(
                     f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}"
                 )

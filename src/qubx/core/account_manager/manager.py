@@ -386,7 +386,10 @@ class AccountManager(IAccountViewer):
     def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
         # IAccountViewer contract: never None — a currency the account never held reads
         # as a detached zero Balance (mirrors get_position's materialize-flat rule,
-        # without storing it).
+        # without storing it). Currency codes are uppercase throughout (venue payloads,
+        # base_currency normalization) — normalize the lookup so 'usdt' cannot silently
+        # read as an empty wallet.
+        currency = currency.upper()
         if exchange is not None:
             return self._states[exchange].get_balance(currency) or Balance(exchange, currency)
         for state in self._states.values():

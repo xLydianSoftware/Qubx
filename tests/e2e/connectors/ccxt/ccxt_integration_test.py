@@ -1,4 +1,5 @@
 import asyncio
+import os
 import time
 from collections import defaultdict
 from pathlib import Path
@@ -465,10 +466,13 @@ class TestCcxtTrading:
     def _account_manager_with_credentials(self, exchange: str, tmp_path: Path) -> AccountConfigurationManager:
         """Build an AccountConfigurationManager from the exchange_credentials fixture, or skip.
 
-        Live-trading tests need real API keys; the fixture reads them from the file passed
-        via ``--env`` (default ``.env.integration``). Without keys for the exchange the test
-        skips instead of failing against the venue.
+        Live-trading tests trade REAL FUNDS (paper=False, market round-trips, position
+        flattening). Credentials alone must not arm them — CI injects real keys into
+        .env.integration, so a routine e2e workflow dispatch would otherwise trade live.
+        They run only with an explicit QUBX_E2E_LIVE_TRADING=1 opt-in on top of the keys.
         """
+        if os.environ.get("QUBX_E2E_LIVE_TRADING") != "1":
+            pytest.skip(f"{exchange} live-trading test disarmed — set QUBX_E2E_LIVE_TRADING=1 to run with real funds")
         creds = self._creds.get(exchange)
         if not creds or not creds.get("api_key") or not creds.get("secret"):
             pytest.skip(f"No {exchange} API credentials in --env file (.env.integration) — live trading test")
