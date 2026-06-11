@@ -637,7 +637,7 @@ class MarketEvent:
 @dataclass
 class Deal:
     trade_id: str  # trade id
-    order_id: str  # order's id
+    order_id: str  # VENUE (exchange-assigned) order id, not the client_order_id
     time: dt_64  # time of trade
     amount: float  # signed traded amount: positive for buy and negative for selling
     price: float

@@ -500,8 +500,9 @@ class TestTradingManagerCancelOrder:
             trading_manager.cancel_order(order_id="")
 
     def test_cancel_order_not_found_raises(self, trading_manager, mock_account):
-        """Cancelling an unknown order raises OrderNotFound."""
+        """Cancelling an unknown order raises OrderNotFound (after the venue->cid fallback)."""
         mock_account.find_order_by_id.return_value = None
+        mock_account.find_order_by_client_id.return_value = None
         with pytest.raises(OrderNotFound):
             trading_manager.cancel_order(order_id="missing_order_789", exchange="BINANCE.UM")
 

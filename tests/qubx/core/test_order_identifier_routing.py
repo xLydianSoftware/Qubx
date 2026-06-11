@@ -72,6 +72,22 @@ def test_cancel_order_routes_client_order_id(trading_manager):
     )
 
 
+def test_cancel_order_order_id_falls_back_to_client_id(trading_manager):
+    # Under fire-and-forget the caller may only hold the cid (venue id not acked yet):
+    # an order_id= cancel must fall back to the cid lookup when the venue index misses.
+    order = _order(order_id=None, client_order_id="qubx_BTCUSDT_1", status=OrderStatus.SUBMITTED)
+    trading_manager._account_manager.find_order_by_id.return_value = None
+    trading_manager._account_manager.find_order_by_client_id.return_value = order
+
+    ok = trading_manager.cancel_order(order_id="qubx_BTCUSDT_1", exchange="BINANCE.UM")
+
+    assert ok is True
+    trading_manager._account_manager.find_order_by_client_id.assert_called_once_with("qubx_BTCUSDT_1")
+    trading_manager._exchange_to_connector["BINANCE.UM"].cancel_order.assert_called_once_with(
+        client_order_id="qubx_BTCUSDT_1", venue_order_id=None
+    )
+
+
 def test_update_order_routes_client_order_id(trading_manager):
     order = _order(order_id="exchange_order_1", client_order_id="cid_1")
     trading_manager._account_manager.find_order_by_client_id.return_value = order

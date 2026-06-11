@@ -258,7 +258,14 @@ class TradingManager(ITradingManager):
 
     def _resolve_order(self, order_id: str | None, client_order_id: str | None) -> Order | None:
         if order_id is not None:
-            return self._account_manager.find_order_by_id(order_id)
+            if (order := self._account_manager.find_order_by_id(order_id)) is not None:
+                return order
+            # Venue-index miss: treat the id as a client id. Under fire-and-forget the venue
+            # id may not be acked yet and legacy callers pass whichever id they hold as
+            # order_id. Framework cids carry the FRAMEWORK_CID_PREFIX ("qubx_") while venue
+            # ids are exchange-assigned (numeric/uuid), so a venue/cid collision that would
+            # misdirect this fallback is implausible.
+            return self._account_manager.find_order_by_client_id(order_id)
         if client_order_id is not None:
             return self._account_manager.find_order_by_client_id(client_order_id)
         return None

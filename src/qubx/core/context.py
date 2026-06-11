@@ -632,6 +632,12 @@ class StrategyContext(IStrategyContext):
     ) -> dict[str, Order]:
         return self.account.get_orders(instrument, exchange, origin)
 
+    def find_order_by_id(self, order_id: str) -> Order | None:
+        return self.account.find_order_by_id(order_id)
+
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        return self.account.find_order_by_client_id(client_id)
+
     def get_order_history(self, client_order_id: str) -> list[OrderTransition]:
         return self.account.get_order_history(client_order_id)
 

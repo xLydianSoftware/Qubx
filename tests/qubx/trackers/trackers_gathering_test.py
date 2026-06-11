@@ -13,6 +13,7 @@ from qubx.core.basics import (
     Instrument,
     Order,
     OrderOrigin,
+    OrderStatus,
     Position,
     Signal,
     TargetPosition,
@@ -33,7 +34,13 @@ from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.ta.indicators import sma
 from qubx.trackers.advanced import TimeExpirationTracker
 from qubx.trackers.composite import CompositeTracker, CompositeTrackerPerSide, LongTracker
-from qubx.trackers.riskctrl import AtrRiskTracker, StopTakePositionTracker, TrailingStopPositionTracker
+from qubx.trackers.riskctrl import (
+    AtrRiskTracker,
+    BrokerSideRiskController,
+    RiskCalculator,
+    StopTakePositionTracker,
+    TrailingStopPositionTracker,
+)
 from qubx.trackers.sizers import FixedLeverageSizer, FixedRiskSizer, FixedSizer
 from tests.qubx.core.utils_test import StubAccount
 
@@ -117,12 +124,89 @@ class DebugStratageyCtx(IStrategyContext):
         # fmt: off
         self._n_orders += 1
         self._orders_size += amount
-        if amount > 0: self._n_orders_buy += 1
-        if amount < 0: self._n_orders_sell += 1
+        if amount > 0:
+            self._n_orders_buy += 1
+        if amount < 0:
+            self._n_orders_sell += 1
         return Order(
             client_order_id="test1", venue_order_id="test", origin=OrderOrigin.FRAMEWORK, type="MARKET", instrument=instrument,
-            submitted_at=np.datetime64(0, "ns"), quantity=amount, price=price if price is not None else 0, side="BUY" if amount > 0 else "SELL", status="CLOSED", time_in_force="gtc")
+            submitted_at=np.datetime64(0, "ns"), quantity=amount, price=price if price is not None else 0, side="BUY" if amount > 0 else "SELL", status=OrderStatus.SUBMITTED, time_in_force="gtc")
         # fmt: on
+
+
+class PricedGathererCtx(DebugStratageyCtx):
+    """Stub ctx with fire-and-forget order semantics: trade() returns an Order whose
+    venue_order_id is still None (populated later, in place, as the AM does on ack)."""
+
+    def __init__(self, instrs, capital) -> None:
+        super().__init__(instrs, capital)
+        self.submitted: list[Order] = []
+        self.cancelled: list[str] = []
+        self._orders_by_cid: dict[str, Order] = {}
+
+    def trade(
+        self,
+        instrument: Instrument,
+        amount: float,
+        price: float | None = None,
+        time_in_force="gtc",
+        **optional,
+    ) -> Order:
+        order = Order(
+            client_order_id=f"cid-{len(self.submitted) + 1}",
+            venue_order_id=None,
+            origin=OrderOrigin.FRAMEWORK,
+            type="LIMIT" if price else "MARKET",
+            instrument=instrument,
+            submitted_at=self.time(),
+            quantity=amount,
+            price=price if price is not None else 0,
+            side="BUY" if amount > 0 else "SELL",
+            status=OrderStatus.SUBMITTED,
+            time_in_force=time_in_force,
+        )
+        self.submitted.append(order)
+        self._orders_by_cid[order.client_order_id] = order
+        return order
+
+    def cancel_order(
+        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
+    ) -> bool:
+        assert client_order_id is not None, "must cancel via the reliable client_order_id path"
+        self.cancelled.append(client_order_id)
+        return True
+
+    def find_order_by_client_id(self, client_id: str) -> Order | None:
+        return self._orders_by_cid.get(client_id)
+
+
+class BrokerRiskCtx(PricedGathererCtx):
+    """PricedGathererCtx plus service-signal recording for risk-controller tests."""
+
+    def __init__(self, instrs, capital) -> None:
+        super().__init__(instrs, capital)
+        self.emitted: list[Signal] = []
+
+    def emit_signal(self, signal: Signal) -> None:
+        self.emitted.append(signal)
+
+
+class ImmediateTakeFillCtx(BrokerRiskCtx):
+    """Synchronous-channel semantics: a plain limit order crosses and returns FILLED."""
+
+    def trade(
+        self,
+        instrument: Instrument,
+        amount: float,
+        price: float | None = None,
+        time_in_force="gtc",
+        **optional,
+    ) -> Order:
+        order = super().trade(instrument, amount, price, time_in_force, **optional)
+        if price is not None and "stop_type" not in optional:
+            order.status = OrderStatus.FILLED
+            order.venue_order_id = f"V-{order.client_order_id}"
+        return order
 
 
 class ZeroTracker(PositionsTracker):
@@ -172,7 +256,7 @@ class TestTrackersAndGatherers:
         i = instrs[0]
         assert i is not None
 
-        res = gathering.alter_positions(
+        gathering.alter_positions(
             ctx, tracker.process_signals(ctx, [i.signal(ctx, 1), i.signal(ctx, 0.5), i.signal(ctx, -0.5)])
         )
 
@@ -180,6 +264,101 @@ class TestTrackersAndGatherers:
         assert ctx._orders_size == 1000.0
         assert ctx._n_orders_buy == 2
         assert ctx._n_orders_sell == 1
+
+    def test_simple_gatherer_priced_targets(self):
+        ctx = PricedGathererCtx(instrs := [lookup.find_symbol("BINANCE.UM", "BTCUSDT")], 10000)
+        i = instrs[0]
+        assert i is not None
+        gathering = SimplePositionGatherer()
+
+        # - priced (limit) entry: buy below the bid (quote is 1000.0/1000.5)
+        gathering.alter_position_size(ctx, TargetPosition(ctx.time(), i, 0.5, entry_price=999.0))
+        assert len(ctx.submitted) == 1
+        o1 = ctx.submitted[0]
+        assert gathering.entry_order_id == o1.client_order_id
+        assert not ctx.cancelled
+
+        # - replacing the target must cancel the previous working entry order (the leak pin)
+        gathering.alter_position_size(ctx, TargetPosition(ctx.time(), i, 0.7, entry_price=998.0))
+        assert ctx.cancelled == [o1.client_order_id]
+        o2 = ctx.submitted[1]
+        assert gathering.entry_order_id == o2.client_order_id
+
+        # - venue ack arrives after trade() returned: AM populates venue id in place
+        o2.venue_order_id = "VENUE-2"
+
+        # - a fill of an unrelated order must not clear the tracked entry
+        gathering.on_execution_report(ctx, i, Deal("t0", "VENUE-OTHER", ctx.time(), 0.1, 998.0, False))
+        assert gathering.entry_order_id == o2.client_order_id
+
+        # - the entry fill arrives with the VENUE id and must match the stored cid (the fill-match pin)
+        gathering.on_execution_report(ctx, i, Deal("t1", "VENUE-2", ctx.time(), 0.7, 998.0, False))
+        assert gathering.entry_order_id is None
+
+        # - next target must not try to cancel the already-filled entry
+        gathering.alter_position_size(ctx, TargetPosition(ctx.time(), i, 0.9, entry_price=997.0))
+        assert ctx.cancelled == [o1.client_order_id]
+
+    def _open_broker_risk_position(self, ctx: BrokerRiskCtx, i: Instrument) -> BrokerSideRiskController:
+        ctrl = BrokerSideRiskController("test", RiskCalculator(), FixedSizer(1.0, amount_in_quote=False))
+        ctrl.process_signals(ctx, [i.signal(ctx, 0.5, take=1010.0, stop=990.0)])
+
+        # - entry fill opens the position: the controller sends protective take + stop (fire-and-forget)
+        ctx.positions[i].quantity = 0.5
+        ctrl.on_execution_report(ctx, i, Deal("t-entry", "V-ENTRY", ctx.time(), 0.5, 1000.5, False))
+        return ctrl
+
+    def test_broker_risk_take_fill_matches_venue_deal_and_cancels_surviving_stop(self):
+        ctx = BrokerRiskCtx(instrs := [lookup.find_symbol("BINANCE.UM", "BTCUSDT")], 10000)
+        i = instrs[0]
+        assert i is not None
+        ctrl = self._open_broker_risk_position(ctx, i)
+
+        assert [o.price for o in ctx.submitted] == [1010.0, 990.0]
+        take, stop = ctx.submitted
+
+        # - venue acks arrive after trade() returned (populated in place, as the AM does)
+        take.venue_order_id = "V-TAKE"
+        stop.venue_order_id = "V-STOP"
+
+        # - the take fills: the deal carries the VENUE id and must match the stored cid;
+        #   only the surviving stop is cancelled (misclassifying as closed-externally cancels both)
+        ctx.positions[i].quantity = 0.0
+        ctrl.on_execution_report(ctx, i, Deal("t-take", "V-TAKE", ctx.time(), -0.5, 1010.0, False))
+        assert ctx.cancelled == [stop.client_order_id]
+
+        ctrl.update(ctx, i, Q("2020-01-01", 1000.0, 1000.5))
+        assert not ctrl.is_active(i)
+        assert [s.comment for s in ctx.emitted] == ["Take triggered"]
+
+    def test_broker_risk_stop_fill_matches_venue_deal_and_cancels_surviving_take(self):
+        ctx = BrokerRiskCtx(instrs := [lookup.find_symbol("BINANCE.UM", "BTCUSDT")], 10000)
+        i = instrs[0]
+        assert i is not None
+        ctrl = self._open_broker_risk_position(ctx, i)
+
+        take, stop = ctx.submitted
+        take.venue_order_id = "V-TAKE"
+        stop.venue_order_id = "V-STOP"
+
+        ctx.positions[i].quantity = 0.0
+        ctrl.on_execution_report(ctx, i, Deal("t-stop", "V-STOP", ctx.time(), -0.5, 990.0, False))
+        assert ctx.cancelled == [take.client_order_id]
+
+        ctrl.update(ctx, i, Q("2020-01-01", 1000.0, 1000.5))
+        assert not ctrl.is_active(i)
+        assert [s.comment for s in ctx.emitted] == ["Stop triggered"]
+
+    def test_broker_risk_immediate_take_fill_sends_no_stale_stop(self):
+        ctx = ImmediateTakeFillCtx(instrs := [lookup.find_symbol("BINANCE.UM", "BTCUSDT")], 10000)
+        i = instrs[0]
+        assert i is not None
+        self._open_broker_risk_position(ctx, i)
+
+        # - the take limit crossed immediately (synchronous channel returns FILLED):
+        #   no stop order may be sent for the already-closed position
+        assert [o.price for o in ctx.submitted] == [1010.0]
+        assert not ctx.cancelled
 
     def test_fixed_risk_sizer(self):
         ctx = DebugStratageyCtx(instrs := [lookup.find_symbol("BINANCE.UM", "BTCUSDT")], 10000)
@@ -235,13 +414,13 @@ class TestTrackersAndGatherers:
             strategies={
                 "Strategy ST client  (0)": [
                     StrategyForTracking(timeframe="5Min", fast_period=10, slow_period=25, high_low_risk=True),
-                    t0 := StopTakePositionTracker(
+                    StopTakePositionTracker(
                         None, None, sizer=FixedRiskSizer(1, 10_000), risk_controlling_side="client"
                     ),
                 ],
                 "Strategy ST broker  (1)": [
                     StrategyForTracking(timeframe="5Min", fast_period=10, slow_period=25, high_low_risk=True),
-                    t1 := StopTakePositionTracker(
+                    StopTakePositionTracker(
                         None, None, sizer=FixedRiskSizer(1, 10_000), risk_controlling_side="broker"
                     ),
                 ],
@@ -394,7 +573,7 @@ class TestTrackersAndGatherers:
 
         assert len(result[1].executions_log) == 7
         assert len(result[1].signals_log) == 7
-        assert result[1].signals_log.iloc[-1]["service"] == True
+        assert result[1].signals_log.iloc[-1]["service"]
         assert not t2.is_active(I)
 
     def test_stop_loss_broker_side(self):

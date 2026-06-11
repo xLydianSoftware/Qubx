@@ -7,7 +7,7 @@ from qubx.backtester.simulator import simulate
 from qubx.core.basics import CtrlChannel, Deal, Instrument, Signal, TargetPosition, TriggerEvent
 from qubx.core.context import StrategyContext
 from qubx.core.events import OrderAcceptedEvent
-from qubx.core.interfaces import IPositionGathering, IStrategy, IStrategyContext, IStrategyInitializer
+from qubx.core.interfaces import IAccountViewer, IPositionGathering, IStrategy, IStrategyContext, IStrategyInitializer
 from qubx.data import CsvStorage
 
 
@@ -126,6 +126,23 @@ class TestStrategyGathererOverride:
         gatherer = strategy.gatherer(mock_ctx)
 
         assert gatherer is None, "Strategy without gatherer override should return None"
+
+
+def test_context_forwards_find_order_lookups_to_account():
+    # IAccountViewer's `...` stub bodies silently return None, so a missing delegation in
+    # StrategyContext is invisible to gatherer tests that stub the context themselves.
+    # Pin both order lookups to real overrides that forward to the account manager.
+    assert StrategyContext.find_order_by_id is not IAccountViewer.find_order_by_id
+    assert StrategyContext.find_order_by_client_id is not IAccountViewer.find_order_by_client_id
+
+    ctx = StrategyContext.__new__(StrategyContext)
+    ctx.account = MagicMock()
+
+    assert ctx.find_order_by_id("V1") is ctx.account.find_order_by_id.return_value
+    ctx.account.find_order_by_id.assert_called_once_with("V1")
+
+    assert ctx.find_order_by_client_id("cid-1") is ctx.account.find_order_by_client_id.return_value
+    ctx.account.find_order_by_client_id.assert_called_once_with("cid-1")
 
 
 def test_incoming_data_loop_routes_typed_messages_to_process_event():
