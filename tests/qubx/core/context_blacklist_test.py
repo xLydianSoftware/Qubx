@@ -37,3 +37,12 @@ def test_get_blacklisted_instruments_uses_known_universe():
     ctx = _ctx_with_service_and_instruments(svc, [btc, eth])
     assert ctx.get_blacklisted_instruments() == [btc]
     svc.matching_instruments.assert_called_once_with([btc, eth])
+
+
+def test_context_exposes_instrument_service_callbacks_attr():
+    # The action reads ctx._instrument_service_callbacks; default must be an empty list.
+    ctx = StrategyContext.__new__(StrategyContext)
+    # simulate __post_init__ having stored callbacks from initializer
+    cbs = [lambda c, a, r: None]
+    ctx._instrument_service_callbacks = cbs
+    assert ctx._instrument_service_callbacks == cbs

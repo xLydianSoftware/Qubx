@@ -115,6 +115,7 @@ class StrategyContext(IStrategyContext):
     _strategy_name: str
     _delisting_detector: DelistingDetector
     _instrument_service: IInstrumentService
+    _instrument_service_callbacks: list = []
     _notifier: IStrategyNotifier
 
     _thread_data_loop: Thread | None = None  # market data loop
@@ -310,6 +311,8 @@ class StrategyContext(IStrategyContext):
         if custom_schedules := self.initializer.get_custom_schedules():
             for schedule_id, (cron_schedule, method) in custom_schedules.items():
                 self._processing_manager.schedule(cron_schedule, method)
+
+        self._instrument_service_callbacks = self.initializer.get_instrument_service_callbacks()
 
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
