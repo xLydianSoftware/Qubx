@@ -46,33 +46,34 @@ instrument is still physically tradeable; a position on it is real and
 legitimate. The correct exit is a **trade to flat**, which the existing
 `DelistingDetector` + `set_universe` removal + the 23:30 scheduled check already
 perform (remove from universe, `alter_positions` → close via order). This path
-is **unchanged** by this design, and such a position is **never forgotten** —
-forgetting it would silently discard a real, still-tradeable holding.
+is **unchanged** by this design, and such a position is **never settled by us** —
+zeroing it would silently discard a real, still-tradeable holding.
 
 **B. Delisting *already happened* (market gone from the exchange).** You
 physically cannot hold a tradeable position anymore — the exchange has
-cash-settled it and there is no market to trade against. Only here is "forget"
-(`drop_position`, no trade) correct, because a closing order is impossible. This
-is the TON case and the new behavior in this design.
+cash-settled it and there is no market to trade against. Only here is
+settle-in-place (`settle_position` — zero quantity, no trade) correct, because a
+closing order is impossible. This is the TON case and the new behavior here.
 
 | State | Market listed? | `delist_date` | Position action |
 |---|---|---|---|
 | Scheduled delist | yes | future | existing path: remove from universe, **close via trade** |
-| Settlement overlap | yes | past | prefer close via trade; **don't forget** (alert if stuck) |
-| Gone | **no** | any / past | skip warmup/subscribe, **forget** (`drop_position`) |
+| Settlement overlap | yes | past | prefer close via trade; **don't settle** (alert if stuck) |
+| Gone | **no** | any / past | skip warmup/subscribe, **settle in place** (`settle_position`) |
 
 The authoritative signal for state B is the **live market-listing absence**
 (`is_instrument_listed() == False`). A past `delist_date` is only a cheap
 first-pass hint to skip warmup/subscription; it never, on its own, authorizes
-the destructive forget (see §3).
+the destructive settle (see §3).
 
 ## Goals
 
 - A delisted instrument must never abort warmup or block startup.
 - An instrument the exchange no longer lists must never be subscribed, warmed
   up, or kept as a tradeable position.
-- A held position on a delisted (already cash-settled) instrument is forgotten
-  and reconciled to exchange truth, with an operator alert.
+- A held position on a delisted (already cash-settled) instrument is settled in
+  place (quantity 0, record retained) and reconciled to exchange truth, with an
+  operator alert.
 - Detection is connector-agnostic at the Qubx core level; connectors supply
   only the raw "is this listed?" fact.
 - Backtests are completely unaffected.
@@ -85,7 +86,7 @@ the destructive forget (see §3).
 - Retroactive cleanup of historical logs or PnL re-derivation (we trust the
   live account-balance sync).
 - A global config kill-switch — rejected as over-engineering; fail-open plus a
-  live-confirmed forget (§3) cover the false-positive risk.
+  live-confirmed settle (§3) cover the false-positive risk.
 
 ## Design
 
@@ -135,13 +136,13 @@ def _is_market_gone(self, instrument: Instrument) -> bool:
     d = instrument.delist_date
     return d is not None and to_timestamp(d) <= self._time_provider.time()
 
-# Excludes gone instruments and forgets held positions on them (§3 guard).
+# Excludes gone instruments and settles held positions on them (§3 guard).
 # Returns the KEPT (still-tradeable) instruments. Runs IN ADDITION to the
 # existing filter_delistings (state A), not instead of it.
 def _drop_gone(self, instruments: list[Instrument]) -> list[Instrument]:
     gone = [i for i in instruments if self._is_market_gone(i)]
     for i in gone:
-        self._forget_if_held(i)        # see §3 (live-confirmed forget only)
+        self._settle_if_held(i)        # see §3 (live-confirmed settle only)
     if gone:
         self._notify_gone(gone)
     gone_set = set(gone)
@@ -154,51 +155,67 @@ def _drop_gone(self, instruments: list[Instrument]) -> list[Instrument]:
   `self._delisting_detector.filter_delistings(...)` (`core/mixins/universe.py:78`),
   before `__do_add_instruments`/subscribe (`:90`, `:215`). `filter_delistings`
   keeps handling state A (remove → close via trade); `_drop_gone` handles state
-  B (exclude → forget). One placement covers startup (`ctx.start()` →
+  B (exclude → settle). One placement covers startup (`ctx.start()` →
   `set_universe`) and every mid-run universe change.
-- A held gone instrument is forgotten by `_drop_gone` even when it was never in
-  the prior universe (the restored-position startup case), since `_forget_if_held`
+- A held gone instrument is settled by `_drop_gone` even when it was never in
+  the prior universe (the restored-position startup case), since `_settle_if_held`
   acts on the held position directly, not on `prev_set` membership.
 - **Removal path also branches on "gone":** `__do_remove_instruments`
   (`core/mixins/universe.py:159`) currently closes positions via
-  `alter_positions` → trade. Add a guard: if `_is_market_gone(instr)`, forget
-  (`drop_position`) instead of trading — so the scheduled 23:30 delisting check
-  and any other removal can never attempt a trade on a vanished market.
+  `alter_positions` → trade. Add a guard: if `_is_market_gone(instr)`, settle in
+  place (§3) instead of trading — so the scheduled 23:30 delisting check and any
+  other removal can never attempt a trade on a vanished market.
 
 The existing `DelistingDetector` is **unchanged** — no `is_delisting` predicate
 is added; state B never routes through it.
 
-### 3. Forget path — `IAccountProcessor.drop_position`
+### 3. Settle-in-place — `IAccountProcessor.settle_position`
 
-No public way exists to drop a position without trading; the normal removal
-path (`UniverseManager.__do_remove_instruments` → `alter_positions` → trade to
-flat) is impossible on a gone market. Add:
+The normal removal path (`UniverseManager.__do_remove_instruments` →
+`alter_positions` → trade to flat) is impossible on a gone market, and there's
+no public way to flatten a position without trading. Rather than delete the
+position record (which would lose realized PnL, average price, funding history),
+we **zero the quantity in place** so the record — and a normally-closed position
+— look identical (`is_open()` is `abs(quantity) >= lot_size`, so qty 0 ⇒ closed).
 
 ```python
-def drop_position(self, instrument: Instrument) -> None:
-    """Remove an instrument's position from tracking WITHOUT trading.
-    For delisted/settled markets the exchange already cash-settled it."""
+# core/basics.py — Position
+def flatten(self) -> None:
+    """Mark the position flat WITHOUT trading: zero quantity and the derived
+    market values; keep r_pnl, average price, cumulative funding, etc.
+    Distinct from reset(), which also wipes r_pnl."""
+    self.quantity = 0.0
+    self.market_value = 0.0
+    self.market_value_funds = 0.0
+    self.pnl = self.r_pnl            # unrealized is 0 at qty 0
+
+# core/interfaces.py — IAccountProcessor
+def settle_position(self, instrument: Instrument) -> None:
+    """Flatten a held position in place (no trade) for a delisted/settled
+    market the exchange has already cash-settled."""
 ```
 
-`_forget_if_held(instrument)`:
+`_settle_if_held(instrument)`:
 - if no open position → just ensure it's unsubscribed / out of the universe;
-- if a position is held → **forget only on a live-confirmed gone market.**
-  Concretely, `drop_position` is allowed only when the per-exchange data
+- if a position is held → **settle only on a live-confirmed gone market.**
+  Concretely, `settle_position` is allowed only when the per-exchange data
   provider exists and reports the instrument **absent from a loaded, non-empty
   market list** (`is_instrument_listed() == False` with markets loaded). In any
   other case — a past `delist_date` but the market still lists it (settlement
   overlap, where a reduce-only close may still be possible), no live signal
-  available, or markets empty/unloaded (fail-open) — we **do not forget**; we
+  available, or markets empty/unloaded (fail-open) — we **do not settle**; we
   **emit a "needs manual review" alert** and leave the position for the existing
-  close-via-trade path or an operator. We never forget a position whose
+  close-via-trade path or an operator. We never flatten a position whose
   delisting has not actually happened.
   - *Optional hardening (not required for v1):* protect against a *partial*
     market load by comparing the current market count against the connector's
-    last-known-good count and skipping the forget on a large unexpected drop.
+    last-known-good count and skipping the settle on a large unexpected drop.
 
-Capital stays correct because the live account-balance sync is authoritative
-(the settled value is already reflected in the quote-currency balance); we only
-discard the stale phantom.
+The settled position stays visible in `get_positions()` with qty 0 and its
+realized PnL / entry / funding intact — identical to a normally-closed position,
+so logs, metrics, and reporting are unaffected. Capital stays correct because
+the live account-balance sync is authoritative (the settled value is already in
+the quote-currency balance) and a qty-0 position contributes zero market value.
 
 ### 4. Connector-side warmup guard (the actual crash fix)
 
@@ -221,7 +238,7 @@ Other connectors mirror the same skip in their own warmup handlers.
 - **State A (scheduled delist, still listed)** → existing `filter_delistings` +
   removal path: remove from universe, **close via trade**. Unchanged.
 - **State B (market gone) + phantom-position lifecycle** → `UniverseManager`
-  (§2–3): exclude + forget (live-confirmed).
+  (§2–3): exclude + settle in place (live-confirmed).
 - **No runner changes, no new component, no callables, no global toggle.**
 
 ### Fail-safe & alerting
@@ -230,8 +247,8 @@ Other connectors mirror the same skip in their own warmup handlers.
   (`is_instrument_listed` returns base `True`, or markets failed to load),
   nothing is treated as gone. A market-load hiccup must never nuke the universe.
 - **Forget only on a live-confirmed gone market (§3):** the only destructive
-  step (forgetting a held position) requires the live listing signal; metadata
-  alone, settlement overlap, or no signal ⇒ no forget, manual-review alert.
+  step (settling a held position to qty 0) requires the live listing signal;
+  metadata alone, settlement overlap, or no signal ⇒ no settle, manual-review alert.
 - **Alert:** on any gone-drop,
   `ctx.notifier.notify_message("[<bot>] Dropped delisted (gone) instruments: TONUSDT (...)", metadata=...)`
   plus a WARN log; on a guarded skip, a "needs manual review" alert. Silent
@@ -278,15 +295,15 @@ subscription without a restored-state pre-filter.
 4. `_drop_gone` runs at the top: `_is_market_gone(TON)` is true because the live
    data provider reports TON absent from `exchange.markets` (the `delist_date`
    you added is corroborating but not required, and is not what authorizes the
-   forget). `_forget_if_held(TON)`: market is live-confirmed gone and markets are
-   loaded/non-empty → `drop_position` + unsubscribe. Notifier alert: "Dropped
-   delisted (gone) instruments: TONUSDT".
+   settle). `_settle_if_held(TON)`: market is live-confirmed gone and markets are
+   loaded/non-empty → `settle_position` (qty 0, r_pnl kept) + unsubscribe.
+   Notifier alert: "Dropped delisted (gone) instruments: TONUSDT".
 5. TON is absent from `to_add` → never subscribed. The bot starts with the
    remaining live positions; capital reflects the OKX-settled balance.
 
 Contrast — a *scheduled* (state A) delist, e.g. TON still listed with a
 `delist_date` 2 days out: `_is_market_gone` is **false** (still listed), so TON
-is never forgotten. The existing `filter_delistings`/removal path closes it via
+is never settled by us. The existing `filter_delistings`/removal path closes it via
 a normal trade when its window arrives.
 
 ## Testing
@@ -296,34 +313,36 @@ a normal trade when its window arrives.
     not gone even with a past `delist_date`; not-listed ⇒ gone); no data
     provider ⇒ fall back to metadata, where a **past** `delist_date` ⇒ gone but
     a **future** `delist_date` ⇒ not gone; fail-open (markets empty) ⇒ not gone.
-  - **State A is never forgotten:** an instrument still listed with a future
+  - **State A is never settled:** an instrument still listed with a future
     `delist_date` is not gone and routes through the existing close-via-trade
-    path, not `drop_position`.
+    path, not `settle_position`.
   - ccxt `is_instrument_listed` against a stubbed `exchange.markets`
     (present / absent / empty-fail-open).
-  - `drop_position` removes the position without emitting a trade.
-  - `_forget_if_held` guard: live-confirmed gone ⇒ forget; past `delist_date`
-    but still listed (settlement overlap) ⇒ no forget, "needs review" alert;
-    no data provider / empty markets ⇒ no forget, alert.
-  - `__do_remove_instruments` gone-branch: removing a gone instrument forgets
-    (no trade); removing a still-listed one trades to flat as before.
+  - `Position.flatten` zeroes quantity and market values but preserves `r_pnl`
+    / average price (vs `reset()` which wipes `r_pnl`); `settle_position` calls
+    it without emitting a trade; `is_open()` is false afterward.
+  - `_settle_if_held` guard: live-confirmed gone ⇒ settle; past `delist_date`
+    but still listed (settlement overlap) ⇒ no settle, "needs review" alert;
+    no data provider / empty markets ⇒ no settle, alert.
+  - `__do_remove_instruments` gone-branch: removing a gone instrument settles
+    in place (no trade); removing a still-listed one trades to flat as before.
 - **Integration**
   - Warmup with one gone instrument in the set → completes, warms the rest,
     logs the skip, no crash (direct regression for the TON incident).
   - Restart with a restored gone position → instrument excluded, position
-    forgotten, alert emitted, bot starts; instrument never subscribed.
+    settled (qty 0, record kept), alert emitted, bot starts; never subscribed.
   - Restart with a still-listed instrument carrying a future `delist_date` →
-    position retained and closed via the existing trade path; not forgotten.
+    position retained and closed via the existing trade path; not settled by us.
 - **Backtest guard**
   - A sim run still warms/trades everything (`is_instrument_listed` no-ops).
 
 ## Scope
 
 **In:** `IDataProvider.is_instrument_listed` (+ ccxt impl), `UniverseManager`
-state-B handling (`_is_market_gone`, `_drop_gone`, `_forget_if_held`,
+state-B handling (`_is_market_gone`, `_drop_gone`, `_settle_if_held`,
 `_data_provider_for`, `_notify_gone`, and the `__do_remove_instruments`
-gone-branch), `IAccountProcessor.drop_position`, ccxt warmup guard, alerting,
-tests.
+gone-branch), `Position.flatten` + `IAccountProcessor.settle_position`, ccxt
+warmup guard, alerting, tests.
 
 **Out:** state-A / future-delist handling (existing `DelistingDetector` +
 close-via-trade path, unchanged), broker-side listing checks, restored-state
@@ -337,5 +356,5 @@ historical-log cleanup.
    the version bump).
 3. Bump factors' qubx pin to the new version; rebuild the strategy release.
 4. Update the `okx.factors` bot to the new release version and restart — TON is
-   skipped in warmup and forgotten at start; the bot comes up clean without a
+   skipped in warmup and settled at start; the bot comes up clean without a
    manual state reset.
