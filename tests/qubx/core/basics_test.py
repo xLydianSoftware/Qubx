@@ -194,3 +194,27 @@ class TestBasics:
         assert 355 * 5 == pos2.get_amount_released_funds_after_closing(10)
         assert 355 * 1 == pos2.get_amount_released_funds_after_closing(-4)
         assert 355 * 5 == pos2.get_amount_released_funds_after_closing()
+
+
+def test_position_flatten_zeroes_quantity_but_keeps_realized(mocker):
+    from qubx.core.basics import Instrument, Position
+
+    instr = mocker.Mock(spec=Instrument)
+    instr.lot_size = 0.001
+    pos = Position(instr, quantity=10.0, pos_average_price=100.0, r_pnl=42.0)
+    pos.market_value = 1000.0
+    pos.market_value_funds = 1000.0
+    pos.initial_margin = 250.0
+    pos.maint_margin = 125.0
+
+    pos.flatten()
+
+    assert pos.quantity == 0.0
+    assert pos.market_value == 0.0
+    assert pos.market_value_funds == 0.0
+    assert pos.initial_margin == 0.0
+    assert pos.maint_margin == 0.0
+    assert pos.pnl == 42.0            # unrealized is 0 at qty 0 -> pnl == r_pnl
+    assert pos.r_pnl == 42.0          # realized preserved
+    assert pos.position_avg_price == 100.0   # entry preserved
+    assert pos.is_open() is False

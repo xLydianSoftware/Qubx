@@ -823,6 +823,24 @@ class Position:
         self.__pos_incr_qty = 0
         self._qty_multiplier = self.instrument.quantity_multiplier
 
+    def flatten(self) -> None:
+        """
+        Mark the position flat WITHOUT trading: zero quantity and the derived
+        market values / margins, while KEEPING realized PnL, average price,
+        commissions and funding history.
+
+        For an instrument whose market has been delisted/removed from the
+        exchange (already cash-settled) we cannot place a closing order, so we
+        reconcile the in-memory position to flat. Unlike reset(), this preserves
+        r_pnl so the record stays identical to a normally-closed position.
+        """
+        self.quantity = 0.0
+        self.market_value = 0.0
+        self.market_value_funds = 0.0
+        self.initial_margin = 0.0
+        self.maint_margin = 0.0
+        self.pnl = self.r_pnl  # unrealized PnL is zero at zero quantity
+
     def reset_by_position(self, pos: "Position") -> None:
         self.quantity = pos.quantity
         self.pnl = pos.pnl
