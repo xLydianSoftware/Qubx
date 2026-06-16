@@ -224,6 +224,26 @@ so logs, metrics, and reporting are unaffected. Capital stays correct because
 the live account-balance sync is authoritative (the settled value is already in
 the quote-currency balance) and a qty-0 position contributes zero market value.
 
+### 3b. Eager markets load before the first `set_universe`
+
+`_is_market_gone` is only authoritative if the connector's market list is
+loaded. The ccxt provider loads `exchange.markets` lazily (on first
+subscription), and in **paper mode** there is no live account processor to
+eager-load them — so at `ctx.start()` → `set_universe` the markets are empty,
+`is_instrument_listed` fail-opens to `True`, and a delisted held position is
+NOT settled (it slips into the live subscription and only fails there). This was
+found via a local restart reproduction; unit tests missed it because they mock
+`is_instrument_listed`.
+
+Fix: add a lifecycle `IDataProvider.start()` (base no-op; pairs with the
+existing `close()`). The ccxt impl synchronously loads markets
+(`self._loop.submit(exchange.load_markets()).result()`, wrapped so a transient
+failure logs and continues — fail-open preserved). `StrategyContext.start()`
+calls `data_provider.start()` for every provider **before** the initial
+`set_universe` (mirroring the existing `close()` shutdown loop). With markets
+loaded, `_drop_gone` settles the delisted position in place at startup and
+excludes it before any subscription.
+
 ### 4. Connector-side warmup guard (the actual crash fix)
 
 The warmup crash happens in the runner's warmup pass, **before** the live
