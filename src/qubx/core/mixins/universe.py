@@ -1,3 +1,4 @@
+from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.detectors import DelistingDetector
 from qubx.core.interfaces import (
@@ -13,6 +14,7 @@ from qubx.core.interfaces import (
     RemovalPolicy,
 )
 from qubx.core.loggers import StrategyLogging
+from qubx.utils.time import to_timestamp
 
 
 class UniverseManager(IUniverseManager):
@@ -62,6 +64,58 @@ class UniverseManager(IUniverseManager):
             and abs(self._account.positions[instrument].quantity) > instrument.min_size
         )
 
+    def _is_market_gone(self, instrument: Instrument) -> bool:
+        """State B only: the market no longer exists / is untradeable.
+        A future delist_date (state A) is NOT gone."""
+        if not self._mkt_manager.is_instrument_listed(instrument):
+            return True  # authoritative live signal
+        d = instrument.delist_date
+        if d is None:
+            return False
+        try:
+            delist_ts = to_timestamp(d).replace(tzinfo=None)
+            now_ts = to_timestamp(self._time_provider.time())
+        except (TypeError, ValueError):
+            # - unparseable delist_date: fail-open, treat as not gone
+            return False
+        return delist_ts <= now_ts
+
+    def _settle_if_held(self, instrument: Instrument) -> None:
+        if not self._has_position(instrument):
+            return
+        if not self._mkt_manager.is_instrument_listed(instrument):
+            # live-confirmed gone: cannot trade out, exchange already settled
+            self._trading_manager.cancel_orders(instrument)
+            self._account.settle_position(instrument)
+            logger.warning(f"[UniverseManager] Settled delisted position {instrument.symbol} (market gone)")
+        else:
+            # flagged by past delist_date metadata only, but still listed (settlement
+            # overlap) -- leave it for the close-via-trade path / manual review
+            logger.warning(
+                f"[UniverseManager] {instrument.symbol} flagged delisted by metadata but still listed; "
+                "leaving position for close-via-trade / manual review"
+            )
+
+    def _notify_gone(self, instruments: list[Instrument]) -> None:
+        symbols = ", ".join(sorted(i.symbol for i in instruments))
+        logger.warning(f"[UniverseManager] Dropping delisted (gone) instruments: {symbols}")
+        notifier = getattr(self._context, "notifier", None)
+        if notifier is not None and not self._context.is_simulation:
+            notifier.notify_message(
+                f"[{self._context.strategy_name}] Dropped delisted (gone) instruments: {symbols}",
+                metadata={"event": "delisted_gone", "instruments": symbols},
+            )
+
+    def _drop_gone(self, instruments: list[Instrument]) -> list[Instrument]:
+        gone = [i for i in instruments if self._is_market_gone(i)]
+        if not gone:
+            return instruments
+        for i in gone:
+            self._settle_if_held(i)
+        self._notify_gone(gone)
+        gone_set = set(gone)
+        return [i for i in instruments if i not in gone_set]
+
     def set_universe(
         self,
         instruments: list[Instrument],
@@ -76,6 +130,9 @@ class UniverseManager(IUniverseManager):
 
         # Filter out instruments with upcoming delist dates
         instruments = self._delisting_detector.filter_delistings(instruments)
+
+        # Filter out instruments whose market is already gone (state B: settle in place)
+        instruments = self._drop_gone(instruments)
 
         new_set = set(instruments)
         prev_set = self._instruments.copy()
@@ -181,6 +238,12 @@ class UniverseManager(IUniverseManager):
         exit_targets = []
         for instr in instruments:
             if self._has_position(instr):
+                if not self._mkt_manager.is_instrument_listed(instr):
+                    # market gone -- cannot trade; settle in place
+                    self._account.settle_position(instr)
+                    logger.warning(f"[UniverseManager] Settled delisted position {instr.symbol} on removal")
+                    continue
+
                 # - create exit target
                 exit_targets.append(instr.target(self._context, 0))
 

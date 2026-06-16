@@ -1,3 +1,4 @@
+import numpy as np
 import pytest
 from pytest_mock import MockerFixture
 
@@ -15,7 +16,12 @@ def mock_dependencies(mocker: MockerFixture):
     # - market_data_manager mock exposes IMarketDataCache via get_market_data_cache()
     cache = mocker.Mock()
     market_data_manager = mocker.Mock()
+    market_data_manager.is_instrument_listed.return_value = True
     market_data_manager.get_market_data_cache.return_value = cache
+
+    # - provide a real "now" so _is_market_gone can compare against delist_date
+    time_provider = mocker.Mock()
+    time_provider.time.return_value = np.datetime64("2026-06-16T00:00:00", "ns")
 
     return {
         "context": mocker.Mock(),
@@ -25,7 +31,7 @@ def mock_dependencies(mocker: MockerFixture):
         "logging": mocker.Mock(),
         "subscription_manager": mocker.Mock(),
         "trading_manager": mocker.Mock(),
-        "time_provider": mocker.Mock(),
+        "time_provider": time_provider,
         "account": mocker.Mock(),
         "position_gathering": mocker.Mock(),
         "delisting_detector": delisting_detector,
@@ -97,7 +103,7 @@ def test_set_universe_with_skip_callback(universe_manager, mock_dependencies, mo
 def test_set_universe_with_position_close(universe_manager, mock_dependencies, mocker: MockerFixture):
     ctx = mock_dependencies["context"]
 
-    sol = (mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0),)
+    sol = mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0)
     universe_manager.set_universe(
         [
             btc := mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0),
@@ -242,3 +248,60 @@ def test_set_universe_keeps_non_delisting_instruments(universe_manager, mock_dep
     # All instruments should be in the universe
     assert set(universe_manager.instruments) == set(instruments)
     mock_dependencies["delisting_detector"].filter_delistings.assert_called_once()
+
+
+def _gone_instr(mocker, symbol="TONUSDT"):
+    i = mocker.Mock(spec=Instrument, symbol=symbol)
+    i.exchange = "OKX.F"
+    i.delist_date = None
+    i.min_size = 0.001
+    return i
+
+
+def test_set_universe_excludes_gone_instrument(universe_manager, mock_dependencies, mocker):
+    mock_dependencies["subscription_manager"].auto_subscribe = True
+    live = mocker.Mock(spec=Instrument, symbol="BTCUSDT")
+    live.exchange = "OKX.F"
+    live.delist_date = None
+    live.min_size = 0.001
+    gone = _gone_instr(mocker)
+
+    def listed(instr):
+        return instr is not gone
+
+    mock_dependencies["market_data_manager"].is_instrument_listed.side_effect = listed
+    mock_dependencies["account"].positions = {}
+
+    universe_manager.set_universe([live, gone])
+
+    assert set(universe_manager.instruments) == {live}
+    assert gone not in universe_manager.instruments
+
+
+def test_gone_held_position_is_settled_not_traded(universe_manager, mock_dependencies, mocker):
+    gone = _gone_instr(mocker)
+    pos = mocker.Mock()
+    pos.quantity = 3175.0
+    mock_dependencies["account"].positions = {gone: pos}
+    mock_dependencies["market_data_manager"].is_instrument_listed.side_effect = lambda i: i is not gone
+    mock_dependencies["subscription_manager"].auto_subscribe = True
+
+    universe_manager.set_universe([gone])
+
+    mock_dependencies["account"].settle_position.assert_called_once_with(gone)
+    mock_dependencies["position_gathering"].alter_positions.assert_not_called()
+
+
+def test_future_delist_but_listed_is_not_gone(universe_manager, mock_dependencies, mocker):
+    import pandas as pd
+
+    instr = _gone_instr(mocker, symbol="SOLUSDT")
+    instr.delist_date = pd.Timestamp("2999-01-01")  # far future
+    mock_dependencies["market_data_manager"].is_instrument_listed.return_value = True
+    mock_dependencies["account"].positions = {}
+    mock_dependencies["subscription_manager"].auto_subscribe = True
+
+    universe_manager.set_universe([instr])
+
+    assert instr in universe_manager.instruments
+    mock_dependencies["account"].settle_position.assert_not_called()
