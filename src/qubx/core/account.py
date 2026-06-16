@@ -263,6 +263,11 @@ class BasicAccountProcessor(IAccountProcessor):
                 self._positions[p.instrument].reset_by_position(p)
         return self
 
+    def settle_position(self, instrument: Instrument) -> None:
+        pos = self._positions.get(instrument)
+        if pos is not None:
+            pos.flatten()
+
     def merge_restored_accounting(self, restored_state: RestoredState | None) -> None:
         """
         Merge accounting fields (commissions, r_pnl, cumulative_funding) from restored state.
@@ -751,6 +756,10 @@ class CompositeAccountProcessor(IAccountProcessor):
             exch_positions = processor.get_positions(exch_name)
             all_positions.update(exch_positions)
         return all_positions
+
+    def settle_position(self, instrument: Instrument) -> None:
+        exch = self._get_exchange(instrument=instrument)
+        self._account_processors[exch].settle_position(instrument)
 
     def get_position(self, instrument: Instrument) -> Position:
         exch = self._get_exchange(instrument=instrument)

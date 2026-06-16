@@ -1606,6 +1606,11 @@ class IAccountProcessor(IAccountViewer):
         """
         ...
 
+    def settle_position(self, instrument: Instrument) -> None:
+        """Flatten a held position in place (no trade) for a delisted/removed
+        market the exchange has already cash-settled. Realized PnL is kept."""
+        ...
+
     def add_active_orders(self, orders: dict[str, Order]) -> None:
         """Add active orders to the account.
 
