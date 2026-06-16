@@ -797,6 +797,40 @@ class StrategyContext(IStrategyContext):
     def get_blacklisted_instruments(self) -> list[Instrument]:
         return self._instrument_service.matching_instruments(self.instruments)
 
+    def _run_instrument_service_cycle(self) -> dict:
+        """Refresh the blacklist, fire change callbacks, then force-close any still-held
+        newly-blacklisted instruments.
+
+        Single shared implementation used by BOTH the `refresh_instrument_service` control
+        action (push trigger) and the framework-automatic periodic TTL poll / startup refresh.
+        Runs on the strategy thread (force-closes positions + invokes strategy callbacks).
+        """
+        # (1) re-fetch and diff against the current universe
+        diff = self._instrument_service.refresh(self.instruments)
+
+        # (2) fire registered instrument-service-change callbacks (only when diff is non-empty)
+        if diff.blacklisted_added or diff.blacklisted_removed:
+            for cb in self._instrument_service_callbacks:
+                try:
+                    cb(self, diff.blacklisted_added, diff.blacklisted_removed)
+                except Exception as e:
+                    logger.error(f"[InstrumentService] :: change callback error: {e}")
+
+        # (3) backstop: force-close any newly-blacklisted instrument STILL held
+        positions = self.get_positions()
+        still_held = [
+            i for i in diff.blacklisted_added if i in positions and positions[i].quantity != 0
+        ]
+        if still_held:
+            self.remove_instruments(still_held, if_has_position_then="close")
+
+        return {
+            "blacklisted_added": len(diff.blacklisted_added),
+            "blacklisted_removed": len(diff.blacklisted_removed),
+            "force_closed": len(still_held),
+            "force_closed_instruments": [str(i) for i in still_held],
+        }
+
     @property
     def exchanges(self) -> list[str]:
         return self._trading_manager.exchanges()

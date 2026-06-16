@@ -126,6 +126,13 @@ def _set_universe(ctx: IStrategyContext, symbols: list[str], exchange: str | Non
     )
 
 
+def _refresh_instrument_service(ctx: IStrategyContext, **kwargs) -> ActionResult:
+    if getattr(ctx, "_instrument_service", None) is None:
+        return ActionResult(status="error", error="Instrument service not available")
+    summary = ctx._run_instrument_service_cycle()
+    return ActionResult(status="ok", data=summary)
+
+
 # --- Instrument discovery actions ---
 
 
@@ -682,6 +689,15 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             ],
         ),
         _set_universe,
+    ),
+    "refresh_instrument_service": (
+        ActionDef(
+            name="refresh_instrument_service",
+            description="Re-fetch the instrument blacklist, fire change callbacks, and force-close any newly-blacklisted held positions",
+            category="universe",
+            dangerous=True,
+        ),
+        _refresh_instrument_service,
     ),
     # Instrument discovery
     "get_available_instruments": (
