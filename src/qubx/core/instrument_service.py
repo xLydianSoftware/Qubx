@@ -34,8 +34,6 @@ class BlacklistEntry:
             return True
         asset_ok = (not asset_set) or (instrument.asset.upper() == self.asset.upper())  # type: ignore[union-attr]
         symbol_ok = (not symbol_set) or (instrument.symbol.upper() == self.symbol.upper())  # type: ignore[union-attr]
-        if asset_set and symbol_set:
-            return asset_ok and symbol_ok
         return asset_ok and symbol_ok
 
 

@@ -141,3 +141,27 @@ def test_nothing_registered_with_null_service():
     StrategyContext._wire_instrument_service_schedules(ctx)
     ctx._processing_manager.schedule.assert_not_called()
     ctx._processing_manager.delay.assert_not_called()
+
+
+def test_run_instrument_service_cycle_accepts_scheduler_ctx_arg():
+    """Guard the scheduler dispatch contract: _process_custom_event calls method(self._context),
+    so _run_instrument_service_cycle must accept a positional ctx argument without error.
+    """
+    svc = MagicMock()
+    svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[], blacklisted_removed=[])
+    ctx = _ctx_for_cycle(svc, [], [], {})
+
+    # Simulate how _process_custom_event invokes the scheduled method:
+    #   method = ctx._run_instrument_service_cycle
+    #   method(self._context)   # passes ctx as positional arg
+    method = ctx._run_instrument_service_cycle
+    result = method(ctx)  # must not raise TypeError
+
+    assert result == {
+        "blacklisted_added": 0,
+        "blacklisted_removed": 0,
+        "force_closed": 0,
+        "force_closed_instruments": [],
+    }
+    # No callbacks or force-closes should have been triggered
+    ctx.remove_instruments.assert_not_called()

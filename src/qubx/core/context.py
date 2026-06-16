@@ -115,7 +115,7 @@ class StrategyContext(IStrategyContext):
     _strategy_name: str
     _delisting_detector: DelistingDetector
     _instrument_service: IInstrumentService
-    _instrument_service_callbacks: list = []
+    _instrument_service_callbacks: list = None
     _notifier: IStrategyNotifier
 
     _thread_data_loop: Thread | None = None  # market data loop
@@ -798,13 +798,16 @@ class StrategyContext(IStrategyContext):
     def get_blacklisted_instruments(self) -> list[Instrument]:
         return self._instrument_service.matching_instruments(self.instruments)
 
-    def _run_instrument_service_cycle(self) -> dict:
+    def _run_instrument_service_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
         """Refresh the blacklist, fire change callbacks, then force-close any still-held
         newly-blacklisted instruments.
 
         Single shared implementation used by BOTH the `refresh_instrument_service` control
         action (push trigger) and the framework-automatic periodic TTL poll / startup refresh.
         Runs on the strategy thread (force-closes positions + invokes strategy callbacks).
+
+        `_ctx` is the scheduler-passed context (from `_process_custom_event`), unused here
+        because the method is already bound to `self` which is the context.
         """
         # (1) re-fetch and diff against the current universe
         diff = self._instrument_service.refresh(self.instruments)
