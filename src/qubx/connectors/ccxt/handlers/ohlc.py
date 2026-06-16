@@ -94,42 +94,56 @@ class OhlcDataHandler(BaseDataTypeHandler):
         _tf_msec = to_timedelta(timeframe).value // 1_000_000
 
         for instrument in instruments:
-            start_since = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
-            ccxt_symbol = instrument_to_ccxt_symbol(instrument)
-
-            # Paginate: exchanges may return fewer bars than requested per call
-            ohlcv_map: dict[int, list] = {}
-            while len(ohlcv_map) < nbarsback:
-                batch = await self._exchange_manager.exchange.fetch_ohlcv(
-                    ccxt_symbol, exch_timeframe, since=start_since,
-                    limit=min(nbarsback - len(ohlcv_map), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER) + 1,
+            if not self._data_provider.is_instrument_listed(instrument):
+                logger.warning(
+                    f"<yellow>{self._exchange_id}</yellow> {instrument} is not listed on the exchange "
+                    "(delisted/removed); skipping warmup"
                 )
-                if not batch:
-                    break
-                prev_count = len(ohlcv_map)
-                for bar in batch:
-                    ohlcv_map[bar[0]] = bar
-                if len(ohlcv_map) == prev_count:
-                    break
-                start_since = batch[-1][0] + _tf_msec
+                continue
 
-            ohlcv = list(ohlcv_map.values())
-            logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
+            try:
+                start_since = self._data_provider._time_msec_nbars_back(timeframe, nbarsback)
+                ccxt_symbol = instrument_to_ccxt_symbol(instrument)
 
-            channel.send(
-                (
-                    instrument,
-                    DataType.OHLC[timeframe],
-                    [self._convert_ohlcv_to_bar(oh) for oh in ohlcv],
-                    True,  # historical data
+                # Paginate: exchanges may return fewer bars than requested per call
+                ohlcv_map: dict[int, list] = {}
+                while len(ohlcv_map) < nbarsback:
+                    batch = await self._exchange_manager.exchange.fetch_ohlcv(
+                        ccxt_symbol, exch_timeframe, since=start_since,
+                        limit=min(nbarsback - len(ohlcv_map), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER) + 1,
+                    )
+                    if not batch:
+                        break
+                    prev_count = len(ohlcv_map)
+                    for bar in batch:
+                        ohlcv_map[bar[0]] = bar
+                    if len(ohlcv_map) == prev_count:
+                        break
+                    start_since = batch[-1][0] + _tf_msec
+
+                ohlcv = list(ohlcv_map.values())
+                logger.debug(f"<yellow>{self._exchange_id}</yellow> {instrument}: loaded {len(ohlcv)} {timeframe} bars")
+
+                channel.send(
+                    (
+                        instrument,
+                        DataType.OHLC[timeframe],
+                        [self._convert_ohlcv_to_bar(oh) for oh in ohlcv],
+                        True,  # historical data
+                    )
                 )
-            )
 
-            if len(ohlcv) > 0:
-                # Send a quote update to the context at the end of warmup
-                channel.send((instrument, DataType.QUOTE, self._convert_ohlcv_to_quote(ohlcv, instrument), False))
+                if len(ohlcv) > 0:
+                    # Send a quote update to the context at the end of warmup
+                    channel.send((instrument, DataType.QUOTE, self._convert_ohlcv_to_quote(ohlcv, instrument), False))
 
-            self._update_quote(instrument, ohlcv)
+                self._update_quote(instrument, ohlcv)
+            except Exception as e:
+                logger.warning(
+                    f"<yellow>{self._exchange_id}</yellow> warmup failed for {instrument} "
+                    f"({type(e).__name__}: {e}); skipping"
+                )
+                continue
 
     async def get_historical_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
         """
