@@ -840,6 +840,7 @@ class Position:
         self.initial_margin = 0.0
         self.maint_margin = 0.0
         self.pnl = self.r_pnl  # unrealized PnL is zero at zero quantity
+        self.__pos_incr_qty = 0
 
     def reset_by_position(self, pos: "Position") -> None:
         self.quantity = pos.quantity
