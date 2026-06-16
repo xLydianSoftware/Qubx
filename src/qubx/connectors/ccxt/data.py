@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
-from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
+from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format, instrument_to_ccxt_symbol
 from qubx.connectors.registry import data_provider
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
@@ -121,6 +121,12 @@ class CcxtDataProvider(IDataProvider):
         """
         return any(self._connection_manager._is_stream_enabled.values())
 
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        markets = getattr(self._exchange_manager.exchange, "markets", None)
+        if not markets:  # None or empty => not loaded / can't tell => fail-open
+            return True
+        return instrument_to_ccxt_symbol(instrument) in markets
+
     def subscribe(
         self,
         subscription_type: str,
@@ -221,6 +227,22 @@ class CcxtDataProvider(IDataProvider):
             return await ohlc_handler.get_historical_ohlc(instrument, timeframe, nbarsback)
 
         return self._loop.submit(_get_historical()).result(60)
+
+    def start(self):
+        # Eagerly load markets so is_instrument_listed() is authoritative before the
+        # initial set_universe (in paper mode no account processor loads them). ccxt
+        # caches markets, so this is idempotent with the account processor's load.
+        try:
+            self._loop.submit(self._exchange_manager.exchange.load_markets()).result()
+            logger.info(
+                f"<yellow>{self._exchange_id}</yellow> Markets loaded "
+                f"({len(self._exchange_manager.exchange.markets or {})})"
+            )
+        except Exception as e:
+            logger.warning(
+                f"<yellow>{self._exchange_id}</yellow> Failed to eagerly load markets: {e} "
+                "(continuing, listing checks will fail-open)"
+            )
 
     def close(self):
         """Properly close all connections and clean up resources."""

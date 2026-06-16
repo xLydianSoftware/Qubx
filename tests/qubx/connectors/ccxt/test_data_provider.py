@@ -1,7 +1,7 @@
 """Simple unit tests for CcxtDataProvider focusing on core functionality."""
 
 import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
 
@@ -192,6 +192,33 @@ class TestBasicFunctionality:
             with pytest.raises(ValueError, match="Expected OhlcDataHandler"):
                 data_provider.get_ohlc(btc_instrument, "1m", 10)
 
+    def test_start_loads_markets(self, data_provider):
+        """start() should eagerly load markets via the async loop."""
+        data_provider._exchange_manager.exchange.load_markets = Mock(return_value="markets_coro")
+        data_provider._exchange_manager.exchange.markets = {"BTC/USDT:USDT": {}}
+
+        # - _loop is a property; patch it so submit(...).result() is fully mocked
+        mock_loop = Mock()
+        with patch.object(type(data_provider), "_loop", new_callable=PropertyMock, return_value=mock_loop):
+            data_provider.start()
+
+        # - load_markets coroutine must have been created and submitted to the loop
+        data_provider._exchange_manager.exchange.load_markets.assert_called_once()
+        mock_loop.submit.assert_called_once_with("markets_coro")
+        mock_loop.submit.return_value.result.assert_called_once()
+
+    def test_start_swallows_load_markets_error(self, data_provider):
+        """start() must not raise if markets load fails (listing checks fail-open)."""
+        mock_loop = Mock()
+        mock_loop.submit.return_value.result.side_effect = Exception("boom")
+        data_provider._exchange_manager.exchange.load_markets = Mock(return_value="markets_coro")
+
+        with patch.object(type(data_provider), "_loop", new_callable=PropertyMock, return_value=mock_loop):
+            # - should not raise
+            data_provider.start()
+
+        mock_loop.submit.return_value.result.assert_called_once()
+
     def test_close_calls_exchange_close(self, data_provider):
         """Test that close method calls exchange close."""
         with patch.object(data_provider._subscription_manager, "get_subscriptions", return_value=[]):
@@ -341,3 +368,24 @@ class TestDelegation:
         with patch.object(data_provider._warmup_service, "execute_warmup") as mock_warmup:
             data_provider.warmup(warmups)
             mock_warmup.assert_called_once_with(warmups)
+
+
+class TestIsInstrumentListed:
+    def test_listed_when_symbol_in_markets(self, data_provider, btc_instrument):
+        from qubx.connectors.ccxt.utils import instrument_to_ccxt_symbol
+
+        sym = instrument_to_ccxt_symbol(btc_instrument)
+        data_provider._exchange_manager.exchange.markets = {sym: {"id": "x"}}
+        assert data_provider.is_instrument_listed(btc_instrument) is True
+
+    def test_not_listed_when_symbol_absent(self, data_provider, btc_instrument):
+        data_provider._exchange_manager.exchange.markets = {"OTHER/USDT:USDT": {}}
+        assert data_provider.is_instrument_listed(btc_instrument) is False
+
+    def test_fail_open_when_markets_empty(self, data_provider, btc_instrument):
+        data_provider._exchange_manager.exchange.markets = {}
+        assert data_provider.is_instrument_listed(btc_instrument) is True
+
+    def test_fail_open_when_markets_none(self, data_provider, btc_instrument):
+        data_provider._exchange_manager.exchange.markets = None
+        assert data_provider.is_instrument_listed(btc_instrument) is True

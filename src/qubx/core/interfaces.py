@@ -909,10 +909,31 @@ class IDataProvider:
         """
         ...
 
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        """
+        Whether the instrument currently exists / is tradeable on the exchange.
+
+        Default is True: callers must never drop an instrument just because a
+        provider cannot determine listing status (fail-open). Connectors that
+        can answer authoritatively (e.g. ccxt via exchange.markets) override this.
+        """
+        return True
+
     @property
     def is_simulation(self) -> bool:
         """
         Check if data provider is in simulation mode.
+        """
+        ...
+
+    def start(self):
+        """
+        Start the data provider and ensure it is ready for use (e.g. load
+        exchange markets) before the strategy universe is first set.
+
+        Default is a no-op. Connectors that need eager initialization
+        (e.g. ccxt loading markets so is_instrument_listed is authoritative)
+        override this.
         """
         ...
 
@@ -1081,6 +1102,11 @@ class IMarketManager(ITimeProvider):
     def update_base_subscription(self, subtype: str): ...
 
     def get_market_data_cache(self) -> IMarketDataCache: ...
+
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        """Whether the instrument is currently listed on its exchange.
+        Fail-open: True when no data provider can answer."""
+        ...
 
 
 class ITradingManager:
@@ -1589,6 +1615,11 @@ class IAccountProcessor(IAccountViewer):
         Returns:
             I"IAccountProcessor": Self for chaining
         """
+        ...
+
+    def settle_position(self, instrument: Instrument) -> None:
+        """Flatten a held position in place (no trade) for a delisted/removed
+        market the exchange has already cash-settled. Realized PnL is kept."""
         ...
 
     def add_active_orders(self, orders: dict[str, Order]) -> None:

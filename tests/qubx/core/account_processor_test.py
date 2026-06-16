@@ -595,3 +595,43 @@ class TestProcessFundingPaymentDedup:
 
         # Post-prune size should be << total bookings; tolerate up to threshold+window.
         assert len(account._applied_funding_buckets) <= 1024
+
+
+def test_settle_position_flattens_without_trade(mocker):
+    from qubx.core.account import BasicAccountProcessor
+    from qubx.core.basics import Instrument, Position
+
+    acc = BasicAccountProcessor(
+        account_id="t",
+        time_provider=mocker.Mock(),
+        base_currency="USDT",
+        health_monitor=mocker.Mock(),
+        exchange="OKX.F",
+    )
+    instr = mocker.Mock(spec=Instrument)
+    instr.lot_size = 0.001
+    pos = Position(instr, quantity=3175.0, pos_average_price=1.69, r_pnl=-7.0)
+    acc.attach_positions(pos)
+
+    acc.settle_position(instr)
+
+    settled = acc.get_positions()[instr]
+    assert settled.quantity == 0.0
+    assert settled.r_pnl == -7.0  # realized kept
+    assert settled.is_open() is False
+
+
+def test_settle_position_noop_when_not_held(mocker):
+    from qubx.core.account import BasicAccountProcessor
+    from qubx.core.basics import Instrument
+
+    acc = BasicAccountProcessor(
+        account_id="t",
+        time_provider=mocker.Mock(),
+        base_currency="USDT",
+        health_monitor=mocker.Mock(),
+        exchange="OKX.F",
+    )
+    instr = mocker.Mock(spec=Instrument)
+    acc.settle_position(instr)  # must not raise
+    assert instr not in acc.get_positions()
