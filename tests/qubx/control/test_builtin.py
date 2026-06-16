@@ -253,10 +253,11 @@ class TestBuiltinRegistry:
         dangerous = {
             "trade", "set_target_position", "set_target_leverage", "close_position",
             "close_positions", "emit_signal", "remove_instruments", "set_universe",
+            "trigger_fit",
         }
         for name in dangerous:
             action_def, _ = BUILTIN_ACTIONS[name]
             assert action_def.dangerous is True, f"{name} should be dangerous"
 
     def test_expected_action_count(self):
-        assert len(BUILTIN_ACTIONS) == 25
+        assert len(BUILTIN_ACTIONS) == 26
