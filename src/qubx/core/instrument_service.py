@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 
 import httpx
@@ -145,3 +146,15 @@ class HttpInstrumentService(IInstrumentService):
 
     def matching_instruments(self, instruments: list[Instrument]) -> list[Instrument]:
         return [i for i in instruments if self._any_match(self._entries, i)]
+
+
+def create_instrument_service(exchanges: list[str]) -> IInstrumentService:
+    """Build the instrument service from the QUBX_INSTRUMENT_SERVICE_URL env var.
+
+    Returns NullInstrumentService when the env var is unset/empty (the default for
+    backtests and local runs), otherwise an HttpInstrumentService.
+    """
+    base_url = os.environ.get("QUBX_INSTRUMENT_SERVICE_URL", "").strip()
+    if not base_url:
+        return NullInstrumentService()
+    return HttpInstrumentService(base_url=base_url, exchanges=exchanges)

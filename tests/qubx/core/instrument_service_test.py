@@ -165,3 +165,24 @@ class TestHttpInstrumentService:
         assert diff.blacklisted_added == []
         assert diff.blacklisted_removed == []
         assert svc.is_blacklisted(BTC_SWAP) is True
+
+
+from qubx.core.instrument_service import create_instrument_service
+
+
+class TestFactory:
+    def test_unset_env_returns_null_service(self, monkeypatch):
+        monkeypatch.delenv("QUBX_INSTRUMENT_SERVICE_URL", raising=False)
+        svc = create_instrument_service(["BINANCE.UM"])
+        assert isinstance(svc, NullInstrumentService)
+
+    def test_empty_env_returns_null_service(self, monkeypatch):
+        monkeypatch.setenv("QUBX_INSTRUMENT_SERVICE_URL", "")
+        svc = create_instrument_service(["BINANCE.UM"])
+        assert isinstance(svc, NullInstrumentService)
+
+    def test_set_env_returns_http_service(self, monkeypatch):
+        monkeypatch.setenv("QUBX_INSTRUMENT_SERVICE_URL", "http://control-api:8080")
+        svc = create_instrument_service(["BINANCE.UM"])
+        assert isinstance(svc, HttpInstrumentService)
+        assert svc.get_blacklist_entries() == []  # nothing fetched yet
