@@ -292,6 +292,26 @@ def test_gone_held_position_is_settled_not_traded(universe_manager, mock_depende
     mock_dependencies["position_gathering"].alter_positions.assert_not_called()
 
 
+def test_remove_instruments_settles_gone_held_position(universe_manager, mock_dependencies, mocker):
+    # - gone instrument with a held position, already in the universe (prev_set)
+    gone = _gone_instr(mocker)
+    pos = mocker.Mock()
+    pos.quantity = 3175.0
+    universe_manager._instruments = {gone}
+    mock_dependencies["account"].positions = {gone: pos}
+    mock_dependencies["market_data_manager"].is_instrument_listed.side_effect = lambda i: i is not gone
+
+    # - this is the path the scheduled delisting check uses (NOT set_universe)
+    universe_manager.remove_instruments([gone])
+
+    # - gone-branch: settle in place, do NOT trade an exit target
+    mock_dependencies["account"].settle_position.assert_called_once_with(gone)
+    mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(
+        mock_dependencies["context"], []
+    )
+    assert gone not in universe_manager.instruments
+
+
 def test_future_delist_but_listed_is_not_gone(universe_manager, mock_dependencies, mocker):
     import pandas as pd
 
