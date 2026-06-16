@@ -59,3 +59,31 @@ class TestBlacklistMatches:
         e = BlacklistEntry(exchange="BINANCE.UM", market_type=None, asset=None, symbol=None)
         assert e.matches(BTC_SWAP) is True
         assert e.matches(ETH_SPOT) is False
+
+
+from qubx.core.instrument_service import (
+    IInstrumentService,
+    InstrumentServiceDiff,
+    NullInstrumentService,
+)
+
+
+class TestNullInstrumentService:
+    def test_is_iinstrument_service(self):
+        svc = NullInstrumentService()
+        assert isinstance(svc, IInstrumentService)
+
+    def test_empty_entries(self):
+        assert NullInstrumentService().get_blacklist_entries() == []
+
+    def test_refresh_returns_empty_diff(self):
+        diff = NullInstrumentService().refresh([BTC_SWAP, ETH_SPOT])
+        assert isinstance(diff, InstrumentServiceDiff)
+        assert diff.blacklisted_added == []
+        assert diff.blacklisted_removed == []
+
+    def test_is_blacklisted_always_false(self):
+        assert NullInstrumentService().is_blacklisted(BTC_SWAP) is False
+
+    def test_matching_instruments_empty(self):
+        assert NullInstrumentService().matching_instruments([BTC_SWAP, ETH_SPOT]) == []

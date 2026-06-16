@@ -34,3 +34,43 @@ class BlacklistEntry:
         if asset_set and symbol_set:
             return asset_ok and symbol_ok
         return asset_ok and symbol_ok
+
+
+@dataclass
+class InstrumentServiceDiff:
+    """Difference between two blacklist evaluations over a known instrument set."""
+
+    blacklisted_added: list[Instrument] = field(default_factory=list)
+    blacklisted_removed: list[Instrument] = field(default_factory=list)
+
+
+class IInstrumentService:
+    """Interface for the instrument blacklist service."""
+
+    def get_blacklist_entries(self) -> list[BlacklistEntry]:
+        raise NotImplementedError
+
+    def refresh(self, known_instruments: list[Instrument]) -> InstrumentServiceDiff:
+        raise NotImplementedError
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        raise NotImplementedError
+
+    def matching_instruments(self, instruments: list[Instrument]) -> list[Instrument]:
+        raise NotImplementedError
+
+
+class NullInstrumentService(IInstrumentService):
+    """No-op instrument service. The default in backtests and local runs."""
+
+    def get_blacklist_entries(self) -> list[BlacklistEntry]:
+        return []
+
+    def refresh(self, known_instruments: list[Instrument]) -> InstrumentServiceDiff:
+        return InstrumentServiceDiff()
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        return False
+
+    def matching_instruments(self, instruments: list[Instrument]) -> list[Instrument]:
+        return []
