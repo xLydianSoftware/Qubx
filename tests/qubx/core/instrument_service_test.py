@@ -87,3 +87,81 @@ class TestNullInstrumentService:
 
     def test_matching_instruments_empty(self):
         assert NullInstrumentService().matching_instruments([BTC_SWAP, ETH_SPOT]) == []
+
+
+from unittest.mock import MagicMock
+
+from qubx.core.instrument_service import HttpInstrumentService
+
+
+def _resp(payload: dict) -> MagicMock:
+    r = MagicMock()
+    r.json.return_value = payload
+    r.raise_for_status.return_value = None
+    return r
+
+
+class TestHttpInstrumentService:
+    def test_refresh_parses_entries(self):
+        client = MagicMock()
+        client.get.return_value = _resp(
+            {"entries": [{"exchange": "BINANCE.UM", "market_type": None, "asset": "BTC", "symbol": None}]}
+        )
+        svc = HttpInstrumentService(base_url="http://svc", exchanges=["BINANCE.UM"], client=client)
+        svc.refresh([BTC_SWAP, ETH_SPOT])
+        entries = svc.get_blacklist_entries()
+        assert len(entries) == 1
+        assert entries[0] == BlacklistEntry("BINANCE.UM", None, "BTC", None)
+
+    def test_refresh_calls_correct_url_with_exchange_params(self):
+        client = MagicMock()
+        client.get.return_value = _resp({"entries": []})
+        svc = HttpInstrumentService(base_url="http://svc", exchanges=["A", "B"], client=client)
+        svc.refresh([])
+        args, kwargs = client.get.call_args
+        assert args[0] == "http://svc/internal/instrument-service/blacklist"
+        assert kwargs["params"] == [("exchange", "A"), ("exchange", "B")]
+
+    def test_is_blacklisted_and_matching(self):
+        client = MagicMock()
+        client.get.return_value = _resp(
+            {"entries": [{"exchange": "BINANCE.UM", "market_type": "SWAP", "asset": "BTC", "symbol": None}]}
+        )
+        svc = HttpInstrumentService(base_url="http://svc", exchanges=["BINANCE.UM"], client=client)
+        svc.refresh([BTC_SWAP, ETH_SPOT])
+        assert svc.is_blacklisted(BTC_SWAP) is True
+        assert svc.is_blacklisted(ETH_SPOT) is False
+        assert svc.matching_instruments([BTC_SWAP, ETH_SPOT]) == [BTC_SWAP]
+
+    def test_refresh_diff_added_then_removed(self):
+        client = MagicMock()
+        svc = HttpInstrumentService(base_url="http://svc", exchanges=["BINANCE.UM"], client=client)
+        # first refresh: BTC blacklisted
+        client.get.return_value = _resp(
+            {"entries": [{"exchange": "BINANCE.UM", "market_type": None, "asset": "BTC", "symbol": None}]}
+        )
+        d1 = svc.refresh([BTC_SWAP, ETH_SPOT])
+        assert d1.blacklisted_added == [BTC_SWAP]
+        assert d1.blacklisted_removed == []
+        # second refresh: BTC no longer blacklisted
+        client.get.return_value = _resp({"entries": []})
+        d2 = svc.refresh([BTC_SWAP, ETH_SPOT])
+        assert d2.blacklisted_added == []
+        assert d2.blacklisted_removed == [BTC_SWAP]
+
+    def test_network_error_keeps_previous_cache(self):
+        import httpx
+
+        client = MagicMock()
+        client.get.return_value = _resp(
+            {"entries": [{"exchange": "BINANCE.UM", "market_type": None, "asset": "BTC", "symbol": None}]}
+        )
+        svc = HttpInstrumentService(base_url="http://svc", exchanges=["BINANCE.UM"], client=client)
+        svc.refresh([BTC_SWAP, ETH_SPOT])
+        assert svc.is_blacklisted(BTC_SWAP) is True
+        # now the network fails -> cache must be preserved, diff empty
+        client.get.side_effect = httpx.ConnectError("boom")
+        diff = svc.refresh([BTC_SWAP, ETH_SPOT])
+        assert diff.blacklisted_added == []
+        assert diff.blacklisted_removed == []
+        assert svc.is_blacklisted(BTC_SWAP) is True

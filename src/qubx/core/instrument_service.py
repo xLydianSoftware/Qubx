@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+import httpx
+
 from qubx import logger
 from qubx.core.basics import Instrument
 
@@ -74,3 +76,72 @@ class NullInstrumentService(IInstrumentService):
 
     def matching_instruments(self, instruments: list[Instrument]) -> list[Instrument]:
         return []
+
+
+class HttpInstrumentService(IInstrumentService):
+    """Fetches the blacklist over HTTP and caches it between refreshes."""
+
+    _BLACKLIST_PATH = "/internal/instrument-service/blacklist"
+
+    def __init__(
+        self,
+        base_url: str,
+        exchanges: list[str],
+        poll_interval_s: float = 60.0,
+        timeout_s: float = 5.0,
+        client: "httpx.Client | None" = None,
+    ) -> None:
+        self._base_url = base_url.rstrip("/")
+        self._exchanges = list(exchanges)
+        self.poll_interval_s = poll_interval_s
+        self._timeout_s = timeout_s
+        self._client = client if client is not None else httpx.Client(timeout=timeout_s)
+        self._entries: list[BlacklistEntry] = []
+
+    def get_blacklist_entries(self) -> list[BlacklistEntry]:
+        return list(self._entries)
+
+    def _fetch(self) -> list[BlacklistEntry] | None:
+        url = f"{self._base_url}{self._BLACKLIST_PATH}"
+        params = [("exchange", e) for e in self._exchanges]
+        try:
+            resp = self._client.get(url, params=params)
+            resp.raise_for_status()
+            payload = resp.json()
+        except Exception as e:  # network / parse error: keep cache
+            logger.warning(f"[InstrumentService] :: blacklist fetch failed, keeping previous cache: {e}")
+            return None
+        entries = []
+        for item in payload.get("entries", []):
+            entries.append(
+                BlacklistEntry(
+                    exchange=item["exchange"],
+                    market_type=item.get("market_type"),
+                    asset=item.get("asset"),
+                    symbol=item.get("symbol"),
+                )
+            )
+        return entries
+
+    def refresh(self, known_instruments: list[Instrument]) -> InstrumentServiceDiff:
+        prev_entries = self._entries
+        new_entries = self._fetch()
+        if new_entries is None:
+            # network error: cache preserved, no diff
+            return InstrumentServiceDiff()
+        prev_matched = {i for i in known_instruments if self._any_match(prev_entries, i)}
+        self._entries = new_entries
+        now_matched = {i for i in known_instruments if self._any_match(new_entries, i)}
+        added = [i for i in known_instruments if i in now_matched and i not in prev_matched]
+        removed = [i for i in known_instruments if i in prev_matched and i not in now_matched]
+        return InstrumentServiceDiff(blacklisted_added=added, blacklisted_removed=removed)
+
+    @staticmethod
+    def _any_match(entries: list[BlacklistEntry], instrument: Instrument) -> bool:
+        return any(e.matches(instrument) for e in entries)
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        return self._any_match(self._entries, instrument)
+
+    def matching_instruments(self, instruments: list[Instrument]) -> list[Instrument]:
+        return [i for i in instruments if self._any_match(self._entries, i)]
