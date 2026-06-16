@@ -1092,6 +1092,11 @@ class IMarketManager(ITimeProvider):
 
     def get_market_data_cache(self) -> IMarketDataCache: ...
 
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        """Whether the instrument is currently listed on its exchange.
+        Fail-open: True when no data provider can answer."""
+        ...
+
 
 class ITradingManager:
     """Manages order operations."""
