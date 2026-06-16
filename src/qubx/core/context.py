@@ -29,7 +29,7 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.detectors import DelistingDetector
-from qubx.core.instrument_service import IInstrumentService, create_instrument_service
+from qubx.core.instrument_service import IInstrumentService, NullInstrumentService, create_instrument_service
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import QueueTimeout, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
@@ -313,6 +313,7 @@ class StrategyContext(IStrategyContext):
                 self._processing_manager.schedule(cron_schedule, method)
 
         self._instrument_service_callbacks = self.initializer.get_instrument_service_callbacks()
+        self._wire_instrument_service_schedules()
 
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
@@ -830,6 +831,22 @@ class StrategyContext(IStrategyContext):
             "force_closed": len(still_held),
             "force_closed_instruments": [str(i) for i in still_held],
         }
+
+    def _wire_instrument_service_schedules(self) -> None:
+        """Framework-automatic refresh wiring (no per-strategy registration required).
+
+        When the instrument service is active (non-Null), register:
+          * a one-shot startup refresh (runs on the strategy thread once data flows), and
+          * a per-minute TTL poll as the eventual-consistency safety net so a missed
+            push still converges.
+        For NullInstrumentService nothing is scheduled (backtests/local unaffected).
+        """
+        if isinstance(self._instrument_service, NullInstrumentService):
+            return
+        # startup refresh (one-shot, strategy thread)
+        self._processing_manager.delay("1s", self._run_instrument_service_cycle)
+        # periodic TTL poll (~60s; per-minute is the smallest expressible cron interval)
+        self._processing_manager.schedule("* * * * *", self._run_instrument_service_cycle)
 
     @property
     def exchanges(self) -> list[str]:

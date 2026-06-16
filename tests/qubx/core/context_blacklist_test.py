@@ -1,6 +1,7 @@
 from unittest.mock import MagicMock
 
 from qubx.core.context import StrategyContext
+from qubx.core.instrument_service import HttpInstrumentService, NullInstrumentService
 
 
 def _ctx_with_service_and_instruments(svc, instruments):
@@ -112,3 +113,31 @@ def test_cycle_empty_diff_is_noop():
         "force_closed": 0,
         "force_closed_instruments": [],
     }
+
+
+def _ctx_with_post_init_wiring(svc):
+    ctx = StrategyContext.__new__(StrategyContext)
+    ctx._instrument_service = svc
+    ctx._processing_manager = MagicMock()
+    return ctx
+
+
+def test_periodic_and_startup_registered_when_service_non_null():
+    svc = MagicMock(spec=HttpInstrumentService)
+    ctx = _ctx_with_post_init_wiring(svc)
+    StrategyContext._wire_instrument_service_schedules(ctx)
+    # periodic per-minute poll
+    ctx._processing_manager.schedule.assert_called_once_with(
+        "* * * * *", ctx._run_instrument_service_cycle
+    )
+    # one-shot startup refresh (runs on strategy thread)
+    ctx._processing_manager.delay.assert_called_once_with(
+        "1s", ctx._run_instrument_service_cycle
+    )
+
+
+def test_nothing_registered_with_null_service():
+    ctx = _ctx_with_post_init_wiring(NullInstrumentService())
+    StrategyContext._wire_instrument_service_schedules(ctx)
+    ctx._processing_manager.schedule.assert_not_called()
+    ctx._processing_manager.delay.assert_not_called()
