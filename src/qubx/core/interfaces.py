@@ -1915,6 +1915,18 @@ class IStrategyContext(
         """Get the auxiliary data storage."""
         ...
 
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        """True if the instrument matches the current blacklist."""
+        ...
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        """Return the instruments that are NOT blacklisted."""
+        ...
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        """Return currently-blacklisted instruments among the context's known instruments."""
+        ...
+
 
 class IPositionGathering:
     """

@@ -29,6 +29,7 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.detectors import DelistingDetector
+from qubx.core.instrument_service import IInstrumentService, create_instrument_service
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import QueueTimeout, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
@@ -113,6 +114,7 @@ class StrategyContext(IStrategyContext):
     _initial_instruments: list[Instrument]
     _strategy_name: str
     _delisting_detector: DelistingDetector
+    _instrument_service: IInstrumentService
     _notifier: IStrategyNotifier
 
     _thread_data_loop: Thread | None = None  # market data loop
@@ -232,6 +234,9 @@ class StrategyContext(IStrategyContext):
             delisting_check_days=self.initializer.get_delisting_check_days(),
         )
 
+        _svc_exchanges = sorted({i.exchange for i in instruments})
+        self._instrument_service = create_instrument_service(_svc_exchanges)
+
         self._universe_manager = UniverseManager(
             context=self,
             strategy=self.strategy,
@@ -243,6 +248,7 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_gathering=__position_gathering,
             delisting_detector=self._delisting_detector,
+            instrument_service=self._instrument_service,
         )
         self._trading_manager = TradingManager(
             context=self,
@@ -778,6 +784,15 @@ class StrategyContext(IStrategyContext):
     @property
     def instruments(self):
         return self._universe_manager.instruments
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        return self._instrument_service.is_blacklisted(instrument)
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        return [i for i in instruments if not self._instrument_service.is_blacklisted(i)]
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        return self._instrument_service.matching_instruments(self.instruments)
 
     @property
     def exchanges(self) -> list[str]:
