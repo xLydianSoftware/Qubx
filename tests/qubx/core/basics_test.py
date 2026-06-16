@@ -214,7 +214,7 @@ def test_position_flatten_zeroes_quantity_but_keeps_realized(mocker):
     assert pos.market_value_funds == 0.0
     assert pos.initial_margin == 0.0
     assert pos.maint_margin == 0.0
-    assert pos.pnl == 42.0            # unrealized is 0 at qty 0 -> pnl == r_pnl
-    assert pos.r_pnl == 42.0          # realized preserved
-    assert pos.position_avg_price == 100.0   # entry preserved
+    assert pos.pnl == 42.0  # unrealized is 0 at qty 0 -> pnl == r_pnl
+    assert pos.r_pnl == 42.0  # realized preserved
+    assert pos.position_avg_price == 100.0  # entry preserved
     assert pos.is_open() is False

@@ -617,7 +617,7 @@ def test_settle_position_flattens_without_trade(mocker):
 
     settled = acc.get_positions()[instr]
     assert settled.quantity == 0.0
-    assert settled.r_pnl == -7.0          # realized kept
+    assert settled.r_pnl == -7.0  # realized kept
     assert settled.is_open() is False
 
 
