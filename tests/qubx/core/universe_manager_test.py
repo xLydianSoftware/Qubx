@@ -325,3 +325,30 @@ def test_future_delist_but_listed_is_not_gone(universe_manager, mock_dependencie
 
     assert instr in universe_manager.instruments
     mock_dependencies["account"].settle_position.assert_not_called()
+
+
+def test_gone_held_with_delist_date_settled_before_filter_delistings(universe_manager, mock_dependencies, mocker):
+    """A gone instrument that ALSO has a (past) delist_date must still be settled:
+    _drop_gone must run before filter_delistings, else the delisting filter strips it
+    first and the held position is never settled."""
+    import pandas as pd
+
+    gone = _gone_instr(mocker)
+    gone.delist_date = pd.Timestamp("2020-01-01")  # already past
+    pos = mocker.Mock()
+    pos.quantity = 3175.0
+    mock_dependencies["account"].positions = {gone: pos}
+    mock_dependencies["subscription_manager"].auto_subscribe = True
+
+    # live listing: gone is not listed (authoritative "gone" signal)
+    mock_dependencies["market_data_manager"].is_instrument_listed.side_effect = lambda i: i is not gone
+    # simulate the REAL DelistingDetector: it strips instruments whose delist_date is set
+    mock_dependencies["delisting_detector"].filter_delistings.side_effect = (
+        lambda instruments: [i for i in instruments if i.delist_date is None]
+    )
+
+    universe_manager.set_universe([gone])
+
+    # _drop_gone ran first and settled the gone, still-held instrument
+    mock_dependencies["account"].settle_position.assert_called_once_with(gone)
+    assert gone not in universe_manager.instruments

@@ -128,11 +128,14 @@ class UniverseManager(IUniverseManager):
             "wait_for_change",
         ), "Invalid if_has_position_then policy"
 
-        # Filter out instruments with upcoming delist dates
-        instruments = self._delisting_detector.filter_delistings(instruments)
-
-        # Filter out instruments whose market is already gone (state B: settle in place)
+        # Settle & exclude instruments whose market is already gone (state B) FIRST,
+        # so a gone instrument that also carries a delist_date is settled in place
+        # before the delisting filter (state A) would otherwise strip it from the list.
         instruments = self._drop_gone(instruments)
+
+        # Then filter out instruments with upcoming/scheduled delist dates (state A:
+        # still listed -> closed via trade through the normal removal path).
+        instruments = self._delisting_detector.filter_delistings(instruments)
 
         new_set = set(instruments)
         prev_set = self._instruments.copy()
