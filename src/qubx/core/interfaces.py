@@ -1779,6 +1779,10 @@ class IProcessingManager:
         """
         ...
 
+    def trigger_fit(self) -> None:
+        """Run on_fit once, on demand (on the strategy thread)."""
+        ...
+
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
     ) -> None:
