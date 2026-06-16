@@ -138,7 +138,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
                     channel.send((instrument, DataType.QUOTE, self._convert_ohlcv_to_quote(ohlcv, instrument), False))
 
                 self._update_quote(instrument, ohlcv)
-            except Exception as e:
+            except BadSymbol as e:
                 logger.warning(
                     f"<yellow>{self._exchange_id}</yellow> warmup failed for {instrument} "
                     f"({type(e).__name__}: {e}); skipping"
