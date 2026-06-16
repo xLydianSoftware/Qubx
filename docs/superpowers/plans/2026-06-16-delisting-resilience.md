@@ -547,14 +547,18 @@ Add these methods to `UniverseManager` (place them right after `_has_position`, 
 
 - [ ] **Step 5: Wire `_drop_gone` into `set_universe`**
 
-In `src/qubx/core/mixins/universe.py`, in `set_universe`, right after the
-existing delisting filter (line 78), add the gone filter:
+In `src/qubx/core/mixins/universe.py`, in `set_universe`, replace the existing
+delisting filter (line 78) so `_drop_gone` runs **BEFORE** `filter_delistings`.
+Order matters: `filter_delistings` strips anything with `delist_date <= now +
+check_days` (incl. past dates), so running it first would remove a gone
+instrument that also carries a `delist_date` before `_drop_gone` could settle
+its held position. Settle state B first, then filter state A:
 
 ```python
-        # Filter out instruments with upcoming delist dates (state A: close via trade)
-        instruments = self._delisting_detector.filter_delistings(instruments)
-        # Filter out instruments whose market is already gone (state B: settle in place)
+        # Settle & exclude instruments whose market is already gone (state B) FIRST
         instruments = self._drop_gone(instruments)
+        # Then filter scheduled/upcoming delistings (state A: still listed → close via trade)
+        instruments = self._delisting_detector.filter_delistings(instruments)
 ```
 
 - [ ] **Step 6: Branch `__do_remove_instruments` to settle gone instruments**

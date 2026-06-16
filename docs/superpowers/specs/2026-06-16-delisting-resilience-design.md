@@ -151,10 +151,17 @@ def _drop_gone(self, instruments: list[Instrument]) -> list[Instrument]:
 
 - `_data_provider_for(instrument)` resolves the per-exchange `IDataProvider`
   the manager already has access to via the context (`ctx._data_providers`).
-- `set_universe` calls `_drop_gone(...)` at the **top**, alongside the existing
+- `set_universe` calls `_drop_gone(...)` at the **top, BEFORE** the existing
   `self._delisting_detector.filter_delistings(...)` (`core/mixins/universe.py:78`),
-  before `__do_add_instruments`/subscribe (`:90`, `:215`). `filter_delistings`
-  keeps handling state A (remove → close via trade); `_drop_gone` handles state
+  before `__do_add_instruments`/subscribe (`:90`, `:215`). **Order matters:**
+  `filter_delistings` removes anything with `delist_date <= now + check_days`
+  (including already-past dates), so if it ran first it would strip a gone
+  instrument that *also* carries a `delist_date` before `_drop_gone` could settle
+  its held position (and on the empty-`prev_set` startup path the removal branch
+  wouldn't fire either) — leaving the phantom un-settled. Running `_drop_gone`
+  first settles the live-gone held position regardless of any `delist_date`.
+  `filter_delistings` keeps handling state A (remove → close via trade);
+  `_drop_gone` handles state
   B (exclude → settle). One placement covers startup (`ctx.start()` →
   `set_universe`) and every mid-run universe change.
 - A held gone instrument is settled by `_drop_gone` even when it was never in
