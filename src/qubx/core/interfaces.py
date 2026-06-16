@@ -926,6 +926,17 @@ class IDataProvider:
         """
         ...
 
+    def start(self):
+        """
+        Start the data provider and ensure it is ready for use (e.g. load
+        exchange markets) before the strategy universe is first set.
+
+        Default is a no-op. Connectors that need eager initialization
+        (e.g. ccxt loading markets so is_instrument_listed is authoritative)
+        override this.
+        """
+        ...
+
     def close(self):
         """
         Close the data provider.

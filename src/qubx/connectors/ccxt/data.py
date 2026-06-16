@@ -228,6 +228,22 @@ class CcxtDataProvider(IDataProvider):
 
         return self._loop.submit(_get_historical()).result(60)
 
+    def start(self):
+        # Eagerly load markets so is_instrument_listed() is authoritative before the
+        # initial set_universe (in paper mode no account processor loads them). ccxt
+        # caches markets, so this is idempotent with the account processor's load.
+        try:
+            self._loop.submit(self._exchange_manager.exchange.load_markets()).result()
+            logger.info(
+                f"<yellow>{self._exchange_id}</yellow> Markets loaded "
+                f"({len(self._exchange_manager.exchange.markets or {})})"
+            )
+        except Exception as e:
+            logger.warning(
+                f"<yellow>{self._exchange_id}</yellow> Failed to eagerly load markets: {e} "
+                "(continuing, listing checks will fail-open)"
+            )
+
     def close(self):
         """Properly close all connections and clean up resources."""
         try:

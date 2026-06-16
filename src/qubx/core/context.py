@@ -394,6 +394,10 @@ class StrategyContext(IStrategyContext):
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to notify strategy start: {e}")
 
+        # - ensure data providers are initialized (e.g. markets loaded) before set_universe
+        for data_provider in self._data_providers:
+            data_provider.start()
+
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)
 
