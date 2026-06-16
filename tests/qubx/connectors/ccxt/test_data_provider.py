@@ -341,3 +341,24 @@ class TestDelegation:
         with patch.object(data_provider._warmup_service, "execute_warmup") as mock_warmup:
             data_provider.warmup(warmups)
             mock_warmup.assert_called_once_with(warmups)
+
+
+class TestIsInstrumentListed:
+    def test_listed_when_symbol_in_markets(self, data_provider, btc_instrument):
+        from qubx.connectors.ccxt.utils import instrument_to_ccxt_symbol
+
+        sym = instrument_to_ccxt_symbol(btc_instrument)
+        data_provider._exchange_manager.exchange.markets = {sym: {"id": "x"}}
+        assert data_provider.is_instrument_listed(btc_instrument) is True
+
+    def test_not_listed_when_symbol_absent(self, data_provider, btc_instrument):
+        data_provider._exchange_manager.exchange.markets = {"OTHER/USDT:USDT": {}}
+        assert data_provider.is_instrument_listed(btc_instrument) is False
+
+    def test_fail_open_when_markets_empty(self, data_provider, btc_instrument):
+        data_provider._exchange_manager.exchange.markets = {}
+        assert data_provider.is_instrument_listed(btc_instrument) is True
+
+    def test_fail_open_when_markets_none(self, data_provider, btc_instrument):
+        data_provider._exchange_manager.exchange.markets = None
+        assert data_provider.is_instrument_listed(btc_instrument) is True

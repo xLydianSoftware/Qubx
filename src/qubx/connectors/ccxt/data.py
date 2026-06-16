@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
-from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format
+from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format, instrument_to_ccxt_symbol
 from qubx.connectors.registry import data_provider
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
@@ -120,6 +120,12 @@ class CcxtDataProvider(IDataProvider):
             bool: True if any stream is enabled (indicating active connection), False otherwise
         """
         return any(self._connection_manager._is_stream_enabled.values())
+
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        markets = getattr(self._exchange_manager.exchange, "markets", None)
+        if not markets:  # None or empty => not loaded / can't tell => fail-open
+            return True
+        return instrument_to_ccxt_symbol(instrument) in markets
 
     def subscribe(
         self,

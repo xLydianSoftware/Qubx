@@ -909,6 +909,16 @@ class IDataProvider:
         """
         ...
 
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        """
+        Whether the instrument currently exists / is tradeable on the exchange.
+
+        Default is True: callers must never drop an instrument just because a
+        provider cannot determine listing status (fail-open). Connectors that
+        can answer authoritatively (e.g. ccxt via exchange.markets) override this.
+        """
+        return True
+
     @property
     def is_simulation(self) -> bool:
         """
