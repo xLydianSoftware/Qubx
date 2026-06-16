@@ -29,6 +29,7 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.detectors import DelistingDetector
+from qubx.core.instrument_service import IInstrumentService, create_instrument_service
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import QueueTimeout, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
@@ -41,6 +42,7 @@ from qubx.core.interfaces import (
     IBroker,
     IDataProvider,
     IHealthMonitor,
+    IInstrumentServiceManager,
     IMarketDataCache,
     IMarketManager,
     IMetricEmitter,
@@ -74,6 +76,7 @@ from .mixins import (
     TradingManager,
     UniverseManager,
 )
+from qubx.core.mixins.instrument_service import InstrumentServiceManager
 
 if TYPE_CHECKING:
     from qubx.control.executor import ActionExecutor
@@ -113,6 +116,8 @@ class StrategyContext(IStrategyContext):
     _initial_instruments: list[Instrument]
     _strategy_name: str
     _delisting_detector: DelistingDetector
+    _instrument_service: IInstrumentService
+    _instrument_service_manager: IInstrumentServiceManager
     _notifier: IStrategyNotifier
 
     _thread_data_loop: Thread | None = None  # market data loop
@@ -232,6 +237,10 @@ class StrategyContext(IStrategyContext):
             delisting_check_days=self.initializer.get_delisting_check_days(),
         )
 
+        _svc_exchanges = sorted({i.exchange for i in instruments})
+        self._instrument_service = create_instrument_service(_svc_exchanges)
+        self._instrument_service_manager = InstrumentServiceManager(self, self._instrument_service)
+
         self._universe_manager = UniverseManager(
             context=self,
             strategy=self.strategy,
@@ -243,6 +252,7 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_gathering=__position_gathering,
             delisting_detector=self._delisting_detector,
+            instrument_service=self._instrument_service,
         )
         self._trading_manager = TradingManager(
             context=self,
@@ -304,6 +314,9 @@ class StrategyContext(IStrategyContext):
         if custom_schedules := self.initializer.get_custom_schedules():
             for schedule_id, (cron_schedule, method) in custom_schedules.items():
                 self._processing_manager.schedule(cron_schedule, method)
+
+        self._instrument_service_manager.set_callbacks(self.initializer.get_instrument_service_callbacks())
+        self._instrument_service_manager.start()
 
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
@@ -781,6 +794,19 @@ class StrategyContext(IStrategyContext):
     @property
     def instruments(self):
         return self._universe_manager.instruments
+
+    # :: IInstrumentServiceManager delegation ::
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        return self._instrument_service_manager.is_blacklisted(instrument)
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        return self._instrument_service_manager.filter_blacklisted(instruments)
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        return self._instrument_service_manager.get_blacklisted_instruments()
+
+    def _run_instrument_service_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
+        return self._instrument_service_manager.run_cycle(_ctx)
 
     @property
     def exchanges(self) -> list[str]:

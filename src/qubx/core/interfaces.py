@@ -1340,6 +1340,36 @@ class IUniverseManager:
         ...
 
 
+class IInstrumentServiceManager:
+    """Manages the instrument blacklist service: read helpers, refresh/callback/force-close
+    cycle, and framework-automatic startup + TTL-poll scheduling."""
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        """Return True if the instrument is on the active blacklist."""
+        ...
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        """Return a new list with blacklisted instruments removed."""
+        ...
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        """Return the subset of the current universe that is blacklisted."""
+        ...
+
+    def run_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
+        """Refresh the blacklist, fire change callbacks, and force-close still-held
+        newly-blacklisted instruments. Returns a summary dict."""
+        ...
+
+    def start(self) -> None:
+        """Wire framework-automatic startup refresh and periodic TTL poll (non-Null only)."""
+        ...
+
+    def set_callbacks(self, callbacks: list) -> None:
+        """Register instrument-service-change callbacks."""
+        ...
+
+
 class ISubscriptionManager:
     """Manages subscriptions."""
 
@@ -1917,6 +1947,18 @@ class IStrategyContext(
 
     def get_aux_data_storage(self) -> IStorage:
         """Get the auxiliary data storage."""
+        ...
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        """True if the instrument matches the current blacklist."""
+        ...
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        """Return the instruments that are NOT blacklisted."""
+        ...
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        """Return currently-blacklisted instruments among the context's known instruments."""
         ...
 
 
@@ -2700,6 +2742,22 @@ class IStrategyInitializer:
         Returns:
             Dictionary mapping schedule IDs to (cron_schedule, method) tuples
         """
+        ...
+
+    def on_instrument_service_change(
+        self,
+        callback: Callable[["IStrategyContext", list["Instrument"], list["Instrument"]], None],
+    ) -> None:
+        """Register a callback fired when the instrument blacklist changes.
+
+        callback(ctx, blacklisted_added, blacklisted_removed) -> None
+        """
+        ...
+
+    def get_instrument_service_callbacks(
+        self,
+    ) -> list[Callable[["IStrategyContext", list["Instrument"], list["Instrument"]], None]]:
+        """Return registered instrument-service-change callbacks, in registration order."""
         ...
 
     def set_stale_data_detection(
