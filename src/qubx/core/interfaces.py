@@ -2698,6 +2698,22 @@ class IStrategyInitializer:
         """
         ...
 
+    def on_instrument_service_change(
+        self,
+        callback: Callable[["IStrategyContext", list["Instrument"], list["Instrument"]], None],
+    ) -> None:
+        """Register a callback fired when the instrument blacklist changes.
+
+        callback(ctx, blacklisted_added, blacklisted_removed) -> None
+        """
+        ...
+
+    def get_instrument_service_callbacks(
+        self,
+    ) -> list[Callable[["IStrategyContext", list["Instrument"], list["Instrument"]], None]]:
+        """Return registered instrument-service-change callbacks, in registration order."""
+        ...
+
     def set_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
     ) -> None:
