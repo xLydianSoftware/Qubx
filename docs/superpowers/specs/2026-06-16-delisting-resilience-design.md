@@ -36,6 +36,36 @@ The existing `DelistingDetector` (`core/detectors/delisting.py`) only handles a
 **future** `delist_date` within a look-ahead window. It does not cover
 "the market is already gone," and nothing consults the live exchange.
 
+## Conceptual model: two distinct states (do not conflate)
+
+The decision of what to do with a held position keys on **tradeability — is the
+market physically there right now? — not on `delist_date`.**
+
+**A. Delisting *scheduled* (future `delist_date`, market still listed).** The
+instrument is still physically tradeable; a position on it is real and
+legitimate. The correct exit is a **trade to flat**, which the existing
+`DelistingDetector` + `set_universe` removal + the 23:30 scheduled check already
+perform (remove from universe, `alter_positions` → close via order). This path
+is **unchanged** by this design, and such a position is **never forgotten** —
+forgetting it would silently discard a real, still-tradeable holding.
+
+**B. Delisting *already happened* (market gone from the exchange).** You
+physically cannot hold a tradeable position anymore — the exchange has
+cash-settled it and there is no market to trade against. Only here is "forget"
+(`drop_position`, no trade) correct, because a closing order is impossible. This
+is the TON case and the new behavior in this design.
+
+| State | Market listed? | `delist_date` | Position action |
+|---|---|---|---|
+| Scheduled delist | yes | future | existing path: remove from universe, **close via trade** |
+| Settlement overlap | yes | past | prefer close via trade; **don't forget** (alert if stuck) |
+| Gone | **no** | any / past | skip warmup/subscribe, **forget** (`drop_position`) |
+
+The authoritative signal for state B is the **live market-listing absence**
+(`is_instrument_listed() == False`). A past `delist_date` is only a cheap
+first-pass hint to skip warmup/subscription; it never, on its own, authorizes
+the destructive forget (see §3).
+
 ## Goals
 
 - A delisted instrument must never abort warmup or block startup.
@@ -54,8 +84,8 @@ The existing `DelistingDetector` (`core/detectors/delisting.py`) only handles a
 - Broker-side listing checks (data side covers the crash and subscriptions).
 - Retroactive cleanup of historical logs or PnL re-derivation (we trust the
   live account-balance sync).
-- A global config kill-switch (see "Decisions" — rejected as over-engineering;
-  fail-open + a conservative forget guard cover the risk).
+- A global config kill-switch — rejected as over-engineering; fail-open plus a
+  live-confirmed forget (§3) cover the false-positive risk.
 
 ## Design
 
@@ -81,44 +111,62 @@ class IDataProvider:
   unaffected.
 - Lives on `IDataProvider` only. Brokers are out of scope (YAGNI).
 
-### 2. Detection + reconciliation on `UniverseManager`
+### 2. "Market gone" detection + reconciliation on `UniverseManager`
 
-Two-tier, **ordered metadata → live** (metadata is cheap/offline; the live
-check needs the connector). No standalone component, no callables threaded
-through signatures — the manager reaches its own dependencies.
+This handles **only state B (market gone)**. State A (future/scheduled
+delisting) is left entirely to the existing `filter_delistings` path, which
+still runs and still closes positions via trade.
+
+The authoritative "gone" signal is the **live market-listing absence**. A
+**past** `delist_date` is a cheap offline hint usable for *exclusion* (skip
+warmup/subscription), but a **future** `delist_date` is explicitly *not* gone.
+No standalone component, no callables threaded through signatures — the manager
+reaches its own dependencies.
 
 ```python
-def _is_delisted(self, instrument: Instrument) -> bool:
-    # tier 1: delist_date metadata (from the InstrumentsLookup), via the
-    #         existing detector — reuses its date math, no reimplementation
-    if self._delisting_detector.is_delisting(instrument):
-        return True
-    # tier 2: live market listing, via the per-exchange data provider
+def _is_market_gone(self, instrument: Instrument) -> bool:
+    """State B only: the market no longer exists / is untradeable.
+    A future delist_date (state A) is NOT gone."""
     dp = self._data_provider_for(instrument)
-    return dp is not None and not dp.is_instrument_listed(instrument)
+    if dp is not None:
+        return not dp.is_instrument_listed(instrument)   # authoritative
+    # No live signal (e.g. connector can't tell): fall back to metadata,
+    # but ONLY a past delist_date counts as gone — never a future one.
+    d = instrument.delist_date
+    return d is not None and to_timestamp(d) <= self._time_provider.time()
 
-# mirrors the existing filter_delistings idiom: returns the KEPT (tradeable)
-# instruments and handles drops (forget + alert) internally
-def _drop_delisted(self, instruments: list[Instrument]) -> list[Instrument]:
-    delisted = [i for i in instruments if self._is_delisted(i)]
-    for i in delisted:
-        self._forget_if_held(i)        # see §3 (with conservative guard)
-    if delisted:
-        self._notify_delisted(delisted)
-    kept = set(delisted)
-    return [i for i in instruments if i not in kept]
+# Excludes gone instruments and forgets held positions on them (§3 guard).
+# Returns the KEPT (still-tradeable) instruments. Runs IN ADDITION to the
+# existing filter_delistings (state A), not instead of it.
+def _drop_gone(self, instruments: list[Instrument]) -> list[Instrument]:
+    gone = [i for i in instruments if self._is_market_gone(i)]
+    for i in gone:
+        self._forget_if_held(i)        # see §3 (live-confirmed forget only)
+    if gone:
+        self._notify_gone(gone)
+    gone_set = set(gone)
+    return [i for i in instruments if i not in gone_set]
 ```
 
-- Add `DelistingDetector.is_delisting(instrument) -> bool` — the
-  single-instrument form of its existing batch `detect_delistings` logic — so
-  tier 1 reuses the detector rather than duplicating the date comparison.
 - `_data_provider_for(instrument)` resolves the per-exchange `IDataProvider`
   the manager already has access to via the context (`ctx._data_providers`).
-- `set_universe` calls `_drop_delisted(...)` exactly where it currently calls
+- `set_universe` calls `_drop_gone(...)` at the **top**, alongside the existing
   `self._delisting_detector.filter_delistings(...)` (`core/mixins/universe.py:78`),
-  at the **top**, before `__do_add_instruments`/subscribe (`:90`, `:215`). This
-  single placement covers startup (`ctx.start()` → `set_universe`) and every
-  mid-run universe change.
+  before `__do_add_instruments`/subscribe (`:90`, `:215`). `filter_delistings`
+  keeps handling state A (remove → close via trade); `_drop_gone` handles state
+  B (exclude → forget). One placement covers startup (`ctx.start()` →
+  `set_universe`) and every mid-run universe change.
+- A held gone instrument is forgotten by `_drop_gone` even when it was never in
+  the prior universe (the restored-position startup case), since `_forget_if_held`
+  acts on the held position directly, not on `prev_set` membership.
+- **Removal path also branches on "gone":** `__do_remove_instruments`
+  (`core/mixins/universe.py:159`) currently closes positions via
+  `alter_positions` → trade. Add a guard: if `_is_market_gone(instr)`, forget
+  (`drop_position`) instead of trading — so the scheduled 23:30 delisting check
+  and any other removal can never attempt a trade on a vanished market.
+
+The existing `DelistingDetector` is **unchanged** — no `is_delisting` predicate
+is added; state B never routes through it.
 
 ### 3. Forget path — `IAccountProcessor.drop_position`
 
@@ -134,13 +182,16 @@ def drop_position(self, instrument: Instrument) -> None:
 
 `_forget_if_held(instrument)`:
 - if no open position → just ensure it's unsubscribed / out of the universe;
-- if a position is held → **conservative guard**: only `drop_position` when we
-  have *positive* delisting evidence, namely either (a) an explicit `delist_date`
-  (tier 1), or (b) the instrument is absent from a **loaded, non-empty** market
-  list (tier 2). The empty/unloaded case is already excluded by fail-open in
-  `is_instrument_listed` (§ below), so a wholesale `load_markets` failure can
-  never trigger a forget. When the guard is not satisfied we **skip the forget
-  and emit a "needs manual review" alert** instead of discarding a position.
+- if a position is held → **forget only on a live-confirmed gone market.**
+  Concretely, `drop_position` is allowed only when the per-exchange data
+  provider exists and reports the instrument **absent from a loaded, non-empty
+  market list** (`is_instrument_listed() == False` with markets loaded). In any
+  other case — a past `delist_date` but the market still lists it (settlement
+  overlap, where a reduce-only close may still be possible), no live signal
+  available, or markets empty/unloaded (fail-open) — we **do not forget**; we
+  **emit a "needs manual review" alert** and leave the position for the existing
+  close-via-trade path or an operator. We never forget a position whose
+  delisting has not actually happened.
   - *Optional hardening (not required for v1):* protect against a *partial*
     market load by comparing the current market count against the connector's
     last-known-good count and skipping the forget on a large unexpected drop.
@@ -167,20 +218,24 @@ Other connectors mirror the same skip in their own warmup handlers.
 ### Responsibilities split
 
 - **Warmup robustness** → connector guard (§4).
-- **Universe + phantom-position lifecycle** → `UniverseManager` (§2–3),
-  two-tier metadata→live detection.
+- **State A (scheduled delist, still listed)** → existing `filter_delistings` +
+  removal path: remove from universe, **close via trade**. Unchanged.
+- **State B (market gone) + phantom-position lifecycle** → `UniverseManager`
+  (§2–3): exclude + forget (live-confirmed).
 - **No runner changes, no new component, no callables, no global toggle.**
 
 ### Fail-safe & alerting
 
 - **Fail-open everywhere:** if a connector can't produce a confident listed-set
   (`is_instrument_listed` returns base `True`, or markets failed to load),
-  nothing is dropped. A market-load hiccup must never nuke the universe.
-- **Conservative forget (§3):** the only destructive step (forgetting a held
-  position) is additionally gated on the market list looking healthy.
-- **Alert:** on any drop,
-  `ctx.notifier.notify_message("[<bot>] Dropped delisted instruments: TONUSDT (...)", metadata=...)`
-  plus a WARN log. Silent drops are not acceptable for a prod trading bot.
+  nothing is treated as gone. A market-load hiccup must never nuke the universe.
+- **Forget only on a live-confirmed gone market (§3):** the only destructive
+  step (forgetting a held position) requires the live listing signal; metadata
+  alone, settlement overlap, or no signal ⇒ no forget, manual-review alert.
+- **Alert:** on any gone-drop,
+  `ctx.notifier.notify_message("[<bot>] Dropped delisted (gone) instruments: TONUSDT (...)", metadata=...)`
+  plus a WARN log; on a guarded skip, a "needs manual review" alert. Silent
+  drops are not acceptable for a prod trading bot.
 
 ## Why no restored-state pre-filter is needed (verified)
 
@@ -220,44 +275,60 @@ subscription without a restored-state pre-filter.
    instruments, logs a warning, completes — no crash.
 3. **Live start**: `ctx.start()` builds `_initial_instruments` including the
    restored TON position → `set_universe(...)`.
-4. `_drop_delisted` runs at the top: tier 1 sees the `delist_date` you added
-   (or, even without it, tier 2 sees TON missing from `exchange.markets`) → TON
-   is delisted. `_forget_if_held(TON)`: market list is healthy → `drop_position`
-   + unsubscribe. Notifier alert: "Dropped delisted instruments: TONUSDT".
+4. `_drop_gone` runs at the top: `_is_market_gone(TON)` is true because the live
+   data provider reports TON absent from `exchange.markets` (the `delist_date`
+   you added is corroborating but not required, and is not what authorizes the
+   forget). `_forget_if_held(TON)`: market is live-confirmed gone and markets are
+   loaded/non-empty → `drop_position` + unsubscribe. Notifier alert: "Dropped
+   delisted (gone) instruments: TONUSDT".
 5. TON is absent from `to_add` → never subscribed. The bot starts with the
    remaining live positions; capital reflects the OKX-settled balance.
+
+Contrast — a *scheduled* (state A) delist, e.g. TON still listed with a
+`delist_date` 2 days out: `_is_market_gone` is **false** (still listed), so TON
+is never forgotten. The existing `filter_delistings`/removal path closes it via
+a normal trade when its window arrives.
 
 ## Testing
 
 - **Unit**
-  - `DelistingDetector.is_delisting` (past, within-window, future-beyond-window,
-    no `delist_date`).
-  - `UniverseManager._is_delisted` ordering: metadata hit short-circuits before
-    the data-provider call; metadata miss falls through to the listing check;
-    no data provider ⇒ fail-open (not delisted).
+  - `UniverseManager._is_market_gone`: live signal authoritative (listed ⇒
+    not gone even with a past `delist_date`; not-listed ⇒ gone); no data
+    provider ⇒ fall back to metadata, where a **past** `delist_date` ⇒ gone but
+    a **future** `delist_date` ⇒ not gone; fail-open (markets empty) ⇒ not gone.
+  - **State A is never forgotten:** an instrument still listed with a future
+    `delist_date` is not gone and routes through the existing close-via-trade
+    path, not `drop_position`.
   - ccxt `is_instrument_listed` against a stubbed `exchange.markets`
     (present / absent / empty-fail-open).
   - `drop_position` removes the position without emitting a trade.
-  - `_forget_if_held` conservative guard: empty/too-small market list ⇒ no
-    forget, "needs review" alert instead.
+  - `_forget_if_held` guard: live-confirmed gone ⇒ forget; past `delist_date`
+    but still listed (settlement overlap) ⇒ no forget, "needs review" alert;
+    no data provider / empty markets ⇒ no forget, alert.
+  - `__do_remove_instruments` gone-branch: removing a gone instrument forgets
+    (no trade); removing a still-listed one trades to flat as before.
 - **Integration**
-  - Warmup with one delisted instrument in the set → completes, warms the rest,
+  - Warmup with one gone instrument in the set → completes, warms the rest,
     logs the skip, no crash (direct regression for the TON incident).
-  - Restart with a restored delisted position → instrument dropped, position
+  - Restart with a restored gone position → instrument excluded, position
     forgotten, alert emitted, bot starts; instrument never subscribed.
+  - Restart with a still-listed instrument carrying a future `delist_date` →
+    position retained and closed via the existing trade path; not forgotten.
 - **Backtest guard**
   - A sim run still warms/trades everything (`is_instrument_listed` no-ops).
 
 ## Scope
 
 **In:** `IDataProvider.is_instrument_listed` (+ ccxt impl), `UniverseManager`
-detection/reconciliation (`_is_delisted`, `_drop_delisted`, `_forget_if_held`,
-`_data_provider_for`, `_notify_delisted`), `DelistingDetector.is_delisting`,
-`IAccountProcessor.drop_position`, ccxt warmup guard, alerting, tests.
+state-B handling (`_is_market_gone`, `_drop_gone`, `_forget_if_held`,
+`_data_provider_for`, `_notify_gone`, and the `__do_remove_instruments`
+gone-branch), `IAccountProcessor.drop_position`, ccxt warmup guard, alerting,
+tests.
 
-**Out:** future-delist handling (unchanged), broker-side listing checks,
-restored-state pre-filter (shown unnecessary), global kill-switch toggle, PnL
-re-derivation, historical-log cleanup.
+**Out:** state-A / future-delist handling (existing `DelistingDetector` +
+close-via-trade path, unchanged), broker-side listing checks, restored-state
+pre-filter (shown unnecessary), global kill-switch toggle, PnL re-derivation,
+historical-log cleanup.
 
 ## Rollout
 
