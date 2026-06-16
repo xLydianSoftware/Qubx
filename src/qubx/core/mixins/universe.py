@@ -197,6 +197,12 @@ class UniverseManager(IUniverseManager):
                 self._removal_queue.pop(instr)
 
     def add_instruments(self, instruments: list[Instrument]):
+        # Settle & exclude already-gone markets (same gone-filter as set_universe).
+        # Only _drop_gone (already-gone), NOT filter_delistings (future/scheduled),
+        # so an explicitly-added still-listed instrument with a future delist_date
+        # stays addable and is handled by the existing scheduled-delist path.
+        instruments = self._drop_gone(instruments)
+        # Then drop blacklisted instruments (same order as set_universe: gone -> blacklist).
         instruments = self._filter_blacklisted(instruments)
         to_add = list(set([instr for instr in instruments if instr not in self._instruments]))
         self.__do_add_instruments(to_add)

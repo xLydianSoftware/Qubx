@@ -698,6 +698,9 @@ class StrategyContext(IStrategyContext):
     def get_market_data_cache(self) -> IMarketDataCache:
         return self._market_data_provider.get_market_data_cache()
 
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        return self._market_data_provider.is_instrument_listed(instrument)
+
     def get_aux_data_storage(self) -> IStorage:
         return self._market_data_provider.get_aux_data_storage()
 

@@ -639,6 +639,11 @@ def _emit_signal(ctx: IStrategyContext, symbol: str, signal_value: float, price:
         return ActionResult(status="error", error=str(e))
 
 
+def _trigger_fit(ctx: IStrategyContext, **kwargs) -> ActionResult:
+    ctx.trigger_fit()
+    return ActionResult(status="ok", data={"message": "fit scheduled"})
+
+
 # --- Action registry ---
 
 _MARKET_TYPE_DOC = "Market type: SPOT, SWAP (perpetual futures), FUTURE (dated futures), OPTION, MARGIN"
@@ -910,5 +915,14 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             ],
         ),
         _emit_signal,
+    ),
+    "trigger_fit": (
+        ActionDef(
+            name="trigger_fit",
+            description="Trigger a strategy fit (recompute targets / rebalance) on demand",
+            category="strategy",
+            dangerous=True,
+        ),
+        _trigger_fit,
     ),
 }
