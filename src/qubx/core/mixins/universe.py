@@ -1,6 +1,7 @@
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.detectors import DelistingDetector
+from qubx.core.instrument_service import IInstrumentService, NullInstrumentService
 from qubx.core.interfaces import (
     IAccountProcessor,
     IMarketManager,
@@ -30,6 +31,7 @@ class UniverseManager(IUniverseManager):
     _warmup_position_gathering: IPositionGathering
     _removal_queue: dict[Instrument, tuple[RemovalPolicy, bool]]
     _delisting_detector: DelistingDetector
+    _instrument_service: IInstrumentService
 
     def __init__(
         self,
@@ -43,6 +45,7 @@ class UniverseManager(IUniverseManager):
         account: IAccountProcessor,
         position_gathering: IPositionGathering,
         delisting_detector: DelistingDetector,
+        instrument_service: IInstrumentService | None = None,
     ):
         self._context = context
         self._strategy = strategy
@@ -57,6 +60,7 @@ class UniverseManager(IUniverseManager):
         self._removal_queue = {}
         self._removal_in_progress = set()
         self._delisting_detector = delisting_detector
+        self._instrument_service = instrument_service if instrument_service is not None else NullInstrumentService()
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (
@@ -116,6 +120,14 @@ class UniverseManager(IUniverseManager):
         gone_set = set(gone)
         return [i for i in instruments if i not in gone_set]
 
+    def _filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        kept = [i for i in instruments if not self._instrument_service.is_blacklisted(i)]
+        dropped = [i for i in instruments if i not in set(kept)]
+        if dropped:
+            symbols = ", ".join(sorted(i.symbol for i in dropped))
+            logger.info(f"[UniverseManager] Dropping blacklisted instruments: {symbols}")
+        return kept
+
     def set_universe(
         self,
         instruments: list[Instrument],
@@ -136,6 +148,8 @@ class UniverseManager(IUniverseManager):
         # Then filter out instruments with upcoming/scheduled delist dates (state A:
         # still listed -> closed via trade through the normal removal path).
         instruments = self._delisting_detector.filter_delistings(instruments)
+
+        instruments = self._filter_blacklisted(instruments)
 
         new_set = set(instruments)
         prev_set = self._instruments.copy()
@@ -183,6 +197,7 @@ class UniverseManager(IUniverseManager):
                 self._removal_queue.pop(instr)
 
     def add_instruments(self, instruments: list[Instrument]):
+        instruments = self._filter_blacklisted(instruments)
         to_add = list(set([instr for instr in instruments if instr not in self._instruments]))
         self.__do_add_instruments(to_add)
         self.__cleanup_removal_queue(instruments)

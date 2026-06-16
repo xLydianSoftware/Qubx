@@ -23,6 +23,10 @@ def mock_dependencies(mocker: MockerFixture):
     time_provider = mocker.Mock()
     time_provider.time.return_value = np.datetime64("2026-06-16T00:00:00", "ns")
 
+    from qubx.core.instrument_service import NullInstrumentService
+
+    instrument_service = NullInstrumentService()
+
     return {
         "context": mocker.Mock(),
         "strategy": mocker.Mock(),
@@ -35,6 +39,7 @@ def mock_dependencies(mocker: MockerFixture):
         "account": mocker.Mock(),
         "position_gathering": mocker.Mock(),
         "delisting_detector": delisting_detector,
+        "instrument_service": instrument_service,
     }
 
 
@@ -51,6 +56,7 @@ def universe_manager(mock_dependencies):
         account=mock_dependencies["account"],
         position_gathering=mock_dependencies["position_gathering"],
         delisting_detector=mock_dependencies["delisting_detector"],
+        instrument_service=mock_dependencies["instrument_service"],
     )
 
 
@@ -352,3 +358,57 @@ def test_gone_held_with_delist_date_settled_before_filter_delistings(universe_ma
     # _drop_gone ran first and settled the gone, still-held instrument
     mock_dependencies["account"].settle_position.assert_called_once_with(gone)
     assert gone not in universe_manager.instruments
+
+
+def test_filter_blacklisted_noop_with_null_service(universe_manager, mock_dependencies, mocker):
+    instruments = [mocker.Mock(spec=Instrument, symbol="BTCUSDT")]
+    assert universe_manager._filter_blacklisted(instruments) == instruments
+
+
+def test_set_universe_drops_blacklisted(mock_dependencies, mocker):
+    btc = mocker.Mock(spec=Instrument, symbol="BTCUSDT")
+    eth = mocker.Mock(spec=Instrument, symbol="ETHUSDT")
+    svc = mocker.Mock()
+    svc.is_blacklisted.side_effect = lambda i: i is btc
+    deps = dict(mock_dependencies)
+    deps["instrument_service"] = svc
+    deps["subscription_manager"].auto_subscribe = True
+    um = UniverseManager(
+        context=deps["context"],
+        strategy=deps["strategy"],
+        market_data_manager=deps["market_data_manager"],
+        logging=deps["logging"],
+        subscription_manager=deps["subscription_manager"],
+        trading_manager=deps["trading_manager"],
+        time_provider=deps["time_provider"],
+        account=deps["account"],
+        position_gathering=deps["position_gathering"],
+        delisting_detector=deps["delisting_detector"],
+        instrument_service=svc,
+    )
+    um.set_universe([btc, eth])
+    assert set(um.instruments) == {eth}
+
+
+def test_add_instruments_drops_blacklisted(mock_dependencies, mocker):
+    btc = mocker.Mock(spec=Instrument, symbol="BTCUSDT")
+    eth = mocker.Mock(spec=Instrument, symbol="ETHUSDT")
+    svc = mocker.Mock()
+    svc.is_blacklisted.side_effect = lambda i: i is btc
+    deps = dict(mock_dependencies)
+    deps["subscription_manager"].auto_subscribe = True
+    um = UniverseManager(
+        context=deps["context"],
+        strategy=deps["strategy"],
+        market_data_manager=deps["market_data_manager"],
+        logging=deps["logging"],
+        subscription_manager=deps["subscription_manager"],
+        trading_manager=deps["trading_manager"],
+        time_provider=deps["time_provider"],
+        account=deps["account"],
+        position_gathering=deps["position_gathering"],
+        delisting_detector=deps["delisting_detector"],
+        instrument_service=svc,
+    )
+    um.add_instruments([btc, eth])
+    assert set(um.instruments) == {eth}
