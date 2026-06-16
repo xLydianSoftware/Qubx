@@ -372,3 +372,4 @@ def test_add_instruments_excludes_gone_and_settles(universe_manager, mock_depend
     assert live in universe_manager.instruments
     assert gone not in universe_manager.instruments
     mock_dependencies["account"].settle_position.assert_called_once_with(gone)
+    mock_dependencies["position_gathering"].alter_positions.assert_not_called()

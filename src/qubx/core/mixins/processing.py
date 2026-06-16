@@ -246,6 +246,8 @@ class ProcessingManager(IProcessingManager):
         """Run on_fit once, on demand. Schedules a one-off event that invokes the
         fit handler on the strategy thread (via delay -> _handle_fit); uses a unique
         delay event id, so the recurring fit schedule is untouched."""
+        # short delay defers the fit onto the strategy thread via the scheduler/channel
+        # (any non-zero delay works); a unique delay event id leaves the recurring fit untouched
         self.delay("1s", lambda c: c._handle_fit(None, "fit", (None, c.time())))
 
     def configure_stale_data_detection(

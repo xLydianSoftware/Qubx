@@ -634,7 +634,7 @@ def _emit_signal(ctx: IStrategyContext, symbol: str, signal_value: float, price:
 
 def _trigger_fit(ctx: IStrategyContext, **kwargs) -> ActionResult:
     ctx.trigger_fit()
-    return ActionResult(status="ok", data={"status": "fit scheduled"})
+    return ActionResult(status="ok", data={"message": "fit scheduled"})
 
 
 # --- Action registry ---
