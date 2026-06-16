@@ -29,7 +29,7 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.detectors import DelistingDetector
-from qubx.core.instrument_service import IInstrumentService, NullInstrumentService, create_instrument_service
+from qubx.core.instrument_service import IInstrumentService, create_instrument_service
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.exceptions import QueueTimeout, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
@@ -42,6 +42,7 @@ from qubx.core.interfaces import (
     IBroker,
     IDataProvider,
     IHealthMonitor,
+    IInstrumentServiceManager,
     IMarketDataCache,
     IMarketManager,
     IMetricEmitter,
@@ -75,6 +76,7 @@ from .mixins import (
     TradingManager,
     UniverseManager,
 )
+from qubx.core.mixins.instrument_service import InstrumentServiceManager
 
 if TYPE_CHECKING:
     from qubx.control.executor import ActionExecutor
@@ -115,7 +117,7 @@ class StrategyContext(IStrategyContext):
     _strategy_name: str
     _delisting_detector: DelistingDetector
     _instrument_service: IInstrumentService
-    _instrument_service_callbacks: list = None
+    _instrument_service_manager: IInstrumentServiceManager
     _notifier: IStrategyNotifier
 
     _thread_data_loop: Thread | None = None  # market data loop
@@ -237,6 +239,7 @@ class StrategyContext(IStrategyContext):
 
         _svc_exchanges = sorted({i.exchange for i in instruments})
         self._instrument_service = create_instrument_service(_svc_exchanges)
+        self._instrument_service_manager = InstrumentServiceManager(self, self._instrument_service)
 
         self._universe_manager = UniverseManager(
             context=self,
@@ -312,8 +315,8 @@ class StrategyContext(IStrategyContext):
             for schedule_id, (cron_schedule, method) in custom_schedules.items():
                 self._processing_manager.schedule(cron_schedule, method)
 
-        self._instrument_service_callbacks = self.initializer.get_instrument_service_callbacks()
-        self._wire_instrument_service_schedules()
+        self._instrument_service_manager.set_callbacks(self.initializer.get_instrument_service_callbacks())
+        self._instrument_service_manager.start()
 
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
@@ -789,67 +792,18 @@ class StrategyContext(IStrategyContext):
     def instruments(self):
         return self._universe_manager.instruments
 
+    # :: IInstrumentServiceManager delegation ::
     def is_blacklisted(self, instrument: Instrument) -> bool:
-        return self._instrument_service.is_blacklisted(instrument)
+        return self._instrument_service_manager.is_blacklisted(instrument)
 
     def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
-        return [i for i in instruments if not self._instrument_service.is_blacklisted(i)]
+        return self._instrument_service_manager.filter_blacklisted(instruments)
 
     def get_blacklisted_instruments(self) -> list[Instrument]:
-        return self._instrument_service.matching_instruments(self.instruments)
+        return self._instrument_service_manager.get_blacklisted_instruments()
 
     def _run_instrument_service_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
-        """Refresh the blacklist, fire change callbacks, then force-close any still-held
-        newly-blacklisted instruments.
-
-        Single shared implementation used by BOTH the `refresh_instrument_service` control
-        action (push trigger) and the framework-automatic periodic TTL poll / startup refresh.
-        Runs on the strategy thread (force-closes positions + invokes strategy callbacks).
-
-        `_ctx` is the scheduler-passed context (from `_process_custom_event`), unused here
-        because the method is already bound to `self` which is the context.
-        """
-        # (1) re-fetch and diff against the current universe
-        diff = self._instrument_service.refresh(self.instruments)
-
-        # (2) fire registered instrument-service-change callbacks (only when diff is non-empty)
-        if diff.blacklisted_added or diff.blacklisted_removed:
-            for cb in self._instrument_service_callbacks:
-                try:
-                    cb(self, diff.blacklisted_added, diff.blacklisted_removed)
-                except Exception as e:
-                    logger.error(f"[InstrumentService] :: change callback error: {e}")
-
-        # (3) backstop: force-close any newly-blacklisted instrument STILL held
-        positions = self.get_positions()
-        still_held = [
-            i for i in diff.blacklisted_added if i in positions and positions[i].quantity != 0
-        ]
-        if still_held:
-            self.remove_instruments(still_held, if_has_position_then="close")
-
-        return {
-            "blacklisted_added": len(diff.blacklisted_added),
-            "blacklisted_removed": len(diff.blacklisted_removed),
-            "force_closed": len(still_held),
-            "force_closed_instruments": [str(i) for i in still_held],
-        }
-
-    def _wire_instrument_service_schedules(self) -> None:
-        """Framework-automatic refresh wiring (no per-strategy registration required).
-
-        When the instrument service is active (non-Null), register:
-          * a one-shot startup refresh (runs on the strategy thread once data flows), and
-          * a per-minute TTL poll as the eventual-consistency safety net so a missed
-            push still converges.
-        For NullInstrumentService nothing is scheduled (backtests/local unaffected).
-        """
-        if isinstance(self._instrument_service, NullInstrumentService):
-            return
-        # startup refresh (one-shot, strategy thread)
-        self._processing_manager.delay("1s", self._run_instrument_service_cycle)
-        # periodic TTL poll (~60s; per-minute is the smallest expressible cron interval)
-        self._processing_manager.schedule("* * * * *", self._run_instrument_service_cycle)
+        return self._instrument_service_manager.run_cycle(_ctx)
 
     @property
     def exchanges(self) -> list[str]:

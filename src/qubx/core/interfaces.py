@@ -1340,6 +1340,36 @@ class IUniverseManager:
         ...
 
 
+class IInstrumentServiceManager:
+    """Manages the instrument blacklist service: read helpers, refresh/callback/force-close
+    cycle, and framework-automatic startup + TTL-poll scheduling."""
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        """Return True if the instrument is on the active blacklist."""
+        ...
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        """Return a new list with blacklisted instruments removed."""
+        ...
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        """Return the subset of the current universe that is blacklisted."""
+        ...
+
+    def run_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
+        """Refresh the blacklist, fire change callbacks, and force-close still-held
+        newly-blacklisted instruments. Returns a summary dict."""
+        ...
+
+    def start(self) -> None:
+        """Wire framework-automatic startup refresh and periodic TTL poll (non-Null only)."""
+        ...
+
+    def set_callbacks(self, callbacks: list) -> None:
+        """Register instrument-service-change callbacks."""
+        ...
+
+
 class ISubscriptionManager:
     """Manages subscriptions."""
 
