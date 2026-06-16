@@ -138,6 +138,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
                     channel.send((instrument, DataType.QUOTE, self._convert_ohlcv_to_quote(ohlcv, instrument), False))
 
                 self._update_quote(instrument, ohlcv)
+            # Skip (don't re-raise) so one delisted/missing symbol can't abort the whole
+            # warmup batch. NOTE: this intentionally differs from the live-subscription
+            # path, which re-raises BadSymbol to let ConnectionManager drop the instrument.
             except BadSymbol as e:
                 logger.warning(
                     f"<yellow>{self._exchange_id}</yellow> warmup failed for {instrument} "

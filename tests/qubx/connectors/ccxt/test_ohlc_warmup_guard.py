@@ -46,8 +46,8 @@ def test_warmup_skips_unlisted_instrument(mocker: MockerFixture):
     mocker.patch.object(handler, "_convert_ohlcv_to_quote", return_value=object())
 
     asyncio.run(handler.warmup({listed, gone}, channel, warmup_period="1d", timeframe="1d"))
-    # at least the listed instrument was fetched; gone was skipped (no crash)
-    assert exchange.fetch_ohlcv.await_count >= 1
+    # exactly one fetch: the listed instrument was fetched, gone was skipped (not fetched)
+    assert exchange.fetch_ohlcv.await_count == 1
 
 
 def test_warmup_continues_when_one_instrument_raises(mocker: MockerFixture):
