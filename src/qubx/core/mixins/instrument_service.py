@@ -6,7 +6,7 @@ from qubx.core.interfaces import IInstrumentServiceManager, IStrategyContext
 
 class InstrumentServiceManager(IInstrumentServiceManager):
     """Owns the instrument blacklist service: read helpers, the refresh→callbacks→force-close
-    cycle, and the framework-automatic startup + TTL-poll scheduling. Composed by StrategyContext
+    cycle, the cache-only fit refresh, and the framework-automatic startup refresh. Composed by StrategyContext
     the same way UniverseManager/ProcessingManager are."""
 
     def __init__(self, context: IStrategyContext, instrument_service: IInstrumentService):
@@ -29,7 +29,7 @@ class InstrumentServiceManager(IInstrumentServiceManager):
     def run_cycle(self, _ctx: IStrategyContext | None = None) -> dict:
         """Refresh the blacklist, fire change callbacks, then force-close any still-held
         newly-blacklisted instruments. Single shared implementation used by the control action
-        AND the startup/TTL-poll schedules. Runs on the strategy thread. `_ctx` is the
+        AND the startup one-shot. Runs on the strategy thread. `_ctx` is the
         scheduler-passed context (unused; the bound `self._context` is the context)."""
         diff = self._service.refresh(self._context.instruments)
         if diff.blacklisted_added or diff.blacklisted_removed:
@@ -49,10 +49,20 @@ class InstrumentServiceManager(IInstrumentServiceManager):
             "force_closed_instruments": [str(i) for i in still_held],
         }
 
+    def refresh_only(self) -> None:
+        """Refresh the cached blacklist WITHOUT firing change callbacks or force-closing
+        positions. Used as the fit-time safety net: called immediately before `on_fit` so
+        `get_universe` / `ctx.filter_blacklisted` select over current blacklist data, while
+        the actual closing of now-blacklisted positions is handled by the fit's
+        `set_universe` removal path. No-op for the Null service (its `refresh` returns an
+        empty diff and nothing else runs)."""
+        self._service.refresh(self._context.instruments)
+
     def start(self) -> None:
-        """Framework-automatic refresh wiring (non-Null only): one-shot startup refresh +
-        per-minute TTL poll, both dispatched on the strategy thread via the context scheduler."""
+        """Framework-automatic refresh wiring (non-Null only): a one-shot startup refresh
+        dispatched on the strategy thread via the context scheduler. The blacklist is kept
+        current thereafter by the fit-time cache refresh (see `refresh_only`) and by the
+        operator-triggered `refresh_instrument_service` action; there is no periodic poll."""
         if isinstance(self._service, NullInstrumentService):
             return
         self._context.delay("1s", self.run_cycle)
-        self._context.schedule("* * * * *", self.run_cycle)
