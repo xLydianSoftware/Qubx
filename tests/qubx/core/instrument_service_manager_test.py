@@ -93,3 +93,31 @@ def test_set_callbacks_preserves_order():
     b = lambda c, ad, rm: None
     m.set_callbacks([a, b])
     assert m._callbacks == [a, b]
+
+
+def test_refresh_only_refreshes_cache_without_callbacks_or_force_close():
+    calls = []
+    btc = MagicMock()
+    pos = MagicMock(); pos.quantity = 1.0
+    svc = MagicMock()
+    svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[btc], blacklisted_removed=[])
+    m, ctx = _mgr(
+        svc,
+        instruments=[btc],
+        positions={btc: pos},
+        callbacks=[lambda c, a, r: calls.append("cb")],
+    )
+    result = m.refresh_only()
+    assert result is None
+    svc.refresh.assert_called_once_with([btc])
+    assert calls == []
+    ctx.remove_instruments.assert_not_called()
+    ctx.get_positions.assert_not_called()
+
+
+def test_refresh_only_noop_with_null_service():
+    m, ctx = _mgr(NullInstrumentService())
+    # Must not raise and must not touch position/removal machinery.
+    assert m.refresh_only() is None
+    ctx.remove_instruments.assert_not_called()
+    ctx.get_positions.assert_not_called()

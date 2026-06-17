@@ -1361,8 +1361,14 @@ class IInstrumentServiceManager:
         newly-blacklisted instruments. Returns a summary dict."""
         ...
 
+    def refresh_only(self) -> None:
+        """Refresh the cached blacklist only — no change callbacks, no force-close.
+        Called before each `on_fit` so universe selection sees current data. No-op for
+        the Null service."""
+        ...
+
     def start(self) -> None:
-        """Wire framework-automatic startup refresh and periodic TTL poll (non-Null only)."""
+        """Wire framework-automatic startup refresh (non-Null only). No periodic poll."""
         ...
 
     def set_callbacks(self, callbacks: list) -> None:

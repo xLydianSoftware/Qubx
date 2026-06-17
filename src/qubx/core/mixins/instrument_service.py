@@ -56,6 +56,15 @@ class InstrumentServiceManager(IInstrumentServiceManager):
             "force_closed_instruments": [str(i) for i in still_held],
         }
 
+    def refresh_only(self) -> None:
+        """Refresh the cached blacklist WITHOUT firing change callbacks or force-closing
+        positions. Used as the fit-time safety net: called immediately before `on_fit` so
+        `get_universe` / `ctx.filter_blacklisted` select over current blacklist data, while
+        the actual closing of now-blacklisted positions is handled by the fit's
+        `set_universe` removal path. No-op for the Null service (its `refresh` returns an
+        empty diff and nothing else runs)."""
+        self._service.refresh(self._context.instruments)
+
     def start(self) -> None:
         """Framework-automatic refresh wiring (non-Null only): a one-shot startup refresh
         dispatched on the strategy thread via the context scheduler. The blacklist is kept
