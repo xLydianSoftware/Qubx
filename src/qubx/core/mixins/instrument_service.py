@@ -57,9 +57,10 @@ class InstrumentServiceManager(IInstrumentServiceManager):
         }
 
     def start(self) -> None:
-        """Framework-automatic refresh wiring (non-Null only): one-shot startup refresh +
-        per-minute TTL poll, both dispatched on the strategy thread via the context scheduler."""
+        """Framework-automatic refresh wiring (non-Null only): a one-shot startup refresh
+        dispatched on the strategy thread via the context scheduler. The blacklist is kept
+        current thereafter by the fit-time cache refresh (see `refresh_only`) and by the
+        operator-triggered `refresh_instrument_service` action; there is no periodic poll."""
         if isinstance(self._service, NullInstrumentService):
             return
         self._context.delay("1s", self.run_cycle)
-        self._context.schedule("* * * * *", self.run_cycle)

@@ -72,12 +72,12 @@ def test_run_cycle_accepts_scheduler_ctx_arg():
     assert result["blacklisted_added"] == 0
 
 
-def test_start_registers_startup_and_poll_when_non_null():
+def test_start_registers_startup_oneshot_but_not_poll_when_non_null():
     svc = MagicMock(spec=HttpInstrumentService)
     m, ctx = _mgr(svc)
     m.start()
     ctx.delay.assert_called_once_with("1s", m.run_cycle)
-    ctx.schedule.assert_called_once_with("* * * * *", m.run_cycle)
+    ctx.schedule.assert_not_called()
 
 
 def test_start_noop_with_null_service():
