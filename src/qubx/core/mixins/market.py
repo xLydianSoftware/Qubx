@@ -489,3 +489,10 @@ class MarketManager(IMarketManager):
         if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
             return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
         raise ValueError(f"Data provider for exchange {exchange} not found")
+
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        try:
+            dp = self._get_data_provider(instrument.exchange)
+        except ValueError:
+            return True  # no provider => can't tell => fail-open
+        return dp.is_instrument_listed(instrument)

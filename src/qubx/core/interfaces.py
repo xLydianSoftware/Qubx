@@ -604,10 +604,31 @@ class IDataProvider:
         """
         ...
 
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        """
+        Whether the instrument currently exists / is tradeable on the exchange.
+
+        Default is True: callers must never drop an instrument just because a
+        provider cannot determine listing status (fail-open). Connectors that
+        can answer authoritatively (e.g. ccxt via exchange.markets) override this.
+        """
+        return True
+
     @property
     def is_simulation(self) -> bool:
         """
         Check if data provider is in simulation mode.
+        """
+        ...
+
+    def start(self):
+        """
+        Start the data provider and ensure it is ready for use (e.g. load
+        exchange markets) before the strategy universe is first set.
+
+        Default is a no-op. Connectors that need eager initialization
+        (e.g. ccxt loading markets so is_instrument_listed is authoritative)
+        override this.
         """
         ...
 
@@ -776,6 +797,11 @@ class IMarketManager(ITimeProvider):
     def update_base_subscription(self, subtype: str): ...
 
     def get_market_data_cache(self) -> IMarketDataCache: ...
+
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        """Whether the instrument is currently listed on its exchange.
+        Fail-open: True when no data provider can answer."""
+        ...
 
 
 class ITradingManager:
@@ -955,6 +981,36 @@ class IUniverseManager:
         """
         Check if trading is allowed for an instrument because of the instrument's trading policy.
         """
+        ...
+
+
+class IInstrumentServiceManager:
+    """Manages the instrument blacklist service: read helpers, refresh/callback/force-close
+    cycle, and framework-automatic startup + TTL-poll scheduling."""
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        """Return True if the instrument is on the active blacklist."""
+        ...
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        """Return a new list with blacklisted instruments removed."""
+        ...
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        """Return the subset of the current universe that is blacklisted."""
+        ...
+
+    def run_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
+        """Refresh the blacklist, fire change callbacks, and force-close still-held
+        newly-blacklisted instruments. Returns a summary dict."""
+        ...
+
+    def start(self) -> None:
+        """Wire framework-automatic startup refresh and periodic TTL poll (non-Null only)."""
+        ...
+
+    def set_callbacks(self, callbacks: list) -> None:
+        """Register instrument-service-change callbacks."""
         ...
 
 
@@ -1236,6 +1292,10 @@ class IProcessingManager:
         """
         ...
 
+    def trigger_fit(self) -> None:
+        """Run on_fit once, on demand (on the strategy thread)."""
+        ...
+
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
     ) -> None:
@@ -1370,6 +1430,18 @@ class IStrategyContext(
 
     def get_aux_data_storage(self) -> IStorage:
         """Get the auxiliary data storage."""
+        ...
+
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        """True if the instrument matches the current blacklist."""
+        ...
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        """Return the instruments that are NOT blacklisted."""
+        ...
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        """Return currently-blacklisted instruments among the context's known instruments."""
         ...
 
 
@@ -2143,6 +2215,22 @@ class IStrategyInitializer:
         Returns:
             Dictionary mapping schedule IDs to (cron_schedule, method) tuples
         """
+        ...
+
+    def on_instrument_service_change(
+        self,
+        callback: Callable[["IStrategyContext", list["Instrument"], list["Instrument"]], None],
+    ) -> None:
+        """Register a callback fired when the instrument blacklist changes.
+
+        callback(ctx, blacklisted_added, blacklisted_removed) -> None
+        """
+        ...
+
+    def get_instrument_service_callbacks(
+        self,
+    ) -> list[Callable[["IStrategyContext", list["Instrument"], list["Instrument"]], None]]:
+        """Return registered instrument-service-change callbacks, in registration order."""
         ...
 
     def set_stale_data_detection(

@@ -1,5 +1,7 @@
+from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.detectors import DelistingDetector
+from qubx.core.instrument_service import IInstrumentService, NullInstrumentService
 from qubx.core.interfaces import (
     IAccountViewer,
     IMarketManager,
@@ -13,6 +15,7 @@ from qubx.core.interfaces import (
     RemovalPolicy,
 )
 from qubx.core.loggers import StrategyLogging
+from qubx.utils.time import to_timestamp
 
 
 class UniverseManager(IUniverseManager):
@@ -28,6 +31,7 @@ class UniverseManager(IUniverseManager):
     _warmup_position_gathering: IPositionGathering
     _removal_queue: dict[Instrument, tuple[RemovalPolicy, bool]]
     _delisting_detector: DelistingDetector
+    _instrument_service: IInstrumentService
 
     def __init__(
         self,
@@ -41,6 +45,7 @@ class UniverseManager(IUniverseManager):
         account: IAccountViewer,
         position_gathering: IPositionGathering,
         delisting_detector: DelistingDetector,
+        instrument_service: IInstrumentService | None = None,
     ):
         self._context = context
         self._strategy = strategy
@@ -55,12 +60,73 @@ class UniverseManager(IUniverseManager):
         self._removal_queue = {}
         self._removal_in_progress = set()
         self._delisting_detector = delisting_detector
+        self._instrument_service = instrument_service if instrument_service is not None else NullInstrumentService()
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (
             instrument in self._account.positions
             and abs(self._account.positions[instrument].quantity) > instrument.min_size
         )
+
+    def _is_market_gone(self, instrument: Instrument) -> bool:
+        """State B only: the market no longer exists / is untradeable.
+        A future delist_date (state A) is NOT gone."""
+        if not self._mkt_manager.is_instrument_listed(instrument):
+            return True  # authoritative live signal
+        d = instrument.delist_date
+        if d is None:
+            return False
+        try:
+            delist_ts = to_timestamp(d).replace(tzinfo=None)
+            now_ts = to_timestamp(self._time_provider.time())
+        except (TypeError, ValueError):
+            # - unparseable delist_date: fail-open, treat as not gone
+            return False
+        return delist_ts <= now_ts
+
+    def _settle_if_held(self, instrument: Instrument) -> None:
+        if not self._has_position(instrument):
+            return
+        if not self._mkt_manager.is_instrument_listed(instrument):
+            # live-confirmed gone: cannot trade out, exchange already settled
+            self._trading_manager.cancel_orders(instrument)
+            self._account.settle_position(instrument)
+            logger.warning(f"[UniverseManager] Settled delisted position {instrument.symbol} (market gone)")
+        else:
+            # flagged by past delist_date metadata only, but still listed (settlement
+            # overlap) -- leave it for the close-via-trade path / manual review
+            logger.warning(
+                f"[UniverseManager] {instrument.symbol} flagged delisted by metadata but still listed; "
+                "leaving position for close-via-trade / manual review"
+            )
+
+    def _notify_gone(self, instruments: list[Instrument]) -> None:
+        symbols = ", ".join(sorted(i.symbol for i in instruments))
+        logger.warning(f"[UniverseManager] Dropping delisted (gone) instruments: {symbols}")
+        notifier = getattr(self._context, "notifier", None)
+        if notifier is not None and not self._context.is_simulation:
+            notifier.notify_message(
+                f"[{self._context.strategy_name}] Dropped delisted (gone) instruments: {symbols}",
+                metadata={"event": "delisted_gone", "instruments": symbols},
+            )
+
+    def _drop_gone(self, instruments: list[Instrument]) -> list[Instrument]:
+        gone = [i for i in instruments if self._is_market_gone(i)]
+        if not gone:
+            return instruments
+        for i in gone:
+            self._settle_if_held(i)
+        self._notify_gone(gone)
+        gone_set = set(gone)
+        return [i for i in instruments if i not in gone_set]
+
+    def _filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        kept = [i for i in instruments if not self._instrument_service.is_blacklisted(i)]
+        dropped = [i for i in instruments if i not in set(kept)]
+        if dropped:
+            symbols = ", ".join(sorted(i.symbol for i in dropped))
+            logger.info(f"[UniverseManager] Dropping blacklisted instruments: {symbols}")
+        return kept
 
     def set_universe(
         self,
@@ -74,8 +140,16 @@ class UniverseManager(IUniverseManager):
             "wait_for_change",
         ), "Invalid if_has_position_then policy"
 
-        # Filter out instruments with upcoming delist dates
+        # Settle & exclude instruments whose market is already gone (state B) FIRST,
+        # so a gone instrument that also carries a delist_date is settled in place
+        # before the delisting filter (state A) would otherwise strip it from the list.
+        instruments = self._drop_gone(instruments)
+
+        # Then filter out instruments with upcoming/scheduled delist dates (state A:
+        # still listed -> closed via trade through the normal removal path).
         instruments = self._delisting_detector.filter_delistings(instruments)
+
+        instruments = self._filter_blacklisted(instruments)
 
         new_set = set(instruments)
         prev_set = self._instruments.copy()
@@ -123,6 +197,13 @@ class UniverseManager(IUniverseManager):
                 self._removal_queue.pop(instr)
 
     def add_instruments(self, instruments: list[Instrument]):
+        # Settle & exclude already-gone markets (same gone-filter as set_universe).
+        # Only _drop_gone (already-gone), NOT filter_delistings (future/scheduled),
+        # so an explicitly-added still-listed instrument with a future delist_date
+        # stays addable and is handled by the existing scheduled-delist path.
+        instruments = self._drop_gone(instruments)
+        # Then drop blacklisted instruments (same order as set_universe: gone -> blacklist).
+        instruments = self._filter_blacklisted(instruments)
         to_add = list(set([instr for instr in instruments if instr not in self._instruments]))
         self.__do_add_instruments(to_add)
         self.__cleanup_removal_queue(instruments)
@@ -181,6 +262,12 @@ class UniverseManager(IUniverseManager):
         exit_targets = []
         for instr in instruments:
             if self._has_position(instr):
+                if not self._mkt_manager.is_instrument_listed(instr):
+                    # market gone -- cannot trade; settle in place
+                    self._account.settle_position(instr)
+                    logger.warning(f"[UniverseManager] Settled delisted position {instr.symbol} on removal")
+                    continue
+
                 # - create exit target
                 exit_targets.append(instr.target(self._context, 0))
 
@@ -222,7 +309,9 @@ class UniverseManager(IUniverseManager):
         )
 
         # - reinitialize strategy loggers
-        self._logging.initialize(self._time_provider.time(), self._account.positions, self._account.get_balances(), self._account)
+        self._logging.initialize(
+            self._time_provider.time(), self._account.positions, self._account.get_balances(), self._account
+        )
 
     def _create_and_update_positions(self, instruments: list[Instrument]):
         for instrument in instruments:

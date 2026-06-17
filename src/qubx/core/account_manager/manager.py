@@ -182,6 +182,15 @@ class AccountManager(IAccountViewer):
         creating the Balance if missing."""
         self._states[exchange].adjust_balance(currency, delta)
 
+    def settle_position(self, instrument: Instrument) -> None:
+        """Flatten a delisted/gone position in place (no trade): the venue already
+        cash-settled it, so the universe manager reconciles the in-memory position to
+        flat. Routed per-exchange via the instrument; no-op if the exchange is unmanaged
+        or the position isn't held."""
+        state = self._states.get(instrument.exchange)
+        if state is not None:
+            state.settle_position(instrument)
+
     # ---- event path ------------------------------------------------------ #
 
     def apply(self, event: AccountMessage) -> ApplyResult:

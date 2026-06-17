@@ -42,9 +42,11 @@ from qubx.core.helpers import (
     set_parameters_to_object,
 )
 from qubx.core.initializer import BasicStrategyInitializer
+from qubx.core.instrument_service import IInstrumentService, create_instrument_service
 from qubx.core.interfaces import (
     IDataProvider,
     IHealthMonitor,
+    IInstrumentServiceManager,
     IMarketDataCache,
     IMarketManager,
     IMetricEmitter,
@@ -65,6 +67,7 @@ from qubx.core.interfaces import (
     StrategyState,
 )
 from qubx.core.loggers import StrategyLogging
+from qubx.core.mixins.instrument_service import InstrumentServiceManager
 from qubx.data.storage import IStorage
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
@@ -115,6 +118,8 @@ class StrategyContext(IStrategyContext):
     _initial_instruments: list[Instrument]
     _strategy_name: str
     _delisting_detector: DelistingDetector
+    _instrument_service: IInstrumentService
+    _instrument_service_manager: IInstrumentServiceManager
     _notifier: IStrategyNotifier
 
     _thread_data_loop: Thread | None = None  # market data loop
@@ -238,6 +243,10 @@ class StrategyContext(IStrategyContext):
             delisting_check_days=self.initializer.get_delisting_check_days(),
         )
 
+        _svc_exchanges = sorted({i.exchange for i in instruments})
+        self._instrument_service = create_instrument_service(_svc_exchanges)
+        self._instrument_service_manager = InstrumentServiceManager(self, self._instrument_service)
+
         self._universe_manager = UniverseManager(
             context=self,
             strategy=self.strategy,
@@ -249,6 +258,7 @@ class StrategyContext(IStrategyContext):
             account=self.account,
             position_gathering=__position_gathering,
             delisting_detector=self._delisting_detector,
+            instrument_service=self._instrument_service,
         )
         self._trading_manager = TradingManager(
             context=self,
@@ -316,6 +326,9 @@ class StrategyContext(IStrategyContext):
         if custom_schedules := self.initializer.get_custom_schedules():
             for schedule_id, (cron_schedule, method) in custom_schedules.items():
                 self._processing_manager.schedule(cron_schedule, method)
+
+        self._instrument_service_manager.set_callbacks(self.initializer.get_instrument_service_callbacks())
+        self._instrument_service_manager.start()
 
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
@@ -399,6 +412,10 @@ class StrategyContext(IStrategyContext):
                 )
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to notify strategy start: {e}")
+
+        # - ensure data providers are initialized (e.g. markets loaded) before set_universe
+        for data_provider in self._data_providers:
+            data_provider.start()
 
         # - update universe with initial instruments after the strategy is initialized
         self.set_universe(self._initial_instruments, skip_callback=True)
@@ -726,6 +743,9 @@ class StrategyContext(IStrategyContext):
     def get_market_data_cache(self) -> IMarketDataCache:
         return self._market_data_provider.get_market_data_cache()
 
+    def is_instrument_listed(self, instrument: Instrument) -> bool:
+        return self._market_data_provider.is_instrument_listed(instrument)
+
     def get_aux_data_storage(self) -> IStorage:
         return self._market_data_provider.get_aux_data_storage()
 
@@ -796,6 +816,19 @@ class StrategyContext(IStrategyContext):
     def instruments(self):
         return self._universe_manager.instruments
 
+    # :: IInstrumentServiceManager delegation ::
+    def is_blacklisted(self, instrument: Instrument) -> bool:
+        return self._instrument_service_manager.is_blacklisted(instrument)
+
+    def filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
+        return self._instrument_service_manager.filter_blacklisted(instruments)
+
+    def get_blacklisted_instruments(self) -> list[Instrument]:
+        return self._instrument_service_manager.get_blacklisted_instruments()
+
+    def _run_instrument_service_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
+        return self._instrument_service_manager.run_cycle(_ctx)
+
     @property
     def exchanges(self) -> list[str]:
         return self._trading_manager.exchanges()
@@ -865,6 +898,9 @@ class StrategyContext(IStrategyContext):
 
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
+
+    def trigger_fit(self) -> None:
+        return self._processing_manager.trigger_fit()
 
     def get_active_targets(self) -> dict[Instrument, TargetPosition]:
         return self._processing_manager.get_active_targets()

@@ -58,6 +58,9 @@ class BasicStrategyInitializer(IStrategyInitializer):
     _pending_global_subscriptions: set[str] = field(default_factory=set)
     _pending_instrument_subscriptions: dict[str, set[Instrument]] = field(default_factory=dict)
     _custom_schedules: dict[str, tuple[str, Callable[["IStrategyContext"], None]]] = field(default_factory=dict)
+    _instrument_service_callbacks: list[Callable[["IStrategyContext", list[Instrument], list[Instrument]], None]] = (
+        field(default_factory=list)
+    )
 
     def set_base_subscription(self, subscription_type: str) -> None:
         self.base_subscription = subscription_type
@@ -186,6 +189,17 @@ class BasicStrategyInitializer(IStrategyInitializer):
             Dictionary mapping schedule IDs to (cron_schedule, method) tuples
         """
         return self._custom_schedules.copy()
+
+    def on_instrument_service_change(
+        self,
+        callback: Callable[["IStrategyContext", list[Instrument], list[Instrument]], None],
+    ) -> None:
+        self._instrument_service_callbacks.append(callback)
+
+    def get_instrument_service_callbacks(
+        self,
+    ) -> list[Callable[["IStrategyContext", list[Instrument], list[Instrument]], None]]:
+        return list(self._instrument_service_callbacks)
 
     def set_stale_data_detection(self, enabled: bool, detection_period: str = "1d", check_interval: str = "1d") -> None:
         """

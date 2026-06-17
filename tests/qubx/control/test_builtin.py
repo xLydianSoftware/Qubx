@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from qubx.control.builtin import BUILTIN_ACTIONS
+from qubx.control.builtin import BUILTIN_ACTIONS, _refresh_instrument_service
 
 
 def _make_mock_ctx():
@@ -93,7 +93,9 @@ def _make_mock_ctx():
     ctx.health.get_data_latencies.return_value = {}
 
     # Mock query_instrument
-    ctx.query_instrument.side_effect = lambda s, exchange=None: instr1 if "BTC" in s else (instr2 if "ETH" in s else None)
+    ctx.query_instrument.side_effect = (
+        lambda s, exchange=None: instr1 if "BTC" in s else (instr2 if "ETH" in s else None)
+    )
 
     return ctx
 
@@ -240,10 +242,21 @@ class TestBuiltinRegistry:
 
     def test_read_only_actions_are_marked(self):
         read_only = {
-            "get_universe", "get_positions", "get_balances", "get_orders", "get_quote",
-            "get_ohlc", "get_state", "get_health", "get_state_schema", "get_total_capital",
-            "get_leverages", "get_subscriptions", "get_available_instruments",
-            "get_instrument_details", "get_top_instruments",
+            "get_universe",
+            "get_positions",
+            "get_balances",
+            "get_orders",
+            "get_quote",
+            "get_ohlc",
+            "get_state",
+            "get_health",
+            "get_state_schema",
+            "get_total_capital",
+            "get_leverages",
+            "get_subscriptions",
+            "get_available_instruments",
+            "get_instrument_details",
+            "get_top_instruments",
         }
         for name in read_only:
             action_def, _ = BUILTIN_ACTIONS[name]
@@ -251,12 +264,50 @@ class TestBuiltinRegistry:
 
     def test_dangerous_actions_are_marked(self):
         dangerous = {
-            "trade", "set_target_position", "set_target_leverage", "close_position",
-            "close_positions", "emit_signal", "remove_instruments", "set_universe",
+            "trade",
+            "set_target_position",
+            "set_target_leverage",
+            "close_position",
+            "close_positions",
+            "emit_signal",
+            "remove_instruments",
+            "set_universe",
+            "trigger_fit",
         }
         for name in dangerous:
             action_def, _ = BUILTIN_ACTIONS[name]
             assert action_def.dangerous is True, f"{name} should be dangerous"
 
     def test_expected_action_count(self):
-        assert len(BUILTIN_ACTIONS) == 25
+        assert len(BUILTIN_ACTIONS) == 27
+
+
+def test_refresh_instrument_service_registered_as_write_action():
+    assert "refresh_instrument_service" in BUILTIN_ACTIONS
+    action_def, handler = BUILTIN_ACTIONS["refresh_instrument_service"]
+    assert action_def.read_only is False
+    assert handler is _refresh_instrument_service
+
+
+def test_refresh_action_delegates_to_cycle():
+    ctx = MagicMock()
+    ctx._instrument_service = MagicMock()  # present
+    ctx._run_instrument_service_cycle.return_value = {
+        "blacklisted_added": 2,
+        "blacklisted_removed": 0,
+        "force_closed": 1,
+        "force_closed_instruments": ["BTCUSDT"],
+    }
+    result = _refresh_instrument_service(ctx)
+    assert result.status == "ok"
+    ctx._run_instrument_service_cycle.assert_called_once_with()
+    assert result.data["blacklisted_added"] == 2
+    assert result.data["force_closed"] == 1
+
+
+def test_refresh_action_errors_when_service_missing():
+    ctx = MagicMock()
+    ctx._instrument_service = None
+    result = _refresh_instrument_service(ctx)
+    assert result.status == "error"
+    ctx._run_instrument_service_cycle.assert_not_called()

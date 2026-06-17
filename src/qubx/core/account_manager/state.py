@@ -420,6 +420,14 @@ class AccountState:
         else:
             existing.reset_by_position(position)
 
+    def settle_position(self, instrument: Instrument) -> None:
+        # Reconcile a delisted/gone position to flat WITHOUT trading: the exchange has
+        # already cash-settled it, so we zero quantity/market value while preserving the
+        # accumulated accounting (r_pnl, commissions, funding). No-op if not held.
+        pos = self._positions.get(instrument)
+        if pos is not None:
+            pos.flatten()
+
     def update_balance(self, currency: str, balance: Balance) -> None:
         # Identity-preserving, like set_position.
         existing = self._balances.get(currency)

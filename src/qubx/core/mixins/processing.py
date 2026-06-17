@@ -293,6 +293,16 @@ class ProcessingManager(IProcessingManager):
 
         return event_id
 
+    def trigger_fit(self) -> None:
+        """Run on_fit once, on demand. Schedules a one-off event that invokes the
+        fit handler on the strategy thread (via delay -> _handle_fit); uses a unique
+        delay event id, so the recurring fit schedule is untouched."""
+        # short delay defers the fit onto the strategy thread via the scheduler/channel
+        # (any non-zero delay works); a unique delay event id leaves the recurring fit untouched.
+        # Bind _handle_fit on the processing manager itself: the scheduler invokes the delayed
+        # method with the context, which (composition, not mixin inheritance) has no _handle_fit.
+        self.delay("1s", lambda _ctx: self._handle_fit(None, "fit", (None, self._time_provider.time())))
+
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
     ) -> None:

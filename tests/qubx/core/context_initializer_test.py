@@ -134,7 +134,7 @@ class TestContextInitializer:
 
         # Create a context
         with patch("qubx.core.context.MarketManager"):
-            with patch("qubx.core.context.UniverseManager") as mock_universe_manager:
+            with patch("qubx.core.context.UniverseManager"):
                 with patch("qubx.core.context.SubscriptionManager") as mock_subscription_manager:
                     with patch("qubx.core.context.TradingManager"):
                         with patch("qubx.core.context.ProcessingManager") as mock_processing_manager:
@@ -163,3 +163,24 @@ class TestContextInitializer:
 
         # Check that the event schedule was set
         mock_processing_manager.return_value.set_event_schedule.assert_called_with("0 * * * *")
+
+
+def test_on_instrument_service_change_registers_in_order():
+    init = BasicStrategyInitializer(simulation=True)
+
+    calls = []
+
+    def cb1(ctx, added, removed):
+        calls.append(("cb1", added, removed))
+
+    def cb2(ctx, added, removed):
+        calls.append(("cb2", added, removed))
+
+    init.on_instrument_service_change(cb1)
+    init.on_instrument_service_change(cb2)
+
+    cbs = init.get_instrument_service_callbacks()
+    assert cbs == [cb1, cb2]
+    cbs[0](None, ["A"], ["B"])
+    cbs[1](None, ["A"], ["B"])
+    assert calls == [("cb1", ["A"], ["B"]), ("cb2", ["A"], ["B"])]
