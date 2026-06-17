@@ -16,6 +16,7 @@ from qubx.core.events import (
     AccountSnapshotEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
+    OrderCancelRejectedEvent,
     OrderFilledEvent,
     OrderRejectedEvent,
     OrderUpdatedEvent,
@@ -181,6 +182,20 @@ def test_cancel_without_any_id_raises(setup):
         conn.cancel_order()
 
 
+def test_cancel_unknown_order_emits_reject_not_silent(setup):
+    # Parity with the live CcxtConnector: cancelling an order the OME doesn't have must
+    # NOT die silently — it emits OrderCancelRejectedEvent (the cancel did not succeed),
+    # so the AM reverts it out of PENDING_CANCEL instead of being left stuck. It must not
+    # raise (rejection boundary) and must not emit a CANCELED.
+    conn, collector, _exchange, _instr, _time = setup
+    conn.cancel_order(client_order_id="qubx-nope", venue_order_id="V-nope")
+    events = _drain(collector)
+    assert len(events) == 1
+    assert isinstance(events[0], OrderCancelRejectedEvent)
+    assert events[0].client_order_id == "qubx-nope"
+    assert events[0].venue_order_id == "V-nope"
+
+
 def test_update_emits_single_updated_event_with_stable_cid(setup):
     conn, collector, _exchange, instr, _time = setup
     request = OrderRequest(
@@ -301,9 +316,13 @@ def test_update_rejected_replace_emits_update_rejected_then_canceled(setup):
     assert canceled.venue_order_id == accepted.venue_order_id
     assert not exchange.get_open_orders()
 
-    # A later cancel finds nothing at the venue — swallowed, no events, no raise.
+    # A later cancel finds nothing at the venue — parity with the live CcxtConnector: it
+    # emits OrderCancelRejectedEvent (the cancel did not succeed), not a silent no-op and
+    # not a raise. (In the full framework TradingManager short-circuits a terminal order
+    # before the connector; this drives the connector directly to exercise the not-found path.)
     conn.cancel_order(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
-    assert _drain(collector) == []
+    later = _drain(collector)
+    assert [type(e) for e in later] == [OrderCancelRejectedEvent], later
 
 
 def test_process_market_data_translates_fill(setup):

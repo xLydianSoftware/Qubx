@@ -7,6 +7,7 @@ from qubx.core.events import (
     AccountSnapshotEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
+    OrderCancelRejectedEvent,
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
@@ -79,7 +80,15 @@ class SimulatedConnector(ChannelEmitter):
         try:
             report = self._exchange.cancel_order(oid)
         except OrderNotFound:
-            return  # already gone at the venue (filled/canceled) — nothing to emit
+            self.send(
+                OrderCancelRejectedEvent(
+                    instrument=None,
+                    client_order_id=client_order_id,
+                    venue_order_id=venue_order_id,
+                    reason=f"cancel_order: order not found for {oid}",
+                )
+            )
+            return
         self._emit_from_report(report)
 
     def update_order(
