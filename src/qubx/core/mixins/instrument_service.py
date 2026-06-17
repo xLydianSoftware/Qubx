@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 class InstrumentServiceManager(IInstrumentServiceManager):
     """Owns the instrument blacklist service: read helpers, the refresh→callbacks→force-close
-    cycle, and the framework-automatic startup + TTL-poll scheduling. Composed by StrategyContext
+    cycle, the cache-only fit refresh, and the framework-automatic startup refresh. Composed by StrategyContext
     the same way UniverseManager/ProcessingManager are."""
 
     def __init__(self, context: "IStrategyContext", instrument_service: IInstrumentService):
@@ -36,7 +36,7 @@ class InstrumentServiceManager(IInstrumentServiceManager):
     def run_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
         """Refresh the blacklist, fire change callbacks, then force-close any still-held
         newly-blacklisted instruments. Single shared implementation used by the control action
-        AND the startup/TTL-poll schedules. Runs on the strategy thread. `_ctx` is the
+        AND the startup one-shot. Runs on the strategy thread. `_ctx` is the
         scheduler-passed context (unused; the bound `self._context` is the context)."""
         diff = self._service.refresh(self._context.instruments)
         if diff.blacklisted_added or diff.blacklisted_removed:
