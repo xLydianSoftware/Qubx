@@ -280,7 +280,8 @@ class OrdersManagementEngine:
 
             case "LIMIT":
                 _need_update_book = True
-                assert order.price is not None  # LIMIT always carries a price (validated)
+                if order.price is None:
+                    raise InvalidOrder(f"LIMIT order {order.venue_order_id} requires a price")
                 if (_buy_side and order.price >= _c_ask) or (not _buy_side and order.price <= _c_bid):
                     _exec_price = _c_ask if _buy_side else _c_bid
 
@@ -288,7 +289,8 @@ class OrdersManagementEngine:
                 # - it processes stop orders separately without adding to orderbook (as on real exchanges)
                 order.status = OrderStatus.ACCEPTED
                 _stp_order = order
-                assert _stp_order.price is not None  # STOP always carries a price (validated)
+                if _stp_order.price is None:
+                    raise InvalidOrder(f"STOP_MARKET order {_stp_order.venue_order_id} requires a price")
                 _emulate_price_exec = self._fill_stops_at_price or _stp_order.options.get(
                     OPTION_FILL_AT_SIGNAL_PRICE, False
                 )
@@ -379,11 +381,11 @@ class OrdersManagementEngine:
     def _validate_order(
         self, order_side: str, order_type: str, amount: float, price: float | None, time_in_force: str, options: dict
     ) -> None:
-        if order_side.upper() not in ["BUY", "SELL"]:
+        if order_side.upper() not in OrderSide:
             raise InvalidOrder("Invalid order side. Only BUY or SELL is allowed.")
 
         _ot = order_type.upper()
-        if _ot not in ["LIMIT", "MARKET", "STOP_MARKET", "STOP_LIMIT"]:
+        if _ot not in OrderType:
             raise InvalidOrder("Invalid order type. Only LIMIT, MARKET, STOP_MARKET, STOP_LIMIT are supported.")
 
         if amount <= 0:
