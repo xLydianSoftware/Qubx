@@ -5,7 +5,6 @@ Handles subscription and warmup for quote (bid/ask) data.
 """
 
 import math
-from typing import Set
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, Instrument
@@ -28,7 +27,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
         return "quote"
 
     def prepare_subscription(
-        self, name: str, sub_type: str, channel: CtrlChannel, instruments: Set[Instrument], **params
+        self, name: str, sub_type: str, channel: CtrlChannel, instruments: set[Instrument], **params
     ) -> SubscriptionConfiguration:
         """
         Prepare quote subscription configuration.
@@ -100,7 +99,7 @@ class QuoteDataHandler(BaseDataTypeHandler):
             requires_market_type_batching=True,
         )
 
-    async def warmup(self, instruments: Set[Instrument], channel: CtrlChannel, **params) -> None:
+    async def warmup(self, instruments: set[Instrument], channel: CtrlChannel, **params) -> None:
         """
         Quote warmup is typically not needed as it represents current market state.
 

@@ -5,7 +5,6 @@ Handles subscription and warmup for OHLC (candlestick) data.
 """
 
 import asyncio
-from typing import Set
 
 from ccxt import BadSymbol
 
@@ -37,7 +36,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         name: str,
         sub_type: str,
         channel: CtrlChannel,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         timeframe: str = "1m",
         **params,
     ) -> SubscriptionConfiguration:
@@ -78,7 +77,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
             raise NotSupported(f"No bulk or single OHLCV watching supported for {self._exchange_id}")
 
     async def warmup(
-        self, instruments: Set[Instrument], channel: CtrlChannel, warmup_period: str, timeframe: str = "1m", **params
+        self, instruments: set[Instrument], channel: CtrlChannel, warmup_period: str, timeframe: str = "1m", **params
     ) -> None:
         """
         Fetch historical OHLC data for warmup during backtesting.
@@ -200,7 +199,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         name: str,
         sub_type: str,
         channel: CtrlChannel,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         timeframe: str = "1m",
         **params,
     ) -> SubscriptionConfiguration:
@@ -283,7 +282,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         name: str,
         sub_type: str,
         channel: CtrlChannel,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         timeframe: str = "1m",
         **params,
     ) -> SubscriptionConfiguration:

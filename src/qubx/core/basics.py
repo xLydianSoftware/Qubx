@@ -5,7 +5,7 @@ from enum import StrEnum
 from functools import cache
 from queue import Empty, Queue
 from threading import Event
-from typing import Any, Optional, TypeAlias, Union
+from typing import Any, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -604,8 +604,8 @@ class TriggerEvent:
 
     time: dt_64
     type: str
-    instrument: Optional[Instrument]
-    data: Optional[Any]
+    instrument: Instrument | None
+    data: Any | None
 
 
 @dataclass
@@ -1436,7 +1436,7 @@ class DataType(StrEnum):
 
     @staticmethod
     @cache
-    def from_str(value: Union[str, "DataType"]) -> tuple["DataType", dict[str, Any]]:
+    def from_str(value: "str | DataType") -> tuple["DataType", dict[str, Any]]:
         """
         Parse subscription type from string.
         Returns: (subtype, params)

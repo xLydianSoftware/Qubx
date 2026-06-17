@@ -4,8 +4,6 @@ Trade data type handler for CCXT data provider.
 Handles subscription and warmup for trade data.
 """
 
-from typing import Set
-
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.series import Quote
@@ -58,7 +56,7 @@ class TradeDataHandler(BaseDataTypeHandler):
             self._data_provider._last_quotes[instrument] = Quote(_time, _bid, _ask, 0.0, 0.0)
 
     def prepare_subscription(
-        self, name: str, sub_type: str, channel: CtrlChannel, instruments: Set[Instrument], **params
+        self, name: str, sub_type: str, channel: CtrlChannel, instruments: set[Instrument], **params
     ) -> SubscriptionConfiguration:
         """
         Prepare trade subscription configuration.
@@ -84,7 +82,7 @@ class TradeDataHandler(BaseDataTypeHandler):
         name: str,
         sub_type: str,
         channel: CtrlChannel,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
     ) -> SubscriptionConfiguration:
         """Prepare subscription configuration for multiple instruments using bulk API."""
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
@@ -117,7 +115,7 @@ class TradeDataHandler(BaseDataTypeHandler):
         name: str,
         sub_type: str,
         channel: CtrlChannel,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
     ) -> SubscriptionConfiguration:
         """
         Prepare subscription configuration for individual instruments.
@@ -177,7 +175,7 @@ class TradeDataHandler(BaseDataTypeHandler):
             requires_market_type_batching=False,
         )
 
-    async def warmup(self, instruments: Set[Instrument], channel: CtrlChannel, warmup_period: str, **params) -> None:
+    async def warmup(self, instruments: set[Instrument], channel: CtrlChannel, warmup_period: str, **params) -> None:
         """
         Fetch historical trade data for warmup during backtesting.
 

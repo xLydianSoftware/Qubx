@@ -6,7 +6,7 @@ to register custom data providers and ``IConnector`` execution connectors using
 decorators (like readers and storages).
 """
 
-from typing import Any, Callable, Protocol, Type, TypeVar
+from typing import Any, Callable, Protocol, TypeVar
 
 from qubx import logger
 from qubx.core.connector import IConnector
@@ -59,12 +59,12 @@ class ConnectorRegistry:
     plumbing and resolve per-exchange subclasses behind a uniform signature).
     """
 
-    _data_providers: dict[str, Type[IDataProvider]] = {}
+    _data_providers: dict[str, type[IDataProvider]] = {}
     _connectors: dict[str, Callable[..., IConnector]] = {}
     _rate_limit_configs: dict[str, Callable] = {}
 
     @classmethod
-    def register_data_provider(cls, name: str) -> Callable[[Type[T]], Type[T]]:
+    def register_data_provider(cls, name: str) -> Callable[[type[T]], type[T]]:
         """
         Decorator to register a data provider class.
 
@@ -75,7 +75,7 @@ class ConnectorRegistry:
             A decorator function that registers the class
         """
 
-        def decorator(provider_cls: Type[T]) -> Type[T]:
+        def decorator(provider_cls: type[T]) -> type[T]:
             cls._data_providers[name.lower()] = provider_cls  # type: ignore
             logger.debug(f"Registered data provider: {name}")
             return provider_cls
@@ -176,7 +176,7 @@ class ConnectorRegistry:
         return name.lower() in cls._data_providers
 
     @classmethod
-    def get_all_data_providers(cls) -> dict[str, Type[IDataProvider]]:
+    def get_all_data_providers(cls) -> dict[str, type[IDataProvider]]:
         """Get all registered data provider classes."""
         return cls._data_providers.copy()
 
@@ -195,7 +195,7 @@ def __getattr__(name: str) -> Any:
 
 
 # Convenience decorators
-def data_provider(name: str) -> Callable[[Type[T]], Type[T]]:
+def data_provider(name: str) -> Callable[[type[T]], type[T]]:
     """
     Decorator for registering a data provider class.
 

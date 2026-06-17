@@ -3,7 +3,7 @@ import json
 import threading
 import urllib.parse
 from collections import defaultdict
-from typing import Any, Dict, Tuple
+from typing import Any
 
 import aiohttp
 import pandas as pd
@@ -84,7 +84,7 @@ class TardisDataProvider(IDataProvider):
         self._last_quotes: defaultdict[Instrument, Quote | None] = defaultdict(lambda: None)
 
         # Store subscription parameters
-        self._subscription_params: Dict[Tuple[str, Instrument], Dict[str, Any]] = {}
+        self._subscription_params: dict[tuple[str, Instrument], dict[str, Any]] = {}
 
         # Symbol to instrument mapping for quick lookups
         self._symbol_to_instrument: dict[str, Instrument] = {}
@@ -505,7 +505,7 @@ class TardisDataProvider(IDataProvider):
 
                     self.channel.send((instrument, ohlc_type, bar, False))
 
-    def _get_orderbook_params(self, instrument: Instrument) -> Dict[str, Any]:
+    def _get_orderbook_params(self, instrument: Instrument) -> dict[str, Any]:
         """
         Get orderbook parameters for a specific instrument.
         Returns default parameters if not found.

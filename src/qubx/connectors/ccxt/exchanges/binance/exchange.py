@@ -1,4 +1,4 @@
-from typing import Dict, List, cast
+from typing import cast
 
 import ccxt.pro as cxp
 import pandas as pd
@@ -250,7 +250,7 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
     #     super().clean_cache(subscription)
     #     self.clean_stream_state(subscription)
 
-    # async def un_watch_ohlcv_for_symbols(self, symbolsAndTimeframes: List[List[str]], params={}):
+    # async def un_watch_ohlcv_for_symbols(self, symbolsAndTimeframes: list[list[str]], params={}):
     #     """
     #     Enhanced bulk OHLCV unsubscription with proper state validation and cleanup.
 
@@ -376,7 +376,7 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
     Describe method needs to be overriden, because of the way super is called in binanceusdm.
     """
 
-    _funding_intervals: Dict[str, str]
+    _funding_intervals: dict[str, str]
     _funding_intervals_updated_at: pd.Timestamp | None
     _funding_interval_cache_ttl: pd.Timedelta
 
@@ -530,7 +530,7 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
         await self._update_funding_intervals()
         return cast(dict[str, float], self._funding_intervals)
 
-    async def watch_funding_rates(self, symbols: List[str] | None = None):
+    async def watch_funding_rates(self, symbols: list[str] | None = None):
         try:
             await self.load_markets()
             await self._update_funding_intervals()

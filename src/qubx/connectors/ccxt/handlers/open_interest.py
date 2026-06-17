@@ -6,7 +6,6 @@ Handles subscription and warmup for open interest data using REST API polling.
 
 import asyncio
 from asyncio.exceptions import CancelledError
-from typing import Set
 
 import numpy as np
 
@@ -36,7 +35,7 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
         return "open_interest"
 
     def prepare_subscription(
-        self, name: str, sub_type: str, channel: CtrlChannel, instruments: Set[Instrument], **params
+        self, name: str, sub_type: str, channel: CtrlChannel, instruments: set[Instrument], **params
     ) -> SubscriptionConfiguration:
         """
         Prepare open interest subscription configuration using REST API polling.
@@ -187,7 +186,7 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
             requires_market_type_batching=False,
         )
 
-    async def warmup(self, instruments: Set[Instrument], channel: CtrlChannel, **params) -> None:
+    async def warmup(self, instruments: set[Instrument], channel: CtrlChannel, **params) -> None:
         """
         Open interest warmup is typically not needed as it represents current state.
 

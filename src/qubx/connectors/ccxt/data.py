@@ -1,6 +1,5 @@
 import asyncio
 from collections import defaultdict
-from typing import Dict, List, Optional, Set, Tuple
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
@@ -26,7 +25,7 @@ from .warmup_service import WarmupService
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
     _exchange_manager: ExchangeManager
-    _last_quotes: dict[Instrument, Optional[Quote]]
+    _last_quotes: dict[Instrument, Quote | None]
     _warmup_timeout: int
 
     def __init__(
@@ -127,7 +126,7 @@ class CcxtDataProvider(IDataProvider):
     def subscribe(
         self,
         subscription_type: str,
-        instruments: List[Instrument],
+        instruments: list[Instrument],
         reset: bool = False,
     ) -> None:
         if not instruments:
@@ -185,7 +184,7 @@ class CcxtDataProvider(IDataProvider):
             # important to update subscription manager
             self.subscribe(subscription_type, list(remaining_instruments), reset=True)
 
-    def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
+    def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
         return self._subscription_manager.get_subscriptions(instrument)
 
@@ -201,14 +200,14 @@ class CcxtDataProvider(IDataProvider):
         """Check if instrument has pending subscription (delegated to subscription manager)."""
         return self._subscription_manager.has_pending_subscription(instrument, subscription_type)
 
-    def warmup(self, warmups: Dict[Tuple[str, Instrument], str]) -> None:
+    def warmup(self, warmups: dict[tuple[str, Instrument], str]) -> None:
         """Execute warmup (delegated to warmup service)."""
         self._warmup_service.execute_warmup(warmups)
 
     def get_quote(self, instrument: Instrument) -> Quote | None:
         return self._last_quotes.get(instrument, None)
 
-    def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> List[Bar]:
+    def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
         """Get historical OHLC data (delegated to OhlcDataHandler)."""
         # Get OHLC handler from factory
         ohlc_handler = self._data_type_handler_factory.get_handler("ohlc")
@@ -333,7 +332,7 @@ class CcxtDataProvider(IDataProvider):
             )
 
     @property
-    def subscribed_instruments(self) -> Set[Instrument]:
+    def subscribed_instruments(self) -> set[Instrument]:
         """Get all subscribed instruments (delegated to subscription manager)."""
         return set(self._subscription_manager.get_all_subscribed_instruments())
 
