@@ -255,14 +255,15 @@ class SimulationRunner:
 
     def _send_market_data(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> None:
         # Market data rides (instrument, d_type, data, is_historical) tuples through process_data.
-        # Funding payment is an account event (the AccountManager books it into balances/position
-        # PnL), so a live (non-warmup) funding payment rides the typed channel as a
-        # FundingPaymentEvent — mirroring the live CCXT funding handler. Warmup funding stays on
-        # the cache-only tuple path (matching main, which never booked historical funding).
+        # A live (non-warmup) funding payment is dual-emitted, mirroring the live CCXT funding
+        # handler: first as a FundingPaymentEvent on the typed channel (the AccountManager books it
+        # into balances/position PnL), then as a tuple so the strategy still reacts in
+        # on_market_data. The event goes first so the account is fully booked before the strategy
+        # sees the tick. Warmup funding is never booked (matches main) — it rides the cache-only
+        # tuple path alone.
         if not is_hist and DataType.from_str(data_type)[0] == DataType.FUNDING_PAYMENT:
             self.channel.send(FundingPaymentEvent(instrument=instrument, payment=data))
-        else:
-            self.channel.send((instrument, data_type, data, is_hist))
+        self.channel.send((instrument, data_type, data, is_hist))
 
     def _feed_ome(self, instrument: Instrument, data: Any) -> None:
         """Drive the OME (now behind SimulatedConnector) with this tick so resting orders match.

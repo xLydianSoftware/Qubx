@@ -7,7 +7,7 @@ import pytest
 from qubx import logger
 from qubx.core.account_manager.reconcile import ReconcileDiff
 from qubx.core.account_manager.reducer import ApplyResult
-from qubx.core.basics import Deal, FundingPayment, OrderChange
+from qubx.core.basics import DataType, Deal, FundingPayment, MarketEvent, OrderChange
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
@@ -618,6 +618,52 @@ def test_warmup_flag_resets_when_invoke_raises_and_next_tick_retries():
     assert pm._strategy.on_warmup_finished.call_count == 1
     assert pm._context._strategy_state.is_on_warmup_finished_called is True
     assert pm._warmup_finished_is_running is False
+
+
+def test_funding_payment_tuple_reaches_on_market_data():
+    # Dual-emit restoration (backtester): the funding-payment TUPLE (the second of the runner's
+    # two sends) rides the tuple path with no registered handler -> _process_custom_event returns
+    # a MarketEvent that reaches the strategy's on_market_data. Booking is the typed event's job
+    # (process_event); this tuple path does NOT book — it only restores the strategy reaction.
+    pm = make_pm()
+    pm._time_provider = MagicMock()
+    pm._health_monitor = MagicMock()
+    pm._subscription_manager = MagicMock()
+    pm._cache = MagicMock()
+    pm._strategy_name = "FundingReact"
+    pm._emitted_signals = []
+    pm._data_throttler = None
+    # the real handler registry is built from _handle_* methods on the class; there is no
+    # _handle_funding_payment, so a funding tuple correctly falls through to _process_custom_event.
+    pm._handlers = {
+        n.split("_handle_")[1]: f for n, f in ProcessingManager.__dict__.items() if n.startswith("_handle_")
+    }
+    pm._custom_scheduled_methods = {}
+    pm._pending_no_quote_signals = {}
+    pm._fit_is_running = False
+    pm._warmup_finished_is_running = False
+    # funding is not the base subscription -> tracker produces no targets on this tick
+    pm._position_tracker.update.return_value = []
+    pm._context.instruments = []
+    pm._context._strategy_state.is_on_start_called = True
+    pm._context._strategy_state.is_warmup_in_progress = False
+    pm._context._strategy_state.is_on_warmup_finished_called = True
+    pm._context._strategy_state.is_on_fit_called = True
+    pm._strategy.on_market_data.return_value = None
+
+    payment = FundingPayment(time=0, funding_rate=0.0001, funding_interval_hours=8)
+    instrument = MagicMock()
+
+    pm.process_data(instrument, DataType.FUNDING_PAYMENT, payment, is_historical=False)
+
+    pm._strategy.on_market_data.assert_called_once()
+    event = pm._strategy.on_market_data.call_args.args[1]
+    assert isinstance(event, MarketEvent)
+    assert event.type == "funding_payment"
+    assert event.data is payment
+    assert event.instrument is instrument
+    # the tuple path must NOT book funding — booking is the typed FundingPaymentEvent's job
+    pm._account_manager.apply.assert_not_called()
 
 
 def test_on_fit_pumping_events_does_not_retrigger_fit():
