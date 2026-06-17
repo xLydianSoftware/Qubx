@@ -348,26 +348,24 @@ class SimulationRunner:
 
     def _handle_no_data_scenario(self, stop_time):
         """Handle scenario when no data is available but scheduler might have events."""
-        # Check if we have pending scheduled events
-        if hasattr(self.scheduler, "next_expected_event_time"):
-            next_scheduled_time = self.scheduler.next_expected_event_time()
-            current_time = self.time_provider.time()
+        next_scheduled_time = self.scheduler.next_expected_event_time()
+        current_time = self.time_provider.time()
 
-            # Convert to int64 for numerical comparisons (avoid type issues)
-            next_time_ns = next_scheduled_time.astype("int64")
-            current_time_ns = current_time.astype("int64")
-            stop_time_ns = stop_time.value  # Already int64
+        # Convert to int64 for numerical comparisons (avoid type issues)
+        next_time_ns = next_scheduled_time.astype("int64")
+        current_time_ns = current_time.astype("int64")
+        stop_time_ns = stop_time.value  # Already int64
 
-            # Check if we've reached the stop time
-            if current_time_ns >= stop_time_ns:
-                return False  # Stop simulation
+        # Check if we've reached the stop time
+        if current_time_ns >= stop_time_ns:
+            return False  # Stop simulation
 
-            # If there's a scheduled event before stop time, advance to it
-            if next_time_ns < np.iinfo(np.int64).max and next_time_ns < stop_time_ns:
-                # Use the original datetime64 object for set_time (not the int64 conversion)
-                self.time_provider.set_time(next_scheduled_time)
-                self.scheduler.check_and_run_tasks()
-                return True  # Continue simulation
+        # If there's a scheduled event before stop time, advance to it
+        if next_time_ns < np.iinfo(np.int64).max and next_time_ns < stop_time_ns:
+            # Use the original datetime64 object for set_time (not the int64 conversion)
+            self.time_provider.set_time(next_scheduled_time)
+            self.scheduler.check_and_run_tasks()
+            return True  # Continue simulation
 
         return False  # No scheduled events, stop simulation
 
