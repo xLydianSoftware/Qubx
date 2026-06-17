@@ -19,7 +19,7 @@ from qubx.core.basics import (
 from qubx.core.events import ChannelMessage
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
+from qubx.core.interfaces import IStrategy, IStrategyContext, ITransferManager, PositionsTracker
 from qubx.core.lookups import lookup
 from qubx.core.utils import time_delta_to_str
 from qubx.data.storage import IStorage
@@ -638,3 +638,26 @@ def recognize_simulation_data_config(
         trading_sessions_time=_trading_session,
         default_trading_sessions_time=_default_session,
     )
+
+
+def collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataFrame | None:
+    """Build the transfers-log DataFrame from a transfer manager.
+
+    ``ITransferManager.get_transfers() -> dict[tid, record]`` (default no-op; the
+    SimulationTransferManager overrides it). We reproduce the legacy frame shape: one row
+    per transfer, ``timestamp`` as the index, the remaining record fields as columns. No
+    transfers (incl. the no-op default) -> empty frame with the legacy schema; no manager
+    at all -> None.
+    """
+    if transfer_manager is None:
+        return None
+    try:
+        records = list(transfer_manager.get_transfers().values())
+        if not records:
+            return pd.DataFrame(
+                columns=["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]
+            )
+        return pd.DataFrame(records).set_index("timestamp")
+    except Exception as e:
+        logger.error(f"Failed to get transfers log: {e}")
+        return None

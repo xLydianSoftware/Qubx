@@ -4,8 +4,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qubx.backtester.simulator import _collect_transfers_log
 from qubx.backtester.transfers import SimulationTransferManager
+from qubx.backtester.utils import collect_transfers_log
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, ITimeProvider
 from qubx.core.interfaces import ITransferManager
@@ -87,7 +87,7 @@ def test_collect_transfers_log_populated_after_transfer():
     tm = SimulationTransferManager(am, _T())
     txid = tm.transfer_funds("E1", "E2", "USDT", 250.0)
 
-    log = _collect_transfers_log(tm)
+    log = collect_transfers_log(tm)
 
     assert log is not None
     assert isinstance(log, pd.DataFrame)
@@ -105,7 +105,7 @@ def test_collect_transfers_log_empty_when_no_transfers():
     am = _am()
     tm = SimulationTransferManager(am, _T())
 
-    log = _collect_transfers_log(tm)
+    log = collect_transfers_log(tm)
 
     # No transfers recorded -> empty frame (mirrors the legacy empty-schema behavior),
     # never the stale always-None result.
@@ -116,12 +116,12 @@ def test_collect_transfers_log_empty_when_no_transfers():
 
 def test_collect_transfers_log_none_for_missing_manager():
     # No manager at all -> None (nothing to collect).
-    assert _collect_transfers_log(None) is None
+    assert collect_transfers_log(None) is None
 
 
 def test_collect_transfers_log_empty_for_base_manager():
     # get_transfers is on ITransferManager with a no-op default (empty), so a manager that
     # doesn't record a log yields an empty frame — no hasattr probing, no raise, never None.
-    log = _collect_transfers_log(ITransferManager())
+    log = collect_transfers_log(ITransferManager())
     assert isinstance(log, pd.DataFrame)
     assert len(log) == 0

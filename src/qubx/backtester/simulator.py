@@ -7,7 +7,6 @@ from qubx import QubxLogConfig, file_formatter, logger
 from qubx.backtester.utils import SetupTypes
 from qubx.core.basics import Instrument
 from qubx.core.exceptions import SimulationError
-from qubx.core.interfaces import ITransferManager
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.storage import IStorage
 from qubx.emitters.inmemory import InMemoryMetricEmitter
@@ -22,33 +21,11 @@ from .utils import (
     SimulationSetup,
     StrategiesDecls_t,
     SymbolOrInstrument_t,
+    collect_transfers_log,
     find_instruments_and_exchanges,
     recognize_simulation_configuration,
     recognize_simulation_data_config,
 )
-
-
-def _collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataFrame | None:
-    """Build the transfers-log DataFrame from a transfer manager.
-
-    ``ITransferManager.get_transfers() -> dict[tid, record]`` (default no-op; the
-    SimulationTransferManager overrides it). We reproduce the legacy frame shape: one row
-    per transfer, ``timestamp`` as the index, the remaining record fields as columns. No
-    transfers (incl. the no-op default) -> empty frame with the legacy schema; no manager
-    at all -> None.
-    """
-    if transfer_manager is None:
-        return None
-    try:
-        records = list(transfer_manager.get_transfers().values())
-        if not records:
-            return pd.DataFrame(
-                columns=["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]
-            )
-        return pd.DataFrame(records).set_index("timestamp")
-    except Exception as e:
-        logger.error(f"Failed to get transfers log: {e}")
-        return None
 
 
 def simulate(
@@ -340,10 +317,10 @@ def _run_setup(
 
         # - get transfers log: runner.py wires a SimulationTransferManager by default, so a
         #   backtest that executes inter-exchange transfers has a log to collect. The manager
-        #   exposes get_transfers() (no get_transfers_dataframe()); _collect_transfers_log
+        #   exposes get_transfers() (no get_transfers_dataframe()); collect_transfers_log
         #   builds the frame from it, returning an empty frame when no transfers ran.
         transfer_manager = getattr(runner.ctx, "_transfer_manager", None)
-        transfers_log = _collect_transfers_log(transfer_manager)
+        transfers_log = collect_transfers_log(transfer_manager)
 
         return TradingSessionResult(
             setup_id,
