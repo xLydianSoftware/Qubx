@@ -7,6 +7,7 @@ from qubx import QubxLogConfig, file_formatter, logger
 from qubx.backtester.utils import SetupTypes
 from qubx.core.basics import Instrument
 from qubx.core.exceptions import SimulationError
+from qubx.core.interfaces import ITransferManager
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.storage import IStorage
 from qubx.emitters.inmemory import InMemoryMetricEmitter
@@ -27,16 +28,16 @@ from .utils import (
 )
 
 
-def _collect_transfers_log(transfer_manager) -> pd.DataFrame | None:
-    """Build the transfers-log DataFrame from a simulation transfer manager.
+def _collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataFrame | None:
+    """Build the transfers-log DataFrame from a transfer manager.
 
-    The rewritten SimulationTransferManager exposes ``get_transfers() -> dict[tid, record]``
-    (the old ``get_transfers_dataframe()`` is gone). We reproduce the legacy frame shape:
-    one row per transfer, ``timestamp`` as the index, and the remaining record fields as
-    columns. With no transfers we return an empty frame with the legacy schema (matching
-    the original behavior), and None for a manager that doesn't expose the transfers API.
+    ``ITransferManager.get_transfers() -> dict[tid, record]`` (default no-op; the
+    SimulationTransferManager overrides it). We reproduce the legacy frame shape: one row
+    per transfer, ``timestamp`` as the index, the remaining record fields as columns. No
+    transfers (incl. the no-op default) -> empty frame with the legacy schema; no manager
+    at all -> None.
     """
-    if transfer_manager is None or not hasattr(transfer_manager, "get_transfers"):
+    if transfer_manager is None:
         return None
     try:
         records = list(transfer_manager.get_transfers().values())

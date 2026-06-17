@@ -1178,10 +1178,14 @@ class ITransferManager:
         ...
 
     def get_transfers(self) -> dict[str, dict[str, Any]]:
+        """Recorded transfers keyed by transaction id, for reporting (e.g. the backtest
+        transfers log).
+
+        Default no-op (empty — no log kept): a live manager performs transfers at the venue
+        and need not maintain one; SimulationTransferManager overrides it. Returns an empty
+        dict rather than None so callers invoke it directly instead of probing for it.
         """
-        Get all transfers.
-        """
-        ...
+        return {}
 
 
 class IProcessingManager:

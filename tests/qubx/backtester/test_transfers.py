@@ -8,6 +8,7 @@ from qubx.backtester.simulator import _collect_transfers_log
 from qubx.backtester.transfers import SimulationTransferManager
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, ITimeProvider
+from qubx.core.interfaces import ITransferManager
 
 
 class _T(ITimeProvider):
@@ -113,6 +114,14 @@ def test_collect_transfers_log_empty_when_no_transfers():
     assert len(log) == 0
 
 
-def test_collect_transfers_log_none_for_unsupported_manager():
-    # A manager without the transfers API yields None rather than raising.
-    assert _collect_transfers_log(object()) is None
+def test_collect_transfers_log_none_for_missing_manager():
+    # No manager at all -> None (nothing to collect).
+    assert _collect_transfers_log(None) is None
+
+
+def test_collect_transfers_log_empty_for_base_manager():
+    # get_transfers is on ITransferManager with a no-op default (empty), so a manager that
+    # doesn't record a log yields an empty frame — no hasattr probing, no raise, never None.
+    log = _collect_transfers_log(ITransferManager())
+    assert isinstance(log, pd.DataFrame)
+    assert len(log) == 0
