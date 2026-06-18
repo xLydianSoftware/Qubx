@@ -102,13 +102,15 @@ class TradingManager(ITradingManager):
         current = self._account.get_position(instrument).quantity
         new = current + amount
         if current == 0 or abs(new) > abs(current):
-            logger.warning(
+            # Routine, expected enforcement (can recur every bar for a strategy that keeps
+            # signalling a blacklisted instrument) -> debug, not warning, to avoid log spam.
+            logger.debug(
                 f"[Blacklist] :: blocked order increasing exposure on {instrument.symbol} "
                 f"(current={current}, amount={amount})"
             )
             return 0.0
         if (current > 0) != (new > 0) and new != 0:  # would flip through zero
-            logger.warning(
+            logger.debug(
                 f"[Blacklist] :: clamping {instrument.symbol} order to close "
                 f"(current={current}, requested_new={new})"
             )
