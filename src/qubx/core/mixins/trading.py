@@ -69,6 +69,31 @@ class TradingManager(ITradingManager):
         self._client_id_store = ClientIdStore()
         self._exchange_to_connector = dict(connectors)
 
+    def _blacklist_clamp(self, instrument: Instrument, amount: float) -> float:
+        """Reduce-only for blacklisted instruments: an order may only move the position
+        toward zero, never open or increase exposure. No-op when not blacklisted (always,
+        without an instrument service). Returns the (possibly clamped) amount; 0.0 means
+        'do not send'. A flip through zero is clamped to an exact close."""
+        if not self._context.is_blacklisted(instrument):
+            return amount
+        current = self._account_manager.get_position(instrument).quantity
+        new = current + amount
+        if current == 0 or abs(new) > abs(current):
+            # Routine, expected enforcement (can recur every bar for a strategy that keeps
+            # signalling a blacklisted instrument) -> debug, not warning, to avoid log spam.
+            logger.debug(
+                f"[Blacklist] :: blocked order increasing exposure on {instrument.symbol} "
+                f"(current={current}, amount={amount})"
+            )
+            return 0.0
+        if (current > 0) != (new > 0) and new != 0:  # would flip through zero
+            logger.debug(
+                f"[Blacklist] :: clamping {instrument.symbol} order to close "
+                f"(current={current}, requested_new={new})"
+            )
+            return -current
+        return amount
+
     def trade(
         self,
         instrument: Instrument,
@@ -77,7 +102,10 @@ class TradingManager(ITradingManager):
         time_in_force="gtc",
         client_id: str | None = None,
         **options,
-    ) -> Order:
+    ) -> Order | None:
+        amount = self._blacklist_clamp(instrument, amount)
+        if amount == 0.0:
+            return None
         size_adj = self._adjust_size(instrument, amount)
         side = self._get_side(amount)
         order_type = self._get_order_type(instrument, price, options)

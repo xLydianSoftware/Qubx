@@ -75,23 +75,23 @@ def test_invoke_on_fit_refreshes_instrument_service_before_on_fit(processing_man
 
     # Attach both calls to a shared parent mock so their relative order is recorded.
     order = MagicMock()
-    order.attach_mock(context._instrument_service_manager.refresh_only, "refresh_only")
+    order.attach_mock(context._instrument_service_manager.enforce_at_fit, "enforce_at_fit")
     order.attach_mock(strategy.on_fit, "on_fit")
 
     # name-mangled: ProcessingManager.__invoke_on_fit
     processing_manager._ProcessingManager__invoke_on_fit()
 
-    context._instrument_service_manager.refresh_only.assert_called_once_with()
+    context._instrument_service_manager.enforce_at_fit.assert_called_once_with()
     strategy.on_fit.assert_called_once_with(context)
 
     called = [c[0] for c in order.mock_calls]
-    assert called.index("refresh_only") < called.index("on_fit")
+    assert called.index("enforce_at_fit") < called.index("on_fit")
 
 
 def test_invoke_on_fit_marks_fit_called_even_if_refresh_raises(processing_manager):
     context = processing_manager._test_context
     strategy = processing_manager._test_strategy
-    context._instrument_service_manager.refresh_only.side_effect = RuntimeError("boom")
+    context._instrument_service_manager.enforce_at_fit.side_effect = RuntimeError("boom")
 
     # Should not propagate: the on_fit try/except swallows it (refresh shares on_fit's
     # error handling — acceptable per design §5).

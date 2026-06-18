@@ -67,6 +67,14 @@ class SimplePositionGatherer(IPositionGathering):
                 logger.debug(f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: {e}")
                 return current_position
 
+            if r is None:
+                # No order was placed (e.g. blocked by the blacklist reduce-only trade gate).
+                # The position is unchanged: do not touch entry_order_id or report new_size.
+                logger.debug(
+                    f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: order not placed; position stays {current_position}"
+                )
+                return current_position
+
             if _is_stop_or_limit:
                 self.entry_order_id = r.client_order_id
                 logger.debug(

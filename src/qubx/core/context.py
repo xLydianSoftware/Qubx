@@ -917,9 +917,6 @@ class StrategyContext(IStrategyContext):
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
         return self._processing_manager.delay(duration, method)
 
-    def trigger_fit(self) -> None:
-        return self._processing_manager.trigger_fit()
-
     # :: IWarmupStateSaver delegation ::
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
         self._warmup_positions = positions

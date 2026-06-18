@@ -360,6 +360,22 @@ class TestTrackersAndGatherers:
         assert [o.price for o in ctx.submitted] == [1010.0]
         assert not ctx.cancelled
 
+    def test_gatherer_handles_none_trade_result_without_crash(self):
+        # When ctx.trade returns None (e.g. an order blocked by the blacklist reduce-only
+        # gate), the gatherer must not crash on r.id and must leave the position unchanged.
+        # Uses a LIMIT target (entry_price below the bid) so _is_stop_or_limit is True --
+        # that is the path that dereferenced r.id and crashed before the guard.
+        ctx = DebugStratageyCtx(instrs := [lookup.find_symbol("BINANCE.UM", "BTCUSDT")], 10000)
+        ctx.trade = lambda *a, **k: None  # simulate a blocked/rejected order
+        gathering = SimplePositionGatherer()
+        i = instrs[0]
+        assert i is not None
+        # quote is bid=1000.0/ask=1000.5; entry_price 999.0 <= bid -> limit buy.
+        target = i.target(ctx.time(), 0.1, entry_price=999.0)
+        result = gathering.alter_position_size(ctx, target)  # must not raise AttributeError
+        assert result == 0.0  # position unchanged (no order placed)
+        assert gathering.entry_order_id is None
+
     def test_fixed_risk_sizer(self):
         ctx = DebugStratageyCtx(instrs := [lookup.find_symbol("BINANCE.UM", "BTCUSDT")], 10000)
         i = instrs[0]

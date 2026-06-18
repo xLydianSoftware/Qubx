@@ -6,7 +6,7 @@ from qubx.core.interfaces import IInstrumentServiceManager, IStrategyContext
 
 class InstrumentServiceManager(IInstrumentServiceManager):
     """Owns the instrument blacklist service: read helpers, the refresh→callbacks→force-close
-    cycle, the cache-only fit refresh, and the framework-automatic startup refresh. Composed by StrategyContext
+    cycle, fit-time enforcement, and the framework-automatic startup refresh. Composed by StrategyContext
     the same way UniverseManager/ProcessingManager are."""
 
     def __init__(self, context: IStrategyContext, instrument_service: IInstrumentService):
@@ -27,10 +27,10 @@ class InstrumentServiceManager(IInstrumentServiceManager):
         return self._service.matching_instruments(self._context.instruments)
 
     def run_cycle(self, _ctx: IStrategyContext | None = None) -> dict:
-        """Refresh the blacklist, fire change callbacks, then force-close any still-held
-        newly-blacklisted instruments. Single shared implementation used by the control action
-        AND the startup one-shot. Runs on the strategy thread. `_ctx` is the
-        scheduler-passed context (unused; the bound `self._context` is the context)."""
+        """Refresh the blacklist, fire change callbacks, then force-close ALL held
+        blacklisted instruments (full set, not just the change delta). Shared by the
+        control action and the startup one-shot. Runs on the strategy thread (`_ctx` is the
+        scheduler-passed context, unused; the bound `self._context` is the context)."""
         diff = self._service.refresh(self._context.instruments)
         if diff.blacklisted_added or diff.blacklisted_removed:
             for cb in self._callbacks:
@@ -38,30 +38,38 @@ class InstrumentServiceManager(IInstrumentServiceManager):
                     cb(self._context, diff.blacklisted_added, diff.blacklisted_removed)
                 except Exception as e:
                     logger.error(f"[InstrumentService] :: change callback error: {e}")
-        positions = self._context.get_positions()
-        still_held = [i for i in diff.blacklisted_added if i in positions and positions[i].quantity != 0]
-        if still_held:
-            self._context.remove_instruments(still_held, if_has_position_then="close")
+        closed = self._force_close_held_blacklisted()
         return {
             "blacklisted_added": len(diff.blacklisted_added),
             "blacklisted_removed": len(diff.blacklisted_removed),
-            "force_closed": len(still_held),
-            "force_closed_instruments": [str(i) for i in still_held],
+            "force_closed": len(closed),
+            "force_closed_instruments": [str(i) for i in closed],
         }
 
-    def refresh_only(self) -> None:
-        """Refresh the cached blacklist WITHOUT firing change callbacks or force-closing
-        positions. Used as the fit-time safety net: called immediately before `on_fit` so
-        `get_universe` / `ctx.filter_blacklisted` select over current blacklist data, while
-        the actual closing of now-blacklisted positions is handled by the fit's
-        `set_universe` removal path. No-op for the Null service (its `refresh` returns an
-        empty diff and nothing else runs)."""
+    def _force_close_held_blacklisted(self) -> list[Instrument]:
+        """Force-close every currently-held position whose instrument is blacklisted.
+        Idempotent and full-set (not the change delta), so already-blacklisted holdings
+        are closed too. Reduce-only by construction (closes to 0), so it is allowed by the
+        trade-layer blacklist gate. No-op for the Null service (is_blacklisted is False)."""
+        positions = self._context.get_positions()
+        held = [i for i, p in positions.items() if p.quantity != 0 and self._service.is_blacklisted(i)]
+        if held:
+            self._context.remove_instruments(held, if_has_position_then="close")
+        return held
+
+    def enforce_at_fit(self) -> None:
+        """Fit-time enforcement: refresh the cached blacklist AND force-close any held
+        blacklisted positions, WITHOUT firing change callbacks (the fit is already
+        running; firing re-fit callbacks here would loop). Called immediately before
+        `on_fit` so the rebalance selects over current data and never holds a blacklisted
+        instrument. No-op for the Null service."""
         self._service.refresh(self._context.instruments)
+        self._force_close_held_blacklisted()
 
     def start(self) -> None:
         """Framework-automatic refresh wiring (non-Null only): a one-shot startup refresh
         dispatched on the strategy thread via the context scheduler. The blacklist is kept
-        current thereafter by the fit-time cache refresh (see `refresh_only`) and by the
+        current thereafter by the fit-time enforcement (see `enforce_at_fit`) and by the
         operator-triggered `refresh_instrument_service` action; there is no periodic poll."""
         if isinstance(self._service, NullInstrumentService):
             return

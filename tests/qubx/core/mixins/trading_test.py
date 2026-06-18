@@ -36,6 +36,9 @@ class MockStrategyContext(IStrategyContext):
         else:
             self.emitted_signals.append(signal)
 
+    def is_blacklisted(self, instrument):
+        return False
+
 
 @pytest.fixture
 def time_provider():
@@ -745,3 +748,67 @@ class TestAdjustSizeMinNotional:
         # Selling 5 ADA (reducing position) — below min_notional but should work
         result = notional_trading_manager._adjust_size(ada_instrument, -5.0)
         assert result == 5.0
+
+
+class TestBlacklistReduceOnly:
+    def _pos(self, qty):
+        p = Mock(spec=Position)
+        p.quantity = qty
+        return p
+
+    def test_clamp_blocks_opening_from_flat(self, trading_manager, mock_account, strategy_context):
+        strategy_context.is_blacklisted = lambda inst: True
+        mock_account.get_position.return_value = self._pos(0.0)
+        assert trading_manager._blacklist_clamp(Mock(symbol="ONDOUSDT"), -891.4) == 0.0
+
+    def test_clamp_blocks_increasing_short(self, trading_manager, mock_account, strategy_context):
+        strategy_context.is_blacklisted = lambda inst: True
+        mock_account.get_position.return_value = self._pos(-500.0)
+        assert trading_manager._blacklist_clamp(Mock(symbol="ONDOUSDT"), -100.0) == 0.0  # -500 -> -600
+
+    def test_clamp_allows_reducing_short(self, trading_manager, mock_account, strategy_context):
+        strategy_context.is_blacklisted = lambda inst: True
+        mock_account.get_position.return_value = self._pos(-500.0)
+        assert trading_manager._blacklist_clamp(Mock(symbol="ONDOUSDT"), 200.0) == 200.0  # -500 -> -300
+
+    def test_clamp_flip_through_zero_is_clamped_to_close(self, trading_manager, mock_account, strategy_context):
+        strategy_context.is_blacklisted = lambda inst: True
+        mock_account.get_position.return_value = self._pos(-500.0)
+        # request would go -500 -> +300 (flip); clamp to exact close (+500)
+        assert trading_manager._blacklist_clamp(Mock(symbol="ONDOUSDT"), 800.0) == 500.0
+
+    def test_clamp_noop_when_not_blacklisted(self, trading_manager, mock_account, strategy_context):
+        strategy_context.is_blacklisted = lambda inst: False
+        assert trading_manager._blacklist_clamp(Mock(symbol="BTCUSDT"), -891.4) == -891.4
+        mock_account.get_position.assert_not_called()
+
+    def test_clamp_blocks_increasing_long(self, trading_manager, mock_account, strategy_context):
+        # long-side mirror of the short-increase block (guards sign handling)
+        strategy_context.is_blacklisted = lambda inst: True
+        mock_account.get_position.return_value = self._pos(500.0)
+        assert trading_manager._blacklist_clamp(Mock(symbol="ONDOUSDT"), 100.0) == 0.0  # +500 -> +600
+
+    def test_clamp_flip_long_to_short_is_clamped_to_close(self, trading_manager, mock_account, strategy_context):
+        strategy_context.is_blacklisted = lambda inst: True
+        mock_account.get_position.return_value = self._pos(500.0)
+        # request would go +500 -> -300 (flip); clamp to exact close (-500)
+        assert trading_manager._blacklist_clamp(Mock(symbol="ONDOUSDT"), -800.0) == -500.0
+
+    def test_clamp_allows_exact_close_unchanged(self, trading_manager, mock_account, strategy_context):
+        # an order that lands exactly on zero is a reduce, returned unchanged (not 0.0-blocked)
+        strategy_context.is_blacklisted = lambda inst: True
+        mock_account.get_position.return_value = self._pos(-500.0)
+        assert trading_manager._blacklist_clamp(Mock(symbol="ONDOUSDT"), 500.0) == 500.0
+
+
+def test_trade_sends_no_order_when_blacklisted_and_opening(
+    trading_manager, mock_account, mock_connector, strategy_context
+):
+    strategy_context.is_blacklisted = lambda inst: True
+    flat = Mock(spec=Position)
+    flat.quantity = 0.0
+    mock_account.get_position.return_value = flat
+    inst = Mock(symbol="ONDOUSDT")
+    inst.exchange = "BINANCE.UM"
+    assert trading_manager.trade(inst, -891.4) is None
+    mock_connector.submit_order.assert_not_called()
