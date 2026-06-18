@@ -38,7 +38,10 @@ class InstrumentServiceManager(IInstrumentServiceManager):
         blacklisted instruments (full set, not just the change delta). Shared by the
         control action and the startup one-shot. Runs on the strategy thread."""
         diff = self._service.refresh(self._context.instruments)
-        if diff.blacklisted_added or diff.blacklisted_removed:
+        # Fire on ANY blacklist edit (entries_changed), not just universe-scoped add/remove:
+        # un-blacklisting an instrument that was already evicted from the universe produces
+        # no add/remove but must still re-fit so the strategy can re-select it.
+        if diff.entries_changed or diff.blacklisted_added or diff.blacklisted_removed:
             for cb in self._callbacks:
                 try:
                     cb(self._context, diff.blacklisted_added, diff.blacklisted_removed)
