@@ -615,10 +615,12 @@ class ProcessingManager(IProcessingManager):
     def __invoke_on_fit(self) -> None:
         with self._health_monitor("ctx.on_fit"):
             try:
-                # - refresh the blacklist cache (cache-only: no callbacks / no force-close)
-                #   so on_fit's get_universe / filter_blacklisted select over current data.
-                #   No-op for the Null instrument service.
-                self._context._instrument_service_manager.refresh_only()
+                # - enforce the blacklist before fitting: refresh the cache AND force-close
+                #   any held blacklisted positions (no change callbacks), so on_fit's
+                #   get_universe / filter_blacklisted select over current data and no
+                #   blacklisted instrument is held into the rebalance. No-op for the Null
+                #   instrument service.
+                self._context._instrument_service_manager.enforce_at_fit()
                 logger.debug(f"[<y>{self.__class__.__name__}</y>] :: Invoking <g>{self._strategy_name}</g> on_fit")
                 self._strategy.on_fit(self._context)
                 self._subscription_manager.commit()  # apply pending operations

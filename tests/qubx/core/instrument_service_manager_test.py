@@ -95,32 +95,25 @@ def test_set_callbacks_preserves_order():
     assert m._callbacks == [a, b]
 
 
-def test_refresh_only_refreshes_cache_without_callbacks_or_force_close():
-    calls = []
-    btc = MagicMock()
-    pos = MagicMock(); pos.quantity = 1.0
+def test_enforce_at_fit_refreshes_and_force_closes_without_callbacks():
+    ondo = MagicMock()
+    pos = MagicMock(); pos.quantity = -891.4
     svc = MagicMock()
-    svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[btc], blacklisted_removed=[])
-    m, ctx = _mgr(
-        svc,
-        instruments=[btc],
-        positions={btc: pos},
-        callbacks=[lambda c, a, r: calls.append("cb")],
-    )
-    result = m.refresh_only()
-    assert result is None
-    svc.refresh.assert_called_once_with([btc])
-    assert calls == []
-    ctx.remove_instruments.assert_not_called()
-    ctx.get_positions.assert_not_called()
+    svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[], blacklisted_removed=[])
+    svc.is_blacklisted.side_effect = lambda i: i is ondo
+    calls = []
+    m, ctx = _mgr(svc, instruments=[ondo], positions={ondo: pos},
+                  callbacks=[lambda c, a, r: calls.append("cb")])
+    assert m.enforce_at_fit() is None
+    svc.refresh.assert_called_once_with([ondo])
+    assert calls == []  # no change callbacks at fit time
+    ctx.remove_instruments.assert_called_once_with([ondo], if_has_position_then="close")
 
 
-def test_refresh_only_noop_with_null_service():
+def test_enforce_at_fit_noop_with_null_service():
     m, ctx = _mgr(NullInstrumentService())
-    # Must not raise and must not touch position/removal machinery.
-    assert m.refresh_only() is None
+    assert m.enforce_at_fit() is None
     ctx.remove_instruments.assert_not_called()
-    ctx.get_positions.assert_not_called()
 
 
 def test_run_cycle_force_closes_all_held_blacklisted_not_just_delta():

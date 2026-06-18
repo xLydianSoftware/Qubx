@@ -1361,10 +1361,9 @@ class IInstrumentServiceManager:
         newly-blacklisted instruments. Returns a summary dict."""
         ...
 
-    def refresh_only(self) -> None:
-        """Refresh the cached blacklist only — no change callbacks, no force-close.
-        Called before each `on_fit` so universe selection sees current data. No-op for
-        the Null service."""
+    def enforce_at_fit(self) -> None:
+        """Fit-time enforcement: refresh the cached blacklist and force-close any held
+        blacklisted positions, without firing change callbacks. No-op for the Null service."""
         ...
 
     def start(self) -> None:
