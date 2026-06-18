@@ -121,3 +121,20 @@ def test_refresh_only_noop_with_null_service():
     assert m.refresh_only() is None
     ctx.remove_instruments.assert_not_called()
     ctx.get_positions.assert_not_called()
+
+
+def test_run_cycle_force_closes_all_held_blacklisted_not_just_delta():
+    # WLFI regression: an already-blacklisted holding (absent from the change delta)
+    # must still be force-closed.
+    ondo, wlfi, btc = MagicMock(), MagicMock(), MagicMock()
+    pos = MagicMock(); pos.quantity = -34767.0
+    btc_pos = MagicMock(); btc_pos.quantity = 1.0
+    svc = MagicMock()
+    # Only ONDO is newly-added this cycle; WLFI was blacklisted earlier.
+    svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[ondo], blacklisted_removed=[])
+    svc.is_blacklisted.side_effect = lambda i: i in (ondo, wlfi)
+    m, ctx = _mgr(svc, instruments=[wlfi, btc], positions={wlfi: pos, btc: btc_pos})
+    summary = m.run_cycle()
+    ctx.remove_instruments.assert_called_once_with([wlfi], if_has_position_then="close")
+    assert summary["force_closed"] == 1
+    assert summary["force_closed_instruments"] == [str(wlfi)]
