@@ -247,8 +247,10 @@ class ProcessingManager(IProcessingManager):
         fit handler on the strategy thread (via delay -> _handle_fit); uses a unique
         delay event id, so the recurring fit schedule is untouched."""
         # short delay defers the fit onto the strategy thread via the scheduler/channel
-        # (any non-zero delay works); a unique delay event id leaves the recurring fit untouched
-        self.delay("1s", lambda c: c._handle_fit(None, "fit", (None, c.time())))
+        # (any non-zero delay works); a unique delay event id leaves the recurring fit untouched.
+        # _handle_fit lives on the ProcessingManager (self), not the context the scheduler
+        # passes into the callback, so bind it from self rather than the callback arg.
+        self.delay("1s", lambda _c: self._handle_fit(None, "fit", (None, self._time_provider.time())))
 
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
