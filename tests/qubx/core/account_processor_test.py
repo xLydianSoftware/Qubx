@@ -147,6 +147,9 @@ class TestAccountProcessorStuff:
 
         mock_context = Mock()
         mock_context.time = DummyTimeProvider().time
+        # No blacklist in these tests: report False so the reduce-only trade gate is a
+        # no-op (a bare Mock would return a truthy is_blacklisted and block opening orders).
+        mock_context.is_blacklisted = Mock(return_value=False)
 
         # Mock the quote method to return a quote with mid_price
         mock_quote = Mock()
