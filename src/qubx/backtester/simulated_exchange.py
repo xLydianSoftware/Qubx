@@ -22,11 +22,9 @@ class ISimulatedExchange:
     """
 
     exchange_id: str
-    _half_tick_size: dict[Instrument, float]
 
     def __init__(self, exchange_id: str):
         self.exchange_id = exchange_id.upper()
-        self._half_tick_size = {}
 
     def get_time_provider(self) -> ITimeProvider: ...
 
@@ -58,41 +56,6 @@ class ISimulatedExchange:
         self, instrument: Instrument, data: Quote | OrderBook | Trade | TradeArray
     ) -> Generator[SimulatedExecutionReport]: ...
 
-    def emulate_quote_from_data(
-        self, instrument: Instrument, timestamp: dt_64, data: float | Timestamped
-    ) -> Quote | None:
-        """
-        Emulate quote from data.
-
-        TODO: we need to get rid of this method in the future
-        """
-        if instrument not in self._half_tick_size:
-            self._half_tick_size[instrument] = instrument.tick_size / 2  # type: ignore
-
-        if isinstance(data, Quote):
-            return data
-
-        elif isinstance(data, Trade):
-            _ts2 = self._half_tick_size[instrument]
-            if data.side == 1:  # type: ignore
-                return Quote(timestamp, data.price - _ts2 * 2, data.price, 0, 0)  # type: ignore
-            else:
-                return Quote(timestamp, data.price, data.price + _ts2 * 2, 0, 0)  # type: ignore
-
-        elif isinstance(data, Bar):
-            _ts2 = self._half_tick_size[instrument]
-            return Quote(timestamp, data.close - _ts2, data.close + _ts2, 0, 0)  # type: ignore
-
-        elif isinstance(data, OrderBook):
-            return data.to_quote()
-
-        elif isinstance(data, float):
-            _ts2 = self._half_tick_size[instrument]
-            return Quote(timestamp, data - _ts2, data + _ts2, 0, 0)
-
-        else:
-            return None
-
 
 class BasicSimulatedExchange(ISimulatedExchange):
     """
@@ -100,7 +63,6 @@ class BasicSimulatedExchange(ISimulatedExchange):
     """
 
     _ome: dict[Instrument, OrdersManagementEngine]
-    _half_tick_size: dict[Instrument, float]
     _order_to_instrument: dict[str, Instrument]
     _fill_stop_order_at_price: bool
     _time_provider: ITimeProvider
@@ -116,7 +78,6 @@ class BasicSimulatedExchange(ISimulatedExchange):
         super().__init__(exchange_id)
         self._ome = {}
         self._order_to_instrument = {}
-        self._half_tick_size = {}
         self._fill_stop_order_at_price = accurate_stop_orders_execution
         self._time_provider = time_provider
         self._tcc = tcc
@@ -209,7 +170,6 @@ class BasicSimulatedExchange(ISimulatedExchange):
         """
         # - clears the OME to remove stale BBO data.
         self._ome.pop(instrument, None)
-        self._half_tick_size.pop(instrument, None)
 
     def on_subscribe(self, instrument: Instrument) -> None:
         """
@@ -218,11 +178,9 @@ class BasicSimulatedExchange(ISimulatedExchange):
         # - just for sanity: remove OME for this instrument if it wasn't removed in on_unsubscribe call
         if instrument in self._ome:
             self._ome.pop(instrument, None)
-            self._half_tick_size.pop(instrument, None)
 
     def _get_ome(self, instrument: Instrument) -> OrdersManagementEngine:
         if (ome := self._ome.get(instrument)) is None:
-            self._half_tick_size[instrument] = instrument.tick_size / 2  # type: ignore
             # - create order management engine for instrument
             self._ome[instrument] = (
                 ome := OrdersManagementEngine(
@@ -259,3 +217,32 @@ def get_simulated_exchange(
     return BasicSimulatedExchange(
         exchange_name, time_provider, tcc, accurate_stop_orders_execution=accurate_stop_orders_execution
     )
+
+
+def emulate_quote_from_data(instrument: Instrument, timestamp: dt_64, data: float | Timestamped) -> Quote | None:
+    """Emulate a tradeable quote from arbitrary market data (quote/trade/bar/orderbook/price).
+
+    Pure helper shared by SimulatedConnector (to feed non-matchable data to the OME) and
+    SimulatedDataProvider (to maintain get_quote) — neither needs the OME to shape a quote.
+
+    TODO: we need to get rid of this in the future.
+    """
+    if isinstance(data, Quote):
+        return data
+
+    half_tick = instrument.tick_size / 2  # type: ignore
+    if isinstance(data, Trade):
+        if data.side == 1:  # type: ignore
+            return Quote(timestamp, data.price - half_tick * 2, data.price, 0, 0)  # type: ignore
+        return Quote(timestamp, data.price, data.price + half_tick * 2, 0, 0)  # type: ignore
+
+    if isinstance(data, Bar):
+        return Quote(timestamp, data.close - half_tick, data.close + half_tick, 0, 0)  # type: ignore
+
+    if isinstance(data, OrderBook):
+        return data.to_quote()
+
+    if isinstance(data, float):
+        return Quote(timestamp, data - half_tick, data + half_tick, 0, 0)
+
+    return None

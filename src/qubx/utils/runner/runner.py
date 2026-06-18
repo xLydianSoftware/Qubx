@@ -14,7 +14,6 @@ from qubx import QubxLogConfig, file_formatter, logger
 from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
-from qubx.backtester.simulated_exchange import get_simulated_exchange
 from qubx.backtester.simulator import simulate
 from qubx.backtester.utils import (
     SetupTypes,
@@ -801,8 +800,9 @@ def _create_paper_connector(
     """
     return SimulatedConnector(
         channel=channel,
-        exchange=get_simulated_exchange(exchange_name, time_provider, tcc),
+        exchange_name=exchange_name,
         time_provider=time_provider,
+        tcc=tcc,
     )
 
 

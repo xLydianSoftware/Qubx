@@ -2,7 +2,6 @@ import numpy as np
 import pytest
 
 from qubx.backtester.connector import SimulatedConnector
-from qubx.backtester.simulated_exchange import get_simulated_exchange
 from qubx.backtester.utils import SimulatedCtrlChannel
 from qubx.core.basics import (
     OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
@@ -79,19 +78,19 @@ def setup():
     instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
     assert instr is not None
     time = _TimeService()
-    exchange = get_simulated_exchange("BINANCE.UM", time, ZERO_COSTS)
     channel, collector = _channel()
-    conn = SimulatedConnector(channel=channel, exchange=exchange, time_provider=time)
-    # prime the order book so the OME is ready to accept orders; consume the
+    conn = SimulatedConnector(channel=channel, exchange_name="BINANCE.UM", time_provider=time, tcc=ZERO_COSTS)
+    # The OME is private to the connector — drive/inspect it directly via conn._ome in these
+    # unit tests. Prime the order book so the OME is ready to accept orders; consume the
     # generator so the quote is actually processed.
+    exchange = conn._ome
     list(exchange.process_market_data(instr, time.feed(Q("2020-01-01 10:00", 32000.0, 32001.0))))
     return conn, collector, exchange, instr, time
 
 
 def test_isinstance_iconnector():
     channel, _ = _channel()
-    exchange = get_simulated_exchange("BINANCE.UM", _TimeService(), ZERO_COSTS)
-    conn = SimulatedConnector(channel=channel, exchange=exchange, time_provider=_TimeService())
+    conn = SimulatedConnector(channel=channel, exchange_name="BINANCE.UM", time_provider=_TimeService(), tcc=ZERO_COSTS)
     assert isinstance(conn, IConnector)
 
 

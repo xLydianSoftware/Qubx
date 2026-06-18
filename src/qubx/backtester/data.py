@@ -2,8 +2,9 @@ from collections import defaultdict
 from typing import TypeVar
 
 from qubx import logger
+from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.simulated_data import SimulatedDataIterator
-from qubx.backtester.simulated_exchange import ISimulatedExchange
+from qubx.backtester.simulated_exchange import emulate_quote_from_data
 from qubx.core.basics import (
     CtrlChannel,
     DataType,
@@ -41,7 +42,7 @@ class SimulatedDataProvider(IDataProvider):
     time_provider: SimulatedTimeProvider
     channel: CtrlChannel
 
-    _exchange: ISimulatedExchange
+    _connector: SimulatedConnector
     _last_quotes: dict[Instrument, Quote | None]
     _data_source: SimulatedDataIterator
 
@@ -50,13 +51,13 @@ class SimulatedDataProvider(IDataProvider):
         exchange_id: str,
         channel: CtrlChannel,
         time_provider: SimulatedTimeProvider,
-        exchange: ISimulatedExchange,
+        connector: SimulatedConnector,
         data_source: SimulatedDataIterator,
     ):
         self.channel = channel
         self.time_provider = time_provider
         self._exchange_id = exchange_id
-        self._exchange = exchange
+        self._connector = connector
 
         # - simulation data source
         self._data_source = data_source
@@ -93,7 +94,7 @@ class SimulatedDataProvider(IDataProvider):
                 continue
 
             # - notify simulating exchange that instrument is subscribed
-            self._exchange.on_subscribe(i)
+            self._connector.on_subscribe(i)
 
             # - we need to clear last quote as it can be staled
             self._last_quotes.pop(i, None)
@@ -104,12 +105,11 @@ class SimulatedDataProvider(IDataProvider):
                 self.channel.send((i, subscription_type, h_data, True))
 
                 last_update = h_data[-1]
-                if last_quote := self._exchange.emulate_quote_from_data(i, last_update.time, last_update):  # type: ignore
+                if last_quote := emulate_quote_from_data(i, last_update.time, last_update):
                     self._last_quotes[i] = last_quote
                     # - prime the OME book so resting orders can match from the start;
-                    #   no orders exist yet at subscribe time, so the reports are empty.
-                    for _ in self._exchange.process_market_data(i, last_quote):  # type: ignore
-                        pass
+                    #   no orders exist yet at subscribe time, so nothing is emitted.
+                    self._connector.process_market_data(i, last_quote)
 
                 logger.debug(f" | subscribed {subscription_type} {i} -> {len(h_data)} records")
 
@@ -125,7 +125,7 @@ class SimulatedDataProvider(IDataProvider):
                 self._last_quotes.pop(instr, None)
 
                 # - Notify simulating exchange that instrument is unsubscribed
-                self._exchange.on_unsubscribe(instr)
+                self._connector.on_unsubscribe(instr)
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         return self._data_source.has_subscription(instrument, subscription_type)

@@ -852,7 +852,7 @@ class ProcessingManager(IProcessingManager):
             self._health_monitor.on_data_arrival(instrument, event_type, dt_64(data.time, "ns"))
             # - paper trading: drive the simulated connector's OME with this tick so resting
             #   orders match BEFORE the strategy reacts. No-op in backtest (the runner feeds the
-            #   OME directly via _feed_ome) and in live (which executes at the venue).
+            #   OME directly via the connector) and in live (which executes at the venue).
             self._feed_simulated_connector(instrument, data)
 
         is_base_data, _update = self._is_base_data(data)
@@ -1223,9 +1223,9 @@ class ProcessingManager(IProcessingManager):
 
     def _feed_simulated_connector(self, instrument: Instrument, payload: Any) -> None:
         # Paper only. is_paper_trading is also True in the backtester (it too uses a
-        # SimulatedConnector), but there the SimulationRunner already feeds the OME via
-        # _feed_ome — so gate on `not _is_simulation` as well to avoid double-feeding the
-        # OME in backtests. Live (not paper) executes at the venue and has no local OME.
+        # SimulatedConnector), but there the SimulationRunner already feeds the OME via the
+        # connector per tick — so gate on `not _is_simulation` as well to avoid double-feeding
+        # the OME in backtests. Live (not paper) executes at the venue and has no local OME.
         if self._is_simulation or not self._context.is_paper_trading:
             return
         connector = self._connectors.get(instrument.exchange)

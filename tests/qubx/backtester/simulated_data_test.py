@@ -590,7 +590,7 @@ class TestSimulatedDataProvider:
             exchange_id=exchange_id,
             channel=MagicMock(),
             time_provider=time_provider,
-            exchange=MagicMock(),
+            connector=MagicMock(),
             data_source=data_iter,
         )
 

@@ -38,7 +38,7 @@ from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import now_ns, to_timedelta
 
 from .data import SimulatedDataProvider
-from .simulated_exchange import ISimulatedExchange, get_simulated_exchange
+from .simulated_exchange import emulate_quote_from_data
 from .utils import (
     SetupTypes,
     SignalsProxy,
@@ -76,7 +76,6 @@ class SimulationRunner:
     strategy_class: str
 
     _connectors: dict[str, SimulatedConnector]
-    _sim_exchanges: dict[str, ISimulatedExchange]
 
     # adjusted times
     _stop: pd.Timestamp | None = None
@@ -205,7 +204,6 @@ class SimulationRunner:
     def _process_generated_signals(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
         t = np.datetime64(int(data.time), "ns")
-        _exchange = self._sim_exchanges[instrument.exchange]
         _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
@@ -218,13 +216,13 @@ class SimulationRunner:
                 cc.send((instrument, "event", {"order": sigs[0][1]}, False))
                 sigs.pop(0)
 
-            if q := _exchange.emulate_quote_from_data(instrument, t, data):
+            if q := emulate_quote_from_data(instrument, t, data):
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        # match resting orders against this tick before the strategy sees it (see _feed_ome)
+        # match resting orders against this tick before the strategy sees it, via the connector
         if not is_hist:
-            self._feed_ome(instrument, data)
+            self._connectors[instrument.exchange].process_market_data(instrument, data)
         self._send_market_data(instrument, data_type, data, is_hist)
 
         return cc.control.is_set()
@@ -232,7 +230,6 @@ class SimulationRunner:
     def _process_strategy(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
         t = np.datetime64(int(data.time), "ns")
-        _exchange = self._sim_exchanges[instrument.exchange]
         _data_provider = self._get_data_provider(instrument.exchange)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
@@ -242,13 +239,13 @@ class SimulationRunner:
                 self.time_provider.set_time(_next_exp_time)
                 self.scheduler.check_and_run_tasks()
 
-            if q := _exchange.emulate_quote_from_data(instrument, t, data):
+            if q := emulate_quote_from_data(instrument, t, data):
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        # match resting orders against this tick before the strategy sees it (see _feed_ome)
+        # match resting orders against this tick before the strategy sees it, via the connector
         if not is_hist:
-            self._feed_ome(instrument, data)
+            self._connectors[instrument.exchange].process_market_data(instrument, data)
         self._send_market_data(instrument, data_type, data, is_hist)
 
         return cc.control.is_set()
@@ -264,18 +261,6 @@ class SimulationRunner:
         if not is_hist and DataType.from_str(data_type)[0] == DataType.FUNDING_PAYMENT:
             self.channel.send(FundingPaymentEvent(instrument=instrument, payment=data))
         self.channel.send((instrument, data_type, data, is_hist))
-
-    def _feed_ome(self, instrument: Instrument, data: Any) -> None:
-        """Drive the OME (now behind SimulatedConnector) with this tick so resting orders match.
-
-        Before the core cut-over the deleted SimulatedBroker fed the OME from market data
-        internally. The OME now lives behind SimulatedConnector, so the runner must drive it
-        explicitly — once per tick, before the tick reaches the strategy, so the OME's BBO
-        reflects it when the strategy places stop/limit orders against it. The connector
-        translates non-tick data (e.g. OHLC bars) into an emulated quote, so pass the raw
-        tick straight through.
-        """
-        self._connectors[instrument.exchange].process_market_data(instrument, data)
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:
@@ -455,14 +440,14 @@ class SimulationRunner:
         return {k: self._wrap_storage(s, prefetch_cfg) for k, s in storages.items()}
 
     def _create_backtest_context(self):
-        # - create data providers objects: exchange -> provider (sharing the per-exchange OME)
+        # - create data providers objects: exchange -> provider (driving the OME via its connector)
         self._data_providers = []
         for exchange in self.setup.exchanges:
             _dprovider = SimulatedDataProvider(
                 exchange_id=exchange,
                 channel=self.channel,
                 time_provider=self.time_provider,
-                exchange=self._sim_exchanges[exchange],
+                connector=self._connectors[exchange],
                 data_source=self._simulated_data_source,
             )
             self._data_providers.append(_dprovider)
@@ -612,19 +597,15 @@ class SimulationRunner:
                     f"'{self.setup.commissions}' !"
                 )
 
-        # - create simulated exchanges (OME-backed): per exchange a connector wraps one.
-        #   Different exchange emulations (Binance/Bybit/IB/...) can plug in here later.
-        self._sim_exchanges = {
-            exchange: get_simulated_exchange(
-                exchange, time_provider, _exchange_to_tcc[exchange], self.setup.accurate_stop_orders_execution
-            )
-            for exchange in self.setup.exchanges
-        }
+        # - per exchange a connector privately owns its OME-backed exchange (built from these
+        #   params). Different exchange emulations (Binance/Bybit/IB/...) can plug in here later.
         self._connectors = {
             exchange: SimulatedConnector(
                 channel=channel,
-                exchange=self._sim_exchanges[exchange],
+                exchange_name=exchange,
                 time_provider=time_provider,
+                tcc=_exchange_to_tcc[exchange],
+                accurate_stop_orders_execution=self.setup.accurate_stop_orders_execution,
             )
             for exchange in self.setup.exchanges
         }

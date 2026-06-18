@@ -1,6 +1,15 @@
 from qubx.backtester.ome import SimulatedExecutionReport
-from qubx.backtester.simulated_exchange import ISimulatedExchange
-from qubx.core.basics import CtrlChannel, Instrument, ITimeProvider, OrderRequest, OrderStatus, Timestamped
+from qubx.backtester.simulated_exchange import ISimulatedExchange, emulate_quote_from_data, get_simulated_exchange
+from qubx.core.basics import (
+    ZERO_COSTS,
+    CtrlChannel,
+    Instrument,
+    ITimeProvider,
+    OrderRequest,
+    OrderStatus,
+    Timestamped,
+    TransactionCostsCalculator,
+)
 from qubx.core.connector import ChannelEmitter
 from qubx.core.events import (
     AccountSnapshot,
@@ -29,25 +38,30 @@ class SimulatedConnector(ChannelEmitter):
 
     channel: CtrlChannel
     exchange_name: str
+    _ome: ISimulatedExchange
 
     def __init__(
         self,
         *,
         channel: CtrlChannel,
-        exchange: ISimulatedExchange,
+        exchange_name: str,
         time_provider: ITimeProvider,
+        tcc: TransactionCostsCalculator = ZERO_COSTS,
+        accurate_stop_orders_execution: bool = False,
         # Absorb extra construction kwargs (e.g. live connectors' loop=...) for parity;
         # simulation has no event loop, so they're ignored.
         **_kwargs,
     ):
         self.channel = channel
-        self.exchange_name = exchange.exchange_id
-        self._exchange = exchange
+        # The OME-backed exchange is private to the connector: nothing else holds it, so all
+        # order matching and market-data feeding routes through this connector.
+        self._ome = get_simulated_exchange(exchange_name, time_provider, tcc, accurate_stop_orders_execution)
+        self.exchange_name = self._ome.exchange_id
         self._time = time_provider
 
     def submit_order(self, request: OrderRequest) -> None:
         try:
-            report = self._exchange.place_order(
+            report = self._ome.place_order(
                 instrument=request.instrument,
                 order_side=request.side,
                 order_type=request.order_type,
@@ -78,7 +92,7 @@ class SimulatedConnector(ChannelEmitter):
         if not oid:
             raise ValueError("cancel_order: client_order_id or venue_order_id is required")
         try:
-            report = self._exchange.cancel_order(oid)
+            report = self._ome.cancel_order(oid)
         except OrderNotFound:
             self.send(
                 OrderCancelRejectedEvent(
@@ -103,7 +117,7 @@ class SimulatedConnector(ChannelEmitter):
         if not oid:
             raise ValueError("update_order: client_order_id or venue_order_id is required")
         try:
-            old = self._exchange.cancel_order(oid)
+            old = self._ome.cancel_order(oid)
         except OrderNotFound:
             self.send(
                 OrderUpdateRejectedEvent(
@@ -118,7 +132,7 @@ class SimulatedConnector(ChannelEmitter):
         # cancel+recreate keeps the original client_order_id, so the strategy sees a
         # single OrderUpdatedEvent rather than a Canceled+Accepted pair.
         try:
-            new = self._exchange.place_order(
+            new = self._ome.place_order(
                 instrument=old_order.instrument,
                 order_side=old_order.side,
                 order_type=old_order.type,
@@ -180,7 +194,7 @@ class SimulatedConnector(ChannelEmitter):
         oid = venue_order_id or client_order_id
         if not oid:
             raise ValueError("request_order_status: client_order_id or venue_order_id is required")
-        for order in self._exchange.get_open_orders().values():
+        for order in self._ome.get_open_orders().values():
             if order.venue_order_id == oid or order.client_order_id == oid:
                 self.send(
                     OrderAcceptedEvent(
@@ -201,7 +215,7 @@ class SimulatedConnector(ChannelEmitter):
         )
 
     def request_snapshot(self) -> None:
-        open_orders = list(self._exchange.get_open_orders().values())
+        open_orders = list(self._ome.get_open_orders().values())
         snapshot = AccountSnapshot(
             exchange=self.exchange_name,
             as_of=self._time.time(),
@@ -210,7 +224,7 @@ class SimulatedConnector(ChannelEmitter):
         self.send(AccountSnapshotEvent(instrument=None, snapshot=snapshot))
 
     def process_market_data(self, instrument: Instrument, data: Timestamped) -> None:
-        # Single entry point that drives the OME (runner._feed_ome in backtest,
+        # Single entry point that drives the OME (the SimulationRunner per tick in backtest,
         # _feed_simulated_connector in paper) with whatever a subscription produces. The OME
         # matches resting orders against Quote/OrderBook/Trade/TradeArray, so those pass
         # through unchanged — full book depth / trade-array fidelity. Anything else (an OHLC
@@ -220,11 +234,18 @@ class SimulatedConnector(ChannelEmitter):
         if isinstance(data, (Quote, OrderBook, Trade, TradeArray)):
             feed: Quote | OrderBook | Trade | TradeArray | None = data
         else:
-            feed = self._exchange.emulate_quote_from_data(instrument, self._time.time(), data)
+            feed = emulate_quote_from_data(instrument, self._time.time(), data)
         if feed is None:
             return
-        for report in self._exchange.process_market_data(instrument, feed):
+        for report in self._ome.process_market_data(instrument, feed):
             self._emit_from_report(report)
+
+    def on_subscribe(self, instrument: Instrument) -> None:
+        # OME lifecycle: reset the per-instrument book so a re-subscribe starts with no stale BBO.
+        self._ome.on_subscribe(instrument)
+
+    def on_unsubscribe(self, instrument: Instrument) -> None:
+        self._ome.on_unsubscribe(instrument)
 
     def _emit_from_report(self, report: SimulatedExecutionReport) -> None:
         order = report.order
