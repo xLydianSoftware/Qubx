@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 class InstrumentServiceManager(IInstrumentServiceManager):
     """Owns the instrument blacklist service: read helpers, the refresh→callbacks→force-close
-    cycle, the cache-only fit refresh, and the framework-automatic startup refresh. Composed by StrategyContext
+    cycle, fit-time enforcement, and the framework-automatic startup refresh. Composed by StrategyContext
     the same way UniverseManager/ProcessingManager are."""
 
     def __init__(self, context: "IStrategyContext", instrument_service: IInstrumentService):

@@ -1342,7 +1342,7 @@ class IUniverseManager:
 
 class IInstrumentServiceManager:
     """Manages the instrument blacklist service: read helpers, refresh/callback/force-close
-    cycle, the cache-only fit refresh, and framework-automatic startup refresh."""
+    cycle, fit-time enforcement, and framework-automatic startup refresh."""
 
     def is_blacklisted(self, instrument: Instrument) -> bool:
         """Return True if the instrument is on the active blacklist."""
