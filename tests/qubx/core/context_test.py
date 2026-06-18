@@ -167,3 +167,20 @@ def test_incoming_data_loop_routes_typed_messages_to_process_event():
 
     ctx._processing_manager.process_event.assert_called_once_with(event)
     ctx.process_data.assert_not_called()
+
+
+def test_strategy_context_delegates_trigger_fit():
+    """Regression: ctx.trigger_fit() must reach ProcessingManager.trigger_fit, not
+    silently fall through to the IStrategyContext '...' no-op stub (which left
+    trigger_fit doing nothing — blacklist re-fits and any other on-demand fit
+    were dropped)."""
+    from qubx.core.context import StrategyContext
+
+    # Defined on the facade itself, not inherited from the interface's no-op stub.
+    assert "trigger_fit" in StrategyContext.__dict__
+
+    # And it delegates to the processing manager.
+    ctx = StrategyContext.__new__(StrategyContext)
+    ctx._processing_manager = Mock()
+    ctx.trigger_fit()
+    ctx._processing_manager.trigger_fit.assert_called_once_with()
