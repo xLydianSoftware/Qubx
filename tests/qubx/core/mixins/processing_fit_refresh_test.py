@@ -1,6 +1,6 @@
 """Tests that ProcessingManager refreshes the instrument-service cache before on_fit."""
 
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -98,3 +98,27 @@ def test_invoke_on_fit_marks_fit_called_even_if_refresh_raises(processing_manage
 
     strategy.on_fit.assert_not_called()  # refresh raised before on_fit ran
     assert context._strategy_state.is_on_fit_called is True
+
+
+def test_trigger_fit_schedules_handle_fit_on_manager_not_context(processing_manager):
+    """trigger_fit must schedule a callback that invokes _handle_fit on the
+    ProcessingManager (self), not on the context the scheduler passes in — the
+    context facade has no _handle_fit. Regression for the no-op trigger_fit bug."""
+    pm = processing_manager
+
+    pm.trigger_fit()
+
+    # delay() stored exactly one one-off callback.
+    assert len(pm._custom_scheduled_methods) == 1
+    scheduled = next(iter(pm._custom_scheduled_methods.values()))
+
+    # The scheduler dispatches the callback as method(self._context); that context
+    # exposes no _handle_fit. Using a spec'd mock makes any c._handle_fit access raise.
+    from unittest.mock import MagicMock
+
+    ctx_without_handle_fit = MagicMock(spec=["time"])
+    ctx_without_handle_fit.time.return_value = 0
+
+    with patch.object(pm, "_handle_fit") as mock_handle_fit:
+        scheduled(ctx_without_handle_fit)  # must not raise AttributeError
+        mock_handle_fit.assert_called_once()

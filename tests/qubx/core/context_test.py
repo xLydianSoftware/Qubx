@@ -122,3 +122,20 @@ class TestStrategyGathererOverride:
         gatherer = strategy.gatherer(mock_ctx)
 
         assert gatherer is None, "Strategy without gatherer override should return None"
+
+
+def test_strategy_context_delegates_trigger_fit():
+    """Regression: ctx.trigger_fit() must reach ProcessingManager.trigger_fit, not
+    silently fall through to the IStrategyContext '...' no-op stub (which left
+    trigger_fit doing nothing — blacklist re-fits and any other on-demand fit
+    were dropped)."""
+    from qubx.core.context import StrategyContext
+
+    # Defined on the facade itself, not inherited from the interface's no-op stub.
+    assert "trigger_fit" in StrategyContext.__dict__
+
+    # And it delegates to the processing manager.
+    ctx = StrategyContext.__new__(StrategyContext)
+    ctx._processing_manager = Mock()
+    ctx.trigger_fit()
+    ctx._processing_manager.trigger_fit.assert_called_once_with()
