@@ -39,10 +39,18 @@ class BlacklistEntry:
 
 @dataclass
 class InstrumentServiceDiff:
-    """Difference between two blacklist evaluations over a known instrument set."""
+    """Difference between two blacklist evaluations over a known instrument set.
+
+    `blacklisted_added`/`blacklisted_removed` are scoped to the known universe (used to
+    force-close held positions). `entries_changed` reflects whether the raw blacklist
+    *entry set* changed at all — it flips even for edits to instruments outside the current
+    universe (e.g. un-blacklisting an instrument that was already evicted), which the
+    universe-scoped lists cannot detect. The manager uses it to decide whether to fire the
+    re-fit callbacks."""
 
     blacklisted_added: list[Instrument] = field(default_factory=list)
     blacklisted_removed: list[Instrument] = field(default_factory=list)
+    entries_changed: bool = False
 
 
 class IInstrumentService:
@@ -133,7 +141,12 @@ class HttpInstrumentService(IInstrumentService):
         now_matched = {i for i in known_instruments if self._any_match(new_entries, i)}
         added = [i for i in known_instruments if i in now_matched and i not in prev_matched]
         removed = [i for i in known_instruments if i in prev_matched and i not in now_matched]
-        return InstrumentServiceDiff(blacklisted_added=added, blacklisted_removed=removed)
+        # entries_changed flips for ANY blacklist edit, including instruments outside the
+        # known universe (BlacklistEntry is a frozen dataclass, so it is set-comparable).
+        entries_changed = set(prev_entries) != set(new_entries)
+        return InstrumentServiceDiff(
+            blacklisted_added=added, blacklisted_removed=removed, entries_changed=entries_changed
+        )
 
     @staticmethod
     def _any_match(entries: list[BlacklistEntry], instrument: Instrument) -> bool:

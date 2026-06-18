@@ -63,6 +63,22 @@ def test_run_cycle_empty_diff_is_noop():
     assert summary == {"blacklisted_added": 0, "blacklisted_removed": 0, "force_closed": 0, "force_closed_instruments": []}
 
 
+def test_run_cycle_fires_callbacks_on_entries_change_with_empty_universe_diff():
+    # Removing an off-universe blacklist entry yields no added/removed (the instrument is no
+    # longer in the universe) but entries_changed is True -> the re-fit callback must fire so
+    # the strategy re-selects and can bring the un-blacklisted instrument back.
+    calls = []
+    svc = MagicMock()
+    svc.refresh.return_value = InstrumentServiceDiff(
+        blacklisted_added=[], blacklisted_removed=[], entries_changed=True
+    )
+    svc.is_blacklisted.return_value = False
+    m, ctx = _mgr(svc, positions={}, callbacks=[lambda c, a, r: calls.append((list(a), list(r)))])
+    m.run_cycle()
+    assert calls == [([], [])]
+    ctx.remove_instruments.assert_not_called()
+
+
 def test_run_cycle_accepts_scheduler_ctx_arg():
     # the scheduler dispatches scheduled methods as method(ctx); run_cycle must accept it
     svc = MagicMock()
