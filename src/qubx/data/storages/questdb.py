@@ -516,7 +516,9 @@ class QuestDBReader(IReader):
                         dtypes.append(dt)
                 else:
                     if x.data_timeframe:
-                        _symbs_lookup[symb][dt := f"{x.dtype}({x.data_timeframe})"] = x
+                        # - prefer the decoded alias (e.g. 'structure'/'flow') over the RECORD fallback name, so
+                        # - custom record-like tables surface as 'structure(1m)' instead of all colliding on 'record(1m)'
+                        _symbs_lookup[symb][dt := f"{x.alias_for_record_type or x.dtype}({x.data_timeframe})"] = x
                     else:
                         _symbs_lookup[symb][dt := (x.alias_for_record_type if x.alias_for_record_type else x.dtype)] = x
                     dtypes.append(dt)
