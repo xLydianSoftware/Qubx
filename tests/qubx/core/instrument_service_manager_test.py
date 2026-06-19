@@ -103,6 +103,20 @@ def test_start_noop_with_null_service():
     ctx.schedule.assert_not_called()
 
 
+def test_start_warms_cache_synchronously():
+    # The blacklist cache must be populated synchronously at startup (start() runs in
+    # context __post_init__, before the universe is set and state is restored) so universe
+    # selection and the reduce-only trade gate are blacklist-aware from t=0 -- not only via
+    # the delayed one-shot run_cycle, which fires after restore could re-open a blacklisted
+    # position.
+    svc = MagicMock(spec=HttpInstrumentService)
+    inst = MagicMock()
+    m, ctx = _mgr(svc, instruments=[inst])
+    m.start()
+    svc.refresh.assert_called_once_with([inst])  # synchronous cache warm-up
+    ctx.delay.assert_called_once_with("1s", m.run_cycle)  # one-shot force-close still scheduled
+
+
 def test_set_callbacks_preserves_order():
     m, ctx = _mgr(MagicMock())
     a = lambda c, ad, rm: None

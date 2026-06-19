@@ -76,10 +76,19 @@ class InstrumentServiceManager(IInstrumentServiceManager):
         self._force_close_held_blacklisted()
 
     def start(self) -> None:
-        """Framework-automatic refresh wiring (non-Null only): a one-shot startup refresh
-        dispatched on the strategy thread via the context scheduler. The blacklist is kept
-        current thereafter by the fit-time enforcement (see `enforce_at_fit`) and by the
+        """Framework-automatic refresh wiring (non-Null only). Runs in the context's
+        __post_init__, before the universe is set and state is restored.
+
+        Two steps: (1) warm the blacklist cache SYNCHRONOUSLY now, so universe selection
+        (the `set_universe` blacklist filter) and the reduce-only trade gate are
+        blacklist-aware from t=0 -- otherwise state-restore can re-establish a blacklisted
+        position before the first async refresh. Best-effort: on a network error the cache
+        stays empty and fit-time enforcement still applies. (2) schedule a one-shot
+        force-close pass on the strategy thread once it is running, to close any blacklisted
+        holding the restore established before the cache was warm. The blacklist is kept
+        current thereafter by the fit-time enforcement (see `enforce_at_fit`) and the
         operator-triggered `refresh_instrument_service` action; there is no periodic poll."""
         if isinstance(self._service, NullInstrumentService):
             return
+        self._service.refresh(self._context.instruments)
         self._context.delay("1s", self.run_cycle)
