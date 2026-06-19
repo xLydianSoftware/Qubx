@@ -205,48 +205,6 @@ def ccxt_extract_deals_from_exec(report: dict[str, Any]) -> list[Deal]:
     return deals
 
 
-def ccxt_restore_position_from_deals(
-    pos: Position, current_volume: float, deals: list[Deal], reserved_amount: float = 0.0
-) -> Position:
-    if current_volume != 0:
-        instr = pos.instrument
-        _last_deals = []
-
-        # - try to find last deals that led to this position
-        for d in sorted(deals, key=lambda x: x.time, reverse=True):
-            current_volume -= d.amount
-            # - spot case when fees may be deducted from the base coin
-            #   that may decrease total amount
-            if d.fee_amount is not None:
-                if instr.base == d.fee_currency:
-                    current_volume += d.fee_amount
-            # print(d.amount, current_volume)
-            _last_deals.insert(0, d)
-
-            # - take in account reserves
-            if abs(current_volume) - abs(reserved_amount) < instr.lot_size:
-                break
-
-        # - reset to 0
-        pos.reset()
-
-        if abs(current_volume) - abs(reserved_amount) > instr.lot_size:
-            # - - - TODO - - - !!!!
-            logger.warning(
-                f"Couldn't restore full deals history for {instr.symbol} symbol. Qubx will use zero position !"
-            )
-        else:
-            fees_in_base = 0.0
-            for d in _last_deals:
-                pos.update_position_by_deal(d)
-                if d.fee_amount is not None:
-                    if instr.base == d.fee_currency:
-                        fees_in_base += d.fee_amount
-            # - we round fees up in case of fees in base currency
-            pos.quantity -= pos.instrument.round_size_up(fees_in_base)
-    return pos
-
-
 def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
     price, amnt = trade["price"], trade["amount"]
     side = int(trade["side"] == "buy") * 2 - 1
