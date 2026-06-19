@@ -78,6 +78,19 @@ def get_ccxt_exchange(
     if use_testnet:
         ccxt_exchange.set_sandbox_mode(True)
 
+    # Binance-specific ccxt guards that otherwise raise NotSupported inside the account snapshot
+    # (fetch_balance / fetch_positions / fetch_open_orders), leaving balance and positions empty:
+    #   - ccxt >= 4.x gates the Binance FUTURES TESTNET behind disableFuturesSandboxWarning; without
+    #     it every authenticated fapi call on testnet.binancefuture.com raises "testnet/sandbox mode
+    #     is not supported for futures anymore" (see binance.py). We acknowledge the deprecation and
+    #     keep using the futures testnet.
+    #   - fetch_open_orders without a symbol raises unless warnOnFetchOpenOrdersWithoutSymbol is off;
+    #     the snapshot fetches venue-wide, so disable it (applies to prod too).
+    if "binance" in ccxt_exchange.id.lower():
+        if use_testnet:
+            ccxt_exchange.options["disableFuturesSandboxWarning"] = True
+        ccxt_exchange.options["warnOnFetchOpenOrdersWithoutSymbol"] = False
+
     return ccxt_exchange
 
 
