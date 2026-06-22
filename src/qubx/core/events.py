@@ -81,6 +81,12 @@ class OrderPartiallyFilledEvent(OrderEvent):
 @msg
 class OrderFilledEvent(OrderEvent):
     fill: Deal | None = None
+    # The venue's authoritative cumulative fill figures on the terminal report. When set,
+    # the reducer books any executions the venue counted but that never arrived as deals
+    # (dropped/coalesced WS fills) so position AND realized PnL converge now, rather than
+    # the size-only self-heal at the next snapshot reconcile.
+    venue_filled_quantity: float | None = None
+    venue_avg_price: float | None = None
 
 
 @msg

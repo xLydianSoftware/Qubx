@@ -1043,7 +1043,7 @@ class CcxtConnector(ChannelEmitter):
                 return
             logger.warning(
                 f"[{self.exchange_name}] {order.client_order_id} FILLED report carried no trades; "
-                "emitting status-only fill — executions may need the next snapshot's position correction"
+                "emitting status-only fill — AM books the cumulative gap, snapshot re-syncs the rest"
             )
             self.send(
                 OrderFilledEvent(
@@ -1051,6 +1051,8 @@ class CcxtConnector(ChannelEmitter):
                     client_order_id=order.client_order_id,
                     venue_order_id=order.venue_order_id,
                     fill=None,
+                    venue_filled_quantity=order.filled_quantity,
+                    venue_avg_price=order.avg_fill_price,
                 )
             )
             return
@@ -1075,6 +1077,10 @@ class CcxtConnector(ChannelEmitter):
                         client_order_id=order.client_order_id,
                         venue_order_id=order.venue_order_id,
                         fill=deal,
+                        # Cumulative venue figures so the reducer can book any fills the
+                        # venue counted but never delivered as deals (dropped WS messages).
+                        venue_filled_quantity=order.filled_quantity,
+                        venue_avg_price=order.avg_fill_price,
                     )
                 )
 

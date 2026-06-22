@@ -270,6 +270,39 @@ def _apply_execution(state: AccountState, order: Order, deal: Deal, now: np.date
     return deal if state.apply_fill(cid, deal, now) else None
 
 
+def _reconcile_fill_gap(state: AccountState, order: Order, event: OrderFilledEvent, now: np.datetime64) -> Deal | None:
+    """Book the executions a terminal report counted (``event.venue_filled_quantity``) but that
+    were never delivered as deals — dropped/coalesced WS fills — as one synthetic fill for the
+    unbooked remainder at the venue's average fill price. Without it the position size only
+    self-heals at the next snapshot reconcile and the realized PnL for the gap is never booked
+    (reconcile is size-only). Routed through ``_apply_execution`` so an already-armed snapshot
+    deficit still suppresses it (no double count), and booking it lifts ``filled_quantity`` to
+    the venue figure so the next snapshot sees no raise. The synthesized fill carries no fee —
+    the per-fill commissions are unknown; exact fees would need a trade fetch.
+
+    Returns None (no gap) when the connector didn't supply the cumulative figure (sim/backtest,
+    split-stream venues), so behaviour is unchanged unless a connector opts in by setting it.
+    """
+    venue_filled = event.venue_filled_quantity
+    if venue_filled is None or order.instrument is None:
+        return None
+    remainder = venue_filled - order.filled_quantity
+    if remainder <= reconcile.fill_qty_epsilon(order.instrument):
+        return None
+    price = event.venue_avg_price if event.venue_avg_price is not None else order.avg_fill_price
+    if price is None:
+        return None
+    synthetic = Deal(
+        trade_id=f"{order.venue_order_id or order.client_order_id}:fill-reconcile",
+        order_id=order.venue_order_id or "",
+        time=now,
+        amount=remainder if order.side == OrderSide.BUY else -remainder,
+        price=price,
+        aggressive=False,
+    )
+    return _apply_execution(state, order, synthetic, now)
+
+
 def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime64) -> ApplyResult:
     order = _resolve_or_materialize(state, event, now)
     if order is None or order.status.is_terminal:
@@ -280,6 +313,11 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
     # the terminal transition still happens, only the booking is skipped.
     deal = _apply_execution(state, order, event.fill, now) if event.fill is not None else None
     position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
+    # Terminal fill-gap: book executions the venue counted but never delivered as deals so
+    # position AND realized PnL converge now, not size-only at the next snapshot.
+    if (gap := _reconcile_fill_gap(state, order, event, now)) is not None and order.instrument is not None:
+        position = _book_deal(state, order.instrument, gap)
+        deal = deal or gap
     order = reconcile.transition(state, order.client_order_id, OrderStatus.FILLED, now)
     return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
 

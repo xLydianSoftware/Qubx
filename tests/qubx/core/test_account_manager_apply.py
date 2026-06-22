@@ -885,3 +885,129 @@ def test_get_metrics_counts_transitions_by_status():
     counts = am.get_metrics()["binance"]
     assert counts[OrderStatus.ACCEPTED.value] == 1
     assert counts[OrderStatus.FILLED.value] == 1
+
+
+# --- terminal fill-gap reconciliation (dropped WS fills) -------------------------------- #
+
+
+def test_filled_books_gap_for_dropped_ws_fills():
+    # The reported scenario: a market order fully fills at the venue, but some fills never
+    # arrive as deals; the terminal FILLED carries fill=None plus the venue's cumulative
+    # filled_quantity. The reducer books the unbooked remainder so position AND filled_quantity
+    # converge now, instead of size-only at the next snapshot reconcile.
+    am = _am()
+    inst = _Inst()
+    state = am.get_state("binance")
+    add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
+    am.apply(
+        OrderPartiallyFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.3)
+        )
+    )
+    r = am.apply(
+        OrderFilledEvent(
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            fill=None,
+            venue_filled_quantity=1.0,
+            venue_avg_price=50_000.0,
+        )
+    )
+    o = state.get_order("cid-1")
+    assert o.status is OrderStatus.FILLED
+    assert o.filled_quantity == 1.0  # 0.3 booked + 0.7 reconciled
+    assert state.get_position(inst).quantity == 1.0  # full position, not 0.3
+    assert r.deal is not None and abs(r.deal.amount - 0.7) < 1e-9  # the synthetic gap fill is surfaced
+    assert r.deal.fee_amount is None  # a synthesized fill carries no fee
+
+
+def test_filled_books_gap_on_top_of_a_delivered_last_deal():
+    # FILLED carries the last real deal AND the venue cumulative still exceeds what we booked.
+    am = _am()
+    inst = _Inst()
+    state = am.get_state("binance")
+    add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
+    am.apply(
+        OrderPartiallyFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.3)
+        )
+    )
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            fill=_fill(trade_id="t2", amount=0.2),
+            venue_filled_quantity=1.0,
+            venue_avg_price=50_000.0,
+        )
+    )
+    o = state.get_order("cid-1")
+    assert o.filled_quantity == 1.0  # 0.3 + 0.2 + 0.5 gap
+    assert state.get_position(inst).quantity == 1.0
+
+
+def test_filled_no_gap_when_cumulative_matches_booked():
+    # When the venue cumulative equals the sum we booked, no synthetic fill is created.
+    am = _am()
+    inst = _Inst()
+    state = am.get_state("binance")
+    add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
+    r = am.apply(
+        OrderFilledEvent(
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            fill=_fill(trade_id="t1", amount=1.0),
+            venue_filled_quantity=1.0,
+            venue_avg_price=50_000.0,
+        )
+    )
+    assert state.get_order("cid-1").filled_quantity == 1.0
+    assert state.get_position(inst).quantity == 1.0
+    assert r.deal.trade_id == "t1"  # the real delivered deal, not a synthetic gap
+
+
+def test_filled_without_venue_cumulative_is_unchanged():
+    # Sim/backtest and split-stream venues don't set venue_filled_quantity → no gap booking;
+    # behaviour is identical to before (only the delivered fill books).
+    am = _am()
+    inst = _Inst()
+    state = am.get_state("binance")
+    add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.3)
+        )
+    )
+    assert state.get_order("cid-1").filled_quantity == 0.3
+    assert state.get_position(inst).quantity == 0.3
+
+
+def test_gap_fill_suppressed_when_snapshot_deficit_already_covers_it():
+    # If a snapshot already counted the missing fills (armed a fill deficit + corrected size),
+    # the terminal gap reconciliation must NOT double-book: routed through _apply_execution,
+    # the synthetic fill is suppressed up to the deficit.
+    am = _am()
+    inst = _Inst()
+    state = am.get_state("binance")
+    add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
+    am.apply(
+        OrderPartiallyFilledEvent(
+            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.3)
+        )
+    )
+    state.set_snapshot_fill_deficit("cid-1", 0.7)  # a snapshot already counted the remaining 0.7
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            fill=None,
+            venue_filled_quantity=1.0,
+            venue_avg_price=50_000.0,
+        )
+    )
+    assert state.get_position(inst).quantity == 0.3  # suppressed: size came from the snapshot, not re-booked
+    assert state.get_snapshot_fill_deficit("cid-1") == 0.0  # deficit consumed
