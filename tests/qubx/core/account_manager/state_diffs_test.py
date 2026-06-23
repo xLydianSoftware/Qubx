@@ -217,6 +217,14 @@ def test_local_only_untimestamped_emits_nothing():
     assert _differ().diff(local, _snap(open_orders=[])) == []
 
 
+def test_field_mismatch_within_grace_emits_nothing():
+    # order present on BOTH sides with a real price drift, but changed within grace ->
+    # the gate suppresses ALL atoms for it (not just the missing case)
+    local = _state(orders=[_order(price=50_000.0, last_updated_at=FRESH)])
+    origin = _snap(open_orders=[_order(price=50_100.0)])
+    assert _differ().diff(local, origin) == []
+
+
 def test_terminal_local_absent_from_snapshot_ignored():
     local = _state(orders=[_order(status=OrderStatus.FILLED)])
     assert _differ().diff(local, _snap(open_orders=[])) == []
