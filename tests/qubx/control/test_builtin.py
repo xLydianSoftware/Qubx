@@ -253,14 +253,14 @@ class TestBuiltinRegistry:
         dangerous = {
             "trade", "set_target_position", "set_target_leverage", "close_position",
             "close_positions", "emit_signal", "remove_instruments", "set_universe",
-            "trigger_fit",
+            "settle_position", "trigger_fit",
         }
         for name in dangerous:
             action_def, _ = BUILTIN_ACTIONS[name]
             assert action_def.dangerous is True, f"{name} should be dangerous"
 
     def test_expected_action_count(self):
-        assert len(BUILTIN_ACTIONS) == 27
+        assert len(BUILTIN_ACTIONS) == 28
 
 
 from qubx.control.builtin import _refresh_instrument_service
@@ -295,3 +295,25 @@ def test_refresh_action_errors_when_service_missing():
     result = _refresh_instrument_service(ctx)
     assert result.status == "error"
     ctx._run_instrument_service_cycle.assert_not_called()
+
+
+def test_settle_position_action_force_flattens_without_trading():
+    ctx = _make_mock_ctx()
+    action_def, handler = BUILTIN_ACTIONS["settle_position"]
+    assert action_def.dangerous is True
+    instr1 = ctx.instruments[0]  # query_instrument("BTCUSDT") -> instr1
+
+    result = handler(ctx, symbol="BTCUSDT")
+
+    assert result.status == "ok"
+    assert "BTCUSDT" in str(result.data)
+    ctx.settle_position.assert_called_once_with(instr1)
+    ctx.close_position.assert_not_called()  # settled in place, never traded
+
+
+def test_settle_position_action_errors_on_unknown_symbol():
+    ctx = _make_mock_ctx()
+    _, handler = BUILTIN_ACTIONS["settle_position"]
+    result = handler(ctx, symbol="NOPEUSDT")
+    assert result.status == "error"
+    ctx.settle_position.assert_not_called()
