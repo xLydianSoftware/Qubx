@@ -4,7 +4,7 @@ from typing import List, Union
 import pandas as pd
 from pytest import approx
 
-from qubx.core.basics import Position, TransactionCostsCalculator
+from qubx.core.basics import OrderOrigin, Position, TransactionCostsCalculator, classify_origin
 from qubx.core.lookups import FileInstrumentsLookupWithCCXT, lookup
 from qubx.core.series import Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str
@@ -194,6 +194,22 @@ class TestBasics:
         assert 355 * 5 == pos2.get_amount_released_funds_after_closing(10)
         assert 355 * 1 == pos2.get_amount_released_funds_after_closing(-4)
         assert 355 * 5 == pos2.get_amount_released_funds_after_closing()
+
+
+def test_classify_origin_default_prefix():
+    assert classify_origin("qubx_BTCUSDT_1") is OrderOrigin.RECOVERED
+    assert classify_origin("manual-123") is OrderOrigin.EXTERNAL
+    assert classify_origin("ext:VENUE-1") is OrderOrigin.EXTERNAL
+    # No-weakening regression: a bare "qubx" lead without the underscore must stay
+    # EXTERNAL on default venues — only a connector whose venue mangles the prefix
+    # (OKX strips "_") opts into a shorter framework_prefix explicitly.
+    assert classify_origin("qubxfoo") is OrderOrigin.EXTERNAL
+
+
+def test_classify_origin_custom_prefix():
+    # The OKX-sanitized form of a framework cid ("qubx_BTCUSDT_1" with "_" stripped).
+    assert classify_origin("qubxBTCUSDT1", framework_prefix="qubx") is OrderOrigin.RECOVERED
+    assert classify_origin("manual-123", framework_prefix="qubx") is OrderOrigin.EXTERNAL
 
 
 def test_position_flatten_zeroes_quantity_but_keeps_realized(mocker):

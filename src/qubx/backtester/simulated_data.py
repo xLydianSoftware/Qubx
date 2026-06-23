@@ -532,8 +532,10 @@ class DataPump:
                     daily_session_start_end=trading_session,
                     open_close_time_shift_secs=open_close_time_indent_secs,
                 )
+                # ohlc -> ohlc: emit bars labeled with the timeframe so consumers route them
+                # to the right OHLC series (a strategy may hold several timeframes at once).
                 self._requested_data_type = f"ohlc({_tf.lower()})"
-                self._producing_data_type = "ohlc"
+                self._producing_data_type = f"ohlc({_tf.lower()})"
 
             case DataType.OHLC_QUOTES:
                 _, _p = DataType.from_str(subscription_type)
@@ -547,6 +549,7 @@ class DataPump:
                     daily_session_start_end=trading_session,
                     open_close_time_shift_secs=open_close_time_indent_secs,
                 )
+                # ohlc -> quote: read bars, emit quotes (a quote carries no timeframe).
                 self._requested_data_type = f"ohlc({_tf.lower()})"
                 self._producing_data_type = "quote"
 
@@ -562,6 +565,7 @@ class DataPump:
                     daily_session_start_end=trading_session,
                     open_close_time_shift_secs=open_close_time_indent_secs,
                 )
+                # ohlc -> trade: read bars, emit trades (a trade carries no timeframe).
                 self._requested_data_type = f"ohlc({_tf.lower()})"
                 self._producing_data_type = "trade"
 
@@ -918,7 +922,9 @@ class SimulatedDataIterator(Iterator):
     # Reader resolution (lazy, cached)
     # -----------------------------------------------------------------------
 
-    def _get_or_create_reader(self, data_type: str, exchange: str, market_type: str, subscription: str | None = None) -> IReader:
+    def _get_or_create_reader(
+        self, data_type: str, exchange: str, market_type: str, subscription: str | None = None
+    ) -> IReader:
         """
         Get or create cached IReader for given (data_type, exchange, market_type).
 
@@ -928,7 +934,9 @@ class SimulatedDataIterator(Iterator):
         Main storage readers are shared across data types for same (exchange, market_type).
         """
         # - check custom storage first: try full subscription key, then base data_type
-        custom_storage = (self._custom_storages.get(subscription) if subscription else None) or self._custom_storages.get(data_type)
+        custom_storage = (
+            self._custom_storages.get(subscription) if subscription else None
+        ) or self._custom_storages.get(data_type)
         if custom_storage is not None:
             cache_key = f"{data_type}:{exchange}:{market_type}"
             if cache_key not in self._readers:

@@ -1,17 +1,12 @@
-import numpy as np
 import pandas as pd
 from pytest import approx
 
 from qubx.connectors.ccxt.utils import (
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
-    ccxt_extract_deals_from_exec,
-    ccxt_restore_position_from_deals,
 )
-from qubx.core.account import BasicAccountProcessor
-from qubx.core.basics import ZERO_COSTS, CtrlChannel, Deal, Instrument, ITimeProvider, Position, dt_64
+from qubx.core.basics import OrderOrigin, OrderStatus
 from qubx.core.lookups import lookup
-from qubx.health.dummy import DummyHealthMonitor
 from tests.qubx.connectors.ccxt.data.ccxt_responses import (
     C1,
     C2,
@@ -21,17 +16,7 @@ from tests.qubx.connectors.ccxt.data.ccxt_responses import (
     C5new,
     C6ex,
     C7cancel,
-    buy_RAREUSDT1,
-    buy_RAREUSDT2,
-    buy_RAREUSDT3,
-    execs_ACA,
-    execs_SUPERUSDT1,
-    execs_SUPERUSDT2,
-    execs_SUPERUSDT3,
-    sell_RAREUSDT1,
-    sell_RAREUSDT2,
 )
-from tests.qubx.core.utils_test import DummyTimeProvider
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
@@ -40,31 +25,34 @@ class TestStrats:
     def test_ccxt_exec_report_conversion(self):
         instrument = lookup.find_symbol("BINANCE", "ACAUSDT")
         assert instrument is not None
-        # - execution reports
-        for o in [
-            ccxt_convert_order_info(instrument, C1),
-            ccxt_convert_order_info(instrument, C2),
-            ccxt_convert_order_info(instrument, C3),
-            ccxt_convert_order_info(instrument, C4),
-            ccxt_convert_order_info(instrument, C5new),
-            ccxt_convert_order_info(instrument, C6ex),
-            ccxt_convert_order_info(instrument, C7cancel),
-        ]:
-            print(o)
-        print("-" * 50)
+        # - execution reports: (raw, status, side, unsigned qty, price, type) — quantity is
+        #   unsigned for SELL too (the framework's positive-amount rule; direction lives in side)
+        expected = [
+            (C1, OrderStatus.ACCEPTED, "BUY", 50.0, None, "MARKET"),
+            (C2, OrderStatus.FILLED, "BUY", 50.0, 0.1612, "MARKET"),
+            (C3, OrderStatus.ACCEPTED, "SELL", 50.0, None, "MARKET"),
+            (C4, OrderStatus.FILLED, "SELL", 50.0, 0.1606, "MARKET"),
+            (C5new, OrderStatus.ACCEPTED, "BUY", 51.0, 0.1611, "LIMIT"),
+            (C6ex, OrderStatus.FILLED, "BUY", 51.0, 0.1611, "LIMIT"),
+            (C7cancel, OrderStatus.CANCELED, "BUY", 50.0, 0.1, "LIMIT"),
+        ]
+        for raw, status, side, quantity, price, order_type in expected:
+            o = ccxt_convert_order_info(instrument, raw)
+            assert o.venue_order_id == raw["id"]
+            assert o.client_order_id == raw["clientOrderId"]
+            assert o.status is status
+            assert o.side == side
+            assert o.quantity == quantity
+            assert o.price == price
+            assert o.type == order_type
+            # fill state rides the unified ccxt fields (R2: snapshots must carry real fills)
+            assert o.filled_quantity == (raw.get("filled") or 0.0)
+            assert o.avg_fill_price == raw.get("average")
 
-        print(ccxt_convert_order_info(instrument, C5new))
-        print(ccxt_convert_order_info(instrument, C6ex))
-        print(ccxt_convert_order_info(instrument, C7cancel))
-
-        print("#" * 50)
-
-        # - historical records
-        for h in HIST:
-            i = lookup.find_symbol("BINANCE.UM", h["info"]["symbol"])
-            if i is not None:
-                o = ccxt_convert_order_info(i, h)
-                print(o)
+        # - historical records (spot ACAUSDT order history) all convert to recognized statuses
+        hist_orders = [ccxt_convert_order_info(instrument, h) for h in HIST]
+        assert [o.venue_order_id for o in hist_orders] == [h["id"] for h in HIST]
+        assert all(o.status in (OrderStatus.ACCEPTED, OrderStatus.FILLED, OrderStatus.CANCELED) for o in hist_orders)
 
     def test_ccxt_hist_trades_conversion(self):
         raw = {
@@ -97,240 +85,109 @@ class TestStrats:
             "fee": {"cost": 6.48e-06, "currency": "BNB"},
             "fees": [{"cost": 6.48e-06, "currency": "BNB"}],
         }
-        print(ccxt_convert_deal_info(raw))
+        deal = ccxt_convert_deal_info(raw)
+        assert deal.trade_id == "56324015"
+        assert deal.order_id == "536752004"
+        assert deal.time == pd.Timestamp("2024-04-07 13:48:37.270000")
+        assert deal.amount == 2.4
+        assert deal.price == 2.1129
+        assert deal.aggressive is True  # taker
+        assert deal.fee_amount == N(6.48e-06)
+        assert deal.fee_currency == "BNB"
 
-    def test_position_restoring_from_deals(self):
-        deals = [
-            Deal(
-                "0",
-                1,
-                time=pd.Timestamp("2024-04-07 13:04:36.975000"),
-                amount=0.5,
-                price=180.84,
-                aggressive=True,
-                fee_amount=0.00011542,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "1",
-                1,
-                time=pd.Timestamp("2024-04-07 13:09:22.644000"),
-                amount=-0.5,
-                price=181.12,
-                aggressive=True,
-                fee_amount=0.00011562,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "2",
-                1,
-                time=pd.Timestamp("2024-04-07 13:48:37.611000"),
-                amount=0.11,
-                price=181.67,
-                aggressive=True,
-                fee_amount=2.544e-05,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "3",
-                1,
-                time=pd.Timestamp("2024-04-07 13:48:37.611000"),
-                amount=0.11,
-                price=181.68,
-                aggressive=True,
-                fee_amount=2.544e-05,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "4",
-                1,
-                time=pd.Timestamp("2024-04-07 13:48:37.611000"),
-                amount=0.11,
-                price=181.69,
-                aggressive=True,
-                fee_amount=2.544e-05,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "5",
-                1,
-                time=pd.Timestamp("2024-04-07 13:48:37.611000"),
-                amount=0.22,
-                price=181.69,
-                aggressive=True,
-                fee_amount=5.09e-05,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "6",
-                1,
-                time=pd.Timestamp("2024-04-07 14:12:34.624000"),
-                amount=-0.55,
-                price=181.29,
-                aggressive=True,
-                fee_amount=0.00012728,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "7",
-                1,
-                time=pd.Timestamp("2024-04-07 14:16:46.048000"),
-                amount=0.7,
-                price=181.32,
-                aggressive=True,
-                fee_amount=0.00016175,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "8",
-                1,
-                time=pd.Timestamp("2024-04-07 14:17:47.396000"),
-                amount=-0.7,
-                price=181.36,
-                aggressive=True,
-                fee_amount=0.00016176,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "9",
-                1,
-                time=pd.Timestamp("2024-04-07 14:18:25.864000"),
-                amount=0.13,
-                price=181.36,
-                aggressive=True,
-                fee_amount=3.005e-05,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "a",
-                1,
-                time=pd.Timestamp("2024-04-07 14:18:25.864000"),
-                amount=0.11,
-                price=181.36,
-                aggressive=True,
-                fee_amount=2.543e-05,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "b",
-                1,
-                time=pd.Timestamp("2024-04-07 14:18:25.864000"),
-                amount=0.76,
-                price=181.36,
-                aggressive=True,
-                fee_amount=0.00076,
-                fee_currency="SOL",
-            ),  # type: ignore
-        ]
+    def test_deal_synthesizes_trade_id_when_venue_omits_it(self):
+        # Some venues omit a per-fill id; the converter must synthesize a deterministic
+        # one from (order_id, timestamp, qty, price) so fill dedup still works.
+        raw = {
+            "order": "ORD-1",
+            "timestamp": 1712497717270,
+            "side": "buy",
+            "takerOrMaker": "taker",
+            "price": 2.1129,
+            "amount": 2.4,
+        }
+        deal = ccxt_convert_deal_info(raw)  # must not raise KeyError on missing "id"
+        assert deal.trade_id == "ORD-1:1712497717270:2.4:2.1129"
+        # deterministic: same fill -> same id (so seen_trade_ids dedups it)
+        assert ccxt_convert_deal_info(dict(raw)).trade_id == deal.trade_id
+        # a real venue id is used verbatim when present
+        assert ccxt_convert_deal_info({**raw, "id": "T9"}).trade_id == "T9"
 
-        instr1: Instrument = lookup.find_symbol("BINANCE", "SOLUSDT")  # type: ignore
-        pos1 = Position(instr1)  # type: ignore
-        vol1 = np.sum([d.amount for d in deals]) - instr1.round_size_up(
-            deals[-1].fee_amount if deals[-1].fee_amount else 0
-        )
 
-        pos1 = ccxt_restore_position_from_deals(pos1, vol1, deals)
-        assert N(pos1.quantity, instr1.lot_size) == vol1
+def _raw_order(**overrides):
+    raw = {
+        "info": {},
+        "amount": 1.0,
+        "price": 50_000.0,
+        "status": "open",
+        "side": "buy",
+        "type": "limit",
+        "timestamp": 1_716_854_400_000,
+        "id": "VENUE-999",
+        "cost": 0.0,
+    }
+    raw.update(overrides)
+    return raw
 
-        deals = [
-            Deal(
-                "0",
-                2,
-                time=pd.Timestamp("2024-04-07 12:40:41.717000"),
-                amount=0.154,
-                price=587.1,
-                aggressive=True,
-                fee_amount=0.0001155,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "1",
-                2,
-                time=pd.Timestamp("2024-04-07 12:41:59.307000"),
-                amount=-0.154,
-                price=586.6,
-                aggressive=True,
-                fee_amount=0.00011472,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "2",
-                2,
-                time=pd.Timestamp("2024-04-07 12:44:45.991000"),
-                amount=-0.199,
-                price=588.5,
-                aggressive=True,
-                fee_amount=0.00014922,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "3",
-                2,
-                time=pd.Timestamp("2024-04-08 12:45:49.738000"),
-                amount=0.025,
-                price=594.1,
-                aggressive=True,
-                fee_amount=1.875e-05,
-                fee_currency="BNB",
-            ),  # type: ignore
-            Deal(
-                "4",
-                2,
-                time=pd.Timestamp("2024-04-08 12:48:37.543000"),
-                amount=0.011,
-                price=594.0,
-                aggressive=True,
-                fee_amount=8.25e-06,
-                fee_currency="BNB",
-            ),  # type: ignore
-        ]
 
-        instr2 = lookup.find_symbol("BINANCE", "BNBUSDT")
-        assert instr2 is not None
-        pos2 = Position(instr2)
-        vol2 = np.sum([d.amount for d in deals]) - instr2.round_size_up(np.sum([d.fee_amount for d in deals]))  # type: ignore
+def test_convert_order_info_without_client_order_id_falls_back_to_ext():
+    # A venue that omits clientOrderId must not KeyError; the order reads as EXTERNAL with a
+    # stable ext:<venue_id> client_order_id.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order())  # no clientOrderId
+    assert order.client_order_id == "ext:VENUE-999"
+    assert order.origin == OrderOrigin.EXTERNAL
+    assert order.venue_order_id == "VENUE-999"
 
-        pos2 = ccxt_restore_position_from_deals(pos2, vol2, deals)
-        assert N(pos2.quantity, instr2.lot_size) == vol2
 
-    def test_account_processor_from_ccxt_reports(self):
-        acc = BasicAccountProcessor(
-            account_id="TestAcc1",
-            time_provider=DummyTimeProvider(),
-            base_currency="USDT",
-            health_monitor=DummyHealthMonitor(),
-            exchange="BINANCE",
-            initial_capital=100,
-        )
-        acc.attach_positions(
-            Position(lookup.find_symbol("BINANCE", "RAREUSDT")),  # type: ignore
-            Position(lookup.find_symbol("BINANCE", "SUPERUSDT")),  # type: ignore
-            Position(lookup.find_symbol("BINANCE", "ACAUSDT")),  # type: ignore
-        )
+def test_convert_order_info_with_framework_client_order_id():
+    # A framework cid parsed back from venue data classifies as RECOVERED (classify_origin);
+    # FRAMEWORK is reserved for orders the trading mixin creates itself.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(clientOrderId="qubx_BTCUSDT_1"))
+    assert order.client_order_id == "qubx_BTCUSDT_1"
+    assert order.origin == OrderOrigin.RECOVERED
 
-        for exs in [
-            *execs_ACA,
-            buy_RAREUSDT1,
-            buy_RAREUSDT2,
-            buy_RAREUSDT3,
-            sell_RAREUSDT1,
-            sell_RAREUSDT2,
-            execs_SUPERUSDT1,
-            execs_SUPERUSDT2,
-            execs_SUPERUSDT3,
-        ]:
-            for report in exs:
-                symbol = report["info"]["s"]
-                instrument = lookup.find_symbol("BINANCE", symbol)  # type: ignore
-                order = ccxt_convert_order_info(instrument, report)
-                deals = ccxt_extract_deals_from_exec(report)
-                acc.process_deals(symbol, deals)
-                acc.process_order(order)
 
-        print("- " * 50)
-        print(pd.DataFrame.from_dict(acc.position_report()).T)
-        print("- " * 50)
-        print(f"Capital: {acc.get_capital()}")
-        print(f"Margin Capital: {acc.get_total_capital()}")
-        print(f"Net leverage: {acc.get_net_leverage()}")
-        print(f"Gross leverage: {acc.get_gross_leverage()}")
+def test_convert_order_info_maps_fill_state_and_unsigned_quantity():
+    # R2: a partially-filled SELL must keep an unsigned quantity (positive-amount rule)
+    # and carry the unified filled/average fields into the framework Order.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(side="sell", filled=0.4, average=49_900.0))
+    assert order.quantity == 1.0
+    assert order.side == "SELL"
+    assert order.filled_quantity == 0.4
+    assert order.avg_fill_price == 49_900.0
+    assert order.status is OrderStatus.PARTIALLY_FILLED
+
+
+def test_convert_order_info_open_with_fills_maps_partially_filled_venue_agnostic():
+    # ccxt's unified status collapses partial fills into "open"; OKX carries the venue
+    # state under info.state (not info.status), so the refinement must not be the only
+    # path — filled > 0 on an open order is the venue-agnostic signal (R2, OKX leg).
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    okx_like = _raw_order(side="buy", filled=0.25, average=50_010.0, info={"state": "partially_filled"})
+    order = ccxt_convert_order_info(instrument, okx_like)
+    assert order.status is OrderStatus.PARTIALLY_FILLED
+    # an open order with no fills stays ACCEPTED
+    untouched = ccxt_convert_order_info(instrument, _raw_order(filled=0.0, average=None))
+    assert untouched.status is OrderStatus.ACCEPTED
+    assert untouched.filled_quantity == 0.0
+    assert untouched.avg_fill_price is None
+
+
+def test_convert_order_info_market_order_price_is_none():
+    # Market orders carry no limit price; the converter must yield None, not a fake 0.0
+    # (matches Order.price: float | None).
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market"))
+    assert order.price is None
+
+
+def test_convert_deal_info_tolerates_empty_fee_and_missing_taker():
+    # CCXT may send fee={} (or cost=None) and omit takerOrMaker — must not KeyError/TypeError.
+    raw = {"order": "O1", "timestamp": 1_716_854_400_000, "side": "buy", "price": 100.0, "amount": 1.0, "fee": {}}
+    deal = ccxt_convert_deal_info(raw)
+    assert deal.fee_amount is None
+    assert deal.fee_currency is None
+    assert deal.aggressive is False  # takerOrMaker absent -> treated as maker

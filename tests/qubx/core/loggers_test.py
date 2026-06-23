@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 import pandas as pd
 import tabulate
 
-from qubx.core.basics import AssetBalance, Deal, Position
+from qubx.core.basics import Balance, Deal, Position
 from qubx.core.loggers import (
     BalanceLogger,
     ExecutionsLogger,
@@ -289,9 +289,9 @@ class TestPortfolioLoggers:
 
         # Create test balances as list
         balances = [
-            AssetBalance(exchange="TEST", currency="USDT", total=1000.0, locked=100.0, free=900.0),
-            AssetBalance(exchange="TEST", currency="BTC", total=0.5, locked=0.0, free=0.5),
-            AssetBalance(exchange="TEST", currency="ETH", total=5.0, locked=1.0, free=4.0),
+            Balance(exchange="TEST", currency="USDT", total=1000.0, locked=100.0, free=900.0),
+            Balance(exchange="TEST", currency="BTC", total=0.5, locked=0.0, free=0.5),
+            Balance(exchange="TEST", currency="ETH", total=5.0, locked=1.0, free=4.0),
         ]
 
         # Record initial balance
@@ -303,10 +303,10 @@ class TestPortfolioLoggers:
             t = _DT(i + 1)
             # Update some balances
             balances = [
-                AssetBalance(
+                Balance(
                     exchange="TEST", currency="USDT", total=balances[0].total - 50.0, locked=balances[0].locked, free=balances[0].total - 50.0 - balances[0].locked
                 ),
-                AssetBalance(
+                Balance(
                     exchange="TEST", currency="BTC", total=balances[1].total + 0.01, locked=balances[1].locked, free=balances[1].total + 0.01 - balances[1].locked
                 ),
                 balances[2],  # ETH unchanged

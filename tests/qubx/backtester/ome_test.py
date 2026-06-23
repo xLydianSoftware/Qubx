@@ -2,7 +2,7 @@ import numpy as np
 
 from qubx.backtester.ome import OrdersManagementEngine
 from qubx.backtester.simulated_data import EmulatedTickSequence
-from qubx.core.basics import ZERO_COSTS, ITimeProvider
+from qubx.core.basics import ZERO_COSTS, ITimeProvider, OrderStatus
 from qubx.core.exceptions import SimulationError
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote, Trade, TradeArray
@@ -37,55 +37,55 @@ class TestOrderManagementEngineSimulation:
         ome.process_market_data(t.g(q0))
 
         r0 = ome.place_order("BUY", "MARKET", 0.04, 0, "Test1")
-        assert r0.order.status == "CLOSED"
+        assert r0.order.status == OrderStatus.FILLED
         assert r0.exec is not None
         assert r0.exec.amount == 0.04
 
         r1 = ome.place_order("SELL", "LIMIT", 0.1, q0.bid, "Test2")
-        assert r1.order.status == "CLOSED"
+        assert r1.order.status == OrderStatus.FILLED
         assert r1.exec is not None
         assert r1.exec.amount == -0.1
 
         r2 = ome.place_order("BUY", "LIMIT", 0.04, q0.bid - 100, "Test2")
-        assert r2.order.status == "OPEN"
+        assert r2.order.status == OrderStatus.ACCEPTED
         assert r2.exec is None
 
         r3 = ome.place_order("BUY", "LIMIT", 0.1, q0.bid - 100, "Test3")
-        assert r3.order.status == "OPEN"
+        assert r3.order.status == OrderStatus.ACCEPTED
         assert r3.exec is None
 
         r4 = ome.place_order("SELL", "LIMIT", 0.04, q0.ask + 100, "Test4")
-        assert r4.order.status == "OPEN"
+        assert r4.order.status == OrderStatus.ACCEPTED
         assert r4.exec is None
 
         r5 = ome.place_order("SELL", "LIMIT", 0.14, q0.ask + 50, "Test5")
-        assert r5.order.status == "OPEN"
-        assert r5.order.client_id == "Test5"
+        assert r5.order.status == OrderStatus.ACCEPTED
+        assert r5.order.client_order_id == "Test5"
         assert r5.exec is None
 
         r6 = ome.place_order("SELL", "LIMIT", 0.3, q0.ask, "Test6")
-        assert r6.order.status == "OPEN"
+        assert r6.order.status == OrderStatus.ACCEPTED
         assert r6.exec is None
 
         r7 = ome.place_order("BUY", "LIMIT", 0.12, q0.bid, "Test7")
-        assert r7.order.status == "OPEN"
+        assert r7.order.status == OrderStatus.ACCEPTED
         assert r7.exec is None
 
         assert len(ome.get_open_orders()) == 6
 
-        ome.cancel_order(r6.order.id)
+        ome.cancel_order(r6.order.venue_order_id)
         assert len(ome.get_open_orders()) == 5
 
         # Should return None when order not found (OME level behavior)
-        result = ome.cancel_order(r6.order.id)
+        result = ome.cancel_order(r6.order.venue_order_id)
         assert result is None
 
-        ome.cancel_order(r7.order.id)
-        ome.cancel_order(r5.order.id)
-        ome.cancel_order(r4.order.id)
-        ome.cancel_order(r3.order.id)
-        rc2 = ome.cancel_order(r2.order.id)
-        assert rc2.order.status == "CANCELED"
+        ome.cancel_order(r7.order.venue_order_id)
+        ome.cancel_order(r5.order.venue_order_id)
+        ome.cancel_order(r4.order.venue_order_id)
+        ome.cancel_order(r3.order.venue_order_id)
+        rc2 = ome.cancel_order(r2.order.venue_order_id)
+        assert rc2.order.status == OrderStatus.CANCELED
         assert len(ome.get_open_orders()) == 0
 
     def test_ome_execution(self):
@@ -124,11 +124,11 @@ class TestOrderManagementEngineSimulation:
         ome.process_market_data(q0)
 
         r1 = ome.place_order("BUY", "LIMIT", 0.3, 2001.0, "Test1")
-        assert r1.order.status == "OPEN"
+        assert r1.order.status == OrderStatus.ACCEPTED
         assert r1.exec is None
 
         r2 = ome.place_order("SELL", "LIMIT", 0.3, 2002.0, "Test2")
-        assert r2.order.status == "OPEN"
+        assert r2.order.status == OrderStatus.ACCEPTED
         assert r2.exec is None
 
         r3 = ome.process_market_data(t.g(Q("2020-01-01 10:01", 2000.0, 2001.0)))
@@ -143,7 +143,7 @@ class TestOrderManagementEngineSimulation:
 
         # - quote at bid
         r5 = ome.place_order("BUY", "LIMIT", 0.3, 2003.0, "Test 3")
-        assert r5.order.status == "OPEN"
+        assert r5.order.status == OrderStatus.ACCEPTED
         assert r5.exec is None
 
         # - no exec - price goes up
@@ -183,7 +183,7 @@ class TestOrderManagementEngineSimulation:
             )
         )
         for i in x1:
-            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+            print(f"  - {i.order.client_order_id} {i.order.status} {str(i.exec)}")
 
         x2 = ome.process_market_data(
             Trade(
@@ -194,7 +194,7 @@ class TestOrderManagementEngineSimulation:
             )
         )
         for i in x2:
-            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+            print(f"  - {i.order.client_order_id} {i.order.status} {str(i.exec)}")
 
         # - quote
         qr = ome.process_market_data(t.g(Q("2020-01-01 10:05", 50.0, 51.0)))
@@ -239,7 +239,7 @@ class TestOrderManagementEngineSimulation:
         # - step 1
         x1 = ome.process_market_data(ta1)
         for i in x1:
-            print(f"  - {i.order.client_id} {i.order.status} {str(i.exec)}")
+            print(f"  - {i.order.client_order_id} {i.order.status} {str(i.exec)}")
 
         # - quote
         qr = ome.process_market_data(t.g(Q("2020-01-01 10:05", 50.0, 51.0)))
@@ -270,8 +270,8 @@ class TestOrderManagementEngineSimulation:
             if rs:
                 execs.append(rs[0].exec)
 
-        assert l1.order.status == "CLOSED"
-        assert l2.order.status == "CLOSED"
+        assert l1.order.status == OrderStatus.FILLED
+        assert l2.order.status == OrderStatus.FILLED
         assert execs[0].price == 39500.0
         assert execs[1].price == 52000.0
 
@@ -330,13 +330,13 @@ class TestOrderManagementEngineSimulation:
             if rs:
                 execs.extend([r.exec for r in rs])
 
-        assert stp1.order.status == "CLOSED"
-        assert stp2.order.status == "CLOSED"
-        assert stp3.order.status == "CLOSED"
-        assert stp4.order.status == "CLOSED"
-        assert lmt1.order.status == "CLOSED"
-        assert lmt2.order.status == "CLOSED"
-        assert lmt3.order.status == "OPEN"
+        assert stp1.order.status == OrderStatus.FILLED
+        assert stp2.order.status == OrderStatus.FILLED
+        assert stp3.order.status == OrderStatus.FILLED
+        assert stp4.order.status == OrderStatus.FILLED
+        assert lmt1.order.status == OrderStatus.FILLED
+        assert lmt2.order.status == OrderStatus.FILLED
+        assert lmt3.order.status == OrderStatus.ACCEPTED
         assert execs[0].price == ent0
         assert execs[1].price > ent0
         assert execs[2].price == ent2

@@ -4,8 +4,8 @@ from datetime import datetime
 from enum import StrEnum
 from functools import cache
 from queue import Empty, Queue
-from threading import Event, Lock
-from typing import TYPE_CHECKING, Any, Literal, Optional, TypeAlias, Union
+from threading import Event
+from typing import Any, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -16,9 +16,6 @@ from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_st
 from qubx.utils.misc import Stopwatch
 from qubx.utils.ntp import start_ntp_thread, time_now
 from qubx.utils.time import to_timedelta
-
-if TYPE_CHECKING:
-    from qubx.core.interfaces import IStrategyContext
 
 dt_64 = np.datetime64
 td_64 = np.timedelta64
@@ -476,14 +473,6 @@ class Instrument:
             options=(options or {}) | kwargs,
         )
 
-    def get_amount_for_leverage(self, ctx: "IStrategyContext", leverage: float) -> float:
-        q = ctx.quote(self)
-        capital = ctx.get_total_capital()
-        if q is None or not capital:
-            return 0
-        amount = (capital * leverage) / q.mid_price()
-        return self.round_size_down(amount)
-
     def __hash__(self) -> int:
         return hash((self.symbol, self.exchange, self.market_type))
 
@@ -615,8 +604,8 @@ class TriggerEvent:
 
     time: dt_64
     type: str
-    instrument: Optional[Instrument]
-    data: Optional[Any]
+    instrument: Instrument | None
+    data: Any | None
 
 
 @dataclass
@@ -647,8 +636,8 @@ class MarketEvent:
 
 @dataclass
 class Deal:
-    id: str  # trade id
-    order_id: str  # order's id
+    trade_id: str  # trade id
+    order_id: str  # VENUE (exchange-assigned) order id, not the client_order_id
     time: dt_64  # time of trade
     amount: float  # signed traded amount: positive for buy and negative for selling
     price: float
@@ -657,9 +646,109 @@ class Deal:
     fee_currency: str | None = None
 
 
-OrderType = Literal["MARKET", "LIMIT", "STOP_MARKET", "STOP_LIMIT"]
-OrderSide = Literal["BUY", "SELL"]
-OrderStatus = Literal["OPEN", "CLOSED", "CANCELED", "NEW", "PENDING"]
+class OrderType(StrEnum):
+    MARKET = "MARKET"
+    LIMIT = "LIMIT"
+    STOP_MARKET = "STOP_MARKET"
+    STOP_LIMIT = "STOP_LIMIT"
+
+
+class OrderSide(StrEnum):
+    BUY = "BUY"
+    SELL = "SELL"
+
+
+class OrderStatus(StrEnum):
+    INITIALIZED = "INITIALIZED"
+    SUBMITTED = "SUBMITTED"
+    ACCEPTED = "ACCEPTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    PENDING_CANCEL = "PENDING_CANCEL"
+    PENDING_UPDATE = "PENDING_UPDATE"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    REJECTED = "REJECTED"
+    EXPIRED = "EXPIRED"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in _TERMINAL_ORDER_STATUSES
+
+    @property
+    def is_inflight(self) -> bool:
+        return self in _INFLIGHT_ORDER_STATUSES
+
+    @property
+    def is_pending(self) -> bool:
+        return self in _PENDING_ORDER_STATUSES
+
+
+_TERMINAL_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.FILLED,
+        OrderStatus.CANCELED,
+        OrderStatus.REJECTED,
+        OrderStatus.EXPIRED,
+    }
+)
+_INFLIGHT_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.SUBMITTED,
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.PENDING_UPDATE,
+    }
+)
+_PENDING_ORDER_STATUSES = frozenset(
+    {
+        OrderStatus.PENDING_CANCEL,
+        OrderStatus.PENDING_UPDATE,
+    }
+)
+
+
+# Client-id prefixes shared by every producer/classifier of order client ids.
+# FRAMEWORK_CID_PREFIX marks an order as framework-originated (ClientIdStore._create_id,
+# connector make_client_id); EXTERNAL_CID_PREFIX marks a cid synthesized for an order the
+# framework discovered at the venue but never placed.
+FRAMEWORK_CID_PREFIX = "qubx_"
+EXTERNAL_CID_PREFIX = "ext:"
+
+
+class OrderOrigin(StrEnum):
+    FRAMEWORK = "FRAMEWORK"
+    RECOVERED = "RECOVERED"
+    EXTERNAL = "EXTERNAL"
+
+
+def classify_origin(client_order_id: str, *, framework_prefix: str = FRAMEWORK_CID_PREFIX) -> OrderOrigin:
+    """Classify an order observed in venue data by its client id: the framework cid
+    prefix marks a framework order seen back from the venue (RECOVERED), anything
+    else is EXTERNAL. Orders the framework places itself are FRAMEWORK at creation
+    and never pass through here.
+
+    ``framework_prefix`` is for connectors whose venue cid charset mangles
+    ``FRAMEWORK_CID_PREFIX`` (OKX bans ``_``): they classify with the prefix the venue
+    actually echoes back, derived from the same sanitizer their ``make_client_id`` uses.
+    """
+    if client_order_id.startswith(framework_prefix):
+        return OrderOrigin.RECOVERED
+    return OrderOrigin.EXTERNAL
+
+
+class OrderChange(StrEnum):
+    """What happened to an order, paired with it on ApplyResult. Covers the cases
+    order.status can't express on its own: UPDATED (status unchanged), CANCEL_REJECTED/
+    UPDATE_REJECTED (status reverts)."""
+
+    ACCEPTED = "ACCEPTED"
+    PARTIALLY_FILLED = "PARTIALLY_FILLED"
+    FILLED = "FILLED"
+    CANCELED = "CANCELED"
+    EXPIRED = "EXPIRED"
+    REJECTED = "REJECTED"
+    UPDATED = "UPDATED"
+    CANCEL_REJECTED = "CANCEL_REJECTED"
+    UPDATE_REJECTED = "UPDATE_REJECTED"
 
 
 @dataclass
@@ -685,34 +774,83 @@ class OrderRequest:
     instrument: Instrument
     quantity: float
     price: float | None = None
-    order_type: OrderType = "LIMIT"
-    side: OrderSide = "BUY"
+    order_type: OrderType = OrderType.LIMIT
+    side: OrderSide = OrderSide.BUY
     time_in_force: str = "gtc"
     client_id: str | None = None
     options: dict[str, Any] = field(default_factory=dict)
 
 
-@dataclass
+@dataclass(frozen=True, slots=True)
+class OrderTransition:
+    """One entry in an Order's status-transition audit trail (see Order.transitions)."""
+
+    time: dt_64
+    from_status: OrderStatus
+    to_status: OrderStatus
+
+
+@dataclass(slots=True, kw_only=True)
 class Order:
-    id: str
+    client_order_id: str
     type: OrderType
     instrument: Instrument
-    time: dt_64
     quantity: float
-    price: float
     side: OrderSide
-    status: OrderStatus
     time_in_force: str
-    client_id: str | None = None
-    cost: float = 0.0
+    status: OrderStatus = OrderStatus.INITIALIZED
+    venue_order_id: str | None = None
+    price: float | None = None  # None for market orders (no limit price)
+    filled_quantity: float = 0.0
+    avg_fill_price: float | None = None
+    # submission timestamp; grace-window reconcile measures order age from this field
+    submitted_at: dt_64 | None = None
+    accepted_at: dt_64 | None = None
+    last_updated_at: dt_64 | None = None
+    rejected_reason: str | None = None
+    # venue/connector error code accompanying a reject (e.g. the ccxt error class name);
+    # None when the reject path carries no code (synthetic reconcile rejects).
+    error_code: str | None = None
+    reduce_only: bool = False
+    post_only: bool = False
+    # Defaults to FRAMEWORK (the common case); the snapshot/external materialization
+    # paths set EXTERNAL / RECOVERED explicitly.
+    origin: OrderOrigin = OrderOrigin.FRAMEWORK
     options: dict[str, Any] = field(default_factory=dict)
+    # Status-transition audit trail, appended on every AM-driven status change (the single
+    # writer is AccountState.transition_order). Bounded by the order's lifetime + the
+    # terminal-history ring buffer. Exposed via ctx.get_order_history(client_order_id).
+    transitions: list[OrderTransition] = field(default_factory=list)
+
+    def require_venue_id(self) -> str:
+        if self.venue_order_id is None:
+            raise ValueError(f"Order {self.client_order_id} has no venue_order_id (status={self.status})")
+        return self.venue_order_id
+
+    def record_fill(self, quantity: float, price: float) -> None:
+        """Accumulate one fill into filled_quantity and the running average fill price.
+
+        ``quantity`` is the fill size (sign-agnostic — absolute size is used for the
+        weighted average). filled_quantity mirrors real, irreversible fills and so is only
+        ever increased. The caller owns dedup (apply a given fill at most once) and any
+        position/balance side effects; this only maintains the order's own fill totals.
+        """
+        qty = abs(quantity)
+        if self.avg_fill_price is None:
+            self.avg_fill_price = price
+        else:
+            self.avg_fill_price = (self.avg_fill_price * self.filled_quantity + price * qty) / (
+                self.filled_quantity + qty
+            )
+        self.filled_quantity += qty
 
     def __str__(self) -> str:
-        return f"[{self.id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price > 0 else ''} ({self.time_in_force}) [{self.status}]"
+        _id = self.venue_order_id or self.client_order_id
+        return f"[{_id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price else ''} ({self.time_in_force}) [{self.status}]"
 
 
 @dataclass
-class AssetBalance:
+class Balance:
     exchange: str
     currency: str
     free: float = 0.0
@@ -722,19 +860,12 @@ class AssetBalance:
     def __str__(self) -> str:
         return f"{self.exchange}:{self.currency} free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
 
-    def lock(self, lock_amount: float) -> None:
-        self.locked += lock_amount
-        self.free = self.total - self.locked
-
-    def __add__(self, amount: float) -> "AssetBalance":
-        self.total += amount
-        self.free += amount
-        return self
-
-    def __sub__(self, amount: float) -> "AssetBalance":
-        self.total -= amount
-        self.free -= amount
-        return self
+    def reset_by_balance(self, balance: "Balance") -> None:
+        # In-place value copy (exchange/currency are identity) so holders of this
+        # Balance keep a live reference. Mirrors Position.reset_by_position.
+        self.free = balance.free
+        self.locked = balance.locked
+        self.total = balance.total
 
 
 DEFAULT_MAINTENANCE_MARGIN = 0.05
@@ -862,6 +993,15 @@ class Position:
         self.funding_payments = pos.funding_payments.copy() if hasattr(pos, "funding_payments") else []
         self.last_funding_time = pos.last_funding_time if hasattr(pos, "last_funding_time") else np.datetime64("NaT")
         self.__pos_incr_qty = pos.__pos_incr_qty
+
+    def reconcile_size(self, quantity: float, avg_price: float) -> None:
+        """Authoritative size/avg-price correction (venue snapshot reconcile). Touches
+        sizing fields only — accumulated accounting (r_pnl, commissions, funding) is
+        locally owned and must survive a snapshot."""
+        self.quantity = quantity
+        self.position_avg_price = avg_price
+        self.position_avg_price_funds = avg_price  # conversion seam is fixed at 1.0 (AccountState.conversion_rate)
+        self.__pos_incr_qty = abs(quantity)
 
     @property
     def notional_value(self) -> float:
@@ -1150,19 +1290,20 @@ class Position:
 
 
 class CtrlChannel:
-    """
-    Controlled data communication channel
+    """Unbounded control channel: producers push events on, the strategy thread drains.
+
+    Sends are non-blocking and never drop — the queue is normally near-empty (events are
+    consumed as fast as they arrive). If the consumer stalls, the queue grows rather than
+    blocking the producer (the connector loop).
     """
 
     control: Event
     _queue: Queue  # we need something like disruptor here (Queue is temporary)
     name: str
-    lock: Lock
 
     def __init__(self, name: str, sentinel=(None, None, None, None)):
         self.name = name
         self.control = Event()
-        self.lock = Lock()
         self._sent = sentinel
         self._queue = Queue()
         self.start()
@@ -1173,14 +1314,15 @@ class CtrlChannel:
     def stop(self):
         if self.control.is_set():
             self.control.clear()
-            self._queue.put(self._sent)  # send sentinel
+            self._queue.put_nowait(self._sent)  # wake the consumer with the sentinel
 
     def start(self):
         self.control.set()
 
     def send(self, data):
-        if self.control.is_set():
-            self._queue.put(data)
+        if not self.control.is_set():
+            return
+        self._queue.put_nowait(data)  # unbounded: never blocks, never drops
 
     def receive(self, timeout: int | None = None) -> Any:
         try:
@@ -1294,7 +1436,7 @@ class DataType(StrEnum):
 
     @staticmethod
     @cache
-    def from_str(value: Union[str, "DataType"]) -> tuple["DataType", dict[str, Any]]:
+    def from_str(value: "str | DataType") -> tuple["DataType", dict[str, Any]]:
         """
         Parse subscription type from string.
         Returns: (subtype, params)
@@ -1396,32 +1538,10 @@ class RestoredState:
     """
 
     time: np.datetime64
-    balances: list[AssetBalance]
+    balances: list[Balance]
     instrument_to_signal_positions: dict[Instrument, list[Signal]]
     instrument_to_target_positions: dict[Instrument, list[TargetPosition]]
     positions: dict[Instrument, Position]
-
-    def filter_by_exchange(self, exchange: str) -> "RestoredState":
-        # TODO: maybe this needs to be mapped for BINANCE.PM, not sure
-        return RestoredState(
-            time=self.time,
-            balances=[balance for balance in self.balances if balance.exchange == exchange],
-            instrument_to_signal_positions={
-                instrument: signals
-                for instrument, signals in self.instrument_to_signal_positions.items()
-                if instrument.exchange == exchange
-            },
-            instrument_to_target_positions={
-                instrument: targets
-                for instrument, targets in self.instrument_to_target_positions.items()
-                if instrument.exchange == exchange
-            },
-            positions={
-                instrument: position
-                for instrument, position in self.positions.items()
-                if instrument.exchange == exchange
-            },
-        )
 
 
 class InstrumentsLookup:

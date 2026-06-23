@@ -3,9 +3,12 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 
-from qubx.core.basics import Instrument, MarketType, Position
-from qubx.core.exceptions import InvalidOrderSize, OrderNotFound
-from qubx.core.interfaces import IAccountProcessor, IBroker, IStrategyContext, ITimeProvider
+from qubx.core.account_manager import SimulatedAccountManager
+from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus, Position
+from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
+from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound
+from qubx.core.interfaces import IStrategyContext, ITimeProvider
+from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
 from qubx.health.dummy import DummyHealthMonitor
 
@@ -136,39 +139,30 @@ def mock_instrument():
 
 
 @pytest.fixture
-def mock_spot_instrument():
-    """Create a mock spot instrument for testing."""
-    instrument = Mock(spec=Instrument)
-    instrument.symbol = "BTCUSDT"
-    instrument.exchange = "BINANCE.SPOT"
-    instrument.market_type = MarketType.SPOT
-    instrument.min_size = 0.001
-    return instrument
-
-
-@pytest.fixture
-def mock_broker():
-    """Create a mock broker for testing."""
-    broker = Mock(spec=IBroker)
-    broker.exchange.return_value = "BINANCE.UM"
-    # Add cancel_order_async method to the mock
-    broker.cancel_order_async = Mock(return_value=None)
-    return broker
+def mock_connector():
+    """Create a mock connector for testing."""
+    connector = Mock()
+    connector.exchange_name = "BINANCE.UM"
+    connector.make_client_id = lambda s: s
+    return connector
 
 
 @pytest.fixture
 def mock_account():
-    """Create a mock account processor for testing."""
-    account = Mock(spec=IAccountProcessor)
+    """Create a mock account manager for testing."""
+    account = Mock()
     return account
 
 
 @pytest.fixture
-def trading_manager(strategy_context, mock_broker, mock_account):
+def trading_manager(strategy_context, mock_connector, mock_account):
     """Create a TradingManager instance for testing."""
     return TradingManager(
-        context=strategy_context, brokers=[mock_broker], account=mock_account, strategy_name="test_strategy",
-        health_monitor=DummyHealthMonitor()
+        context=strategy_context,
+        connectors={"BINANCE.UM": mock_connector},
+        account_manager=mock_account,
+        strategy_name="test_strategy",
+        health_monitor=DummyHealthMonitor(),
     )
 
 
@@ -406,149 +400,228 @@ class TestTradingManagerClosePositions:
         trading_manager.close_position.assert_any_call(ada_future, False)
 
 
+def _live_order(order_id="test_order_123"):
+    """A resolvable, non-terminal order living on BINANCE.UM."""
+    instrument = Mock()
+    instrument.exchange = "BINANCE.UM"
+    order = Mock()
+    order.client_order_id = "qubx_BTCUSDT_1"
+    order.venue_order_id = order_id
+    order.instrument = instrument
+    order.status = OrderStatus.ACCEPTED
+    return order
+
+
+class TestTradingManagerTradeOrderShape:
+    """The Order trade() builds carries None price for market orders (no fake 0.0)."""
+
+    def test_market_order_has_none_price(self, trading_manager, mock_connector, mock_account):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+        mock_account.get_position.return_value = None
+
+        trading_manager.trade(instr, 0.1)  # no price => market order
+
+        registered = mock_account.add_order.call_args.args[0]
+        assert registered.type == "MARKET"
+        assert registered.price is None
+
+    def test_limit_order_keeps_price(self, trading_manager, mock_connector, mock_account):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+        mock_account.get_position.return_value = None
+
+        trading_manager.trade(instr, 0.1, price=50_000.0)
+
+        registered = mock_account.add_order.call_args.args[0]
+        assert registered.type == "LIMIT"
+        assert registered.price == 50_000.0
+
+
+class TestTradingManagerTradeSubmitFailure:
+    """trade() registers the order before submitting, and cleans up on a synchronous raise."""
+
+    def test_sync_submit_raise_removes_order_no_phantom(self, trading_manager, mock_connector, mock_account):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+        mock_account.get_position.return_value = None  # flat: skip position-reducing math
+        mock_connector.submit_order.side_effect = RuntimeError("framework reject")
+
+        with pytest.raises(RuntimeError):
+            trading_manager.trade(instr, 0.1, price=50_000.0)
+
+        # the order is registered before submit, then dropped on the raise — not left as a
+        # phantom in-flight order, and NOT a fake REJECTED transition.
+        mock_account.add_order.assert_called_once()
+        registered = mock_account.add_order.call_args.args[0]
+        mock_account.remove_order.assert_called_once_with("BINANCE.UM", registered.client_order_id)
+        mock_account.transition_order.assert_not_called()
+
+
 class TestTradingManagerCancelOrder:
-    """Test cases for cancel_order and cancel_order_async methods."""
+    """Cancel routing through IConnector + AccountManager."""
 
-    def test_cancel_order_success(self, trading_manager, mock_broker, mock_account):
-        """Test successful synchronous order cancellation."""
-        # Given a broker that successfully cancels orders
-        mock_broker.cancel_order.return_value = True
-        order_id = "test_order_123"
-        exchange = "BINANCE.UM"
-        mock_order = Mock()
-        mock_order.id = order_id
-        mock_order.client_id = None
-        mock_account.find_order_by_id.return_value = mock_order
+    def test_cancel_order_success(self, trading_manager, mock_connector, mock_account):
+        """A live order transitions to PENDING_CANCEL and routes to the connector."""
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
 
-        # When canceling an order
-        result = trading_manager.cancel_order(order_id=order_id, exchange=exchange)
+        result = trading_manager.cancel_order(order_id="test_order_123", exchange="BINANCE.UM")
 
-        # Then the operation succeeds
         assert result is True
-        mock_broker.cancel_order.assert_called_once_with(order_id=order_id, client_order_id=None)
-        mock_account.remove_order.assert_called_once_with(order_id, exchange)
+        mock_account.transition_order.assert_called_once_with(
+            "BINANCE.UM", order.client_order_id, OrderStatus.PENDING_CANCEL
+        )
+        mock_connector.cancel_order.assert_called_once_with(
+            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+        )
 
-    def test_cancel_order_failure(self, trading_manager, mock_broker, mock_account):
-        """Test failed synchronous order cancellation."""
-        # Given a broker that fails to cancel orders
-        mock_broker.cancel_order.return_value = False
-        order_id = "test_order_456"
-        exchange = "BINANCE.UM"
-        mock_order = Mock()
-        mock_order.id = order_id
-        mock_order.client_id = None
-        mock_account.find_order_by_id.return_value = mock_order
+    def test_cancel_terminal_is_idempotent_noop(self, trading_manager, mock_connector, mock_account):
+        """Cancelling a terminal order is a no-op that still reports success."""
+        order = _live_order()
+        order.status = OrderStatus.FILLED
+        mock_account.find_order_by_id.return_value = order
 
-        # When canceling an order
-        result = trading_manager.cancel_order(order_id=order_id, exchange=exchange)
+        result = trading_manager.cancel_order(order_id="test_order_123", exchange="BINANCE.UM")
 
-        # Then the operation fails
-        assert result is False
-        mock_broker.cancel_order.assert_called_once_with(order_id=order_id, client_order_id=None)
-        # Account removal should not be called when cancellation fails
-        mock_account.remove_order.assert_not_called()
+        assert result is True
+        mock_connector.cancel_order.assert_not_called()
+        mock_account.transition_order.assert_not_called()
+
+    def test_cancel_already_pending_cancel_is_noop(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        order.status = OrderStatus.PENDING_CANCEL
+        mock_account.find_order_by_id.return_value = order
+
+        assert trading_manager.cancel_order(order_id="test_order_123") is True
+        mock_connector.cancel_order.assert_not_called()
+        mock_account.transition_order.assert_not_called()
 
     def test_cancel_order_empty_id(self, trading_manager):
-        """Test cancel_order with empty order ID."""
+        """Empty/ambiguous identifiers raise ValueError."""
         with pytest.raises(ValueError):
             trading_manager.cancel_order(order_id="")
 
-    def test_cancel_order_order_not_found_exception(self, trading_manager, mock_broker, mock_account):
-        """Test cancel_order when OrderNotFound exception is raised."""
-        # Given a broker that raises OrderNotFound
-        mock_broker.cancel_order.side_effect = OrderNotFound("Order not found")
-        order_id = "missing_order_789"
-        exchange = "BINANCE.UM"
-        mock_order = Mock()
-        mock_order.id = order_id
-        mock_order.client_id = None
-        mock_account.find_order_by_id.return_value = mock_order
+    def test_cancel_order_not_found_raises(self, trading_manager, mock_account):
+        """Cancelling an unknown order raises OrderNotFound (after the venue->cid fallback)."""
+        mock_account.find_order_by_id.return_value = None
+        mock_account.find_order_by_client_id.return_value = None
+        with pytest.raises(OrderNotFound):
+            trading_manager.cancel_order(order_id="missing_order_789", exchange="BINANCE.UM")
 
-        # When canceling the order
-        result = trading_manager.cancel_order(order_id=order_id, exchange=exchange)
+    def test_cancel_order_resolves_exchange_from_order(self, trading_manager, mock_connector, mock_account):
+        """When no exchange is given, the order's own exchange is used."""
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
 
-        # Then it returns False and still tries to remove from account
-        assert result is False
-        mock_account.remove_order.assert_called_once_with(order_id, exchange)
+        assert trading_manager.cancel_order(order_id="test_order_123") is True
+        mock_connector.cancel_order.assert_called_once_with(
+            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+        )
 
-    def test_cancel_order_unexpected_exception(self, trading_manager, mock_broker, mock_account):
-        """Test cancel_order when unexpected exception is raised."""
-        # Given a broker that raises an unexpected exception
-        mock_broker.cancel_order.side_effect = Exception("Unexpected error")
-        order_id = "error_order_999"
-        exchange = "BINANCE.UM"
-        mock_order = Mock()
-        mock_order.id = order_id
-        mock_order.client_id = None
-        mock_account.find_order_by_id.return_value = mock_order
 
-        # When canceling the order
-        result = trading_manager.cancel_order(order_id=order_id, exchange=exchange)
+class _AccountRoutingContext(MockStrategyContext):
+    """process_event applies straight to the AM — the PM dispatch leg
+    (ProcessingManager._dispatch_account) minus strategy callbacks."""
 
-        # Then it returns False and doesn't remove from account
-        assert result is False
-        mock_account.remove_order.assert_not_called()
+    def __init__(self, account_manager):
+        super().__init__()
+        self._am = account_manager
+        self.routed_events = []
 
-    def test_cancel_order_async_success(self, trading_manager, mock_broker, mock_account):
-        """Test successful asynchronous order cancellation."""
-        # Given a broker with async cancel support
-        mock_broker.cancel_order_async.return_value = None
-        order_id = "async_order_123"
-        exchange = "BINANCE.UM"
-        mock_order = Mock()
-        mock_order.id = order_id
-        mock_order.client_id = None
-        mock_account.find_order_by_id.return_value = mock_order
+    def process_event(self, event):
+        self.routed_events.append(event)
+        self._am.apply(event)
 
-        # When canceling an order async
-        result = trading_manager.cancel_order_async(order_id=order_id, exchange=exchange)
 
-        # Then it returns None and removes from account optimistically
-        assert result is None
-        mock_broker.cancel_order_async.assert_called_once_with(order_id=order_id, client_order_id=None)
-        mock_account.remove_order.assert_called_once_with(order_id, exchange)
+class TestTradingManagerCancelUpdateFailure:
+    """Synchronous connector raise on cancel/update: the exception propagates to the
+    caller AND the order reverts to its pre-pending status via the synthetic reject
+    routed through the PM (not stuck PENDING_CANCEL/PENDING_UPDATE)."""
 
-    def test_cancel_order_async_empty_id(self, trading_manager):
-        """Test cancel_order_async with empty order ID."""
-        with pytest.raises(ValueError):
-            trading_manager.cancel_order_async(order_id="")
+    @pytest.fixture
+    def failure_setup(self, mock_connector):
+        instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instrument is not None
+        am = SimulatedAccountManager(
+            connectors={"BINANCE.UM": mock_connector},
+            base_currencies={"BINANCE.UM": "USDT"},
+            time=MockTimeProvider(),
+        )
+        context = _AccountRoutingContext(am)
+        tm = TradingManager(
+            context=context,
+            connectors={"BINANCE.UM": mock_connector},
+            account_manager=am,
+            strategy_name="test_strategy",
+            health_monitor=DummyHealthMonitor(),
+        )
+        order = Order(
+            client_order_id="qubx_BTCUSDT_1",
+            venue_order_id="V1",
+            origin=OrderOrigin.FRAMEWORK,
+            type="LIMIT",
+            instrument=instrument,
+            submitted_at=pd.Timestamp("2023-01-01").asm8,
+            quantity=0.1,
+            price=50_000.0,
+            side="BUY",
+            status=OrderStatus.ACCEPTED,
+            time_in_force="gtc",
+        )
+        am.add_order(order)
+        return tm, am, context, order
 
-    def test_cancel_order_async_order_not_found_exception(self, trading_manager, mock_broker, mock_account):
-        """Test cancel_order_async when OrderNotFound exception is raised."""
-        # Given a broker that raises OrderNotFound
-        mock_broker.cancel_order_async.side_effect = OrderNotFound("Order not found")
-        order_id = "missing_async_order_789"
-        exchange = "BINANCE.UM"
-        mock_order = Mock()
-        mock_order.id = order_id
-        mock_order.client_id = None
-        mock_account.find_order_by_id.return_value = mock_order
+    def test_cancel_sync_raise_propagates_and_reverts_order(self, failure_setup, mock_connector):
+        tm, am, context, order = failure_setup
+        mock_connector.cancel_order.side_effect = ConnectionError("venue unreachable")
 
-        # When canceling the order async
-        result = trading_manager.cancel_order_async(order_id=order_id, exchange=exchange)
+        with pytest.raises(ConnectionError):
+            tm.cancel_order(client_order_id=order.client_order_id)
 
-        # Then it returns None and still tries to remove from account
-        assert result is None
-        mock_account.remove_order.assert_called_once_with(order_id, exchange)
+        assert am.get_order(order.client_order_id).status is OrderStatus.ACCEPTED
+        (event,) = context.routed_events
+        assert isinstance(event, OrderCancelRejectedEvent)
+        assert event.client_order_id == order.client_order_id
+        assert "venue unreachable" in event.reason
 
-    def test_cancel_order_default_exchange(self, trading_manager, mock_broker, mock_account):
-        """Test that default exchange is used when none specified."""
-        # Given a broker that successfully cancels orders
-        mock_broker.cancel_order.return_value = True
-        order_id = "default_exchange_order"
-        mock_order = Mock()
-        mock_order.id = order_id
-        mock_order.client_id = None
-        mock_account.find_order_by_id.return_value = mock_order
+    def test_update_sync_raise_propagates_and_reverts_order(self, failure_setup, mock_connector):
+        tm, am, context, order = failure_setup
+        mock_connector.update_order.side_effect = ConnectionError("venue unreachable")
 
-        # When canceling without specifying exchange
-        result = trading_manager.cancel_order(order_id=order_id)
+        with pytest.raises(ConnectionError):
+            tm.update_order(price=51_000.0, amount=0.1, client_order_id=order.client_order_id)
 
-        # Then the default exchange is used
-        assert result is True
-        mock_broker.cancel_order.assert_called_once_with(order_id=order_id, client_order_id=None)
-        # Default exchange should be from first broker
-        mock_account.remove_order.assert_called_once_with(order_id, "BINANCE.UM")
+        assert am.get_order(order.client_order_id).status is OrderStatus.ACCEPTED
+        (event,) = context.routed_events
+        assert isinstance(event, OrderUpdateRejectedEvent)
+        assert event.client_order_id == order.client_order_id
+        assert "venue unreachable" in event.reason
+
+
+class TestTradingManagerUpdateOrderGuards:
+    """update_order pre-connector guards: terminal misuse raises, in-flight update no-ops."""
+
+    def test_update_filled_raises_terminal_connector_not_called(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        order.status = OrderStatus.FILLED
+        mock_account.find_order_by_id.return_value = order
+
+        with pytest.raises(OrderAlreadyTerminal):
+            trading_manager.update_order(price=51_000.0, amount=0.1, order_id="test_order_123")
+
+        mock_connector.update_order.assert_not_called()
+        mock_account.transition_order.assert_not_called()
+
+    def test_update_while_pending_update_is_silent_noop(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        order.status = OrderStatus.PENDING_UPDATE
+        mock_account.find_order_by_id.return_value = order
+
+        assert trading_manager.update_order(price=51_000.0, amount=0.1, order_id="test_order_123") is None
+
+        mock_connector.update_order.assert_not_called()
+        mock_account.transition_order.assert_not_called()
 
 
 class TestAdjustSizeMinNotional:
@@ -572,12 +645,12 @@ class TestAdjustSizeMinNotional:
         )
 
     @pytest.fixture
-    def notional_trading_manager(self, strategy_context, mock_broker, mock_account):
+    def notional_trading_manager(self, strategy_context, mock_connector, mock_account):
         """Create a TradingManager with a mock context that returns a quote."""
         tm = TradingManager(
             context=strategy_context,
-            brokers=[mock_broker],
-            account=mock_account,
+            connectors={"BINANCE.UM": mock_connector},
+            account_manager=mock_account,
             strategy_name="test_strategy",
             health_monitor=DummyHealthMonitor(),
         )
@@ -622,9 +695,7 @@ class TestAdjustSizeMinNotional:
         result = notional_trading_manager._adjust_size(ada_instrument, 37.0)
         assert result == 37.0
 
-    def test_round_up_amount_above_min(
-        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
-    ):
+    def test_round_up_amount_above_min(self, notional_trading_manager, ada_instrument, strategy_context, mock_account):
         """Test that amount=36.76 rounds up to 36.8 via step 2 (round_size_up of amount)."""
         mid_price = 25.0 / 36.755
         self._setup_quote(strategy_context, mid_price)
@@ -633,9 +704,7 @@ class TestAdjustSizeMinNotional:
         result = notional_trading_manager._adjust_size(ada_instrument, 36.76)
         assert result == 36.8
 
-    def test_genuinely_too_small_raises(
-        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
-    ):
+    def test_genuinely_too_small_raises(self, notional_trading_manager, ada_instrument, strategy_context, mock_account):
         """Test that genuinely small amounts raise InvalidOrderSize."""
         mid_price = 25.0 / 36.755
         self._setup_quote(strategy_context, mid_price)
@@ -644,9 +713,7 @@ class TestAdjustSizeMinNotional:
         with pytest.raises(InvalidOrderSize):
             notional_trading_manager._adjust_size(ada_instrument, 10.0)
 
-    def test_borderline_reject(
-        self, notional_trading_manager, ada_instrument, strategy_context, mock_account
-    ):
+    def test_borderline_reject(self, notional_trading_manager, ada_instrument, strategy_context, mock_account):
         """Test that amount=36.6 (more than one lot step below min) raises."""
         mid_price = 25.0 / 36.755
         self._setup_quote(strategy_context, mid_price)
@@ -685,7 +752,8 @@ class TestAdjustSizeMinNotional:
 
 class TestBlacklistReduceOnly:
     def _pos(self, qty):
-        p = Mock(spec=Position); p.quantity = qty
+        p = Mock(spec=Position)
+        p.quantity = qty
         return p
 
     def test_clamp_blocks_opening_from_flat(self, trading_manager, mock_account, strategy_context):
@@ -733,10 +801,14 @@ class TestBlacklistReduceOnly:
         assert trading_manager._blacklist_clamp(Mock(symbol="ONDOUSDT"), 500.0) == 500.0
 
 
-def test_trade_sends_no_order_when_blacklisted_and_opening(trading_manager, mock_account, mock_broker, strategy_context):
+def test_trade_sends_no_order_when_blacklisted_and_opening(
+    trading_manager, mock_account, mock_connector, strategy_context
+):
     strategy_context.is_blacklisted = lambda inst: True
-    flat = Mock(spec=Position); flat.quantity = 0.0
+    flat = Mock(spec=Position)
+    flat.quantity = 0.0
     mock_account.get_position.return_value = flat
-    inst = Mock(symbol="ONDOUSDT"); inst.exchange = "BINANCE.UM"
+    inst = Mock(symbol="ONDOUSDT")
+    inst.exchange = "BINANCE.UM"
     assert trading_manager.trade(inst, -891.4) is None
-    mock_broker.send_order.assert_not_called()
+    mock_connector.submit_order.assert_not_called()

@@ -1,3 +1,5 @@
+import os
+import socket
 import time
 from threading import Event
 
@@ -10,6 +12,18 @@ from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.basics import CtrlChannel, DataType, LiveTimeProvider
 from qubx.core.lookups import lookup
 from qubx.core.series import Bar, Quote
+from qubx.health import DummyHealthMonitor
+
+TARDIS_HOST = os.environ.get("TARDIS_HOST", "quantlab")
+TARDIS_PORT = int(os.environ.get("TARDIS_PORT", "8011"))
+
+
+def _tardis_reachable(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 @pytest.mark.integration
@@ -19,6 +33,12 @@ class TestTardisDataProvider:
     @pytest.fixture(autouse=True)
     def setup(self):
         """Set up the test environment."""
+        if not _tardis_reachable(TARDIS_HOST, TARDIS_PORT):
+            pytest.skip(
+                f"Tardis Machine host {TARDIS_HOST}:{TARDIS_PORT} is unreachable "
+                "(set TARDIS_HOST/TARDIS_PORT to point at a reachable instance)"
+            )
+
         QubxLogConfig.set_log_level("DEBUG")
 
         # Set up a time provider and control channel
@@ -32,13 +52,14 @@ class TestTardisDataProvider:
         assert instrument is not None, "Could not find instrument BITFINEX.F:BTCUSDT"
         self.instrument = instrument
 
-        # Set up the data provider
+        # Set up the data provider (exchange_name BITFINEX.F maps to tardis 'bitfinex-derivatives')
         self.data_provider = TardisDataProvider(
-            host="quantlab",
-            port=8011,  # WebSocket port - HTTP port will be 8010
-            exchange="bitfinex-derivatives",
+            exchange_name="BITFINEX.F",
             time_provider=self.time_provider,
             channel=self.channel,
+            health_monitor=DummyHealthMonitor(),
+            host=TARDIS_HOST,
+            port=TARDIS_PORT,  # WebSocket port - HTTP port will be port - 1
         )
 
         yield

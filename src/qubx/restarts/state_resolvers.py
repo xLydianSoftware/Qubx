@@ -96,10 +96,11 @@ class StateResolver:
         if orders:
             logger.info(f"Cancelling {len(orders)} live orders ...")
             for order in orders.values():
+                oid = order.venue_order_id or order.client_order_id
                 try:
-                    ctx.cancel_order(order_id=order.id)
+                    ctx.cancel_order(order_id=oid)
                 except OrderNotFound:
-                    logger.debug(f"Order {order.id} already cancelled or doesn't exist")
+                    logger.debug(f"Order {oid} already cancelled or doesn't exist")
 
         # Get current live positions
         live_positions = ctx.get_positions()

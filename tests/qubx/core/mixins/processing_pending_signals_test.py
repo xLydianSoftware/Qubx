@@ -1,6 +1,6 @@
 """Tests for the pending signal retry mechanism in ProcessingManager."""
 
-from unittest.mock import MagicMock, Mock, PropertyMock
+from unittest.mock import MagicMock
 
 import numpy as np
 import pytest
@@ -92,7 +92,8 @@ class TestPendingSignalRetry:
             market_data=market_data,
             subscription_manager=subscription_manager,
             time_provider=time_provider,
-            account=account,
+            account_manager=account,
+            connectors={},
             position_tracker=position_tracker,
             position_gathering=position_gathering,
             universe_manager=universe_manager,

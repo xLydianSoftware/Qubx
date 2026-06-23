@@ -20,7 +20,7 @@ import pandas as pd
 import pytest
 
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     Instrument,
     MarketType,
     RestoredState,
@@ -768,7 +768,7 @@ class TestCsvStateRestorer:
         # Convert to dict for easier testing
         balances = {b.currency: b for b in state.balances}
         assert "USDT" in balances
-        assert isinstance(balances["USDT"], AssetBalance)
+        assert isinstance(balances["USDT"], Balance)
         assert balances["USDT"].total > 0
 
 

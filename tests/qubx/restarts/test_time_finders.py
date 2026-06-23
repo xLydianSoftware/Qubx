@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     Instrument,
     MarketType,
     Position,
@@ -55,26 +55,6 @@ def sample_signal(sample_instrument):
 
 
 @pytest.fixture
-def sample_target_position(sample_signal):
-    """Return a sample target position for testing."""
-    return TargetPosition(
-        time=np.datetime64("2023-01-01T11:00:00"),
-        instrument=sample_signal.instrument,
-        target_position_size=1.0,
-    )
-
-
-@pytest.fixture
-def sample_position(sample_instrument):
-    """Return a sample position for testing."""
-    return Position(
-        instrument=sample_instrument,
-        quantity=1.0,
-        pos_average_price=50000.0,
-    )
-
-
-@pytest.fixture
 def empty_state(sample_time):
     """Return an empty restored state for testing."""
     return RestoredState(
@@ -110,7 +90,7 @@ def state_with_nonzero_positions(sample_time, sample_instrument, sample_signal):
 
     return RestoredState(
         time=sample_time,
-        balances=[AssetBalance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
+        balances=[Balance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
         instrument_to_target_positions={sample_instrument: target_positions},
         instrument_to_signal_positions={},
         positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
@@ -146,7 +126,7 @@ def state_with_zero_positions(sample_time, sample_instrument, sample_signal):
 
     return RestoredState(
         time=sample_time,
-        balances=[AssetBalance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
+        balances=[Balance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
         instrument_to_signal_positions={},
         instrument_to_target_positions={sample_instrument: target_positions},
         positions={sample_instrument: Position(sample_instrument, 1.0, 50000.0)},
@@ -210,7 +190,7 @@ def state_with_multiple_instruments(sample_time, sample_instrument, sample_signa
 
     return RestoredState(
         time=sample_time,
-        balances=[AssetBalance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
+        balances=[Balance(exchange="TEST", currency="USDT", free=10000.0, locked=0.0, total=10000.0)],
         instrument_to_signal_positions={},
         instrument_to_target_positions={
             sample_instrument: btc_target_positions,
@@ -339,11 +319,17 @@ class TestTimeFinderLASTSIGNAL:
             min_size=0.01,
         )
         btc_targets = [
-            TargetPosition(time=np.datetime64("2023-01-01T11:00:00"), instrument=sample_instrument, target_position_size=1.0),
-            TargetPosition(time=np.datetime64("2023-01-01T10:00:00"), instrument=sample_instrument, target_position_size=0.0),
+            TargetPosition(
+                time=np.datetime64("2023-01-01T11:00:00"), instrument=sample_instrument, target_position_size=1.0
+            ),
+            TargetPosition(
+                time=np.datetime64("2023-01-01T10:00:00"), instrument=sample_instrument, target_position_size=0.0
+            ),
         ]
         stale_targets = [
-            TargetPosition(time=np.datetime64("2022-06-01T00:00:00"), instrument=stale_instrument, target_position_size=1.0),
+            TargetPosition(
+                time=np.datetime64("2022-06-01T00:00:00"), instrument=stale_instrument, target_position_size=1.0
+            ),
         ]
         state = RestoredState(
             time=sample_time,

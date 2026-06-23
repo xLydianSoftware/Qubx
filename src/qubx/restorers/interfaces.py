@@ -7,7 +7,7 @@ including positions and signals.
 
 from typing import Protocol, runtime_checkable
 
-from qubx.core.basics import AssetBalance, Instrument, Position, RestoredState, TargetPosition
+from qubx.core.basics import Balance, Instrument, Position, RestoredState, TargetPosition
 
 
 @runtime_checkable
@@ -60,12 +60,12 @@ class IBalanceRestorer(Protocol):
     Protocol for balance restorers.
     """
 
-    def restore_balances(self) -> list[AssetBalance]:
+    def restore_balances(self) -> list[Balance]:
         """
         Restore balances.
 
         Returns:
-            A list of AssetBalance objects (each knows its exchange and currency).
+            A list of Balance objects (each knows its exchange and currency).
         """
         ...
 

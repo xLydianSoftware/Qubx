@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Any, Awaitable, Callable, Dict, List, Set
+from typing import Any, Awaitable, Callable
 
 import ccxt.pro as cxp
 import numpy as np
@@ -10,16 +10,22 @@ from ccxt import BadSymbol
 
 from qubx import logger
 from qubx.core.basics import (
-    AssetBalance,
+    EXTERNAL_CID_PREFIX,
+    FRAMEWORK_CID_PREFIX,
+    Balance,
     Deal,
     FundingRate,
     Instrument,
     Liquidation,
     OpenInterest,
     Order,
+    OrderSide,
+    OrderStatus,
     Position,
+    classify_origin,
     dt_64,
 )
+from qubx.core.exceptions import BadRequest, InvalidOrderParameters
 from qubx.core.series import OrderBook, Quote, Trade
 from qubx.core.utils import recognize_time
 from qubx.utils.marketdata.ccxt import (
@@ -35,10 +41,67 @@ from .exceptions import (
 
 EXCH_SYMBOL_PATTERN = re.compile(r"(?P<base>[^/]+)/(?P<quote>[^:]+)(?::(?P<margin>.+))?")
 
+# ccxt canonical order status -> framework OrderStatus. ccxt lowercases the
+# canonical `status` field; venue-specific `info.status` values are uppercase, so
+# we match case-insensitively.
+_CCXT_STATUS_MAP: dict[str, OrderStatus] = {
+    "open": OrderStatus.ACCEPTED,
+    "new": OrderStatus.ACCEPTED,
+    "accepted": OrderStatus.ACCEPTED,
+    "closed": OrderStatus.FILLED,
+    "filled": OrderStatus.FILLED,
+    "partially_filled": OrderStatus.PARTIALLY_FILLED,
+    "partial": OrderStatus.PARTIALLY_FILLED,
+    "canceled": OrderStatus.CANCELED,
+    "cancelled": OrderStatus.CANCELED,
+    "expired": OrderStatus.EXPIRED,
+    "rejected": OrderStatus.REJECTED,
+}
 
-def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Order:
+
+def info_float(info: dict[str, Any], key: str) -> float | None:
+    """Parse an optional numeric field from a raw venue payload; None when absent/malformed.
+
+    Venue payloads carry numerics as strings and some use ``""`` for not-applicable
+    fields (e.g. OKX outside multi-currency margin mode) — both map to None.
     """
-    Convert CCXT excution record to Order object
+    value = info.get(key)
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def ccxt_status_to_order_status(raw: str | None, info: dict[str, Any] | None = None) -> OrderStatus:
+    """Map a ccxt order status string to a framework ``OrderStatus`` enum.
+
+    ccxt reports a canonical, lowercase ``status``; for an ``open`` order some venues
+    carry the truer state (e.g. ``PARTIALLY_FILLED``) in the venue-specific
+    ``info.status`` — that refinement is applied before mapping. A genuinely unknown
+    status is logged (so it surfaces) and mapped to the non-terminal ``ACCEPTED``: it
+    is never fabricated into a terminal state, and AM's reconcile heals the true one.
+    """
+    status = (raw or "").lower()
+    # For an open order, prefer the venue-specific info.status (it may say partially_filled).
+    if status == "open" and info is not None:
+        status = str(info.get("status", status)).lower()
+    mapped = _CCXT_STATUS_MAP.get(status)
+    if mapped is None:
+        logger.warning(f"Unknown ccxt order status '{raw}' (refined '{status}'); defaulting to ACCEPTED")
+        return OrderStatus.ACCEPTED
+    return mapped
+
+
+def ccxt_convert_order_info(
+    instrument: Instrument, raw: dict[str, Any], *, framework_prefix: str = FRAMEWORK_CID_PREFIX
+) -> Order:
+    """
+    Convert CCXT excution record to Order object.
+
+    ``framework_prefix`` is the venue-echoed framework cid prefix the connector
+    classifies origins with (``CcxtConnector.cid_framework_prefix``).
     """
     ri = raw["info"]
     if isinstance(ri, list):
@@ -50,8 +113,19 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         # Try alternative fields for different exchanges
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
     amnt = float(amnt_raw)
-    price = raw["price"] or 0.0
-    status = raw["status"] or "UNKNOWN"
+    # None for market orders (no limit price) — matches Order.price: float | None.
+    price = raw.get("price")
+    # ccxt's unified fill fields; None-safe (venues omit them on fresh acks).
+    _filled = raw.get("filled")
+    filled_quantity = abs(float(_filled)) if _filled is not None else 0.0
+    _average = raw.get("average")
+    avg_fill_price = float(_average) if _average is not None else None
+    status = ccxt_status_to_order_status(raw.get("status"), ri)
+    if status is OrderStatus.ACCEPTED and filled_quantity > 0.0:
+        # ccxt's unified status collapses partial fills into "open", and the info.status
+        # refinement is venue-specific (OKX carries the state under info.state) — the
+        # unified `filled` field is the venue-agnostic partial-fill signal.
+        status = OrderStatus.PARTIALLY_FILLED
     side_raw = raw["side"]
     if side_raw is None:
         side = "UNKNOWN"
@@ -64,55 +138,63 @@ def ccxt_convert_order_info(instrument: Instrument, raw: dict[str, Any]) -> Orde
         _type = "UNKNOWN"
     else:
         _type = _type.upper()
-    if status == "open":
-        status = ri.get("status", status)  # for filled / part_filled ?
-
-    # Ensure status is always a string and uppercase
-    if not status:
-        status = "UNKNOWN"
-
-    status = status.upper()
     options = {}
     if raw.get("reduceOnly"):
         options["reduceOnly"] = True
 
     tif = raw.get("timeInForce")
 
+    # Some venues omit clientOrderId (e.g. externally-placed orders); fall back to the
+    # framework's external-order id convention (ext:<venue_id>) so it reads as EXTERNAL and
+    # still has a stable, non-null client_order_id.
+    client_order_id = raw.get("clientOrderId") or f"{EXTERNAL_CID_PREFIX}{raw['id']}"
+    origin = classify_origin(client_order_id, framework_prefix=framework_prefix)
+
     return Order(
-        id=raw["id"],
+        client_order_id=client_order_id,
+        venue_order_id=raw["id"],
+        origin=origin,
         type=_type,
         instrument=instrument,
-        time=recognize_time(raw["timestamp"]),
-        quantity=abs(amnt) * (-1 if side == "SELL" else 1),
-        price=float(price) if price is not None else 0.0,
+        submitted_at=recognize_time(raw["timestamp"]),
+        # Unsigned, per the framework's positive-amount rule (direction lives in side).
+        quantity=abs(amnt),
+        price=float(price) if price is not None else None,
         side=side,
         status=status,
+        filled_quantity=filled_quantity,
+        avg_fill_price=avg_fill_price,
         time_in_force=tif,
-        client_id=raw["clientOrderId"],
-        cost=float(raw["cost"] or 0),  # cost can be None
         options=options,
     )
 
 
-def ccxt_convert_deal_info(raw: Dict[str, Any]) -> Deal:
-    fee_amount = None
-    fee_currency = None
-    if "fee" in raw:
-        fee_amount = float(raw["fee"]["cost"])
-        fee_currency = raw["fee"]["currency"]
+def ccxt_convert_deal_info(raw: dict[str, Any]) -> Deal:
+    # CCXT may return fee absent, an empty {}, or {"cost": None} — guard all three.
+    fee = raw.get("fee") or {}
+    _fee_cost = fee.get("cost")
+    fee_amount = float(_fee_cost) if _fee_cost is not None else None
+    fee_currency = fee.get("currency")
+    order_id = raw.get("order")
+    timestamp = raw["timestamp"]
+    amount = float(raw["amount"])
+    price = float(raw["price"])
+    # Some venues omit a per-fill id; synthesize a deterministic one from
+    # (order_id, timestamp, qty, price) so fill dedup (AccountState._seen_trade_ids) still works.
+    trade_id = raw.get("id") or f"{order_id}:{timestamp}:{amount}:{price}"
     return Deal(
-        id=raw["id"],
-        order_id=raw["order"],
-        time=to_timestamp(raw["timestamp"], unit="ms"),
-        amount=float(raw["amount"]) * (-1 if raw["side"] == "sell" else +1),
-        price=float(raw["price"]),
-        aggressive=raw["takerOrMaker"] == "taker",
+        trade_id=trade_id,
+        order_id=order_id,
+        time=to_timestamp(timestamp, unit="ms"),
+        amount=amount * (-1 if raw.get("side") == "sell" else +1),
+        price=price,
+        aggressive=raw.get("takerOrMaker") == "taker",  # absent -> maker (some venues omit it)
         fee_amount=fee_amount,
         fee_currency=fee_currency,
     )
 
 
-def ccxt_extract_deals_from_exec(report: Dict[str, Any]) -> List[Deal]:
+def ccxt_extract_deals_from_exec(report: dict[str, Any]) -> list[Deal]:
     """
     Small helper for extracting deals (trades) from CCXT execution report
     """
@@ -123,52 +205,38 @@ def ccxt_extract_deals_from_exec(report: Dict[str, Any]) -> List[Deal]:
     return deals
 
 
-def ccxt_restore_position_from_deals(
-    pos: Position, current_volume: float, deals: List[Deal], reserved_amount: float = 0.0
-) -> Position:
-    if current_volume != 0:
-        instr = pos.instrument
-        _last_deals = []
-
-        # - try to find last deals that led to this position
-        for d in sorted(deals, key=lambda x: x.time, reverse=True):
-            current_volume -= d.amount
-            # - spot case when fees may be deducted from the base coin
-            #   that may decrease total amount
-            if d.fee_amount is not None:
-                if instr.base == d.fee_currency:
-                    current_volume += d.fee_amount
-            # print(d.amount, current_volume)
-            _last_deals.insert(0, d)
-
-            # - take in account reserves
-            if abs(current_volume) - abs(reserved_amount) < instr.lot_size:
-                break
-
-        # - reset to 0
-        pos.reset()
-
-        if abs(current_volume) - abs(reserved_amount) > instr.lot_size:
-            # - - - TODO - - - !!!!
-            logger.warning(
-                f"Couldn't restore full deals history for {instr.symbol} symbol. Qubx will use zero position !"
-            )
-        else:
-            fees_in_base = 0.0
-            for d in _last_deals:
-                pos.update_position_by_deal(d)
-                if d.fee_amount is not None:
-                    if instr.base == d.fee_currency:
-                        fees_in_base += d.fee_amount
-            # - we round fees up in case of fees in base currency
-            pos.quantity -= pos.instrument.round_size_up(fees_in_base)
-    return pos
-
-
 def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
     price, amnt = trade["price"], trade["amount"]
     side = int(trade["side"] == "buy") * 2 - 1
     return Trade(recognize_time(trade["timestamp"]), price, amnt, side)
+
+
+def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str, dict[str, Any]]) -> Position | None:
+    """Convert one ccxt unified position dict into a Position; None when the symbol is
+    unknown to the loaded markets. Shared by the REST snapshot path (ccxt_convert_positions)
+    and WS position pushes so both produce the identical mapping."""
+    symbol = info["symbol"]
+    if symbol not in markets:
+        logger.warning(f"Could not find symbol {symbol}, skipping position...")
+        return None
+    instr = ccxt_symbol_to_instrument(
+        ccxt_exchange_name,
+        markets[symbol],
+    )
+    quantity = abs(info["contracts"]) * (-1 if info["side"] == "short" else 1)
+    pos = Position(
+        instrument=instr,
+        quantity=quantity,
+        pos_average_price=info["entryPrice"],
+    )
+    if info.get("markPrice", None) is not None:
+        pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
+
+    # Use exchange-provided maintenance margin if available (more accurate than calculated)
+    if info.get("maintenanceMargin") is not None:
+        pos.set_external_maint_margin(float(info["maintenanceMargin"]))
+
+    return pos
 
 
 def ccxt_convert_positions(
@@ -176,28 +244,9 @@ def ccxt_convert_positions(
 ) -> list[Position]:
     positions = []
     for info in pos_infos:
-        symbol = info["symbol"]
-        if symbol not in markets:
-            logger.warning(f"Could not find symbol {symbol}, skipping position...")
-            continue
-        instr = ccxt_symbol_to_instrument(
-            ccxt_exchange_name,
-            markets[symbol],
-        )
-        quantity = abs(info["contracts"]) * (-1 if info["side"] == "short" else 1)
-        pos = Position(
-            instrument=instr,
-            quantity=quantity,
-            pos_average_price=info["entryPrice"],
-        )
-        if info.get("markPrice", None) is not None:
-            pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
-
-        # Use exchange-provided maintenance margin if available (more accurate than calculated)
-        if info.get("maintenanceMargin") is not None:
-            pos.set_external_maint_margin(float(info["maintenanceMargin"]))
-
-        positions.append(pos)
+        pos = ccxt_convert_position(info, ccxt_exchange_name, markets)
+        if pos is not None:
+            positions.append(pos)
     return positions
 
 
@@ -330,16 +379,14 @@ def ccxt_convert_funding_rate(info: dict[str, Any]) -> FundingRate:
     )
 
 
-def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[AssetBalance]:
+def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[Balance]:
     balances = []
     for currency, data in d["total"].items():
         if not data:
             continue
         total = float(d["total"].get(currency, 0) or 0)
         locked = float(d["used"].get(currency, 0) or 0)
-        balances.append(
-            AssetBalance(exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total)
-        )
+        balances.append(Balance(exchange=exchange, currency=currency, free=total - locked, locked=locked, total=total))
     return balances
 
 
@@ -368,7 +415,7 @@ def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInteres
     )
 
 
-def find_instrument_for_exch_symbol(exch_symbol: str, symbol_to_instrument: Dict[str, Instrument]) -> Instrument:
+def find_instrument_for_exch_symbol(exch_symbol: str, symbol_to_instrument: dict[str, Instrument]) -> Instrument:
     match = EXCH_SYMBOL_PATTERN.match(exch_symbol)
     if not match:
         raise CcxtSymbolNotRecognized(f"Invalid exchange symbol {exch_symbol}")
@@ -384,8 +431,89 @@ def instrument_to_ccxt_symbol(instr: Instrument) -> str:
     return f"{instr.base}/{instr.quote}:{instr.settle}" if instr.is_futures() else f"{instr.base}/{instr.quote}"
 
 
+def prepare_ccxt_order_payload(
+    instrument: Instrument,
+    order_side: OrderSide,
+    order_type: str,
+    amount: float,
+    price: float | None,
+    client_id: str | None,
+    time_in_force: str,
+    quote: Quote | None,
+    reduce_only: bool,
+) -> dict[str, Any]:
+    """Build the ccxt ``create_order`` payload and perform framework-side validation.
+
+    Venue-agnostic and side-effect free: the caller supplies the current ``quote``
+    (the only READ dependency) and the already-resolved ``reduce_only`` flag, so this
+    function holds no account / data-provider reference. Raises ``BadRequest`` /
+    ``InvalidOrderParameters`` for framework-side rejections — the caller is expected
+    to surface those synchronously (never on the channel).
+
+    This does not auto-detect reduce-only from positions: the connector has no account,
+    so reduce-only must arrive already resolved from the caller.
+    """
+    params: dict[str, Any] = {}
+    _is_trigger_order = order_type.startswith("stop_")
+
+    if quote is None:
+        logger.warning(f"[<y>{instrument.symbol}</y>] :: Quote is not available for order creation.")
+        raise BadRequest(f"Quote is not available for order creation for {instrument.symbol}")
+
+    if reduce_only:
+        params["reduceOnly"] = True
+    else:
+        min_notional = instrument.min_notional
+        if min_notional > 0 and abs(amount) * instrument.quantity_multiplier * quote.mid_price() < min_notional:
+            raise InvalidOrderParameters(
+                f"[{instrument.symbol}] Order amount {amount} is too small. Minimum notional is {min_notional}"
+            )
+
+    # - handle trigger (stop) orders
+    if _is_trigger_order:
+        params["triggerPrice"] = price
+        order_type = order_type.split("_")[1]
+
+    if client_id:
+        params["clientOrderId"] = client_id
+
+    if instrument.is_futures():
+        params["type"] = "swap"
+
+    ccxt_symbol = instrument_to_ccxt_symbol(instrument)
+
+    if order_type.lower() == "limit" or _is_trigger_order:
+        time_in_force = time_in_force.upper()
+        params["timeInForce"] = time_in_force
+        if price is None:
+            raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
+        # GTX (post-only) crossing-the-spread adjustment: nudge the price 1 tick to the
+        # passive side so the venue does not reject the post-only order outright.
+        if order_side == "BUY" and time_in_force == "GTX" and price >= quote.ask:
+            logger.info(
+                f"[{instrument.symbol}] :: GTX BUY order price {price} is greater than ask price {quote.ask}. "
+                "Setting 1 tick below ask."
+            )
+            price = quote.ask - instrument.tick_size
+        elif order_side == "SELL" and time_in_force == "GTX" and price <= quote.bid:
+            logger.info(
+                f"[{instrument.symbol}] :: GTX SELL order price {price} is less than bid price {quote.bid}. "
+                "Setting 1 tick above bid."
+            )
+            price = quote.bid + instrument.tick_size
+
+    return {
+        "symbol": ccxt_symbol,
+        "type": order_type.lower(),
+        "side": order_side.lower(),
+        "amount": amount,
+        "price": price,
+        "params": params,
+    }
+
+
 def ccxt_find_instrument(
-    symbol: str, exchange: cxp.Exchange, symbol_to_instrument: Dict[str, Instrument] | None = None
+    symbol: str, exchange: cxp.Exchange, symbol_to_instrument: dict[str, Instrument] | None = None
 ) -> Instrument:
     instrument = None
     if symbol_to_instrument is not None:
@@ -410,7 +538,7 @@ def ccxt_find_instrument(
 
 
 def create_market_type_batched_subscriber(
-    subscriber: Callable[[List[Instrument]], Awaitable[None]], instruments: Set[Instrument]
+    subscriber: Callable[[list[Instrument]], Awaitable[None]], instruments: set[Instrument]
 ) -> Callable[[], Awaitable[None]]:
     """
     Create a batched subscriber that calls the original subscriber for each market type group.
@@ -427,7 +555,7 @@ def create_market_type_batched_subscriber(
         Async function that will call subscriber for each market type group
     """
     # Group instruments by market type
-    instr_by_type: Dict[str, List[Instrument]] = defaultdict(list)
+    instr_by_type: dict[str, list[Instrument]] = defaultdict(list)
     for instr in instruments:
         instr_by_type[instr.market_type].append(instr)
 

@@ -6,8 +6,20 @@ This file contains tests for the StateResolver class and its methods.
 
 from unittest.mock import MagicMock
 
-from qubx.core.basics import InitializingSignal, Instrument, Position, TargetPosition
+import numpy as np
+
+from qubx.core.basics import (
+    InitializingSignal,
+    Instrument,
+    Order,
+    OrderOrigin,
+    OrderStatus,
+    Position,
+    TargetPosition,
+)
 from qubx.core.lookups import lookup
+from qubx.core.mixins.trading import TradingManager
+from qubx.health.dummy import DummyHealthMonitor
 from qubx.restarts.state_resolvers import StateResolver
 
 
@@ -453,6 +465,49 @@ class TestStateResolverCloseAll(TestStateResolverBase):
             signal = call.args[0]
             assert isinstance(signal, InitializingSignal)
             assert signal.signal == 0.0  # All positions should be closed
+
+    def test_close_all_with_unacked_order_reaches_connector_cancel(self):
+        """An order without a venue id (fire-and-forget, not acked yet) makes CLOSE_ALL pass
+        its cid as order_id; the TradingManager venue->cid fallback must still resolve it and
+        deliver the cancel to the connector."""
+        btc = self._find_instrument("BINANCE.UM", "BTCUSDT")
+        unacked = Order(
+            client_order_id="qubx_BTCUSDT_1",
+            venue_order_id=None,
+            origin=OrderOrigin.FRAMEWORK,
+            type="LIMIT",
+            instrument=btc,
+            submitted_at=np.datetime64("2024-01-01", "ns"),
+            quantity=0.5,
+            price=50000.0,
+            side="BUY",
+            status=OrderStatus.SUBMITTED,
+            time_in_force="gtc",
+        )
+
+        connector = MagicMock()
+        connector.exchange_name = "BINANCE.UM"
+        account_manager = MagicMock()
+        account_manager.find_order_by_id.return_value = None  # no venue id -> venue index misses
+        account_manager.find_order_by_client_id.return_value = unacked
+
+        tm_ctx = MagicMock()
+        tm_ctx.time.return_value = np.datetime64("2024-01-01", "ns")
+        tm = TradingManager(
+            context=tm_ctx,
+            connectors={"BINANCE.UM": connector},
+            account_manager=account_manager,
+            health_monitor=DummyHealthMonitor(),
+            strategy_name="test",
+        )
+
+        self.ctx.get_orders.return_value = {unacked.client_order_id: unacked}
+        self.ctx.get_positions.return_value = {}
+        self.ctx.cancel_order.side_effect = tm.cancel_order
+
+        StateResolver.CLOSE_ALL(self.ctx, {}, {}, {})
+
+        connector.cancel_order.assert_called_once_with(client_order_id="qubx_BTCUSDT_1", venue_order_id=None)
 
     def test_close_all_ignores_small_positions(self):
         """Test CLOSE_ALL ignores positions smaller than lot_size."""

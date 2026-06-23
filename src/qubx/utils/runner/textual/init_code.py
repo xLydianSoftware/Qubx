@@ -122,7 +122,7 @@ def orders():
     if (_orders := ctx.get_orders()):
         print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
         for k, (i, o) in enumerate(_orders.items()):
-            print(f" [{{k}}] {{i}} {{o.status}} {{o.side}} {{o.instrument.symbol}} {{o.quantity}} @ {{o.price}} - {{o.time}}")
+            print(f" [{{k}}] {{i}} {{o.status}} {{o.side}} {{o.instrument.symbol}} {{o.quantity}} @ {{o.price}} - {{o.submitted_at}}")
         print("- - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - -")
 
 def trade(instrument, qty: float, price=None, tif='gtc'):
@@ -169,7 +169,7 @@ def _orders_as_records():
                     "qty": _sanitize_number(order.quantity),
                     "price": _sanitize_number(order.price) if order.price else None,
                     "status": order.status,
-                    "time": str(order.time),
+                    "time": str(order.submitted_at),
                     "id": order_id,
                 }})
     except Exception:

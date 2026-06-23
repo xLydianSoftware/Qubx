@@ -3,7 +3,7 @@ from qubx.core.basics import DataType, Instrument
 from qubx.core.detectors import DelistingDetector
 from qubx.core.instrument_service import IInstrumentService, NullInstrumentService
 from qubx.core.interfaces import (
-    IAccountProcessor,
+    IAccountViewer,
     IMarketManager,
     IPositionGathering,
     IStrategy,
@@ -26,7 +26,7 @@ class UniverseManager(IUniverseManager):
     _subscription_manager: ISubscriptionManager
     _trading_manager: ITradingManager
     _time_provider: ITimeProvider
-    _account: IAccountProcessor
+    _account: IAccountViewer
     _position_gathering: IPositionGathering
     _warmup_position_gathering: IPositionGathering
     _removal_queue: dict[Instrument, tuple[RemovalPolicy, bool]]
@@ -42,7 +42,7 @@ class UniverseManager(IUniverseManager):
         subscription_manager: ISubscriptionManager,
         trading_manager: ITradingManager,
         time_provider: ITimeProvider,
-        account: IAccountProcessor,
+        account: IAccountViewer,
         position_gathering: IPositionGathering,
         delisting_detector: DelistingDetector,
         instrument_service: IInstrumentService | None = None,
@@ -309,7 +309,9 @@ class UniverseManager(IUniverseManager):
         )
 
         # - reinitialize strategy loggers
-        self._logging.initialize(self._time_provider.time(), self._account.positions, self._account.get_balances(), self._account)
+        self._logging.initialize(
+            self._time_provider.time(), self._account.positions, self._account.get_balances(), self._account
+        )
 
     def _create_and_update_positions(self, instruments: list[Instrument]):
         for instrument in instruments:

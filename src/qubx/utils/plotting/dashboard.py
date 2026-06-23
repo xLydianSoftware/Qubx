@@ -15,8 +15,6 @@ from IPython.display import clear_output
 from plotly.subplots import make_subplots
 
 from qubx import QubxLogConfig, logger
-from qubx.backtester.simulator import SimulatedBroker
-from qubx.connectors.ccxt.broker import CcxtBroker
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.core.basics import Instrument
 from qubx.core.interfaces import IStrategy, IStrategyContext

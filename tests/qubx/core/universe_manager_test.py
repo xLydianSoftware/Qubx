@@ -312,9 +312,7 @@ def test_remove_instruments_settles_gone_held_position(universe_manager, mock_de
 
     # - gone-branch: settle in place, do NOT trade an exit target
     mock_dependencies["account"].settle_position.assert_called_once_with(gone)
-    mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(
-        mock_dependencies["context"], []
-    )
+    mock_dependencies["position_gathering"].alter_positions.assert_called_once_with(mock_dependencies["context"], [])
     assert gone not in universe_manager.instruments
 
 
@@ -349,9 +347,9 @@ def test_gone_held_with_delist_date_settled_before_filter_delistings(universe_ma
     # live listing: gone is not listed (authoritative "gone" signal)
     mock_dependencies["market_data_manager"].is_instrument_listed.side_effect = lambda i: i is not gone
     # simulate the REAL DelistingDetector: it strips instruments whose delist_date is set
-    mock_dependencies["delisting_detector"].filter_delistings.side_effect = (
-        lambda instruments: [i for i in instruments if i.delist_date is None]
-    )
+    mock_dependencies["delisting_detector"].filter_delistings.side_effect = lambda instruments: [
+        i for i in instruments if i.delist_date is None
+    ]
 
     universe_manager.set_universe([gone])
 
