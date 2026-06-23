@@ -692,3 +692,86 @@ def test_on_fit_pumping_events_does_not_retrigger_fit():
     assert pm._strategy.on_fit.call_count == 1
     assert pm._context._strategy_state.is_on_fit_called is True
     assert pm._fit_is_running is False
+
+
+# --- gatherer order/position callbacks (framework-level propagation to every gatherer) ----- #
+
+
+def test_filled_event_fires_gatherer_on_order_and_position_change():
+    # The gatherer gets the same ApplyResult-driven callbacks as the strategy: a fill fires
+    # gatherer.on_order(order, change), on_position_change(position), AND on_execution_report.
+    pm = make_pm()
+    fill = _fill()
+    order, position, instrument = MagicMock(), MagicMock(), MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(
+        order=order, order_change=OrderChange.FILLED, deal=fill, position=position
+    )
+    pm.process_event(OrderFilledEvent(instrument=instrument, client_order_id="cid", venue_order_id="V1", fill=fill))
+    pm._position_gathering.on_order.assert_called_once()
+    assert pm._position_gathering.on_order.call_args.args[1] is order
+    assert pm._position_gathering.on_order.call_args.args[2] is OrderChange.FILLED
+    pm._position_gathering.on_position_change.assert_called_once()
+    assert pm._position_gathering.on_position_change.call_args.args[1] is position
+    pm._position_gathering.on_execution_report.assert_called_once()
+
+
+def test_accepted_fires_gatherer_on_order_only():
+    pm = make_pm()
+    pm._account_manager.apply.return_value = ApplyResult(order=MagicMock(), order_change=OrderChange.ACCEPTED)
+    pm.process_event(
+        OrderAcceptedEvent(
+            instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
+        )
+    )
+    pm._position_gathering.on_order.assert_called_once()
+    assert pm._position_gathering.on_order.call_args.args[2] is OrderChange.ACCEPTED
+    pm._position_gathering.on_position_change.assert_not_called()
+
+
+def test_cancel_rejected_reaches_gatherer_on_order():
+    # The dangerous-but-recoverable case the gatherer must see to retry its cancel.
+    pm = make_pm()
+    pm._account_manager.apply.return_value = ApplyResult(
+        order=MagicMock(client_order_id="C-1"), order_change=OrderChange.CANCEL_REJECTED
+    )
+    pm.process_event(OrderCancelRejectedEvent(instrument=MagicMock(), client_order_id="C-1", reason="nope"))
+    pm._position_gathering.on_order.assert_called_once()
+    assert pm._position_gathering.on_order.call_args.args[2] is OrderChange.CANCEL_REJECTED
+
+
+def test_snapshot_corrections_fire_gatherer_on_position_change_per_position():
+    pm = make_pm()
+    p1, p2 = MagicMock(), MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=ReconcileDiff(positions=[p1, p2]))
+    pm.process_event(_snapshot_event())
+    assert pm._position_gathering.on_position_change.call_count == 2
+    assert [c.args[1] for c in pm._position_gathering.on_position_change.call_args_list] == [p1, p2]
+
+
+def test_suppressed_result_fires_no_gatherer_callback():
+    pm = make_pm()
+    pm._account_manager.apply.return_value = ApplyResult()
+    pm.process_event(
+        OrderAcceptedEvent(
+            instrument=MagicMock(), client_order_id="c", venue_order_id="V", accepted_at=np.datetime64("now")
+        )
+    )
+    pm._position_gathering.on_order.assert_not_called()
+    pm._position_gathering.on_position_change.assert_not_called()
+
+
+def test_raising_gatherer_on_order_does_not_halt_dispatch():
+    # gatherer error-isolation: a raising gatherer.on_order must not stop the strategy
+    # callbacks or the gatherer's position fire, and is counted under strategy_callback_errors.
+    pm = make_pm()
+    emitter = _FakeEmitter()
+    pm._context.emitter = emitter
+    pm._position_gathering.on_order.side_effect = RuntimeError("gatherer on_order boom")
+    pm._account_manager.apply.return_value = ApplyResult(
+        order=MagicMock(), order_change=OrderChange.FILLED, deal=_fill(), position=MagicMock()
+    )
+    pm.process_event(OrderFilledEvent(instrument=MagicMock(), client_order_id="cid", venue_order_id="V1", fill=_fill()))
+    pm._strategy.on_order.assert_called_once()
+    pm._strategy.on_position_change.assert_called_once()
+    pm._position_gathering.on_position_change.assert_called_once()
+    assert any(name == "strategy_callback_errors" for name, _, _ in emitter.calls)
