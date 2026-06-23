@@ -220,6 +220,20 @@ def _patcher(record):
 # ---------------------------------------------------------------------------
 
 
+_DEBUG_AREAS: frozenset = frozenset()
+
+
+def _area_matches(area, enabled) -> bool:
+    """True if ``area`` equals, or is a dotted child of, any enabled entry.
+
+    Areas are hierarchical: ``connector`` enables ``connector.ccxt`` /
+    ``connector.hyperliquid``; ``connector.ccxt`` enables only itself.
+    """
+    if not area:
+        return False
+    return any(area == e or area.startswith(e + ".") for e in enabled)
+
+
 class QubxLogConfig:
     @staticmethod
     def get_log_level():
@@ -236,20 +250,47 @@ class QubxLogConfig:
         QubxLogConfig.setup_logger(level)
 
     @staticmethod
+    def get_debug_areas() -> set[str]:
+        raw = os.getenv("QUBX_DEBUG_AREAS")
+        if raw is None:
+            from qubx.config import settings
+
+            raw = settings.debug_areas
+        return {a.strip() for a in (raw or "").split(",") if a.strip()}
+
+    @staticmethod
     def setup_logger(level: str | None = None, colorize: bool = True):
+        global _DEBUG_AREAS
         logger.remove()
         level = level or QubxLogConfig.get_log_level()
+
+        areas = QubxLogConfig.get_debug_areas()
+        _DEBUG_AREAS = frozenset(areas)
+        base_no = logger.level(level).no
+
+        def _area_filter(record):
+            # base level and above always pass; sub-base (DEBUG/TRACE) only for enabled areas
+            if record["level"].no >= base_no:
+                return True
+            return _area_matches(record["extra"].get("area"), areas)
+
+        # admit sub-base records to the sink only when some area is enabled; otherwise the
+        # sink stays at the base level and DEBUG calls short-circuit before formatting.
+        sink_level = "DEBUG" if areas else level
 
         log_format = os.getenv("QUBX_LOG_FORMAT", "text").lower()
         if log_format == "json":
             sink = JsonSink(_log_context)
-            logger.add(sink.write, level=level, enqueue=True, backtrace=True, diagnose=True)
+            logger.add(
+                sink.write, level=sink_level, filter=_area_filter, enqueue=True, backtrace=True, diagnose=True
+            )
         else:
             logger.add(
                 sys.stdout,
                 format=formatter,
                 colorize=colorize,
-                level=level,
+                level=sink_level,
+                filter=_area_filter,
                 enqueue=True,
                 backtrace=True,
                 diagnose=True,
@@ -276,6 +317,37 @@ class QubxLogConfig:
 
 QubxLogConfig.setup_logger()
 logger = logger.opt(colors=True)  # Enable color tag parsing in message text
+
+
+def area_logger(area: str):
+    """A logger whose DEBUG/TRACE lines are gated behind ``QUBX_DEBUG_AREAS=<area>``.
+
+    INFO and above are unaffected. Enable verbose output for one or more areas without
+    flipping the global level::
+
+        QUBX_DEBUG_AREAS=account_manager            # one area
+        QUBX_DEBUG_AREAS=account_manager,connector  # several (comma-separated)
+
+    Areas are hierarchical (dotted): enabling ``connector`` turns on ``connector.ccxt``,
+    ``connector.hyperliquid``, ...; ``connector.hyperliquid`` turns on only that one.
+    """
+    return logger.bind(area=area)
+
+
+def connector_logger(name: str):
+    """:func:`area_logger` for a connector, tagged ``connector.<name>``.
+
+    Built-in and out-of-tree (plugin) connectors call this with their exchange/connector
+    name. Enable all connectors with ``QUBX_DEBUG_AREAS=connector`` or one with
+    ``QUBX_DEBUG_AREAS=connector.<name>``.
+    """
+    return area_logger(f"connector.{name.lower()}")
+
+
+def debug_enabled(area: str) -> bool:
+    """Cheap check for whether an area's DEBUG output is active — guard hot-path logs:
+    ``if debug_enabled('connector.binance'): log.debug(...)``."""
+    return _area_matches(area, _DEBUG_AREAS)
 
 
 # registering magic for jupyter notebook

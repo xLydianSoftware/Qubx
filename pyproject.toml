@@ -88,6 +88,10 @@ docs = "https://xlydiansoftware.github.io/Qubx"
 [project.scripts]
 qubx = "qubx.cli.commands:main"
 
+[project.entry-points."qubx.exchange_plugins"]
+ccxt = "qubx.connectors.ccxt.plugin:PLUGIN"
+tardis = "qubx.connectors.tardis.plugin:PLUGIN"
+
 # ============================================================
 # OPTIONAL DEPENDENCIES (`pip install qubx[connectors,...]`)
 # ============================================================

@@ -6,7 +6,7 @@ Architecture
 - ``CcxtStorage`` — top-level IStorage, registered as ``@storage("ccxt")``.
   Exchange-agnostic: any exchange is connected **lazily** on the first
   ``get_reader(exchange, market)`` call.  Multiple exchanges share one
-  ``AsyncThreadLoop``.
+  owned ``BackgroundEventLoop``.
 
 - ``CcxtReader`` — thin per-(exchange, market) IReader that delegates to
   the parent ``CcxtStorage``.
@@ -50,7 +50,7 @@ from qubx.core.basics import DataType, Instrument
 from qubx.data.containers import IteratorsMaster, RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
-from qubx.utils.misc import AsyncThreadLoop
+from qubx.utils.misc import BackgroundEventLoop
 from qubx.utils.time import handle_start_stop, now_utc, to_timedelta
 
 # - default market type per well-known exchange name
@@ -335,13 +335,10 @@ class CcxtFetchExhausted(RuntimeError):
         self.failures = failures
         self.total_requested = total_requested
         failed_symbols = sorted(failures.keys())
-        preview = ", ".join(
-            f"{s}={type(failures[s]).__name__}" for s in failed_symbols[:5]
-        )
+        preview = ", ".join(f"{s}={type(failures[s]).__name__}" for s in failed_symbols[:5])
         more = f" (+{len(failed_symbols) - 5} more)" if len(failed_symbols) > 5 else ""
         super().__init__(
-            f"OHLCV fetch exhausted retries for {len(failures)}/{total_requested} "
-            f"symbols: {preview}{more}"
+            f"OHLCV fetch exhausted retries for {len(failures)}/{total_requested} symbols: {preview}{more}"
         )
 
 
@@ -424,7 +421,7 @@ class CcxtStorage(IStorage):
 
     Exchange-agnostic: any exchange is connected **lazily** on the first
     ``get_reader(exchange, market)`` call.  All exchanges share one
-    ``AsyncThreadLoop``.
+    owned ``BackgroundEventLoop``.
 
     Registration name: ``ccxt`` (via ``@storage`` decorator).
 
@@ -451,7 +448,7 @@ class CcxtStorage(IStorage):
 
     _max_bars: int
     _max_history: pd.Timedelta
-    _loop: AsyncThreadLoop | None
+    _loop: BackgroundEventLoop | None
     _capabilities: Any | None
 
     def __init__(
@@ -485,7 +482,7 @@ class CcxtStorage(IStorage):
     def _ensure_exchange(self, exchange: str) -> Exchange:
         """
         Create and cache the CCXT Pro exchange object for *exchange* on first use.
-        All exchanges share the same ``AsyncThreadLoop``.
+        All exchanges share the storage's owned ``BackgroundEventLoop``.
         """
         if exchange in self._exchanges:
             return self._exchanges[exchange]
@@ -493,14 +490,10 @@ class CcxtStorage(IStorage):
         from qubx.connectors.ccxt.exchanges import READER_CAPABILITIES
         from qubx.connectors.ccxt.factory import get_ccxt_exchange
 
-        # - reuse existing loop so all exchanges run on one thread
-        existing_loop = self._loop.loop if self._loop is not None else None
-        ccxt_ex = get_ccxt_exchange(exchange, loop=existing_loop)
-
+        # - the storage owns one background loop+thread; all exchanges run on it
         if self._loop is None:
-            _loop = getattr(ccxt_ex, "asyncio_loop", None)
-            assert _loop is not None, f"CcxtStorage: asyncio_loop not found on {exchange}"
-            self._loop = AsyncThreadLoop(_loop)
+            self._loop = BackgroundEventLoop(name="CcxtStorage")
+        ccxt_ex = get_ccxt_exchange(exchange, loop=self._loop.loop)
 
         if self._capabilities is None:
             self._capabilities = READER_CAPABILITIES.copy()
@@ -535,6 +528,9 @@ class CcxtStorage(IStorage):
                 except Exception as e:
                     logger.warning(f"[CCXT] Error closing {ex_name}: {e}")
         self._exchanges.clear()
+        if self._loop is not None:
+            self._loop.stop()
+            self._loop = None
 
     def __del__(self) -> None:
         try:
@@ -757,8 +753,7 @@ class CcxtStorage(IStorage):
             _ex_id = getattr(ccxt_ex, "id", "ccxt")
             for qubx_sym, exc in failures.items():
                 logger.error(
-                    f"[CCXT] {_ex_id}: OHLCV fetch for {qubx_sym} exhausted retries — "
-                    f"{type(exc).__name__}: {exc}"
+                    f"[CCXT] {_ex_id}: OHLCV fetch for {qubx_sym} exhausted retries — {type(exc).__name__}: {exc}"
                 )
             if self._strict_fetch:
                 raise CcxtFetchExhausted(failures, total_requested=len(instruments_info))

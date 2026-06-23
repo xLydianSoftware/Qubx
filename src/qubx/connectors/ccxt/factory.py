@@ -1,12 +1,10 @@
 import asyncio
-from threading import Thread
 from typing import Any
 
 import ccxt.pro as cxp
 
-from qubx.connectors.registry import CredentialsProvider, connector
-from qubx.core.basics import CtrlChannel
-from qubx.core.interfaces import IDataProvider, IHealthMonitor, ITimeProvider
+from qubx.connectors.plugin import ConnectorBuildContext
+from qubx.core.interfaces import IHealthMonitor, ITimeProvider
 from qubx.core.mixins.utils import canonical_exchange
 
 from .connector import CcxtConnector
@@ -16,9 +14,10 @@ from .exchanges import CUSTOM_CONNECTORS, EXCHANGE_ALIASES
 
 def get_ccxt_exchange(
     exchange: str,
+    *,
+    loop: asyncio.AbstractEventLoop,
     api_key: str | None = None,
     secret: str | None = None,
-    loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
     **kwargs,
 ) -> cxp.Exchange:
@@ -32,7 +31,7 @@ def get_ccxt_exchange(
         exchange (str): The exchange name.
         api_key (str, optional): The API key. Default is None.
         secret (str, optional): The API secret. Default is None.
-        loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
+        loop (asyncio.AbstractEventLoop): The caller-owned event loop the exchange runs on (required).
         use_testnet (bool): Use testnet/sandbox mode. Default is False.
         **kwargs: Additional parameters for exchange configuration.
 
@@ -52,14 +51,9 @@ def get_ccxt_exchange(
     # Build exchange options
     options: dict[str, Any] = {"name": exchange}
 
-    if loop is not None:
-        options["asyncio_loop"] = loop
-    else:
-        loop = asyncio.new_event_loop()
-        thread = Thread(target=loop.run_forever, daemon=True)
-        thread.start()
-        options["thread_asyncio_loop"] = thread
-        options["asyncio_loop"] = loop
+    # The caller owns the loop (connectors via the runner's shared loop, storage via its
+    # BackgroundEventLoop) — the factory never spawns one.
+    options["asyncio_loop"] = loop
 
     # Add API credentials
     api_key, secret = _get_api_credentials(api_key, secret, kwargs)
@@ -101,9 +95,10 @@ def get_ccxt_exchange_manager(
     exchange: str,
     health_monitor: IHealthMonitor,
     time_provider: ITimeProvider,
+    *,
+    loop: asyncio.AbstractEventLoop,
     api_key: str | None = None,
     secret: str | None = None,
-    loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
     check_interval_seconds: float = 30.0,
     **kwargs,
@@ -168,18 +163,7 @@ def get_ccxt_connector(
     return connector_cls(exchange_name=exchange_name, **kwargs)
 
 
-@connector("ccxt")
-def create_ccxt_connector(
-    exchange_name: str,
-    time_provider: ITimeProvider,
-    channel: CtrlChannel,
-    credentials: CredentialsProvider,
-    data_provider: IDataProvider,
-    health_monitor: IHealthMonitor,
-    read_only: bool = False,
-    loop: asyncio.AbstractEventLoop | None = None,
-    **kwargs,
-) -> CcxtConnector:
+def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
     """Registered ``IConnector`` factory for ccxt venues (``ConnectorRegistry.get_connector('ccxt')``).
 
     Builds the authenticated ccxt ExchangeManager from the venue credentials — a separate
@@ -187,29 +171,32 @@ def create_ccxt_connector(
     (the manager cache keys on api_key/secret) — and resolves the per-exchange
     ``CcxtConnector`` subclass via ``get_ccxt_connector``.
     """
-    creds = credentials.get_exchange_credentials(exchange_name)
+    creds = ctx.credentials.get_exchange_credentials(ctx.exchange_name)
     exchange_manager = get_ccxt_exchange_manager(
-        exchange=exchange_name,
+        exchange=ctx.exchange_name,
         use_testnet=creds.testnet,
         api_key=creds.api_key,
         secret=creds.secret,
-        health_monitor=health_monitor,
-        time_provider=time_provider,
-        loop=loop,
+        health_monitor=ctx.health_monitor,
+        time_provider=ctx.time_provider,
+        loop=ctx.loop,
         **(creds.model_extra or {}),
     )
+    # Share the same per-exchange limiter the data provider uses (closes the gap where the
+    # order-placing side was previously unthrottled).
+    if ctx.rate_limiter is not None:
+        exchange_manager.attach_rate_limiter(ctx.rate_limiter)
     # The connector self-reports the canonical (instrument-universe) exchange so the
     # account events it stamps (balances/snapshots) route to the same AM state its
     # instruments do: a BINANCE.PM account trades BINANCE.UM instruments — the venue
     # name is plumbing only (credentials lookup + ccxt exchange class, both above).
     return get_ccxt_connector(
-        canonical_exchange(exchange_name),
-        channel=channel,
-        time_provider=time_provider,
+        canonical_exchange(ctx.exchange_name),
+        channel=ctx.channel,
+        time_provider=ctx.time_provider,
         exchange_manager=exchange_manager,
-        data_provider=data_provider,
-        read_only=read_only,
-        loop=loop,
+        data_provider=ctx.data_provider,
+        loop=ctx.loop,
     )
 
 

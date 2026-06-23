@@ -40,7 +40,7 @@ import ccxt
 import ccxt.pro
 from ccxt import AuthenticationError, ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
-from qubx import logger
+from qubx import connector_logger, logger
 from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
     Balance,
@@ -69,7 +69,7 @@ from qubx.core.events import (
     OrderUpdateRejectedEvent,
     PositionUpdateEvent,
 )
-from qubx.core.exceptions import InvalidOrderParameters, ReadOnlyConnector
+from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.interfaces import IDataProvider, ITimeProvider
 from qubx.core.utils import recognize_time
 from qubx.utils.misc import AsyncThreadLoop
@@ -158,7 +158,6 @@ class CcxtConnector(ChannelEmitter):
         time_provider: ITimeProvider,
         exchange_manager: ExchangeManager,
         data_provider: IDataProvider,
-        read_only: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
         cancel_timeout: int = 30,
         cancel_retry_interval: int = 2,
@@ -167,11 +166,12 @@ class CcxtConnector(ChannelEmitter):
         **kwargs: Any,
     ):
         self.exchange_name = exchange_name
+        # Diagnostic logger gated by QUBX_DEBUG_AREAS=connector (all) or connector.<exchange> (one)
+        self._dbg = connector_logger(exchange_name)
         self.channel = channel
         self._time = time_provider
         self._em = exchange_manager
         self._data_provider = data_provider
-        self._read_only = read_only
         self._explicit_loop = loop
         self.cancel_timeout = cancel_timeout
         self.cancel_retry_interval = cancel_retry_interval
@@ -299,8 +299,6 @@ class CcxtConnector(ChannelEmitter):
         caller (TradingManager) sees it immediately. The venue call is then fired
         on the exchange loop; its verdict rides the channel as an event.
         """
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
 
         instrument = request.instrument
         if instrument is None:
@@ -401,8 +399,6 @@ class CcxtConnector(ChannelEmitter):
     # Write side — cancel
     # ------------------------------------------------------------------ #
     def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         if not client_order_id and not venue_order_id:
             raise InvalidOrderParameters("cancel_order: client_order_id or venue_order_id is required")
         self._spawn(self._cancel_async(client_order_id, venue_order_id))
@@ -569,8 +565,6 @@ class CcxtConnector(ChannelEmitter):
         price: float | None = None,
         quantity: float | None = None,
     ) -> None:
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         if not client_order_id and not venue_order_id:
             raise InvalidOrderParameters("update_order: client_order_id or venue_order_id is required")
         self._spawn(self._update_async(client_order_id, venue_order_id, price, quantity))
@@ -698,8 +692,6 @@ class CcxtConnector(ChannelEmitter):
     # Leverage / margin
     # ------------------------------------------------------------------ #
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
             self._run_sync(self._em.exchange.set_leverage(leverage, symbol))
@@ -709,8 +701,6 @@ class CcxtConnector(ChannelEmitter):
             return False
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
             ex = self._em.exchange
@@ -1058,6 +1048,9 @@ class CcxtConnector(ChannelEmitter):
             return
         last = len(deals) - 1
         for i, deal in enumerate(deals):
+            self._dbg.debug(
+                "emit fill {} amt={} cum={} tid={}", instrument.symbol, deal.amount, order.filled_quantity, deal.trade_id
+            )
             # On a full fill the LAST deal closes the order (OrderFilledEvent →
             # terminal); earlier deals are partials. On a partial-fill report every
             # deal is a partial.
@@ -1114,6 +1107,7 @@ class CcxtConnector(ChannelEmitter):
         position = ccxt_convert_position(raw, ex.name, ex.markets)
         if position is None:
             return
+        self._dbg.debug("ws position push {} qty={} as_of={}", position.instrument.symbol, position.quantity, timestamp)
         self.send(
             PositionUpdateEvent(
                 instrument=position.instrument,
@@ -1339,8 +1333,7 @@ class CcxtConnector(ChannelEmitter):
         """Start the WS account-event subscription and emit the initial snapshot.
 
         The exchange/connection itself is owned by the ExchangeManager (already
-        constructed). Read-only connectors keep this read surface alive (account events +
-        snapshots flow, but write methods raise ReadOnlyConnector).
+        constructed).
         """
         self._start_executions_stream()
         # Initial snapshot (design.md "connect / reconnect contract", case 1).

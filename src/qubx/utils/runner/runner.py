@@ -22,6 +22,7 @@ from qubx.backtester.utils import (
     recognize_simulation_data_config,
 )
 from qubx.config import settings as qubx_settings
+from qubx.connectors.plugin import BuildContext, ConnectorBuildContext
 from qubx.connectors.registry import ConnectorRegistry
 from qubx.core.account_manager import AccountManager, AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import (
@@ -39,8 +40,6 @@ from qubx.core.exceptions import WarmupValidationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
-    IDataProvider,
-    IHealthMonitor,
     IStrategyContext,
     ITimeProvider,
 )
@@ -150,8 +149,8 @@ def run_strategy_yaml(
     if account_file is not None and not account_file.exists():
         raise FileNotFoundError(f"Account configuration file not found: {account_file}")
 
-    # Register built-in connectors and load plugins
-    import qubx.connectors  # noqa: F401, I001 - registers built-in ccxt/tardis connectors
+    # Built-in connectors (ccxt/tardis) are discovered via entry points (group
+    # qubx.exchange_plugins); load_plugins handles @storage/@reader + config-listed modules.
     from qubx.plugins import load_plugins  # noqa: I001
 
     acc_manager = AccountConfigurationManager(account_file, config_file.parent, search_qubx_dir=True)
@@ -539,43 +538,38 @@ def create_strategy_context(
                 "which is already configured — configure only one of them"
             )
         rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector)
-        if rate_limiter is not None:
-            exchange_config.params["rate_limiter"] = rate_limiter
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager))
-        # Both paper and live use a REAL market-data provider (live quotes/OHLC); only
-        # paper's *execution* is simulated.
-        _data_provider = _create_data_provider(
-            venue_name,
-            exchange_config,
+        # Both paper and live use a REAL market-data provider (live quotes/OHLC); only paper's
+        # *execution* is simulated. The data provider may come from a different source than the
+        # connector (e.g. an xdata data service + a venue connector) — it is resolved by the
+        # optional ``data_provider`` field, which defaults to ``connector``.
+        _base_ctx = BuildContext(
+            exchange_name=venue_name,
             time_provider=_time,
             channel=_chan,
-            account_manager=account_manager,
+            credentials=account_manager,
             health_monitor=_health_monitor,
             loop=loop,
+            rate_limiter=rate_limiter,
+            params=dict(exchange_config.params),
         )
+        _dp_name = (exchange_config.data_provider or exchange_config.connector).lower()
+        _data_provider = ConnectorRegistry.get_data_provider(_dp_name, _base_ctx)
         _exchange_to_data_provider[exchange_name] = _data_provider
         # Per-exchange connector: paper wraps the OME in a SimulatedConnector (synchronous
-        # execution), live builds the real CcxtConnector (WS execution stream). Everything
-        # downstream (AM, StrategyContext) is identical for both.
+        # execution); live builds the real connector. Everything downstream is identical.
         if paper:
             _connectors[exchange_name] = _create_paper_connector(
                 exchange_name, time_provider=_time, channel=_chan, tcc=tcc
             )
         else:
-            # Live execution connector resolved from the registry by the config's connector
-            # name (same as the data provider above) — no hardcoded venue. The registered
-            # factory builds the venue's authenticated client and picks any per-exchange subclass.
-            _connectors[exchange_name] = ConnectorRegistry.get_connector(
-                exchange_config.connector.lower(),
-                exchange_name=venue_name,
-                time_provider=_time,
-                channel=_chan,
-                credentials=account_manager,
-                data_provider=_data_provider,
-                health_monitor=_health_monitor,
-                read_only=config.live.read_only,
-                loop=loop,
-            )
+            if _rl_manager.is_enabled and rate_limiter is None:
+                logger.warning(
+                    f"[{venue_name}] connector '{exchange_config.connector}' declares no rate limits — "
+                    "venue calls are unthrottled (add rate_limits() to the plugin)."
+                )
+            _conn_ctx = ConnectorBuildContext(**vars(_base_ctx), data_provider=_data_provider)
+            _connectors[exchange_name] = ConnectorRegistry.get_connector(exchange_config.connector.lower(), _conn_ctx)
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
         _base_currencies[exchange_name] = _resolve_base_currency(
             venue_name, exchange_config, config.live, account_manager
@@ -674,6 +668,7 @@ def create_strategy_context(
         state_snapshot_interval=_state_snapshot_interval,
         rate_limiting_config=_rate_limiting_config,
         event_loop=loop,
+        read_only=config.live.read_only,
     )
 
     # Set context for metric emitters to enable is_live tag and time access
@@ -748,29 +743,6 @@ def _create_tcc(
     tcc = lookup.find_fees(exchange_name, settings.commissions)
     assert tcc is not None, f"Can't find fees calculator for {exchange_name} exchange"
     return tcc
-
-
-def _create_data_provider(
-    exchange_name: str,
-    exchange_config: ExchangeConfig,
-    time_provider: ITimeProvider,
-    channel: CtrlChannel,
-    account_manager: AccountConfigurationManager,
-    health_monitor: IHealthMonitor,
-    loop: asyncio.AbstractEventLoop | None = None,
-) -> IDataProvider:
-    connector_name = exchange_config.connector.lower()
-
-    return ConnectorRegistry.get_data_provider(
-        connector_name,
-        exchange_name=exchange_name,
-        time_provider=time_provider,
-        channel=channel,
-        health_monitor=health_monitor,
-        credentials=account_manager,
-        loop=loop,
-        **exchange_config.params,
-    )
 
 
 def _resolve_base_currency(

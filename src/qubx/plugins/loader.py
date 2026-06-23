@@ -10,13 +10,49 @@ import importlib
 import importlib.util
 import os
 import sys
+from importlib.metadata import entry_points
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 from qubx import logger
 
 if TYPE_CHECKING:
+    from qubx.connectors.plugin import ExchangePlugin
     from qubx.utils.runner.configs import PluginsConfig
+
+_EXCHANGE_PLUGINS_GROUP = "qubx.exchange_plugins"
+
+
+class PluginLoader:
+    """Discovers ``ExchangePlugin`` instances via entry points (group ``qubx.exchange_plugins``).
+
+    ``available()`` lists installed plugin names from metadata without importing them;
+    ``load(name)`` lazily imports just the one requested.
+    """
+
+    @staticmethod
+    def available() -> set[str]:
+        return {ep.name for ep in entry_points(group=_EXCHANGE_PLUGINS_GROUP)}
+
+    @staticmethod
+    def load(name: str) -> "ExchangePlugin | None":
+        from qubx.connectors.plugin import ExchangePlugin
+
+        for ep in entry_points(group=_EXCHANGE_PLUGINS_GROUP):
+            if ep.name != name:
+                continue
+            try:
+                obj = ep.load()
+            except ModuleNotFoundError as e:
+                raise ModuleNotFoundError(
+                    f"connector plugin '{name}' is installed but its module is unavailable "
+                    f"(missing optional dependency? for built-ins try `qubx[connectors]`): {e}"
+                ) from e
+            if not isinstance(obj, ExchangePlugin):
+                raise TypeError(f"entry point '{name}' did not resolve to an ExchangePlugin (got {type(obj)!r})")
+            assert obj.name == name, f"plugin.name {obj.name!r} != entry-point name {name!r}"
+            return obj
+        return None
 
 # Track which plugins have been loaded to avoid duplicate loading
 _loaded_plugins: set[str] = set()

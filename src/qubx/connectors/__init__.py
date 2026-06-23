@@ -1,20 +1,10 @@
 """
 Qubx connectors package.
 
-This module provides the connector registry and ensures all built-in connectors are registered.
-
-Note: The paper-trading connector (SimulatedConnector) is NOT registered with the registry —
-it is created directly by the backtester and paper trading runner.
+A venue is one :class:`~qubx.connectors.plugin.ExchangePlugin` (connector + data provider +
+rate-limit declaration), discovered by entry point (group ``qubx.exchange_plugins``) and resolved
+via :class:`~qubx.connectors.registry.ConnectorRegistry`. The paper-trading connector
+(``SimulatedConnector``) is NOT a plugin — it is created directly by the backtester / paper runner.
 """
 
-# Re-export the registry for convenience, and import connector modules to trigger
-# decorator registration (@data_provider / @connector).
-from qubx.connectors.ccxt.data import CcxtDataProvider  # noqa: F401
-from qubx.connectors.ccxt.factory import create_ccxt_connector  # noqa: F401 - registers @connector("ccxt")
-from qubx.connectors.ccxt.rate_limits import create_ccxt_rate_limit_config  # noqa: F401
-from qubx.connectors.registry import (  # noqa: F401
-    ConnectorRegistry,
-    connector,
-    data_provider,
-)
-from qubx.connectors.tardis.data import TardisDataProvider  # noqa: F401
+from qubx.connectors.registry import ConnectorRegistry  # noqa: F401
