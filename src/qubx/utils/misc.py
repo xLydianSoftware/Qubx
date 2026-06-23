@@ -12,7 +12,7 @@ from collections.abc import Callable
 from functools import wraps
 from os.path import abspath, exists, expanduser
 from pathlib import Path
-from threading import Lock
+from threading import Lock, Thread
 from typing import Any, Awaitable, Union
 
 import joblib
@@ -463,6 +463,43 @@ class AsyncThreadLoop:
         self, executor: concurrent.futures.Executor, func: Callable, *args, **kwargs
     ) -> concurrent.futures.Future:
         return await self.loop.run_in_executor(executor, func, *args, **kwargs)
+
+
+def run_sync(loop: asyncio.AbstractEventLoop, coro, *, timeout: float | None = None):
+    """Submit ``coro`` to ``loop`` from another thread, block for the result, propagate its exception.
+
+    Guards the classic deadlock of being called from ``loop``'s own thread.
+    """
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        raise RuntimeError("run_sync called from the target loop's own thread — would deadlock")
+    return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout)
+
+
+class BackgroundEventLoop:
+    """Owns an asyncio loop on a dedicated daemon thread; submit/run coroutines onto it."""
+
+    def __init__(self, name: str = "QubxConnectorLoop"):
+        self._loop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._loop.run_forever, daemon=True, name=name)
+        self._thread.start()
+
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop:
+        return self._loop
+
+    def submit(self, coro) -> concurrent.futures.Future:
+        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+
+    def run_sync(self, coro, *, timeout: float | None = None):
+        return run_sync(self._loop, coro, timeout=timeout)
+
+    def stop(self) -> None:
+        self._loop.call_soon_threadsafe(self._loop.stop)
+        self._thread.join()
 
 
 def synchronized(func: Callable):
