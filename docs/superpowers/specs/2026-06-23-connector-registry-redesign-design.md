@@ -36,7 +36,8 @@ single `IConnector`. Registration, however, still has three weaknesses (see #318
 
 **In scope (Qubx only):**
 - New core types, registry, loader; runner two-phase build; migrate in-tree `ccxt` + `tardis`; move
-  `read_only` enforcement to the framework; make `loop` required; entry-point declarations.
+  `read_only` enforcement to the framework; make `loop` required and retire `AsyncThreadLoop`; entry-point
+  declarations.
 
 **Out of scope (follow-ups):**
 - Rewriting `qubx-hyperliquid` / `qubx-lighter` (done in the `exchanges` repo against this contract).
@@ -212,23 +213,60 @@ RateLimitManager.get_or_create(venue, connector)            # manager.py:91
 - Delete the five per-connector guards (`ccxt/connector.py:302,404,572,701,713`) and the `read_only`
   ctor param. Templates and `LiveConfig.read_only` are **kept** (default `false`), so no config migration.
 
-## `loop` ownership
+## `loop` ownership (and retiring `AsyncThreadLoop`)
 
 Connectors consume a loop, never create one. `loop` is **required** on `BuildContext` (no default). The
 runner already creates one shared loop on a dedicated thread (`runner.py:274-276`, the `SharedEventLoop`
-thread) and passes it everywhere. For non-runner construction (REPL / notebook / conformance), add a small
-helper so the caller owns the loop explicitly:
+thread) and passes it everywhere.
+
+Two helpers in `qubx/utils/misc.py` make loop ownership and cross-thread submission explicit, and replace
+the under-powered `AsyncThreadLoop`:
 
 ```python
-# qubx/utils/misc.py
-def start_background_event_loop(name: str = "QubxConnectorLoop") -> tuple[asyncio.AbstractEventLoop, Thread]:
-    loop = asyncio.new_event_loop()
-    t = Thread(target=loop.run_forever, daemon=True, name=name); t.start()
-    return loop, t
+def run_sync(loop: asyncio.AbstractEventLoop, coro, *, timeout: float | None = None):
+    """Submit `coro` to `loop` from another thread, block for the result, propagate its exception.
+    Guards the classic deadlock of being called from `loop`'s own thread."""
+    try:
+        running = asyncio.get_running_loop()
+    except RuntimeError:
+        running = None
+    if running is loop:
+        raise RuntimeError("run_sync called from the target loop's own thread — would deadlock")
+    return asyncio.run_coroutine_threadsafe(coro, loop).result(timeout)
+
+class BackgroundEventLoop:
+    """Owns an asyncio loop on a dedicated daemon thread; submit/run coroutines onto it."""
+    def __init__(self, name: str = "QubxConnectorLoop"):
+        self._loop = asyncio.new_event_loop()
+        self._thread = Thread(target=self._loop.run_forever, daemon=True, name=name)
+        self._thread.start()
+    @property
+    def loop(self) -> asyncio.AbstractEventLoop: return self._loop
+    def submit(self, coro) -> concurrent.futures.Future: return asyncio.run_coroutine_threadsafe(coro, self._loop)
+    def run_sync(self, coro, *, timeout: float | None = None): return run_sync(self._loop, coro, timeout=timeout)
+    def stop(self) -> None:
+        self._loop.call_soon_threadsafe(self._loop.stop); self._thread.join()
 ```
 
+- `BackgroundEventLoop` is the single thing that **owns** a loop+thread (start/stop) — for REPL / notebook /
+  conformance construction, and (follow-up) for external clients (HL/lighter) that own their loop. It replaces
+  the raw `(loop, thread)` tuple helper idea.
+- `run_sync(loop, coro)` is the blocking submit-and-wait that every connector currently hand-rolls as
+  `_run_sync` — now one implementation, with exception propagation and a **reentrancy guard** (the deadlock
+  `AsyncThreadLoop` left exposed).
+
+**Retire `AsyncThreadLoop`** (`utils/misc.py:451`): it is a stateless one-line wrapper over
+`run_coroutine_threadsafe` that holds no state and owns no lifecycle, yet its call sites/comments imply it
+does; it omits `run_sync`, ships a mis-typed `run_in_executor`, and exposes the reentrancy deadlock. Replace:
+- Call sites that submit to an **externally-owned** loop (ccxt `_loop` properties — `connector.py:211`,
+  `data.py:105`, `connection_manager.py:85`, `subscription_orchestrator.py:51`, `warmup_service.py:49`;
+  `tardis/data.py`; `data/storages/ccxt.py`) → call `asyncio.run_coroutine_threadsafe(coro, loop)` /
+  `run_sync(loop, coro)` directly. They don't own the loop, so they shouldn't hold a wrapper that implies they do.
+- Loop **owners** → `BackgroundEventLoop`.
+
 Delete the `loop is None` self-spawn branch in `ccxt/factory.py:55-62`; `loop` becomes required in
-`get_ccxt_exchange` / `get_ccxt_exchange_manager`.
+`get_ccxt_exchange` / `get_ccxt_exchange_manager`. The runner's shared loop and `_cleanup_event_loop`
+(`runner.py:274-276`, `:109`) can adopt `BackgroundEventLoop` (optional, behavior-preserving).
 
 ## Config & release interaction
 
@@ -268,8 +306,13 @@ authors.
   `create_data_provider`; `PLUGIN = TardisPlugin()`.
 - **`core/mixins/trading.py`:** `read_only` gate at `:115`/`:327`/`:387`; `self._read_only` from
   `config.live.read_only`.
-- **`utils/misc.py`:** `start_background_event_loop()`.
-- **`ccxt/factory.py`:** `loop` required; delete `loop is None` self-spawn branch (`:55-62`).
+- **`utils/misc.py`:** add `run_sync(loop, coro, timeout)` + `BackgroundEventLoop`; **delete `AsyncThreadLoop`**.
+- **`AsyncThreadLoop` call sites:** migrate the ccxt stack (`connector.py:211`, `data.py:105`,
+  `connection_manager.py:85`, `subscription_orchestrator.py:51`, `warmup_service.py:49`), `tardis/data.py`,
+  and `data/storages/ccxt.py` to `run_coroutine_threadsafe` / `run_sync`; any owned-loop usage →
+  `BackgroundEventLoop`.
+- **`ccxt/factory.py`:** `loop` required; delete `loop is None` self-spawn branch (`:55-62`). Optionally route
+  the runner's shared loop (`runner.py:274-276`) + `_cleanup_event_loop` (`:109`) through `BackgroundEventLoop`.
 - **`pyproject.toml`:** the `[project.entry-points."qubx.exchange_plugins"]` block.
 - **`RateLimitManager` (`manager.py`):** unchanged.
 
@@ -279,7 +322,8 @@ authors.
 `BuildContext`); `ExchangePlugin` ABC defaults via a `FakePlugin`; registry (`get_plugin`,
 `get_connector`/`get_data_provider`/`get_rate_limit_config`, `None`→clear error e.g. `get_connector("tardis")`);
 `PluginLoader` (`available()` without import, lazy `load`, unknown→None, non-plugin→TypeError, name assert,
-missing-extra wrap); `start_background_event_loop`; trading-mixin `read_only` gate.
+missing-extra wrap); `run_sync` (result / timeout / exception propagation / reentrancy-guard raise) and
+`BackgroundEventLoop` (submit / run_sync / stop); trading-mixin `read_only` gate.
 
 **Integration:** runner two-phase build for ccxt (mocked creds); **shared-limiter identity** — the same
 `ExchangeRateLimiter` reaches both the DP and connector exchange managers; real entry-point discovery of
@@ -288,16 +332,18 @@ Qubx's own `ccxt`/`tardis` (installed editable in CI); **lazy-load guard** —
 
 **Migration / regression:** rewrite decorator-era registry tests to the plugin model; replace the five
 connector `read_only` tests (`test_ccxt_connector_writes.py`) with trading-mixin gate tests; keep the ccxt
-connector/data-provider suites green; existing runner/e2e suites pass (`just test`); stale `@connector`
-import → tombstone error test.
+connector/data-provider/storage suites green after the `AsyncThreadLoop` migration; existing runner/e2e
+suites pass (`just test`); stale `@connector` import → tombstone error test.
 
 ## Sequencing — two Qubx PRs
 
 The release flow is untouched (we keep `plugins.modules`), so there is no release PR.
 
 - **PR 1 — prep (behavior-preserving, green standalone):** move `read_only` to the trading-mixin gate
-  (delete connector guards + ctor param, relocate tests); `loop` required + `start_background_event_loop` +
-  delete the `loop is None` self-spawn branch.
+  (delete connector guards + ctor param, relocate tests); `loop` required; add `run_sync` +
+  `BackgroundEventLoop` and **retire `AsyncThreadLoop`** (migrate all in-tree call sites); delete the
+  `loop is None` self-spawn branch. (The `AsyncThreadLoop` retirement is a sizable mechanical migration —
+  can be split into its own commit/PR if review gets large.)
 - **PR 2 — the migration (atomic):** `ExchangePlugin`/contexts/`PluginLoader`; new `ConnectorRegistry`
   API; runner two-phase + `rate_limiter`-in-context; `ccxt → CcxtPlugin` (attach limiter to connector) and
   `tardis → TardisPlugin`; `pyproject` entry points; delete the three decorators + import-side-effect;
@@ -313,6 +359,8 @@ connector, so an atomic flip is cleaner.
   `ExchangePlugin` + entry-point shape.
 - Author the Hyperliquid connector (and migrate `qubx-lighter`) against this final contract in the
   `exchanges` repo.
+- Migrate `qubx-hyperliquid` / `qubx-lighter` off `AsyncThreadLoop` (and their bespoke `_run_sync`) to
+  `BackgroundEventLoop` / `run_sync` while authoring them against this contract.
 
 ## Non-goals
 
@@ -331,3 +379,6 @@ connector, so an atomic flip is cleaner.
 - **Discovery:** entry points replace decorators; built-ins via self-declared entry points; name handling
   via entry-point key + `plugin.name` assert.
 - **Config/release:** keep `plugins.modules`; release flow unchanged.
+- **`AsyncThreadLoop`:** retired in favor of `BackgroundEventLoop` (owns loop+thread) + `run_sync(loop, coro)`
+  (cross-thread blocking submit with reentrancy guard); non-owning call sites use `run_coroutine_threadsafe` /
+  `run_sync` directly.
