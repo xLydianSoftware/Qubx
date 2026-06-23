@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from qubx import logger
+from qubx import area_logger
 from qubx.core.account_manager import reconcile
 from qubx.core.account_manager.reconcile import ReconcileDiff
 from qubx.core.account_manager.state import AccountState
@@ -50,6 +50,10 @@ from qubx.core.events import (
     OrderUpdateRejectedEvent,
     PositionUpdateEvent,
 )
+
+# Module logger bound to the "account_manager" area: every line here carries that tag.
+# INFO/WARNING show as usual; DEBUG only when QUBX_DEBUG_AREAS includes account_manager.
+logger = area_logger("account_manager")
 
 
 @dataclass
@@ -213,7 +217,9 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
     already covers it (see _covered_by_balance_push); position/r_pnl always book.
     """
     pos = state.ensure_position(instrument)
+    _before = pos.quantity
     realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
+    logger.debug("deal {} amt={} {}->{} tid={}", instrument.symbol, deal.amount, _before, pos.quantity, deal.trade_id)
     if instrument.is_futures():
         # TODO(account-mgmt): fee is folded into settle here (correct when
         # settle == portfolio base currency); revisit for instruments whose
@@ -462,7 +468,16 @@ def _handle_position_update(state: AccountState, event: PositionUpdateEvent, now
     state.mark_position_push(instrument, event.as_of)
     local = state.get_position(instrument)
     local_qty = local.quantity if local is not None else 0.0
-    if abs(event.position.quantity - local_qty) < instrument.lot_size:
+    matched = abs(event.position.quantity - local_qty) < instrument.lot_size
+    logger.debug(
+        "push {} pushed={} local={} as_of={} {}",
+        instrument.symbol,
+        event.position.quantity,
+        local_qty,
+        event.as_of,
+        "match" if matched else "DRIFT",
+    )
+    if matched:
         return ApplyResult(position=local)
     return ApplyResult(position_drift=event.position)
 

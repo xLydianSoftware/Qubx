@@ -11,7 +11,7 @@ from typing import Callable, Literal
 import numpy as np
 import pandas as pd
 
-from qubx import logger
+from qubx import area_logger
 from qubx.core.account_manager import reconcile, reducer
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.reducer import ApplyResult
@@ -32,6 +32,9 @@ from qubx.core.connector import IConnector
 from qubx.core.events import AccountMessage, AccountSnapshotEvent, BalanceUpdateEvent, OrderEvent
 from qubx.core.interfaces import IAccountViewer, IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
+
+# Module logger bound to the "account_manager" area (see reducer.py for the contract).
+logger = area_logger("account_manager")
 
 
 class AccountManager(IAccountViewer):

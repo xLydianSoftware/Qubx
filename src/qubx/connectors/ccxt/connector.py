@@ -40,7 +40,7 @@ import ccxt
 import ccxt.pro
 from ccxt import AuthenticationError, ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
-from qubx import logger
+from qubx import connector_logger, logger
 from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
     Balance,
@@ -166,6 +166,8 @@ class CcxtConnector(ChannelEmitter):
         **kwargs: Any,
     ):
         self.exchange_name = exchange_name
+        # Diagnostic logger gated by QUBX_DEBUG_AREAS=connector (all) or connector.<exchange> (one)
+        self._dbg = connector_logger(exchange_name)
         self.channel = channel
         self._time = time_provider
         self._em = exchange_manager
@@ -1046,6 +1048,9 @@ class CcxtConnector(ChannelEmitter):
             return
         last = len(deals) - 1
         for i, deal in enumerate(deals):
+            self._dbg.debug(
+                "emit fill {} amt={} cum={} tid={}", instrument.symbol, deal.amount, order.filled_quantity, deal.trade_id
+            )
             # On a full fill the LAST deal closes the order (OrderFilledEvent →
             # terminal); earlier deals are partials. On a partial-fill report every
             # deal is a partial.
@@ -1102,6 +1107,7 @@ class CcxtConnector(ChannelEmitter):
         position = ccxt_convert_position(raw, ex.name, ex.markets)
         if position is None:
             return
+        self._dbg.debug("ws position push {} qty={} as_of={}", position.instrument.symbol, position.quantity, timestamp)
         self.send(
             PositionUpdateEvent(
                 instrument=position.instrument,
