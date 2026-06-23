@@ -106,6 +106,15 @@ def _remove_instruments(ctx: IStrategyContext, symbols: list[str], exchange: str
     )
 
 
+def _settle_position(ctx: IStrategyContext, symbol: str, exchange: str | None = None, **kwargs) -> ActionResult:
+    instr = _resolve(ctx, symbol, exchange)
+    if instr is None:
+        return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
+
+    ctx.settle_position(instr)
+    return ActionResult(status="ok", data={"settled": str(instr)})
+
+
 def _set_universe(ctx: IStrategyContext, symbols: list[str], exchange: str | None = None, if_has_position: str = "close", **kwargs) -> ActionResult:
     instruments = []
     errors = []
@@ -680,6 +689,19 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             ],
         ),
         _remove_instruments,
+    ),
+    "settle_position": (
+        ActionDef(
+            name="settle_position",
+            description="Force-settle a held position in place (flatten to zero without trading). Operator override for an untradeable/stuck position, e.g. a delisted market with no live quote.",
+            category="universe",
+            dangerous=True,
+            params=[
+                ActionParam(name="symbol", type="string", description="Trading instrument symbol to force-settle"),
+                _EXCHANGE_PARAM,
+            ],
+        ),
+        _settle_position,
     ),
     "set_universe": (
         ActionDef(

@@ -120,6 +120,30 @@ class UniverseManager(IUniverseManager):
         gone_set = set(gone)
         return [i for i in instruments if i not in gone_set]
 
+    def _settle_gone_holdings(self, handled: set[Instrument]) -> None:
+        """Settle held positions whose market is gone, regardless of universe membership.
+
+        Complements `_drop_gone`, which only sweeps universe *candidates*: a held position
+        that is out of the universe -- blacklisted, dropped, or orphaned -- is invisible to
+        the candidate sweep, so without this it could never be settled once its market
+        disappears from the exchange.
+
+        `handled` are the candidate instruments already processed by `_drop_gone` this pass;
+        they are skipped to avoid settling the same position twice."""
+        for instrument in list(self._account.positions):
+            if instrument in handled:
+                continue
+            if self._is_market_gone(instrument):
+                self._settle_if_held(instrument)
+
+    def settle_position(self, instrument: Instrument) -> None:
+        """Operator override: flatten a held position in place without trading, regardless of
+        whether the market is still listed. For an untradeable/stuck position (e.g. a delisted
+        market with no live quote) where the normal close-via-trade path can never fill."""
+        self._trading_manager.cancel_orders(instrument)
+        self._account.settle_position(instrument)
+        logger.warning(f"[UniverseManager] Force-settled position {instrument.symbol} (operator override)")
+
     def _filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
         kept = [i for i in instruments if not self._instrument_service.is_blacklisted(i)]
         dropped = [i for i in instruments if i not in set(kept)]
@@ -143,7 +167,12 @@ class UniverseManager(IUniverseManager):
         # Settle & exclude instruments whose market is already gone (state B) FIRST,
         # so a gone instrument that also carries a delist_date is settled in place
         # before the delisting filter (state A) would otherwise strip it from the list.
+        candidate_set = set(instruments)
         instruments = self._drop_gone(instruments)
+
+        # Also settle any held position whose market is gone but which is absent from the
+        # candidate list above (blacklisted / dropped / orphaned) -- _drop_gone can't see it.
+        self._settle_gone_holdings(candidate_set)
 
         # Then filter out instruments with upcoming/scheduled delist dates (state A:
         # still listed -> closed via trade through the normal removal path).

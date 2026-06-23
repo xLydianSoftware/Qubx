@@ -791,6 +791,9 @@ class StrategyContext(IStrategyContext):
     def remove_instruments(self, instruments: list[Instrument], if_has_position_then: RemovalPolicy = "close"):
         return self._universe_manager.remove_instruments(instruments, if_has_position_then)
 
+    def settle_position(self, instrument: Instrument) -> None:
+        return self._universe_manager.settle_position(instrument)
+
     @property
     def instruments(self):
         return self._universe_manager.instruments
