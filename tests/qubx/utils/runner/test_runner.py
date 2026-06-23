@@ -205,7 +205,7 @@ class TestRunStrategyYaml:
         return mock
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     def test_paper_context_wires_simulated_connector_and_account_manager(
         self,
         mock_create_data_provider,
@@ -277,7 +277,7 @@ class TestRunStrategyYaml:
         assert ctx._account_manager._cfg.inflight_check_retries == 7
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     def test_paper_context_canonicalizes_binance_pm(
         self,
         mock_create_data_provider,
@@ -352,7 +352,7 @@ class TestRunStrategyYaml:
         assert ctx.account.get_position(btc).last_update_price == quote.mid_price()
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
     @patch("qubx.utils.runner.runner._restore_state")
     def test_run_strategy_yaml_with_restored_positions(
@@ -454,7 +454,7 @@ class TestRunStrategyYaml:
         assert pos.instrument == eth_instrument
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
     def test_run_strategy_yaml_with_warmup(
         self,
