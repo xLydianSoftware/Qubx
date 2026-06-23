@@ -19,28 +19,10 @@ class CcxtPlugin(ExchangePlugin):
     name = "ccxt"
 
     def create_data_provider(self, ctx: BuildContext) -> IDataProvider:
-        return CcxtDataProvider(
-            exchange_name=ctx.exchange_name,
-            time_provider=ctx.time_provider,
-            channel=ctx.channel,
-            health_monitor=ctx.health_monitor,
-            credentials=ctx.credentials,
-            loop=ctx.loop,
-            rate_limiter=ctx.rate_limiter,
-            **ctx.params,
-        )
+        return CcxtDataProvider(ctx, **ctx.params)
 
     def create_connector(self, ctx: ConnectorBuildContext) -> IConnector:
-        return create_ccxt_connector(
-            exchange_name=ctx.exchange_name,
-            time_provider=ctx.time_provider,
-            channel=ctx.channel,
-            credentials=ctx.credentials,
-            data_provider=ctx.data_provider,
-            health_monitor=ctx.health_monitor,
-            loop=ctx.loop,
-            rate_limiter=ctx.rate_limiter,
-        )
+        return create_ccxt_connector(ctx)
 
     def rate_limits(self, exchange_name: str) -> ExchangeRateLimitConfig | None:
         return create_ccxt_rate_limit_config(exchange_name)

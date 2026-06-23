@@ -9,8 +9,10 @@ import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import clear_exchange_manager_cache
+from qubx.connectors.plugin import BuildContext
 from qubx.core.basics import CtrlChannel, Instrument, LiveTimeProvider, MarketType
 from qubx.health import DummyHealthMonitor
+from qubx.utils.misc import BackgroundEventLoop
 from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
@@ -24,14 +26,15 @@ def test_binance_ohlcv_extended_fields():
     channel = CtrlChannel("test_ohlcv")
 
     # Create data provider (it creates its own ExchangeManager; public data, no credentials)
-    data_provider = CcxtDataProvider(
+    ctx = BuildContext(
         exchange_name="BINANCE.UM",
         time_provider=LiveTimeProvider(),
         channel=channel,
-        health_monitor=DummyHealthMonitor(),
         credentials=AccountConfigurationManager(),
-        warmup_timeout=60,
+        health_monitor=DummyHealthMonitor(),
+        loop=BackgroundEventLoop().loop,
     )
+    data_provider = CcxtDataProvider(ctx, warmup_timeout=60)
 
     # Create test instrument
     test_instrument = Instrument(

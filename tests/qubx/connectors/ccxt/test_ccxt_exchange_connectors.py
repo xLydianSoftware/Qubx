@@ -16,6 +16,7 @@ from qubx.connectors.ccxt.exchanges.bitfinex.connector import BitfinexCcxtConnec
 from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
 from qubx.connectors.ccxt.factory import get_ccxt_connector
 from qubx.connectors.ccxt.utils import ccxt_convert_order_info
+from qubx.connectors.plugin import ConnectorBuildContext
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus, classify_origin
 from qubx.core.events import (
@@ -631,15 +632,16 @@ def test_create_ccxt_connector_binance_pm_reports_canonical_exchange(monkeypatch
     credentials = Mock()
     credentials.get_exchange_credentials.return_value = Mock(testnet=False, api_key="k", secret="s", model_extra=None)
 
-    conn = create_ccxt_connector(
+    ctx = ConnectorBuildContext(
         exchange_name="BINANCE.PM",
         time_provider=DummyTimeProvider(),
         channel=Mock(),
         credentials=credentials,
-        data_provider=Mock(),
         health_monitor=Mock(),
         loop=Mock(),
+        data_provider=Mock(),
     )
+    conn = create_ccxt_connector(ctx)
 
     assert conn.exchange_name == "BINANCE.UM"
     credentials.get_exchange_credentials.assert_called_once_with("BINANCE.PM")

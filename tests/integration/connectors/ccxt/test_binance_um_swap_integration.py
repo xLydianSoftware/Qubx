@@ -16,9 +16,11 @@ import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import clear_exchange_manager_cache
+from qubx.connectors.plugin import BuildContext
 from qubx.core.basics import CtrlChannel, DataType, Instrument, LiveTimeProvider, MarketType
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.health import DummyHealthMonitor
+from qubx.utils.misc import BackgroundEventLoop
 from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
@@ -82,15 +84,15 @@ class TestBinanceUmSwapIntegration:
     @pytest.fixture
     def data_provider(self, test_channel):
         """Create a CcxtDataProvider with a real Binance UM exchange (public data, no credentials)."""
-        provider = CcxtDataProvider(
+        ctx = BuildContext(
             exchange_name="BINANCE.UM",
             time_provider=LiveTimeProvider(),
             channel=test_channel,
-            health_monitor=DummyHealthMonitor(),
             credentials=AccountConfigurationManager(),
-            max_ws_retries=3,
-            warmup_timeout=30,
+            health_monitor=DummyHealthMonitor(),
+            loop=BackgroundEventLoop().loop,
         )
+        provider = CcxtDataProvider(ctx, max_ws_retries=3, warmup_timeout=30)
 
         yield provider
 
