@@ -573,7 +573,6 @@ def create_strategy_context(
                 credentials=account_manager,
                 data_provider=_data_provider,
                 health_monitor=_health_monitor,
-                read_only=config.live.read_only,
                 loop=loop,
             )
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
@@ -674,6 +673,7 @@ def create_strategy_context(
         state_snapshot_interval=_state_snapshot_interval,
         rate_limiting_config=_rate_limiting_config,
         event_loop=loop,
+        read_only=config.live.read_only,
     )
 
     # Set context for metric emitters to enable is_live tag and time access

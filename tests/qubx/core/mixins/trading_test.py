@@ -6,7 +6,7 @@ import pytest
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus, Position
 from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
-from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound
+from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound, ReadOnlyConnector
 from qubx.core.interfaces import IStrategyContext, ITimeProvider
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
@@ -164,6 +164,35 @@ def trading_manager(strategy_context, mock_connector, mock_account):
         strategy_name="test_strategy",
         health_monitor=DummyHealthMonitor(),
     )
+
+
+@pytest.fixture
+def read_only_trading_manager(strategy_context, mock_connector, mock_account):
+    """A TradingManager constructed in read-only mode."""
+    return TradingManager(
+        context=strategy_context,
+        connectors={"BINANCE.UM": mock_connector},
+        account_manager=mock_account,
+        strategy_name="test_strategy",
+        health_monitor=DummyHealthMonitor(),
+        read_only=True,
+    )
+
+
+class TestReadOnlyGate:
+    """read_only is enforced once at the trading write boundary (trade/cancel/update)."""
+
+    def test_trade_blocked(self, read_only_trading_manager, mock_instrument):
+        with pytest.raises(ReadOnlyConnector):
+            read_only_trading_manager.trade(mock_instrument, 1.0)
+
+    def test_cancel_order_blocked(self, read_only_trading_manager):
+        with pytest.raises(ReadOnlyConnector):
+            read_only_trading_manager.cancel_order(client_order_id="x")
+
+    def test_update_order_blocked(self, read_only_trading_manager):
+        with pytest.raises(ReadOnlyConnector):
+            read_only_trading_manager.update_order(price=1.0, amount=1.0, client_order_id="x")
 
 
 class TestTradingManagerClosePosition:

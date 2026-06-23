@@ -168,7 +168,9 @@ class StrategyContext(IStrategyContext):
         state_snapshot_interval: str | None = None,
         rate_limiting_config: Any | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
+        read_only: bool = False,
     ) -> None:
+        self._read_only = read_only
         self._account_manager = account_manager
         # self.account is the read-only IAccountViewer surface (AccountManager implements
         # it; the strategy and mixins read positions/balances/capital through it).
@@ -266,6 +268,7 @@ class StrategyContext(IStrategyContext):
             account_manager=self._account_manager,
             health_monitor=self._health_monitor,
             strategy_name=self._strategy_name,
+            read_only=self._read_only,
         )
         self._processing_manager = ProcessingManager(
             context=self,

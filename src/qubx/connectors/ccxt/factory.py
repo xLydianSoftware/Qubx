@@ -176,7 +176,6 @@ def create_ccxt_connector(
     credentials: CredentialsProvider,
     data_provider: IDataProvider,
     health_monitor: IHealthMonitor,
-    read_only: bool = False,
     loop: asyncio.AbstractEventLoop | None = None,
     **kwargs,
 ) -> CcxtConnector:
@@ -208,7 +207,6 @@ def create_ccxt_connector(
         time_provider=time_provider,
         exchange_manager=exchange_manager,
         data_provider=data_provider,
-        read_only=read_only,
         loop=loop,
     )
 

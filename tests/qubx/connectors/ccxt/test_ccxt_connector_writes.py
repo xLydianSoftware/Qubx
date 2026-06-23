@@ -23,7 +23,7 @@ from qubx.core.events import (
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
 )
-from qubx.core.exceptions import BadRequest, InvalidOrderParameters, ReadOnlyConnector
+from qubx.core.exceptions import BadRequest, InvalidOrderParameters
 from qubx.core.series import Quote
 from tests.qubx.core.utils_test import DummyTimeProvider
 
@@ -52,7 +52,6 @@ def _make_connector(
     *,
     exchange: Mock | None = None,
     data_provider: Mock | None = None,
-    read_only: bool = False,
 ) -> tuple[CcxtConnector, list, Mock]:
     """Build a connector with a capturing channel and a mocked exchange.
 
@@ -84,7 +83,6 @@ def _make_connector(
         time_provider=DummyTimeProvider(),
         exchange_manager=em,
         data_provider=data_provider,
-        read_only=read_only,
     )
 
     captured: list = []
@@ -575,46 +573,3 @@ def test_set_margin_mode_calls_ccxt_returns_true() -> None:
     ok = conn.set_margin_mode(_instrument(), "isolated")
     assert ok is True
     exchange.set_margin_mode.assert_awaited_once_with("isolated", "BTC/USDT:USDT")
-
-
-# --------------------------------------------------------------------------- #
-# (9) read_only connector raises on writes
-# --------------------------------------------------------------------------- #
-def test_read_only_raises_on_submit() -> None:
-    conn, _, _ = _make_connector(read_only=True)
-    with pytest.raises(ReadOnlyConnector):
-        conn.submit_order(_order_request())
-
-
-def test_read_only_raises_on_cancel() -> None:
-    conn, _, _ = _make_connector(read_only=True)
-    with pytest.raises(ReadOnlyConnector):
-        conn.cancel_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
-
-
-def test_read_only_raises_on_update() -> None:
-    conn, _, _ = _make_connector(read_only=True)
-    with pytest.raises(ReadOnlyConnector):
-        conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=1.0)
-
-
-def test_read_only_raises_on_set_leverage() -> None:
-    # Leverage is a write to the venue and must be guarded like submit/cancel/update:
-    # the venue must NOT be touched.
-    exchange = Mock()
-    exchange.set_leverage = AsyncMock(return_value={})
-    exchange.has = {"editOrder": True}
-    conn, _, _ = _make_connector(exchange=exchange, read_only=True)
-    with pytest.raises(ReadOnlyConnector):
-        conn.set_instrument_leverage(_instrument(), 5.0)
-    exchange.set_leverage.assert_not_awaited()
-
-
-def test_read_only_raises_on_set_margin_mode() -> None:
-    exchange = Mock()
-    exchange.set_margin_mode = AsyncMock(return_value={})
-    exchange.has = {"editOrder": True}
-    conn, _, _ = _make_connector(exchange=exchange, read_only=True)
-    with pytest.raises(ReadOnlyConnector):
-        conn.set_margin_mode(_instrument(), "isolated")
-    exchange.set_margin_mode.assert_not_awaited()
