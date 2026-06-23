@@ -5,6 +5,13 @@ def test_connector_ctx_is_a_build_ctx():
     assert issubclass(ConnectorBuildContext, BuildContext)
 
 
+def test_build_context_params_defaults_to_empty():
+    ctx = BuildContext(
+        exchange_name="X", time_provider=None, channel=None, credentials=None, health_monitor=None, loop=None
+    )
+    assert ctx.params == {}
+
+
 def test_plugin_defaults_return_none():
     class P(ExchangePlugin):
         name = "p"

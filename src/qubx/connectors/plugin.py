@@ -12,7 +12,7 @@ are intentionally NOT ``slots=True`` so the runner can extend one into the other
 
 import asyncio
 from abc import ABC
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from qubx.connectors.registry import CredentialsProvider
 from qubx.core.basics import CtrlChannel, ITimeProvider
@@ -34,6 +34,9 @@ class BuildContext:
     # Built centrally by RateLimitManager from plugin.rate_limits(); the same instance is
     # shared into the data provider and the connector. None when rate limiting is disabled.
     rate_limiter: ExchangeRateLimiter | None = None
+    # Per-exchange config options (ExchangeConfig.params) — venue-specific knobs a plugin
+    # forwards to the data provider (e.g. tardis host/port, ccxt orderbook_limit).
+    params: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True, kw_only=True)

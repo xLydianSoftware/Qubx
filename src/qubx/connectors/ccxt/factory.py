@@ -7,6 +7,7 @@ from qubx.connectors.registry import CredentialsProvider, connector
 from qubx.core.basics import CtrlChannel
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ITimeProvider
 from qubx.core.mixins.utils import canonical_exchange
+from qubx.rate_limiting import ExchangeRateLimiter
 
 from .connector import CcxtConnector
 from .exchange_manager import ExchangeManager
@@ -173,6 +174,7 @@ def create_ccxt_connector(
     data_provider: IDataProvider,
     health_monitor: IHealthMonitor,
     loop: asyncio.AbstractEventLoop,
+    rate_limiter: ExchangeRateLimiter | None = None,
     **kwargs,
 ) -> CcxtConnector:
     """Registered ``IConnector`` factory for ccxt venues (``ConnectorRegistry.get_connector('ccxt')``).
@@ -193,6 +195,10 @@ def create_ccxt_connector(
         loop=loop,
         **(creds.model_extra or {}),
     )
+    # Share the same per-exchange limiter the data provider uses (closes the gap where the
+    # order-placing side was previously unthrottled).
+    if rate_limiter is not None:
+        exchange_manager.attach_rate_limiter(rate_limiter)
     # The connector self-reports the canonical (instrument-universe) exchange so the
     # account events it stamps (balances/snapshots) route to the same AM state its
     # instruments do: a BINANCE.PM account trades BINANCE.UM instruments — the venue
