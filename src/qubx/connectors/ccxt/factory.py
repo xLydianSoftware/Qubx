@@ -1,5 +1,4 @@
 import asyncio
-from threading import Thread
 from typing import Any
 
 import ccxt.pro as cxp
@@ -16,9 +15,10 @@ from .exchanges import CUSTOM_CONNECTORS, EXCHANGE_ALIASES
 
 def get_ccxt_exchange(
     exchange: str,
+    *,
+    loop: asyncio.AbstractEventLoop,
     api_key: str | None = None,
     secret: str | None = None,
-    loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
     **kwargs,
 ) -> cxp.Exchange:
@@ -32,7 +32,7 @@ def get_ccxt_exchange(
         exchange (str): The exchange name.
         api_key (str, optional): The API key. Default is None.
         secret (str, optional): The API secret. Default is None.
-        loop (asyncio.AbstractEventLoop, optional): Event loop. Default is None.
+        loop (asyncio.AbstractEventLoop): The caller-owned event loop the exchange runs on (required).
         use_testnet (bool): Use testnet/sandbox mode. Default is False.
         **kwargs: Additional parameters for exchange configuration.
 
@@ -52,14 +52,9 @@ def get_ccxt_exchange(
     # Build exchange options
     options: dict[str, Any] = {"name": exchange}
 
-    if loop is not None:
-        options["asyncio_loop"] = loop
-    else:
-        loop = asyncio.new_event_loop()
-        thread = Thread(target=loop.run_forever, daemon=True)
-        thread.start()
-        options["thread_asyncio_loop"] = thread
-        options["asyncio_loop"] = loop
+    # The caller owns the loop (connectors via the runner's shared loop, storage via its
+    # BackgroundEventLoop) — the factory never spawns one.
+    options["asyncio_loop"] = loop
 
     # Add API credentials
     api_key, secret = _get_api_credentials(api_key, secret, kwargs)
@@ -101,9 +96,10 @@ def get_ccxt_exchange_manager(
     exchange: str,
     health_monitor: IHealthMonitor,
     time_provider: ITimeProvider,
+    *,
+    loop: asyncio.AbstractEventLoop,
     api_key: str | None = None,
     secret: str | None = None,
-    loop: asyncio.AbstractEventLoop | None = None,
     use_testnet: bool = False,
     check_interval_seconds: float = 30.0,
     **kwargs,
@@ -176,7 +172,7 @@ def create_ccxt_connector(
     credentials: CredentialsProvider,
     data_provider: IDataProvider,
     health_monitor: IHealthMonitor,
-    loop: asyncio.AbstractEventLoop | None = None,
+    loop: asyncio.AbstractEventLoop,
     **kwargs,
 ) -> CcxtConnector:
     """Registered ``IConnector`` factory for ccxt venues (``ConnectorRegistry.get_connector('ccxt')``).

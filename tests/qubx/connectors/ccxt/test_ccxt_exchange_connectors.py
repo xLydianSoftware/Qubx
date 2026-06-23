@@ -638,6 +638,7 @@ def test_create_ccxt_connector_binance_pm_reports_canonical_exchange(monkeypatch
         credentials=credentials,
         data_provider=Mock(),
         health_monitor=Mock(),
+        loop=Mock(),
     )
 
     assert conn.exchange_name == "BINANCE.UM"
