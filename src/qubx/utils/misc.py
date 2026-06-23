@@ -13,7 +13,7 @@ from functools import wraps
 from os.path import abspath, exists, expanduser
 from pathlib import Path
 from threading import Lock, Thread
-from typing import Any, Awaitable, Union
+from typing import Any, Union
 
 import joblib
 import numpy as np
@@ -449,20 +449,22 @@ class ProgressParallel(joblib.Parallel):
 
 
 class AsyncThreadLoop:
-    """
-    Helper class to submit coroutines to asyncio loop from separate thread.
+    """Submit coroutines to an externally-owned asyncio loop from another thread.
+
+    A thin handle over a loop the *caller* owns (the exchange/client created and runs it);
+    this class neither starts nor stops the loop. Use ``submit`` for fire-and-forget and
+    ``run_sync`` to block for the result (the latter guards the deadlock of being called
+    from the loop's own thread). To own a loop+thread, use ``BackgroundEventLoop``.
     """
 
     def __init__(self, loop: asyncio.AbstractEventLoop):
         self.loop = loop
 
-    def submit(self, coro: Awaitable) -> concurrent.futures.Future:
-        return asyncio.run_coroutine_threadsafe(coro, self.loop)  # type: ignore
+    def submit(self, coro) -> concurrent.futures.Future:
+        return asyncio.run_coroutine_threadsafe(coro, self.loop)
 
-    async def run_in_executor(
-        self, executor: concurrent.futures.Executor, func: Callable, *args, **kwargs
-    ) -> concurrent.futures.Future:
-        return await self.loop.run_in_executor(executor, func, *args, **kwargs)
+    def run_sync(self, coro, *, timeout: float | None = None):
+        return run_sync(self.loop, coro, timeout=timeout)
 
 
 def run_sync(loop: asyncio.AbstractEventLoop, coro, *, timeout: float | None = None):

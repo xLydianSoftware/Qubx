@@ -62,3 +62,23 @@ def test_stop_joins_thread():
     bel = BackgroundEventLoop(name="join-me")
     bel.stop()
     assert not bel._thread.is_alive()
+
+
+def test_async_thread_loop_run_sync_and_submit():
+    from qubx.utils.misc import AsyncThreadLoop
+
+    bel = BackgroundEventLoop()
+    try:
+        atl = AsyncThreadLoop(bel.loop)
+
+        async def mul(a, b):
+            return a * b
+
+        assert atl.run_sync(mul(3, 4)) == 12
+
+        async def seven():
+            return 7
+
+        assert atl.submit(seven()).result(1) == 7
+    finally:
+        bel.stop()
