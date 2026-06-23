@@ -1,28 +1,30 @@
 """
-Registry for data providers and execution connectors.
+Registry for exchange plugins (connector + data provider + rate-limit declaration).
 
-This module provides a registry pattern for connectors, allowing plugins
-to register custom data providers and ``IConnector`` execution connectors using
-decorators (like readers and storages).
+A venue is one :class:`~qubx.connectors.plugin.ExchangePlugin`, discovered by entry point
+(group ``qubx.exchange_plugins``) via :class:`~qubx.plugins.loader.PluginLoader` and resolved
+here by name (the config's ``connector`` / ``data_provider`` field). ``register`` is the direct
+path for tests / programmatic use. The paper/backtest ``SimulatedConnector`` is NOT a plugin —
+it is the framework's built-in simulator, constructed directly by the runner.
 """
 
-from typing import Any, Callable, Protocol, TypeVar
+from typing import TYPE_CHECKING, Any, Protocol
 
-from qubx import logger
 from qubx.core.connector import IConnector
 from qubx.core.interfaces import IDataProvider
 
-T = TypeVar("T")
+if TYPE_CHECKING:
+    from qubx.connectors.plugin import BuildContext, ConnectorBuildContext, ExchangePlugin
 
 
 class ExchangeSettingsLike(Protocol):
-    """The slice of per-exchange settings that registered factories actually read."""
+    """The slice of per-exchange settings that plugins actually read."""
 
     testnet: bool
 
 
 class ExchangeCredentialsLike(Protocol):
-    """The slice of per-exchange credentials that registered factories actually read."""
+    """The slice of per-exchange credentials that plugins actually read."""
 
     testnet: bool
     api_key: str
@@ -35,7 +37,7 @@ class ExchangeCredentialsLike(Protocol):
 class CredentialsProvider(Protocol):
     """Structural view of the runner's ``AccountConfigurationManager``.
 
-    Registered factories receive it as the standardized ``credentials`` argument; typing it
+    Plugins receive it as the standardized ``credentials`` field of the build context; typing it
     structurally keeps connector code free of a connectors->runner import back-edge.
     """
 
@@ -45,188 +47,77 @@ class CredentialsProvider(Protocol):
 
 
 class ConnectorRegistry:
-    """
-    Registry for data-provider classes and ``IConnector`` execution-connector factories.
+    """Resolves :class:`ExchangePlugin` instances by name and builds their components.
 
-    Plugins register their own market-data providers (``@data_provider``) and live
-    execution connectors (``@connector``) by name, so the runner resolves both from the
-    config's ``connector`` field rather than hardcoding a venue. The paper/backtest
-    ``SimulatedConnector`` is NOT registered — it is the framework's built-in simulator,
-    constructed directly by the runner.
-
-    Data providers register the class (instantiated with standardized constructor args);
-    connectors register a factory callable (so a venue can build its own auth/exchange
-    plumbing and resolve per-exchange subclasses behind a uniform signature).
+    Plugins are discovered lazily via entry points (``get_plugin`` → ``PluginLoader.load``);
+    ``register`` is the direct path for tests. ``get_data_provider`` / ``get_connector`` call the
+    plugin's factory methods and raise a clear error when the requested capability is absent.
     """
 
-    _data_providers: dict[str, type[IDataProvider]] = {}
-    _connectors: dict[str, Callable[..., IConnector]] = {}
-    _rate_limit_configs: dict[str, Callable] = {}
+    _plugins: dict[str, "ExchangePlugin"] = {}
 
     @classmethod
-    def register_data_provider(cls, name: str) -> Callable[[type[T]], type[T]]:
-        """
-        Decorator to register a data provider class.
-
-        Args:
-            name: The name to register the data provider under (e.g., "ccxt", "tardis")
-
-        Returns:
-            A decorator function that registers the class
-        """
-
-        def decorator(provider_cls: type[T]) -> type[T]:
-            cls._data_providers[name.lower()] = provider_cls  # type: ignore
-            logger.debug(f"Registered data provider: {name}")
-            return provider_cls
-
-        return decorator
+    def register(cls, plugin: "ExchangePlugin") -> None:
+        cls._plugins[plugin.name.lower()] = plugin
 
     @classmethod
-    def get_data_provider(cls, name: str, **kwargs: Any) -> IDataProvider:
-        """
-        Get a data provider instance by name.
+    def get_plugin(cls, name: str) -> "ExchangePlugin":
+        key = name.lower()
+        if key not in cls._plugins:
+            from qubx.plugins.loader import PluginLoader
 
-        Args:
-            name: The name of the data provider
-            **kwargs: Arguments to pass to the constructor
-
-        Returns:
-            An instance of the data provider
-
-        Raises:
-            ValueError: If the data provider is not found
-        """
-        provider_cls = cls._data_providers.get(name.lower())
-        if provider_cls is None:
-            raise ValueError(f"Data provider '{name}' is not registered. Available: {list(cls._data_providers.keys())}")
-        return provider_cls(**kwargs)
+            plugin = PluginLoader.load(key)
+            if plugin is None:
+                raise ValueError(f"No connector plugin '{name}'. Available: {sorted(PluginLoader.available())}")
+            cls._plugins[key] = plugin
+        return cls._plugins[key]
 
     @classmethod
-    def register_connector(cls, name: str) -> Callable[[T], T]:
-        """
-        Decorator to register an ``IConnector`` factory under a connector name.
-
-        The registered object is a callable (factory) — not necessarily a class — so a
-        venue can build its own auth/exchange plumbing and pick a per-exchange subclass
-        behind the uniform ``get_connector(name, **kwargs)`` signature.
-
-        Args:
-            name: The connector name to register under (e.g., "ccxt").
-        """
-
-        def decorator(factory: T) -> T:
-            cls._connectors[name.lower()] = factory  # type: ignore[assignment]
-            logger.debug(f"Registered connector: {name}")
-            return factory
-
-        return decorator
+    def get_data_provider(cls, name: str, ctx: "BuildContext") -> IDataProvider:
+        dp = cls.get_plugin(name).create_data_provider(ctx)
+        if dp is None:
+            raise ValueError(f"Venue plugin '{name}' provides no data provider")
+        return dp
 
     @classmethod
-    def get_connector(cls, name: str, **kwargs: Any) -> IConnector:
-        """
-        Build an ``IConnector`` instance by connector name.
-
-        Args:
-            name: The connector name (the config's ``connector`` field).
-            **kwargs: Arguments forwarded to the registered factory.
-
-        Raises:
-            ValueError: If the connector is not registered.
-        """
-        factory = cls._connectors.get(name.lower())
-        if factory is None:
-            raise ValueError(f"Connector '{name}' is not registered. Available: {list(cls._connectors.keys())}")
-        return factory(**kwargs)
-
-    @classmethod
-    def is_connector_registered(cls, name: str) -> bool:
-        """Check if an execution connector is registered."""
-        return name.lower() in cls._connectors
-
-    @classmethod
-    def register_rate_limit_config(cls, name: str) -> Callable:
-        """Decorator to register a rate limit config factory for a connector.
-
-        The factory receives (exchange_name: str) and returns ExchangeRateLimitConfig or None.
-        """
-
-        def decorator(func: Callable) -> Callable:
-            cls._rate_limit_configs[name.lower()] = func
-            logger.debug(f"Registered rate limit config: {name}")
-            return func
-
-        return decorator
+    def get_connector(cls, name: str, ctx: "ConnectorBuildContext") -> IConnector:
+        conn = cls.get_plugin(name).create_connector(ctx)
+        if conn is None:
+            raise ValueError(f"Venue plugin '{name}' provides no execution connector")
+        return conn
 
     @classmethod
     def get_rate_limit_config(cls, name: str, exchange_name: str):
-        """Get rate limit config for a connector/exchange pair.
-
-        Returns:
-            ExchangeRateLimitConfig or None if connector has no rate limiting registered
-        """
-        factory = cls._rate_limit_configs.get(name.lower())
-        if factory is None:
-            return None
-        return factory(exchange_name)
+        """Rate-limit config for a venue (None when the plugin declares none)."""
+        return cls.get_plugin(name).rate_limits(exchange_name)
 
     @classmethod
-    def is_data_provider_registered(cls, name: str) -> bool:
-        """Check if a data provider is registered."""
-        return name.lower() in cls._data_providers
+    def is_registered(cls, name: str) -> bool:
+        from qubx.plugins.loader import PluginLoader
 
-    @classmethod
-    def get_all_data_providers(cls) -> dict[str, type[IDataProvider]]:
-        """Get all registered data provider classes."""
-        return cls._data_providers.copy()
+        return name.lower() in cls._plugins or name.lower() in PluginLoader.available()
 
 
-# Tombstone for the pre-IConnector registry API so stale plugins fail with a pointer to the migration.
-_REMOVED_NAMES = ("broker", "account_processor", "register_broker", "register_account_processor")
+# Tombstone for the pre-ExchangePlugin registry API so stale plugins fail with a pointer to the migration.
+_REMOVED_NAMES = (
+    "broker",
+    "account_processor",
+    "register_broker",
+    "register_account_processor",
+    "connector",
+    "data_provider",
+    "rate_limit_config",
+    "register_connector",
+    "register_data_provider",
+    "register_rate_limit_config",
+)
 
 
 def __getattr__(name: str) -> Any:
     if name in _REMOVED_NAMES:
         raise ImportError(
-            f"'{name}' was removed: plugins now implement a single IConnector and register a factory with "
-            "@connector(name) — see docs/account-management/design.md, section 'Connectors (IConnector)'."
+            f"'{name}' was removed: a venue is now one ExchangePlugin (connector + data provider + "
+            "rate_limits), discovered by entry point (group 'qubx.exchange_plugins'). See "
+            "docs/superpowers/specs/2026-06-23-connector-registry-redesign-design.md."
         )
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
-
-
-# Convenience decorators
-def data_provider(name: str) -> Callable[[type[T]], type[T]]:
-    """
-    Decorator for registering a data provider class.
-
-    Usage:
-        @data_provider("my_exchange")
-        class MyExchangeDataProvider(IDataProvider):
-            def __init__(self, exchange_name, time_provider, channel, ...):
-                ...
-    """
-    return ConnectorRegistry.register_data_provider(name)
-
-
-def connector(name: str) -> Callable[[T], T]:
-    """
-    Decorator for registering an IConnector factory.
-
-    Usage:
-        @connector("my_exchange")
-        def create_my_exchange_connector(exchange_name, time_provider, channel, ...) -> IConnector:
-            ...
-    """
-    return ConnectorRegistry.register_connector(name)
-
-
-def rate_limit_config(name: str) -> Callable:
-    """
-    Decorator for registering a rate limit config factory.
-
-    Usage:
-        @rate_limit_config("my_exchange")
-        def create_my_exchange_rate_limits(exchange_name: str) -> ExchangeRateLimitConfig:
-            return ExchangeRateLimitConfig(pools={...}, ...)
-    """
-    return ConnectorRegistry.register_rate_limit_config(name)

@@ -9,7 +9,7 @@ import aiohttp
 import pandas as pd
 
 from qubx import logger
-from qubx.connectors.registry import CredentialsProvider, data_provider
+from qubx.connectors.registry import CredentialsProvider
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote, Trade
@@ -31,7 +31,6 @@ TARDIS_EXCHANGE_MAPPERS = {
 }
 
 
-@data_provider("tardis")
 class TardisDataProvider(IDataProvider):
     """
     Data provider implementation for Tardis market data service.

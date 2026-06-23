@@ -62,6 +62,9 @@ class StrictBaseModel(BaseModel):
 
 class ExchangeConfig(StrictBaseModel):
     connector: str
+    # Optional market-data source, resolved independently of the connector (e.g. an xdata data
+    # service feeding a venue connector). Defaults to ``connector`` when unset.
+    data_provider: str | None = None
     universe: list[str]
     params: dict = Field(default_factory=dict)
     base_currency: str | None = None
@@ -480,11 +483,15 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
                 result.valid = False
                 result.errors.append(f"Exchange '{exchange_name}' has no symbols in universe")
 
-            # "xlighter" returns here when the plugin is ported to IConnector (see design.md Deferred)
-            if exchange_config.connector.lower() not in ["ccxt", "tardis"]:
-                result.warnings.append(
-                    f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}"
-                )
+            # Validate the connector + optional data_provider names against installed plugins.
+            from qubx.connectors.registry import ConnectorRegistry
+
+            for _role, _name in (
+                ("connector", exchange_config.connector),
+                ("data_provider", exchange_config.data_provider),
+            ):
+                if _name and not ConnectorRegistry.is_registered(_name):
+                    result.warnings.append(f"Exchange '{exchange_name}' uses unknown {_role}: {_name}")
 
     # Validate simulation configuration if present
     if config.simulation:

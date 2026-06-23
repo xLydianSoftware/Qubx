@@ -4,7 +4,7 @@ from collections import defaultdict
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format, instrument_to_ccxt_symbol
-from qubx.connectors.registry import CredentialsProvider, data_provider
+from qubx.connectors.registry import CredentialsProvider
 from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
 from qubx.core.interfaces import IDataProvider, IHealthMonitor
 from qubx.core.series import Bar, Quote
@@ -21,7 +21,6 @@ from .subscription_orchestrator import SubscriptionOrchestrator
 from .warmup_service import WarmupService
 
 
-@data_provider("ccxt")
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
     _exchange_manager: ExchangeManager

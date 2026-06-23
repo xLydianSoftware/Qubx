@@ -3,7 +3,7 @@ from typing import Any
 
 import ccxt.pro as cxp
 
-from qubx.connectors.registry import CredentialsProvider, connector
+from qubx.connectors.registry import CredentialsProvider
 from qubx.core.basics import CtrlChannel
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ITimeProvider
 from qubx.core.mixins.utils import canonical_exchange
@@ -165,7 +165,6 @@ def get_ccxt_connector(
     return connector_cls(exchange_name=exchange_name, **kwargs)
 
 
-@connector("ccxt")
 def create_ccxt_connector(
     exchange_name: str,
     time_provider: ITimeProvider,
