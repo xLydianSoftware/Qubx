@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Replace the three import-side-effect connector decorators + untyped `**kwargs` factory with a typed two-part build context, a cohesive `ExchangePlugin` ABC, and entry-point discovery — and retire `AsyncThreadLoop` for a proper `BackgroundEventLoop` + `run_sync`.
+**Goal:** Replace the three import-side-effect connector decorators + untyped `**kwargs` factory with a typed two-part build context, a cohesive `ExchangePlugin` ABC, and entry-point discovery — and refactor `AsyncThreadLoop` into a proper submit-seam (plus `BackgroundEventLoop` + `run_sync`).
 
 **Architecture:** A venue is one `ExchangePlugin` (ABC, `None`-returning defaults) that builds its data provider and connector from typed contexts (`BuildContext` → `ConnectorBuildContext`). Plugins are discovered lazily via `importlib.metadata` entry points (group `qubx.exchange_plugins`); built-in `ccxt`/`tardis` self-declare entry points. `read_only` becomes a single trading-mixin gate; `loop` is required and owned externally.
 
@@ -24,8 +24,7 @@
 ## File Structure
 
 **Phase 1 (prep):**
-- `src/qubx/utils/misc.py` — add `run_sync()` + `BackgroundEventLoop`; **delete** `AsyncThreadLoop`.
-- ccxt stack + tardis + ccxt storage — migrate `AsyncThreadLoop` call sites to `run_coroutine_threadsafe`/`run_sync`.
+- `src/qubx/utils/misc.py` — add `run_sync()` + `BackgroundEventLoop`; **refactor** `AsyncThreadLoop` (add `run_sync` method, drop broken `run_in_executor`, tighten `submit`).
 - `src/qubx/core/mixins/trading.py` — `read_only` gate.
 - `src/qubx/connectors/ccxt/connector.py` — delete 5 `read_only` guards + ctor param.
 - `src/qubx/connectors/ccxt/factory.py` — `loop` required; delete self-spawn branch.
@@ -182,72 +181,68 @@ git commit -m "feat(utils): add run_sync + BackgroundEventLoop (owns loop+thread
 
 ---
 
-## Task 2: Retire `AsyncThreadLoop` (migrate in-tree call sites)
+## Task 2: Refactor `AsyncThreadLoop` into a proper submit-seam — DONE (decision B)
+
+> **Decision B (revised during execution):** `AsyncThreadLoop` is the deliberate per-connector submit-seam — six ccxt test modules patch the `_loop` property with a fake exposing `.submit`/`.submitted_tasks`, so it is justified by its testability and deleting it would force a harness rewrite. We **refactor it in place** rather than retire it; call sites are left unchanged. Implemented in commit `348f58d0`.
 
 **Files:**
-- Modify (call sites): `src/qubx/connectors/ccxt/connector.py:203-211`, `ccxt/data.py:103-105`, `ccxt/connection_manager.py:83-85`, `ccxt/subscription_orchestrator.py:49-51`, `ccxt/warmup_service.py:47-49`, `ccxt/tardis/data.py` (`tardis/data.py:71,76`), `data/storages/ccxt.py:454,503`
-- Modify (delete class): `src/qubx/utils/misc.py` (`AsyncThreadLoop` at `:451`)
-- Test: existing ccxt/tardis/storage suites must stay green (no new test file).
+- Modify: `src/qubx/utils/misc.py` (`AsyncThreadLoop` at `:451`)
+- Test: `tests/qubx/utils/test_async_loop.py` (extend)
 
 **Interfaces:**
-- Consumes: `run_sync`, `BackgroundEventLoop` (Task 1), stdlib `asyncio.run_coroutine_threadsafe`.
+- Consumes: `run_sync` (Task 1).
+- Produces: `AsyncThreadLoop.run_sync(coro, *, timeout=None)`; `AsyncThreadLoop.run_in_executor` removed.
 
-The transform per call site: a `_loop` property returning `AsyncThreadLoop(loop)` and callers doing `self._loop.submit(coro)` become a `_loop` property returning the raw loop and callers doing `asyncio.run_coroutine_threadsafe(coro, self._loop)`; any blocking `.submit(coro).result()` becomes `run_sync(self._loop, coro, timeout=...)`.
+- [ ] **Step 1: Confirm `run_in_executor` is unused**
 
-- [ ] **Step 1: Read each call site to capture exact usage**
+Run: `grep -rnE "_loop\.run_in_executor|_async_loop\.run_in_executor" src/ /home/yuriy/devs/exchanges/` → expect 0.
 
-Run: `grep -rn "AsyncThreadLoop\|\._loop\b\|\.submit(" src/qubx/connectors/ccxt/ src/qubx/connectors/tardis/ src/qubx/data/storages/ccxt.py`
-Record, per file: whether `.submit()` results are awaited/`.result()`-ed (→ `run_sync`) or fire-and-forget (→ `run_coroutine_threadsafe`).
-
-- [ ] **Step 2: Migrate one file (representative: `ccxt/connector.py`)**
-
-Replace the `_loop` property (`connector.py:203-211`):
+- [ ] **Step 2: Write the failing test**
 
 ```python
-# BEFORE
-from qubx.utils.misc import AsyncThreadLoop
-@property
-def _loop(self) -> AsyncThreadLoop:
-    loop = self._exchange_manager.exchange.asyncio_loop
-    return AsyncThreadLoop(loop)
+# tests/qubx/utils/test_async_loop.py  (append)
+def test_async_thread_loop_run_sync_and_submit():
+    from qubx.utils.misc import AsyncThreadLoop
 
-# AFTER
-import asyncio
-from qubx.utils.misc import run_sync  # if any blocking submit exists in this file
-@property
-def _loop(self) -> asyncio.AbstractEventLoop:
-    return self._exchange_manager.exchange.asyncio_loop
+    bel = BackgroundEventLoop()
+    try:
+        atl = AsyncThreadLoop(bel.loop)
+
+        async def mul(a, b):
+            return a * b
+
+        assert atl.run_sync(mul(3, 4)) == 12
+
+        async def seven():
+            return 7
+
+        assert atl.submit(seven()).result(1) == 7
+    finally:
+        bel.stop()
 ```
 
-Then update this file's callers: `self._loop.submit(coro)` → `asyncio.run_coroutine_threadsafe(coro, self._loop)`; `self._loop.submit(coro).result(t)` → `run_sync(self._loop, coro, timeout=t)`.
+- [ ] **Step 3: Run to verify it fails**
 
-- [ ] **Step 3: Run that file's tests**
+Run: `uv run pytest tests/qubx/utils/test_async_loop.py::test_async_thread_loop_run_sync_and_submit -v`
+Expected: FAIL (`AsyncThreadLoop` has no `run_sync`).
 
-Run: `uv run pytest tests/qubx/connectors/ccxt/ -k connector -v`
-Expected: PASS (unchanged behavior).
+- [ ] **Step 4: Refactor the class**
 
-- [ ] **Step 4: Commit the file, then repeat Steps 2–3 for each remaining call site**
+In `src/qubx/utils/misc.py`: drop `Awaitable` from the typing import; delete `run_in_executor`; retype `submit(self, coro)` (drop the `# type: ignore`); add the `run_sync` method delegating to the free `run_sync`; correct the docstring (a thin handle over an externally-owned loop — neither starts nor stops it).
 
-Repeat for `ccxt/data.py`, `ccxt/connection_manager.py`, `ccxt/subscription_orchestrator.py`, `ccxt/warmup_service.py`, `tardis/data.py`, `data/storages/ccxt.py`. Also delete the now-stale comment at `ccxt/data.py:275` ("AsyncThreadLoop stop is handled by its own lifecycle"). Commit per file:
-
-```bash
-git add src/qubx/connectors/ccxt/connector.py
-git commit -m "refactor(ccxt): drop AsyncThreadLoop in connector for run_coroutine_threadsafe/run_sync"
+```python
+    def run_sync(self, coro, *, timeout: float | None = None):
+        return run_sync(self.loop, coro, timeout=timeout)
 ```
 
-- [ ] **Step 5: Delete `AsyncThreadLoop` and verify nothing references it**
+- [ ] **Step 5: Run + commit**
 
-Run: `grep -rn "AsyncThreadLoop" src/` → expect **0** matches. Remove the `class AsyncThreadLoop` block from `src/qubx/utils/misc.py`.
-
-- [ ] **Step 6: Full suite + commit**
-
-Run: `just test`
-Expected: PASS.
+Run: `uv run pytest tests/qubx/utils/test_async_loop.py -q` → PASS; sanity `uv run pytest tests/qubx/connectors/ccxt/test_warmup_service.py tests/qubx/connectors/ccxt/test_subscription_orchestrator.py tests/qubx/connectors/ccxt/test_data_provider.py -q` → PASS (call sites untouched).
 
 ```bash
 just style-check
-git add src/qubx/utils/misc.py
-git commit -m "refactor(utils): remove AsyncThreadLoop (superseded by run_sync/BackgroundEventLoop)"
+git add src/qubx/utils/misc.py tests/qubx/utils/test_async_loop.py
+git commit -m "refactor(utils): make AsyncThreadLoop a proper submit-seam — add run_sync, drop broken run_in_executor"
 ```
 
 ---
@@ -1025,7 +1020,7 @@ Run the existing paper/e2e smoke that builds a ccxt context (`uv run pytest test
 
 ## Self-Review
 
-**Spec coverage:** ExchangePlugin/contexts (T5) ✓; entry-point discovery (T6) + built-ins (T10) ✓; registry + convenience + tombstone (T7) ✓; runner two-phase + rate_limiter-in-context (T11) ✓; rate-limit ownership unchanged in manager, shared via context (T8/T11) ✓; read_only single gate (T3) ✓; loop required (T4) + run_sync/BackgroundEventLoop + AsyncThreadLoop retirement (T1/T2) ✓; ccxt/tardis migration (T8/T9) ✓; config/release `plugins.modules` kept (no task needed — unchanged) ✓; testing + sequencing (whole plan) ✓.
+**Spec coverage:** ExchangePlugin/contexts (T5) ✓; entry-point discovery (T6) + built-ins (T10) ✓; registry + convenience + tombstone (T7) ✓; runner two-phase + rate_limiter-in-context (T11) ✓; rate-limit ownership unchanged in manager, shared via context (T8/T11) ✓; read_only single gate (T3) ✓; loop required (T4) + run_sync/BackgroundEventLoop + AsyncThreadLoop refactor (T1/T2) ✓; ccxt/tardis migration (T8/T9) ✓; config/release `plugins.modules` kept (no task needed — unchanged) ✓; testing + sequencing (whole plan) ✓.
 
 **Type consistency:** `BuildContext`/`ConnectorBuildContext` field names match across T5/T8/T11; `create_data_provider(ctx)`/`create_connector(ctx)`/`rate_limits(exchange_name)` consistent T5↔T7↔T8↔T9; `PluginLoader.available()/load()` consistent T6↔T7↔T10; `run_sync(loop, coro, timeout=)` consistent T1↔T2.
 
