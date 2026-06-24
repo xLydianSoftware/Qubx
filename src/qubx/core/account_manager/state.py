@@ -65,7 +65,6 @@ class AccountState:
         "_transition_counts",
         "_venue_figures",
         "_applied_funding_buckets",
-        "_position_push_as_of",
         "_balance_push_as_of",
     )
 
@@ -115,11 +114,10 @@ class AccountState:
         # applied funding buckets ((instrument, bucket-index) keys), FIFO-bounded dedup
         # side-table — same family as _seen_trade_ids, but keyed per funding interval
         self._applied_funding_buckets: OrderedDict[tuple, None] = OrderedDict()
-        # venue event time of the last applied WS push, per instrument / per currency
-        # (venue clock — same domain as Deal.time). Drive the stale-push ratchet and
-        # the covered-delta guards. Instrument/currency-keyed and tiny, so retained
-        # for the state's lifetime (no eviction).
-        self._position_push_as_of: dict[Instrument, np.datetime64] = {}
+        # venue event time of the last applied WS balance push, per currency (venue
+        # clock — same domain as Deal.time). Drives the stale-push ratchet and the
+        # covered-delta guards. Currency-keyed and tiny, so retained for the state's
+        # lifetime (no eviction).
         self._balance_push_as_of: dict[str, np.datetime64] = {}
 
     def __repr__(self) -> str:
@@ -185,9 +183,6 @@ class AccountState:
 
     def get_snapshot_fill_suppressed(self, cid: str) -> float:
         return self._snapshot_fill_suppressed.get(cid, 0.0)
-
-    def get_position_push_as_of(self, instrument: Instrument) -> np.datetime64 | None:
-        return self._position_push_as_of.get(instrument)
 
     def get_balance_push_as_of(self, currency: str) -> np.datetime64 | None:
         return self._balance_push_as_of.get(currency)
@@ -468,11 +463,6 @@ class AccountState:
                 existing.last_update_time, existing.last_update_price, existing.last_update_conversion_rate
             )
         return changed
-
-    def mark_position_push(self, instrument: Instrument, as_of: np.datetime64) -> None:
-        """Record the venue event time of an applied position push. Staleness checks
-        live in the reducer (this setter is dumb, like set_snapshot_fill_deficit)."""
-        self._position_push_as_of[instrument] = as_of
 
     def apply_balance_push(
         self, currency: str, total: float, as_of: np.datetime64, *, free: float = np.nan, locked: float = np.nan

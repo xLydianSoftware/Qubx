@@ -163,9 +163,10 @@ def reconcile_snapshot(
     # Positions: the snapshot is the venue's authoritative truth for size, and stale
     # snapshots are already rejected wholesale by the as_of ratchet above. Reconcile is
     # surgical (size/avg-price/margin/mark only — locally accumulated r_pnl/commissions/
-    # funding always survive) with NO per-record freshness: WS position pushes never
-    # write size, so the snapshot must stay the sole size-correction authority (a
-    # freshness guard would block exactly the correction position_drift requests).
+    # funding always survive) with NO per-record freshness: position size is owned by
+    # the deal ledger on the event path, so the snapshot is the sole size-correction
+    # authority (there is no WS position push — non-order-driven changes such as
+    # liquidations/ADL surface here, at the next snapshot).
     if snapshot.positions is not None:
         for snap_pos in snapshot.positions:
             if state.reconcile_position_from_snapshot(snap_pos):

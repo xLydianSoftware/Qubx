@@ -42,10 +42,8 @@ from qubx.core.events import (
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
-    PositionUpdateEvent,
 )
 from qubx.core.series import Quote
-from tests.qubx.connectors.ccxt.data.ccxt_responses import BINANCE_MARKETS
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 CCXT_SYMBOL = "BTC/USDT:USDT"
@@ -683,24 +681,6 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
 # --------------------------------------------------------------------------- #
 # (g) F26 — WS position/balance pushes + account-stream composition
 # --------------------------------------------------------------------------- #
-def _ws_position(*, contracts: float = 0.03, side: str = "long", ps: str = "BOTH", ts: int = 1700000000000) -> dict:
-    # ccxt unified position as pro/binance.parse_ws_position emits it for an
-    # ACCOUNT_UPDATE P entry: contracts is abs, side carries the sign, markPrice /
-    # maintenanceMargin are None, timestamp is the event time E (stamped in
-    # handle_positions), and the raw P entry rides in info (incl. hedge-mode ps).
-    return {
-        "info": {"s": "ETHUSDT", "pa": "0.03", "ep": "3383.73", "ps": ps},
-        "symbol": "ETH/USDT:USDT",
-        "contracts": contracts,
-        "side": side,
-        "entryPrice": 3383.73,
-        "unrealizedPnl": 1.5,
-        "markPrice": None,
-        "maintenanceMargin": None,
-        "timestamp": ts,
-    }
-
-
 def _ws_balance(*, reason: str = "ORDER", event_time: int = 1700000000123) -> dict:
     # ccxt unified watch_balance result: a currency cache plus the raw last venue
     # message in info — for futures, the ACCOUNT_UPDATE with the changed assets in a.B.
@@ -721,32 +701,6 @@ def _ws_balance(*, reason: str = "ORDER", event_time: int = 1700000000123) -> di
         "timestamp": event_time,
         "USDT": {"free": None, "used": None, "total": 122624.125},
     }
-
-
-def test_ws_position_push_emits_position_update_event() -> None:
-    conn, sent, exchange = _make_connector()
-    # Production contract: the factory stamps the framework exchange name onto the ccxt
-    # exchange ({"name": exchange}), so converted instruments route to the right state.
-    exchange.name = "BINANCE.UM"
-    exchange.markets = BINANCE_MARKETS
-
-    conn._handle_ws_position(_ws_position(contracts=0.03, side="short"))
-
-    assert len(sent) == 1
-    ev = sent[0]
-    assert isinstance(ev, PositionUpdateEvent)
-    assert ev.position.quantity == -0.03  # signed from contracts/side
-    assert ev.position.instrument.symbol == "ETHUSDT"
-    assert ev.position.instrument.exchange == "BINANCE.UM"
-    assert ev.instrument == ev.position.instrument
-    assert ev.as_of == np.datetime64(1700000000000, "ms")  # venue event time E
-
-
-def test_ws_position_push_hedge_mode_skipped() -> None:
-    conn, sent, exchange = _make_connector()
-    exchange.markets = BINANCE_MARKETS
-    conn._handle_ws_position(_ws_position(ps="LONG"))
-    assert sent == []
 
 
 def test_ws_balance_push_emits_per_asset_events() -> None:
@@ -795,9 +749,9 @@ def _binance_exchange(*, has: dict, options: dict) -> Mock:
 
 
 @pytest.mark.asyncio
-async def test_account_streams_derivatives_venue_adds_position_and_balance_loops() -> None:
+async def test_account_streams_derivatives_venue_adds_balance_loop() -> None:
     exchange = _binance_exchange(
-        has={"watchPositions": True, "watchBalance": True},
+        has={"watchBalance": True},
         options={"defaultSubType": "linear"},  # binanceusdm: defaultType stays 'spot'
     )
     conn, _, _ = _make_connector(exchange=exchange)
@@ -805,14 +759,12 @@ async def test_account_streams_derivatives_venue_adds_position_and_balance_loops
 
     await conn._subscribe_executions()
 
-    assert [k["stream"] for k in recorded] == ["executions", "positions", "balance"]
+    # Position size is owned by the deal ledger + snapshot reconcile — no position loop.
+    assert [k["stream"] for k in recorded] == ["executions", "balance"]
     # Only the orders loop owns liveness; watch_balance resolves a single dict.
-    assert [k["mark_ready"] for k in recorded] == [True, False, False]
-    assert [k.get("iterate", True) for k in recorded] == [True, True, False]
-    assert recorded[1]["handle"] == conn._handle_ws_position
-    assert recorded[2]["handle"] == conn._handle_ws_balances
-    # ccxt's own positions snapshot fetch is disabled — AM owns the snapshot fetch.
-    assert exchange.options["watchPositions"] == {"fetchPositionsSnapshot": False, "awaitPositionsSnapshot": False}
+    assert [k["mark_ready"] for k in recorded] == [True, False]
+    assert [k.get("iterate", True) for k in recorded] == [True, False]
+    assert recorded[1]["handle"] == conn._handle_ws_balances
 
 
 @pytest.mark.asyncio

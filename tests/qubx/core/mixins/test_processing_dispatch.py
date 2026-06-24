@@ -17,7 +17,6 @@ from qubx.core.events import (
     OrderCancelRejectedEvent,
     OrderFilledEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
 from qubx.core.interfaces import IStrategy
 from qubx.core.mixins.processing import ProcessingManager, validate_account_callback_signatures
@@ -262,39 +261,6 @@ def test_suppressed_funding_fires_no_callback():
     pm = make_pm()
     pm._account_manager.apply.return_value = ApplyResult()
     pm.process_event(_funding_event())
-    pm._account_manager.apply.assert_called_once()
-    assert pm._strategy.mock_calls == []
-
-
-def test_stale_position_push_fires_nothing():
-    # A ratchet-dropped (stale/duplicate) push returns an empty result: nothing may reach
-    # the strategy — there is no fire-through off the event payload, which would deliver
-    # data older than already delivered.
-    pm = make_pm()
-    pm._account_manager.apply.return_value = ApplyResult()
-    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock(), as_of=np.datetime64("now")))
-    pm._account_manager.apply.assert_called_once()
-    assert pm._strategy.mock_calls == []
-
-
-def test_size_equal_position_push_fires_local_position():
-    # A size-equal push carries the LOCAL position in result.position: on_position_change
-    # fires exactly once, off local state, never off the event payload.
-    pm = make_pm()
-    local = MagicMock()
-    pm._account_manager.apply.return_value = ApplyResult(position=local)
-    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock(), as_of=np.datetime64("now")))
-    pm._strategy.on_position_change.assert_called_once()
-    assert pm._strategy.on_position_change.call_args.args[1] is local
-
-
-def test_position_drift_result_fires_no_strategy_callback():
-    # Drift is operator machinery: the AM reacts with a rate-limited snapshot request
-    # (pinned at the manager level); the strategy sees nothing until the race-safe
-    # snapshot reconcile corrects the position and fires on_position_change off the diff.
-    pm = make_pm()
-    pm._account_manager.apply.return_value = ApplyResult(position_drift=MagicMock())
-    pm.process_event(PositionUpdateEvent(instrument=MagicMock(), position=MagicMock(), as_of=np.datetime64("now")))
     pm._account_manager.apply.assert_called_once()
     assert pm._strategy.mock_calls == []
 

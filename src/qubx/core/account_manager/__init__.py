@@ -41,7 +41,6 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
 
 __all__ = [
@@ -62,7 +61,6 @@ __all__ = [
     "OrderRejectedEvent",
     "OrderUpdatedEvent",
     "OrderUpdateRejectedEvent",
-    "PositionUpdateEvent",
     "AccountManager",
     "SimulatedAccountManager",
     "AccountManagerConfig",

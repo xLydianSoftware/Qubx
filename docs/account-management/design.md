@@ -180,21 +180,18 @@ Order **status** events drive the lifecycle; a **`DealEvent`** drives the ledger
   position's mark price and dedups per `(instrument, funding-interval bucket)` (bounded
   set), so venue + simulated re-deliveries apply once. No mark yet → skip *without*
   consuming the bucket, so a re-delivery can apply later.
-- `PositionUpdateEvent` / `BalanceUpdateEvent` are **absolute venue pushes** (Binance UM
-  `ACCOUNT_UPDATE`, riding the existing listenKey user-data WS — other venues stay
-  snapshot-only via the `_account_streams()` seam), while the deal path books **deltas**.
-  The venue's per-fill ordering of `ORDER_TRADE_UPDATE` vs `ACCOUNT_UPDATE` is not
-  reliably documented, so application is **ordering-agnostic**:
-  - **Position pushes never write size on the event path** — sizes are owned by the deal
-    ledger. A push size-equal to local (within one lot) advances the per-instrument push
-    `as_of` ratchet and returns the **local** position in `ApplyResult.position`, so
-    `on_position_change` fires off local state; a stale push (at/behind the ratchet)
-    returns empty and fires nothing. Size drift sets `ApplyResult.position_drift`
-    with **zero mutation**, and the AccountManager fires a rate-limited (~2 s per
-    exchange) `request_snapshot()` + WARNING — the race-safe snapshot reconcile corrects
-    the size. Venue upnl/mark are not taken from pushes (positions stay locally marked);
-    hedge-mode pushes (`ps != BOTH`) are warned+skipped at the connector (qubx `Position`
-    is net-only).
+- `BalanceUpdateEvent` is an **absolute venue push** (Binance UM `ACCOUNT_UPDATE`, riding
+  the existing listenKey user-data WS — other venues stay snapshot-only via the
+  `_account_streams()` seam), while the deal path books **deltas**. The venue's per-fill
+  ordering of `ORDER_TRADE_UPDATE` vs `ACCOUNT_UPDATE` is not reliably documented, so
+  application is **ordering-agnostic**:
+  - **Position size is never written by a venue push.** There is no `watch_positions` loop:
+    a venue position push can arrive before its own fill/deal events, so comparing it
+    against local state yields spurious drift. Size is owned by the deal ledger on the
+    event path; non-order-driven changes (liquidation/ADL, manual/external trades) surface
+    at the next snapshot reconcile (≤30 s), which is the **sole** size-correction authority.
+    Reconcile is surgical (size/avg-price/margin/mark only) — `r_pnl`, commissions and
+    `cumulative_funding` always survive.
   - **Balance pushes apply absolutely** (`apply_balance_push`) under a per-currency
     `as_of` ratchet — strictly-older pushes drop; `as_of` is venue event time, the same
     clock domain as `Deal.time`. Futures pushes carry the wallet total only (free/locked
@@ -207,15 +204,13 @@ Order **status** events drive the lifecycle; a **`DealEvent`** drives the ledger
     convergence to identical qty/r_pnl/balances), and it fixes the funding double-count
     (our computed `FundingPaymentEvent` vs the venue's actual `FUNDING_FEE` debit).
     Position size, `r_pnl` and `cumulative_funding` always book.
-  - Dispatch: a size-equal push reaches `on_position_change` with the local position
-    through the purely field-driven path (no PM special case); stale and drift pushes
-    fire no strategy callback; balance pushes fire **no** strategy callback either (see
-    Strategy callbacks).
+  - Dispatch: balance pushes fire **no** strategy callback (see Strategy callbacks);
+    position size changes reach `on_position_change` only via the deal path or the
+    snapshot reconcile diff.
 
-  With this, liquidation/ADL and venue balance changes reach state at WS latency instead
-  of the ~30 s snapshot tick — **leveraged live (Binance UM) is ready pending a testnet
-  soak**, which also pins the real per-fill event ordering for a later opt-in
-  direct-apply upgrade.
+  Venue balance changes reach state at WS latency; position size relies on the deal ledger
+  plus the ~30 s snapshot reconcile (and the on-connect / reconnect / liveness-timeout
+  snapshots) for non-order-driven changes such as liquidation/ADL.
 
 ## Strategy callbacks
 
@@ -230,8 +225,8 @@ callbacks:
 - `on_execution(ctx, instrument, deal)` — once per newly applied, deduplicated fill
   (`Deal` carries no instrument field, hence the explicit parameter).
 - `on_position_change(ctx, position)` — position changed: every fill, funding payments,
-  venue position pushes, and each position corrected by a snapshot reconcile. High fire
-  rate by design — keep it cheap.
+  and each position corrected by a snapshot reconcile. High fire rate by design — keep it
+  cheap.
 
 There is deliberately **no balance callback**: balances are read via
 `ctx.get_balances()` / `ctx.get_balance()`, and `BalanceUpdateEvent` applies to account
@@ -258,7 +253,6 @@ class ApplyResult:
     deal: Deal | None = None                # new deal applied -> on_execution + downstream fill consumers
     position: Position | None = None        # position changed -> on_position_change
     reconcile_diff: ReconcileDiff | None = None  # snapshot reconcile -> on_position_change per corrected position
-    position_drift: Position | None = None  # venue push disagrees with local size -> AM snapshot request, no callback
     balance: Balance | None = None          # balance push applied -> internal visibility only, NO strategy callback
 ```
 
@@ -273,12 +267,7 @@ class ApplyResult:
   fires. Each set field fires its callback: `order` + `order_change` → `on_order`,
   `deal` → `on_execution` (plus downstream fill consumers), `position` →
   `on_position_change`, `reconcile_diff` → `on_position_change` per corrected position.
-  There is no event-type special case: a size-equal venue position push carries the
-  local position in `position` (the reducer never writes size off a push), so it
-  reaches `on_position_change` through the same field-driven path, while a stale
-  ratchet-dropped push returns empty and fires nothing. `position_drift` fires
-  nothing strategy-side (the AM reacts with the rate-limited snapshot request);
-  `BalanceUpdateEvent` fires nothing either way (see Strategy callbacks).
+  `BalanceUpdateEvent` fires nothing strategy-side either way (see Strategy callbacks).
 
 ## Reconciler
 
@@ -332,9 +321,10 @@ drives the ticks** and makes every connector call.
    authoritative for size/avg-price and venue-reported margin/mark **only**; locally
    accumulated accounting (`r_pnl`, commissions, funding) always survives. Never routes
    through `reset_by_position`. Positions deliberately keep **no** per-record freshness
-   guard against WS pushes: pushes never write size, so the snapshot must remain the sole
-   size-correction authority (a guard would block exactly the correction
-   `position_drift` requests). Balances overwrite (identity-preserving) — except a
+   guard: size is owned by the deal ledger on the event path (there is no WS position
+   push), so the snapshot is the sole size-correction authority and the place where
+   non-order-driven changes (liquidation/ADL) surface. Balances overwrite
+   (identity-preserving) — except a
    currency whose push `as_of` is at/after the snapshot's `as_of`: the absolute push is
    the at-least-as-fresh figure (tie-break favors the push; snapshot `as_of` is the
    local fetch clock, push `as_of` is venue event time).

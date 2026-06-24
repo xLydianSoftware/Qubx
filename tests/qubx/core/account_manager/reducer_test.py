@@ -39,7 +39,6 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
 from qubx.core.lookups import lookup
 
@@ -269,66 +268,13 @@ def test_dedup_across_deal_and_order_stream():
 
 
 # --------------------------------------------------------------------------- #
-# F26 — venue position/balance pushes
+# F26 — venue balance pushes
 # --------------------------------------------------------------------------- #
-
-
-def _venue_position(qty: float, price: float = 50_000.0) -> Position:
-    return Position(BTC, quantity=qty, pos_average_price=price)
 
 
 def _total_push(total: float, currency: str = "USDT") -> Balance:
     # futures pushes carry no free/locked split — total only (NaN split by contract)
     return Balance(exchange="binance", currency=currency, free=np.nan, locked=np.nan, total=total)
-
-
-def test_position_push_size_equal_returns_local_position():
-    # Size-equal push carries the LOCAL position (never the venue payload), so the
-    # purely field-driven dispatch fires on_position_change off local state.
-    state = _state()
-    _order(state, status=OrderStatus.ACCEPTED)
-    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5)), T1)
-    venue = _venue_position(0.5)
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=venue, as_of=T1), T1)
-    assert r.position is _present(state.get_position(BTC))
-    assert r.position is not venue
-    assert r.position_drift is None
-    assert state.get_position_push_as_of(BTC) == T1
-    assert _present(state.get_position(BTC)).quantity == 0.5
-
-
-def test_position_push_flat_on_empty_state_creates_nothing():
-    state = _state()
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.0), as_of=T1), T1)
-    assert r.is_empty()
-    assert state.get_position(BTC) is None
-    assert state.get_position_push_as_of(BTC) == T1
-
-
-def test_position_push_drift_flags_without_mutation():
-    state = _state()
-    _order(state, status=OrderStatus.ACCEPTED)
-    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5, 50_000.0)), T1)
-    venue = _venue_position(0.7, 49_000.0)
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=venue, as_of=T1), T1)
-    assert r.position_drift is venue
-    assert r.position is None and not r.is_empty()
-    local = _present(state.get_position(BTC))
-    assert local.quantity == 0.5  # zero mutation — the snapshot reconcile corrects size
-    assert local.position_avg_price == 50_000.0
-
-
-def test_position_push_stale_as_of_suppressed():
-    # Ratchet-dropped pushes return empty -> NOTHING fires (no fire-through off the
-    # event payload — that would deliver data older than already delivered).
-    state = _state()
-    apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.0), as_of=T1), T1)
-    # older AND same-time pushes are stale (<= ratchet), even when they would drift
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.7), as_of=T0), T1)
-    assert r.is_empty()
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.7), as_of=T1), T1)
-    assert r.is_empty()
-    assert state.get_position_push_as_of(BTC) == T1
 
 
 def test_balance_push_applies_absolutely_preserving_locked():

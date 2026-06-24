@@ -48,7 +48,6 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
 
 # Module logger bound to the "account_manager" area: every line here carries that tag.
@@ -63,9 +62,6 @@ class ApplyResult:
     deal: Deal | None = None  # new deal applied -> downstream fill consumers
     position: Position | None = None  # position changed
     reconcile_diff: ReconcileDiff | None = None  # set when a snapshot reconcile applied
-    # venue position push disagrees with local size — NOT applied to state; the
-    # AccountManager reacts with a rate-limited snapshot request (race-safe correction)
-    position_drift: Position | None = None
     # balance push applied (the live state Balance) — internal/diff visibility only,
     # fires NO strategy callback by design (balances are read via ctx)
     balance: Balance | None = None
@@ -78,7 +74,6 @@ class ApplyResult:
             and self.deal is None
             and self.position is None
             and self.reconcile_diff is None
-            and self.position_drift is None
             and self.balance is None
         )
 
@@ -457,31 +452,6 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
     return ApplyResult(position=pos)
 
 
-def _handle_position_update(state: AccountState, event: PositionUpdateEvent, now: np.datetime64) -> ApplyResult:
-    # Positions are tracked from fills (the deal ledger). A venue position push never
-    # writes size — it only VERIFIES local state: on drift the AccountManager refetches
-    # a snapshot to correct it.
-    instrument = event.position.instrument
-    last = state.get_position_push_as_of(instrument)
-    if last is not None and event.as_of <= last:
-        return ApplyResult()
-    state.mark_position_push(instrument, event.as_of)
-    local = state.get_position(instrument)
-    local_qty = local.quantity if local is not None else 0.0
-    matched = abs(event.position.quantity - local_qty) < instrument.lot_size
-    logger.debug(
-        "push {} pushed={} local={} as_of={} {}",
-        instrument.symbol,
-        event.position.quantity,
-        local_qty,
-        event.as_of,
-        "match" if matched else "DRIFT",
-    )
-    if matched:
-        return ApplyResult(position=local)
-    return ApplyResult(position_drift=event.position)
-
-
 def _handle_balance_update(state: AccountState, event: BalanceUpdateEvent, now: np.datetime64) -> ApplyResult:
     # Absolute apply through the per-currency as_of ratchet; total-only pushes (futures
     # carry no free/locked split -> NaN) preserve locked. Producer contract: a push
@@ -514,7 +484,6 @@ _HANDLERS = {
     OrderCancelRejectedEvent: _handle_cancel_rejected,
     OrderUpdateRejectedEvent: _handle_update_rejected,
     FundingPaymentEvent: _handle_funding_payment,
-    PositionUpdateEvent: _handle_position_update,
     BalanceUpdateEvent: _handle_balance_update,
 }
 

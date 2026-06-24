@@ -131,16 +131,6 @@ class OrderUpdateRejectedEvent(OrderEvent):
 
 
 @msg
-class PositionUpdateEvent(AccountMessage):
-    """Absolute venue position push (e.g. Binance ACCOUNT_UPDATE). ``as_of`` is the
-    venue event time — same clock domain as ``Deal.time`` — used by the reducer's
-    stale-push ratchet and drift detection."""
-
-    position: Position
-    as_of: np.datetime64
-
-
-@msg
 class BalanceUpdateEvent(AccountMessage):
     """Absolute venue balance push. ``as_of`` is the venue event time (same clock
     domain as ``Deal.time``), driving the per-currency ratchet and covered-delta

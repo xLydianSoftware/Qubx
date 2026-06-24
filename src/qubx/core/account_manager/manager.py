@@ -52,11 +52,6 @@ class AccountManager(IAccountViewer):
     _terminal_retention: np.timedelta64
     _liveness_unready_since: dict[str, np.datetime64]
     _last_eviction_sweep: np.datetime64
-    _last_drift_snapshot: dict[str, np.datetime64]
-
-    # Min interval between drift-triggered snapshot requests, per exchange: a burst of
-    # drifting position pushes collapses into one REST correction.
-    _DRIFT_SNAPSHOT_MIN_INTERVAL = np.timedelta64(2_000, "ms")
 
     def __init__(
         self,
@@ -130,7 +125,6 @@ class AccountManager(IAccountViewer):
         }
         self._liveness_unready_since = {}
         self._last_eviction_sweep = time.time()
-        self._last_drift_snapshot = {}
 
     def _register_ticks(self) -> None:
         cfg = self._cfg
@@ -206,8 +200,6 @@ class AccountManager(IAccountViewer):
             if diff.missing:
                 self._resolve_missing_orders(state, diff)
             self._log_reconcile_diff(state.exchange, diff)
-        if result.position_drift is not None:
-            self._on_position_drift(state, result.position_drift, now)
         # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest)
         # registers no periodic ticks, so without this sweep terminal orders and their
         # side-table entries would grow unbounded there (and in live when
@@ -269,34 +261,6 @@ class AccountManager(IAccountViewer):
                 logger.exception(f"[{state.exchange}] missing-order status fetch failed for {cid}")
                 unresolved.append(order)
         diff.missing[:] = unresolved
-
-    def _on_position_drift(self, state: AccountState, pushed: Position, now: np.datetime64) -> None:
-        # A venue position push disagreed with local size. The reducer never applies it
-        # (sizes are owned by the deal ledger); the correction is the race-safe snapshot
-        # reconcile. Rate-limited per exchange so a burst of drifting pushes collapses
-        # into one REST request — drifts suppressed inside the window are still corrected
-        # by that pending snapshot.
-        instrument = pushed.instrument
-        local = state.get_position(instrument)
-        local_qty = local.quantity if local is not None else 0.0
-        last = self._last_drift_snapshot.get(state.exchange)
-        if last is not None and (now - last) < self._DRIFT_SNAPSHOT_MIN_INTERVAL:
-            logger.debug(
-                f"[{state.exchange}] position drift on {instrument.symbol} "
-                f"(local={local_qty}, pushed={pushed.quantity}) within rate window; snapshot already requested"
-            )
-            return
-        logger.warning(
-            f"[{state.exchange}] position drift on {instrument.symbol}: "
-            f"local={local_qty}, pushed={pushed.quantity}; requesting snapshot"
-        )
-        # Stamp before the request so a connector error doesn't re-fire every push;
-        # the periodic snapshot tick is the backstop.
-        self._last_drift_snapshot[state.exchange] = now
-        try:
-            self._connectors[state.exchange].request_snapshot()
-        except Exception:
-            logger.exception(f"[{state.exchange}] drift snapshot request failed")
 
     def _state_for_event(self, event: AccountMessage) -> AccountState | None:
         if isinstance(event, AccountSnapshotEvent):
