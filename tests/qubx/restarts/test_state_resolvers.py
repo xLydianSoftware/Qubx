@@ -507,7 +507,9 @@ class TestStateResolverCloseAll(TestStateResolverBase):
 
         StateResolver.CLOSE_ALL(self.ctx, {}, {}, {})
 
-        connector.cancel_order.assert_called_once_with(client_order_id="qubx_BTCUSDT_1", venue_order_id=None)
+        connector.cancel_order.assert_called_once_with(
+            client_order_id="qubx_BTCUSDT_1", venue_order_id=None, instrument=unacked.instrument
+        )
 
     def test_close_all_ignores_small_positions(self):
         """Test CLOSE_ALL ignores positions smaller than lot_size."""

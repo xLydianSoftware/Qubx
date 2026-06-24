@@ -145,7 +145,7 @@ def test_cancel_emits_canceled(setup):
     )
     conn.submit_order(request)
     accepted = _drain(collector)[0]
-    conn.cancel_order(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
+    conn.cancel_order(instrument=instr, client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
     events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderCanceledEvent)
@@ -167,7 +167,7 @@ def test_cancel_by_venue_id_only_emits_canceled(setup):
     )
     conn.submit_order(request)
     accepted = _drain(collector)[0]
-    conn.cancel_order(venue_order_id=accepted.venue_order_id)  # no client_order_id
+    conn.cancel_order(instrument=instr, venue_order_id=accepted.venue_order_id)  # no client_order_id
     events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderCanceledEvent)
@@ -176,9 +176,9 @@ def test_cancel_by_venue_id_only_emits_canceled(setup):
 
 def test_cancel_without_any_id_raises(setup):
     # At least one id is required — neither given is a caller bug, raised synchronously.
-    conn, _collector, _exchange, _instr, _time = setup
+    conn, _collector, _exchange, instr, _time = setup
     with pytest.raises(ValueError):
-        conn.cancel_order()
+        conn.cancel_order(instrument=instr, )
 
 
 def test_cancel_unknown_order_emits_reject_not_silent(setup):
@@ -186,8 +186,8 @@ def test_cancel_unknown_order_emits_reject_not_silent(setup):
     # NOT die silently — it emits OrderCancelRejectedEvent (the cancel did not succeed),
     # so the AM reverts it out of PENDING_CANCEL instead of being left stuck. It must not
     # raise (rejection boundary) and must not emit a CANCELED.
-    conn, collector, _exchange, _instr, _time = setup
-    conn.cancel_order(client_order_id="qubx-nope", venue_order_id="V-nope")
+    conn, collector, _exchange, instr, _time = setup
+    conn.cancel_order(instrument=instr, client_order_id="qubx-nope", venue_order_id="V-nope")
     events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderCancelRejectedEvent)
@@ -208,7 +208,7 @@ def test_update_emits_single_updated_event_with_stable_cid(setup):
     )
     conn.submit_order(request)
     accepted = _drain(collector)[0]
-    conn.update_order(
+    conn.update_order(instrument=instr, 
         client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id, price=30500.0, quantity=0.2
     )
     events = _drain(collector)
@@ -233,7 +233,7 @@ def test_update_by_venue_id_only_emits_updated(setup):
     )
     conn.submit_order(request)
     accepted = _drain(collector)[0]
-    conn.update_order(venue_order_id=accepted.venue_order_id, price=30500.0, quantity=0.2)  # no client_order_id
+    conn.update_order(instrument=instr, venue_order_id=accepted.venue_order_id, price=30500.0, quantity=0.2)  # no client_order_id
     events = _drain(collector)
     assert len(events) == 1
     assert isinstance(events[0], OrderUpdatedEvent)
@@ -263,7 +263,7 @@ def test_update_to_crossing_price_emits_fill(setup):
     assert isinstance(accepted, OrderAcceptedEvent)
 
     # Re-price above the ask (32001) so the modified order crosses and fills immediately.
-    conn.update_order(
+    conn.update_order(instrument=instr, 
         client_order_id=accepted.client_order_id,
         venue_order_id=accepted.venue_order_id,
         price=33000.0,
@@ -300,7 +300,7 @@ def test_update_rejected_replace_emits_update_rejected_then_canceled(setup):
     accepted = _drain(collector)[0]
     assert isinstance(accepted, OrderAcceptedEvent)
 
-    conn.update_order(  # must not raise
+    conn.update_order(instrument=instr,   # must not raise
         client_order_id=accepted.client_order_id,
         venue_order_id=accepted.venue_order_id,
         price=31500.0,  # below ask: the re-placed stop would trigger immediately
@@ -319,7 +319,7 @@ def test_update_rejected_replace_emits_update_rejected_then_canceled(setup):
     # emits OrderCancelRejectedEvent (the cancel did not succeed), not a silent no-op and
     # not a raise. (In the full framework TradingManager short-circuits a terminal order
     # before the connector; this drives the connector directly to exercise the not-found path.)
-    conn.cancel_order(client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
+    conn.cancel_order(instrument=instr, client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id)
     later = _drain(collector)
     assert [type(e) for e in later] == [OrderCancelRejectedEvent], later
 
@@ -409,7 +409,7 @@ def test_request_order_status_by_venue_id_only_open_emits_accepted(setup):
 
 
 def test_request_order_status_missing_emits_rejected(setup):
-    conn, collector, _exchange, _instr, _time = setup
+    conn, collector, _exchange, instr, _time = setup
     conn.request_order_status(client_order_id="does-not-exist")
     events = _drain(collector)
     assert len(events) == 1
@@ -537,7 +537,7 @@ def test_update_order_preserves_options(setup):
     accepted = _drain(collector)[0]
 
     new_stop_price = 32600.0
-    conn.update_order(
+    conn.update_order(instrument=instr, 
         client_order_id=accepted.client_order_id, venue_order_id=accepted.venue_order_id, price=new_stop_price
     )
     _drain(collector)  # consume the updated event

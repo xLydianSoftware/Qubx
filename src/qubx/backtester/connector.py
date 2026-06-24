@@ -86,7 +86,13 @@ class SimulatedConnector(ChannelEmitter):
             return
         self._emit_from_report(report)
 
-    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def cancel_order(
+        self,
+        *,
+        instrument: Instrument,
+        client_order_id: str | None = None,
+        venue_order_id: str | None = None,
+    ) -> None:
         # Prefer the venue id (the OME keys orders by it); fall back to the cid before the ack.
         oid = venue_order_id or client_order_id
         if not oid:
@@ -108,6 +114,7 @@ class SimulatedConnector(ChannelEmitter):
     def update_order(
         self,
         *,
+        instrument: Instrument,
         client_order_id: str | None = None,
         venue_order_id: str | None = None,
         price: float | None = None,

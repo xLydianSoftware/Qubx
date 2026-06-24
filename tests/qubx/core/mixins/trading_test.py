@@ -502,7 +502,7 @@ class TestTradingManagerCancelOrder:
             "BINANCE.UM", order.client_order_id, OrderStatus.PENDING_CANCEL
         )
         mock_connector.cancel_order.assert_called_once_with(
-            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id, instrument=order.instrument
         )
 
     def test_cancel_terminal_is_idempotent_noop(self, trading_manager, mock_connector, mock_account):
@@ -545,7 +545,7 @@ class TestTradingManagerCancelOrder:
 
         assert trading_manager.cancel_order(order_id="test_order_123") is True
         mock_connector.cancel_order.assert_called_once_with(
-            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id, instrument=order.instrument
         )
 
 
