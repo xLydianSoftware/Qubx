@@ -324,9 +324,9 @@ def test_cancel_raises_when_no_id_given() -> None:
     # to address — a caller bug, raised synchronously.
     conn, _, _ = _make_connector()
     with pytest.raises(InvalidOrderParameters):
-        conn.cancel_order()
+        conn.cancel_order(instrument=_instrument(), )
     with pytest.raises(InvalidOrderParameters):
-        conn.cancel_order(client_order_id="")
+        conn.cancel_order(instrument=_instrument(), client_order_id="")
 
 
 @pytest.mark.parametrize(
@@ -346,7 +346,7 @@ async def test_cancel_by_venue_id_emits_canceled(ids: dict) -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(**ids)
+    conn.cancel_order(instrument=_instrument(), **ids)
     await _drive(conn)
 
     # Order not in cache (never submitted via this connector) -> symbol is None; the
@@ -364,7 +364,7 @@ async def test_cancel_by_cloid_uses_cloid_endpoint() -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(client_order_id="qubx_BTCUSDT_1")
+    conn.cancel_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1")
     await _drive(conn)
 
     exchange.cancel_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1", None)
@@ -381,7 +381,7 @@ async def test_cancel_venue_reject_emits_cancel_rejected() -> None:
 
     # TradingManager always passes both ids; the reject must route by the REAL cid
     # (not the venue id) so AM can revert the order from PENDING_CANCEL.
-    conn.cancel_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    conn.cancel_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
     await _drive(conn)
 
     assert len(sent) == 1
@@ -399,7 +399,7 @@ async def test_cancel_venue_reject_by_venue_id_only_carries_venue_id() -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(venue_order_id="VENUE123")
+    conn.cancel_order(instrument=_instrument(), venue_order_id="VENUE123")
     await _drive(conn)
 
     assert len(sent) == 1
@@ -418,7 +418,7 @@ async def test_cancel_cloid_network_error_leaves_inflight_no_reject() -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(client_order_id="qubx_BTCUSDT_1")
+    conn.cancel_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1")
     await _drive(conn)
 
     assert sent == []
@@ -446,7 +446,7 @@ async def test_update_network_error_leaves_inflight_no_reject() -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=123.0)
+    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=123.0)
     await _drive(conn)
 
     assert sent == []
@@ -462,7 +462,7 @@ async def test_update_direct_edit_emits_updated() -> None:
     exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0, quantity=2.0)
+    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0, quantity=2.0)
     await _drive(conn)
 
     exchange.edit_order.assert_awaited_once()
@@ -481,7 +481,7 @@ async def test_update_edit_venue_reject_emits_update_rejected() -> None:
     exchange.edit_order = AsyncMock(side_effect=ccxt.InvalidOrder("cannot edit"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0)
+    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0)
     await _drive(conn)
 
     assert isinstance(sent[0], OrderUpdateRejectedEvent)
@@ -496,7 +496,7 @@ async def test_update_by_venue_id_only_emits_updated() -> None:
     exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(venue_order_id="VENUE123", price=102.0, quantity=2.0)
+    conn.update_order(instrument=_instrument(), venue_order_id="VENUE123", price=102.0, quantity=2.0)
     await _drive(conn)
 
     exchange.edit_order.assert_awaited_once()
@@ -517,7 +517,7 @@ async def test_update_cancel_recreate_path_rejects_without_touching_live_order()
     exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123"})
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0, quantity=2.0)
+    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0, quantity=2.0)
     await _drive(conn)
 
     exchange.cancel_order.assert_not_awaited()  # live order left untouched
@@ -527,9 +527,9 @@ async def test_update_cancel_recreate_path_rejects_without_touching_live_order()
 def test_update_raises_when_no_id_given() -> None:
     conn, _, _ = _make_connector()
     with pytest.raises(InvalidOrderParameters):
-        conn.update_order(price=1.0)
+        conn.update_order(instrument=_instrument(), price=1.0)
     with pytest.raises(InvalidOrderParameters):
-        conn.update_order(client_order_id="", price=1.0)
+        conn.update_order(instrument=_instrument(), client_order_id="", price=1.0)
 
 
 # --------------------------------------------------------------------------- #

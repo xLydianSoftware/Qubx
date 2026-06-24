@@ -336,6 +336,7 @@ class TradingManager(ITradingManager):
             self._get_connector(order.instrument.exchange).cancel_order(
                 client_order_id=cid,
                 venue_order_id=order.venue_order_id,
+                instrument=order.instrument,
             )
         except Exception as e:
             # A synchronous raise means the cancel never reached the venue. Route the
@@ -397,6 +398,7 @@ class TradingManager(ITradingManager):
             self._get_connector(instrument.exchange).update_order(
                 client_order_id=cid,
                 venue_order_id=order.venue_order_id,
+                instrument=instrument,
                 price=adjusted_price,
                 quantity=abs(amount),
             )

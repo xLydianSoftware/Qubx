@@ -492,7 +492,7 @@ async def test_cancel_resolves_cached_symbol() -> None:
 
     conn.submit_order(_order_request())
     await _drive(conn)
-    conn.cancel_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    conn.cancel_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
     await _drive(conn)
 
     # Closes the commit-3 gap: cancel_order now awaited WITH the cached ccxt symbol.
@@ -509,7 +509,7 @@ async def test_update_edit_resolves_cached_symbol_and_side() -> None:
 
     conn.submit_order(_order_request())
     await _drive(conn)
-    conn.update_order(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=101.0, quantity=2.0)
+    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=101.0, quantity=2.0)
     await _drive(conn)
 
     kwargs = exchange.edit_order.await_args.kwargs
@@ -532,7 +532,7 @@ async def test_update_cid_only_uses_cloid_edit_variant() -> None:
     conn.submit_order(_order_request())
     await _drive(conn)
     sent.clear()
-    conn.update_order(client_order_id="qubx_BTCUSDT_1", price=101.0, quantity=2.0)
+    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", price=101.0, quantity=2.0)
     await _drive(conn)
 
     exchange.edit_order_with_client_order_id.assert_awaited_once_with(
@@ -552,7 +552,7 @@ async def test_update_cid_only_upgrades_to_cached_venue_id() -> None:
     conn, _sent, _ = _make_connector(exchange=exchange)
     conn._handle_ws_order(_ws_order(status="open"))  # cache learns VENUE123 + symbol
 
-    conn.update_order(client_order_id="qubx_BTCUSDT_1", price=101.0, quantity=2.0)
+    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", price=101.0, quantity=2.0)
     await _drive(conn)
 
     assert exchange.edit_order.await_args.kwargs["id"] == "VENUE123"
@@ -582,7 +582,7 @@ async def test_snapshot_seeds_order_cache() -> None:
     assert conn._venue_to_cid.get("V9") == "recovered-1"
 
     # A cid-only cancel of the snapshot-seen order now resolves venue id + symbol.
-    conn.cancel_order(client_order_id="recovered-1")
+    conn.cancel_order(instrument=_instrument(), client_order_id="recovered-1")
     await _drive(conn)
     exchange.cancel_order.assert_not_called()  # cid-only cancel stays on the cloid path
     exchange.cancel_order_with_client_order_id.assert_awaited_once_with("recovered-1", CCXT_SYMBOL)

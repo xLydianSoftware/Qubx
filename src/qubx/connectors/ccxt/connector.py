@@ -398,7 +398,13 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Write side — cancel
     # ------------------------------------------------------------------ #
-    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
+    def cancel_order(
+        self,
+        *,
+        instrument: Instrument,
+        client_order_id: str | None = None,
+        venue_order_id: str | None = None,
+    ) -> None:
         if not client_order_id and not venue_order_id:
             raise InvalidOrderParameters("cancel_order: client_order_id or venue_order_id is required")
         self._spawn(self._cancel_async(client_order_id, venue_order_id))
@@ -560,6 +566,7 @@ class CcxtConnector(ChannelEmitter):
     def update_order(
         self,
         *,
+        instrument: Instrument,
         client_order_id: str | None = None,
         venue_order_id: str | None = None,
         price: float | None = None,
