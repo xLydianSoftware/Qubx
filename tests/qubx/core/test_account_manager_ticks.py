@@ -63,11 +63,7 @@ def test_inflight_tick_requests_status_and_bumps_retry():
     am._states["binance"].add_order(_mk_order("cid-1", OrderStatus.SUBMITTED, "V1"))
     am._time.adv(6_000)
     am._on_inflight_tick(None)
-    conn.request_order_status.assert_called_once_with(
-        client_order_id="cid-1",
-        venue_order_id="V1",
-        instrument=None,
-    )
+    conn.request_order_status.assert_called_once_with(am._states["binance"].get_order("cid-1"))
     assert am._states["binance"].get_retry("cid-1") == 1
 
 
@@ -167,7 +163,7 @@ def test_retry_budget_resets_on_status_change():
     am._time.adv(6_000)
     am._on_inflight_tick(None)
     # fresh budget: the sweep polls the venue instead of giving up and reverting
-    conn.request_order_status.assert_called_once_with(client_order_id="cid-1", venue_order_id="V1", instrument=None)
+    conn.request_order_status.assert_called_once_with(state.get_order("cid-1"))
     assert state.get_order("cid-1").status is OrderStatus.PENDING_CANCEL
     assert state.get_retry("cid-1") == 1
 
@@ -328,6 +324,6 @@ def test_inflight_sweep_isolates_raising_callback():
     am._on_inflight_tick(None)  # must not raise
 
     # order B still processed despite A's callback raising
-    conn.request_order_status.assert_any_call(client_order_id="cid-b", venue_order_id="VB", instrument=None)
+    conn.request_order_status.assert_any_call(b)
     # A reverted out of PENDING_CANCEL to its captured pre-pending status
     assert state.get_order("cid-a").status is OrderStatus.ACCEPTED

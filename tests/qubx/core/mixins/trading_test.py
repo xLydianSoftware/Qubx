@@ -501,9 +501,7 @@ class TestTradingManagerCancelOrder:
         mock_account.transition_order.assert_called_once_with(
             "BINANCE.UM", order.client_order_id, OrderStatus.PENDING_CANCEL
         )
-        mock_connector.cancel_order.assert_called_once_with(
-            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id, instrument=order.instrument
-        )
+        mock_connector.cancel_order.assert_called_once_with(order)
 
     def test_cancel_terminal_is_idempotent_noop(self, trading_manager, mock_connector, mock_account):
         """Cancelling a terminal order is a no-op that still reports success."""
@@ -544,9 +542,7 @@ class TestTradingManagerCancelOrder:
         mock_account.find_order_by_id.return_value = order
 
         assert trading_manager.cancel_order(order_id="test_order_123") is True
-        mock_connector.cancel_order.assert_called_once_with(
-            client_order_id=order.client_order_id, venue_order_id=order.venue_order_id, instrument=order.instrument
-        )
+        mock_connector.cancel_order.assert_called_once_with(order)
 
 
 class _AccountRoutingContext(MockStrategyContext):

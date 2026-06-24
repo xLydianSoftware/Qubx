@@ -333,11 +333,7 @@ class TradingManager(ITradingManager):
         )
         self._account_manager.transition_order(order.instrument.exchange, cid, OrderStatus.PENDING_CANCEL)
         try:
-            self._get_connector(order.instrument.exchange).cancel_order(
-                client_order_id=cid,
-                venue_order_id=order.venue_order_id,
-                instrument=order.instrument,
-            )
+            self._get_connector(order.instrument.exchange).cancel_order(order)
         except Exception as e:
             # A synchronous raise means the cancel never reached the venue. Route the
             # synthetic reject through the PM (same path as the reconcile give-up) so the
@@ -395,13 +391,7 @@ class TradingManager(ITradingManager):
         cid = order.client_order_id
         self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
         try:
-            self._get_connector(instrument.exchange).update_order(
-                client_order_id=cid,
-                venue_order_id=order.venue_order_id,
-                instrument=instrument,
-                price=adjusted_price,
-                quantity=abs(amount),
-            )
+            self._get_connector(instrument.exchange).update_order(order, price=adjusted_price, quantity=abs(amount))
         except Exception as e:
             # Same contract as cancel_order: synthetic reject through the PM reverts
             # PENDING_UPDATE via pre_pending, then the original exception re-raises.

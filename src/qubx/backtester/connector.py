@@ -5,6 +5,7 @@ from qubx.core.basics import (
     CtrlChannel,
     Instrument,
     ITimeProvider,
+    Order,
     OrderRequest,
     OrderStatus,
     Timestamped,
@@ -86,51 +87,33 @@ class SimulatedConnector(ChannelEmitter):
             return
         self._emit_from_report(report)
 
-    def cancel_order(
-        self,
-        *,
-        instrument: Instrument,
-        client_order_id: str | None = None,
-        venue_order_id: str | None = None,
-    ) -> None:
+    def cancel_order(self, order: Order) -> None:
         # Prefer the venue id (the OME keys orders by it); fall back to the cid before the ack.
-        oid = venue_order_id or client_order_id
-        if not oid:
-            raise ValueError("cancel_order: client_order_id or venue_order_id is required")
+        oid = order.venue_order_id or order.client_order_id
         try:
             report = self._ome.cancel_order(oid)
         except OrderNotFound:
             self.send(
                 OrderCancelRejectedEvent(
-                    instrument=None,
-                    client_order_id=client_order_id,
-                    venue_order_id=venue_order_id,
+                    instrument=order.instrument,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
                     reason=f"cancel_order: order not found for {oid}",
                 )
             )
             return
         self._emit_from_report(report)
 
-    def update_order(
-        self,
-        *,
-        instrument: Instrument,
-        client_order_id: str | None = None,
-        venue_order_id: str | None = None,
-        price: float | None = None,
-        quantity: float | None = None,
-    ) -> None:
-        oid = venue_order_id or client_order_id
-        if not oid:
-            raise ValueError("update_order: client_order_id or venue_order_id is required")
+    def update_order(self, order: Order, *, price: float | None = None, quantity: float | None = None) -> None:
+        oid = order.venue_order_id or order.client_order_id
         try:
             old = self._ome.cancel_order(oid)
         except OrderNotFound:
             self.send(
                 OrderUpdateRejectedEvent(
-                    instrument=None,
-                    client_order_id=client_order_id or oid,  # cid if known, else the venue id
-                    venue_order_id=venue_order_id,
+                    instrument=order.instrument,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
                     reason="update_order: order not found",
                 )
             )
@@ -189,34 +172,26 @@ class SimulatedConnector(ChannelEmitter):
         # OrderAcceptedEvent on the already-ACCEPTED order.
         self._emit_exec(new)
 
-    def request_order_status(
-        self,
-        *,
-        client_order_id: str | None = None,
-        venue_order_id: str | None = None,
-        instrument: Instrument | None = None,
-    ) -> None:
-        # `instrument` is for live venues that need a symbol on the REST fetch;
-        # the simulated OME resolves orders by id alone.
-        oid = venue_order_id or client_order_id
-        if not oid:
-            raise ValueError("request_order_status: client_order_id or venue_order_id is required")
-        for order in self._ome.get_open_orders().values():
-            if order.venue_order_id == oid or order.client_order_id == oid:
+    def request_order_status(self, order: Order) -> None:
+        # The simulated OME resolves orders by id alone (live venues need the symbol off
+        # the order for the REST fetch).
+        oid = order.venue_order_id or order.client_order_id
+        for resting in self._ome.get_open_orders().values():
+            if resting.venue_order_id == oid or resting.client_order_id == oid:
                 self.send(
                     OrderAcceptedEvent(
-                        instrument=order.instrument,
-                        client_order_id=order.client_order_id,
-                        venue_order_id=order.venue_order_id,
+                        instrument=resting.instrument,
+                        client_order_id=resting.client_order_id,
+                        venue_order_id=resting.venue_order_id,
                         accepted_at=self._time.time(),
                     )
                 )
                 return
         self.send(
             OrderRejectedEvent(
-                instrument=None,
-                client_order_id=client_order_id or oid,  # cid if known, else the venue id
-                venue_order_id=venue_order_id,
+                instrument=order.instrument,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
                 reason="reconcile: order not present at venue",
             )
         )

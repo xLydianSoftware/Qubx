@@ -13,7 +13,16 @@ import ccxt
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
-from qubx.core.basics import CtrlChannel, Instrument, MarketType, OrderRequest
+from qubx.core.basics import (
+    CtrlChannel,
+    Instrument,
+    MarketType,
+    Order,
+    OrderRequest,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+)
 from qubx.core.connector import IConnector
 from qubx.core.events import (
     OrderAcceptedEvent,
@@ -118,6 +127,32 @@ def _order_request(**overrides) -> OrderRequest:
     )
     kw.update(overrides)
     return OrderRequest(**kw)  # type: ignore[arg-type]
+
+
+def _order(
+    *,
+    client_order_id: str = "qubx_BTCUSDT_1",
+    venue_order_id: str | None = None,
+    side: OrderSide = OrderSide.BUY,
+    order_type: OrderType = OrderType.LIMIT,
+    quantity: float = 1.0,
+    price: float | None = 100.0,
+) -> Order:
+    """Build an ACCEPTED order to hand to the connector's cancel/update/status calls.
+
+    The connector reads symbol/side/type/ids straight off it (it keeps no order cache).
+    """
+    return Order(
+        client_order_id=client_order_id,
+        type=order_type,
+        instrument=_instrument(),
+        quantity=quantity,
+        side=side,
+        time_in_force="gtc",
+        status=OrderStatus.ACCEPTED,
+        venue_order_id=venue_order_id,
+        price=price,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -319,55 +354,35 @@ async def test_submit_no_id_emits_nothing() -> None:
 # --------------------------------------------------------------------------- #
 # (5) cancel_order
 # --------------------------------------------------------------------------- #
-def test_cancel_raises_when_no_id_given() -> None:
-    # cancel_order accepts EITHER id; with neither (or only an empty cid) there is nothing
-    # to address — a caller bug, raised synchronously.
-    conn, _, _ = _make_connector()
-    with pytest.raises(InvalidOrderParameters):
-        conn.cancel_order(instrument=_instrument(), )
-    with pytest.raises(InvalidOrderParameters):
-        conn.cancel_order(instrument=_instrument(), client_order_id="")
-
-
-@pytest.mark.parametrize(
-    "ids",
-    [
-        {"venue_order_id": "VENUE123"},
-        {"client_order_id": "qubx_BTCUSDT_1", "venue_order_id": "VENUE123"},
-    ],
-    ids=["venue_id_only", "both_ids"],
-)
 @pytest.mark.asyncio
-async def test_cancel_by_venue_id_emits_canceled(ids: dict) -> None:
-    # With a venue id (alone, or alongside the cid) the venue-id endpoint is used — a caller
-    # that only knows the venue id must still be able to cancel.
+async def test_cancel_by_venue_id_emits_canceled() -> None:
+    # An order carrying a venue id cancels through the venue-id endpoint, with the ccxt
+    # symbol the connector reads straight off the order's instrument (no cache).
     exchange = Mock()
     exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1"})
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(instrument=_instrument(), **ids)
+    conn.cancel_order(_order(venue_order_id="VENUE123"))
     await _drive(conn)
 
-    # Order not in cache (never submitted via this connector) -> symbol is None; the
-    # read-side cache fills the symbol in for orders this connector submitted (see the
-    # reads test suite). ccxt resolves the market from the id alone in that case.
-    exchange.cancel_order.assert_awaited_once_with("VENUE123", None)
+    exchange.cancel_order.assert_awaited_once_with("VENUE123", "BTC/USDT:USDT")
     assert isinstance(sent[0], OrderCanceledEvent)
     assert sent[0].venue_order_id == "VENUE123"
 
 
 @pytest.mark.asyncio
 async def test_cancel_by_cloid_uses_cloid_endpoint() -> None:
+    # No venue id yet (ack not seen) -> cloid endpoint, symbol from the order's instrument.
     exchange = Mock()
     exchange.cancel_order_with_client_order_id = AsyncMock(return_value={"id": "VENUE123"})
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1")
+    conn.cancel_order(_order(venue_order_id=None))
     await _drive(conn)
 
-    exchange.cancel_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1", None)
+    exchange.cancel_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1", "BTC/USDT:USDT")
     assert isinstance(sent[0], OrderCanceledEvent)
 
 
@@ -379,33 +394,15 @@ async def test_cancel_venue_reject_emits_cancel_rejected() -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    # TradingManager always passes both ids; the reject must route by the REAL cid
-    # (not the venue id) so AM can revert the order from PENDING_CANCEL.
-    conn.cancel_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    # The reject carries both ids (the order always has its cid) so AM can revert the order
+    # from PENDING_CANCEL by either.
+    conn.cancel_order(_order(venue_order_id="VENUE123"))
     await _drive(conn)
 
     assert len(sent) == 1
     assert isinstance(sent[0], OrderCancelRejectedEvent)
     assert sent[0].client_order_id == "qubx_BTCUSDT_1"
     assert sent[0].venue_order_id == "VENUE123"  # both ids carried so AM routes by either
-
-
-@pytest.mark.asyncio
-async def test_cancel_venue_reject_by_venue_id_only_carries_venue_id() -> None:
-    # Venue-id-only cancel that the venue refuses: the reject must still carry the venue id
-    # so AM resolves the order by it; the unknown cid stays None (no stand-in).
-    exchange = Mock()
-    exchange.cancel_order = AsyncMock(side_effect=ccxt.OperationRejected("Order already filled"))
-    exchange.has = {"editOrder": True}
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.cancel_order(instrument=_instrument(), venue_order_id="VENUE123")
-    await _drive(conn)
-
-    assert len(sent) == 1
-    assert isinstance(sent[0], OrderCancelRejectedEvent)
-    assert sent[0].venue_order_id == "VENUE123"
-    assert sent[0].client_order_id is None  # cid unknown -> venue-only addressing
 
 
 @pytest.mark.asyncio
@@ -418,7 +415,7 @@ async def test_cancel_cloid_network_error_leaves_inflight_no_reject() -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.cancel_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1")
+    conn.cancel_order(_order(venue_order_id=None))
     await _drive(conn)
 
     assert sent == []
@@ -446,7 +443,7 @@ async def test_update_network_error_leaves_inflight_no_reject() -> None:
     exchange.has = {"editOrder": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=123.0)
+    conn.update_order(_order(venue_order_id="VENUE123"), price=123.0)
     await _drive(conn)
 
     assert sent == []
@@ -462,10 +459,13 @@ async def test_update_direct_edit_emits_updated() -> None:
     exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0, quantity=2.0)
+    conn.update_order(_order(venue_order_id="VENUE123"), price=102.0, quantity=2.0)
     await _drive(conn)
 
-    exchange.edit_order.assert_awaited_once()
+    # symbol/side/type come straight off the order — the venue-id edit endpoint gets them all.
+    exchange.edit_order.assert_awaited_once_with(
+        id="VENUE123", symbol="BTC/USDT:USDT", type="limit", side="buy", amount=2.0, price=102.0, params={}
+    )
     ev = sent[0]
     assert isinstance(ev, OrderUpdatedEvent)
     assert ev.client_order_id == "qubx_BTCUSDT_1"
@@ -475,13 +475,30 @@ async def test_update_direct_edit_emits_updated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_by_cloid_uses_cloid_edit_endpoint() -> None:
+    # No venue id yet -> ccxt's client-order-id edit variant, with symbol/side/type off the order.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.edit_order_with_client_order_id = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.update_order(_order(venue_order_id=None), price=102.0, quantity=2.0)
+    await _drive(conn)
+
+    exchange.edit_order_with_client_order_id.assert_awaited_once_with(
+        "qubx_BTCUSDT_1", "BTC/USDT:USDT", "limit", "buy", 2.0, 102.0
+    )
+    assert isinstance(sent[0], OrderUpdatedEvent)
+
+
+@pytest.mark.asyncio
 async def test_update_edit_venue_reject_emits_update_rejected() -> None:
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.edit_order = AsyncMock(side_effect=ccxt.InvalidOrder("cannot edit"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0)
+    conn.update_order(_order(venue_order_id="VENUE123"), price=102.0)
     await _drive(conn)
 
     assert isinstance(sent[0], OrderUpdateRejectedEvent)
@@ -489,47 +506,20 @@ async def test_update_edit_venue_reject_emits_update_rejected() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_by_venue_id_only_emits_updated() -> None:
-    # update_order by venue id alone (no client_order_id): editOrder path, venue id addresses the event.
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.update_order(instrument=_instrument(), venue_order_id="VENUE123", price=102.0, quantity=2.0)
-    await _drive(conn)
-
-    exchange.edit_order.assert_awaited_once()
-    ev = sent[0]
-    assert isinstance(ev, OrderUpdatedEvent)
-    assert ev.venue_order_id == "VENUE123"
-    assert ev.client_order_id is None  # cid unknown -> venue-only addressing
-    assert ev.new_price == 102.0
-
-
-@pytest.mark.asyncio
 async def test_update_cancel_recreate_path_rejects_without_touching_live_order() -> None:
-    # Exchange without editOrder support -> cancel+recreate path. The recreate can't be
-    # built yet (no original params held), so it must reject WITHOUT cancelling: cancelling
-    # first would leave the order dead at the venue while telling the strategy "still alive".
+    # Exchange without editOrder support -> cancel+recreate path, not yet wired, so it must
+    # reject WITHOUT cancelling: cancelling first would leave the order dead at the venue
+    # while telling the strategy "still alive".
     exchange = Mock()
     exchange.has = {"editOrder": False}
     exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123"})
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=102.0, quantity=2.0)
+    conn.update_order(_order(venue_order_id="VENUE123"), price=102.0, quantity=2.0)
     await _drive(conn)
 
     exchange.cancel_order.assert_not_awaited()  # live order left untouched
     assert isinstance(sent[0], OrderUpdateRejectedEvent)
-
-
-def test_update_raises_when_no_id_given() -> None:
-    conn, _, _ = _make_connector()
-    with pytest.raises(InvalidOrderParameters):
-        conn.update_order(instrument=_instrument(), price=1.0)
-    with pytest.raises(InvalidOrderParameters):
-        conn.update_order(instrument=_instrument(), client_order_id="", price=1.0)
 
 
 # --------------------------------------------------------------------------- #
