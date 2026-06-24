@@ -21,7 +21,18 @@ from qubx import logger
 from qubx.connectors.ccxt.connector import CcxtConnector
 from qubx.connectors.ccxt.exchanges._two_stream import _TwoStreamCcxtConnector
 from qubx.core.account_manager import SimulatedAccountManager
-from qubx.core.basics import Balance, Instrument, MarketType, OrderOrigin, OrderRequest, OrderStatus, Position
+from qubx.core.basics import (
+    Balance,
+    Instrument,
+    MarketType,
+    Order,
+    OrderOrigin,
+    OrderRequest,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+)
 from qubx.core.events import (
     AccountSnapshotEvent,
     BalanceUpdateEvent,
@@ -31,7 +42,6 @@ from qubx.core.events import (
     OrderFilledEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
-    OrderUpdatedEvent,
     PositionUpdateEvent,
 )
 from qubx.core.series import Quote
@@ -158,6 +168,32 @@ def _order_request(**overrides) -> OrderRequest:
     return OrderRequest(**kw)  # type: ignore[arg-type]
 
 
+def _order(
+    *,
+    client_order_id: str = "qubx_BTCUSDT_1",
+    venue_order_id: str | None = "VENUE123",
+    side: OrderSide = OrderSide.BUY,
+    order_type: OrderType = OrderType.LIMIT,
+    quantity: float = 1.0,
+    price: float | None = 100.0,
+) -> Order:
+    """Build an ACCEPTED order to hand to the connector's request_order_status calls.
+
+    The connector reads symbol/side/type/ids straight off it (it keeps no order cache).
+    """
+    return Order(
+        client_order_id=client_order_id,
+        type=order_type,
+        instrument=_instrument(),
+        quantity=quantity,
+        side=side,
+        time_in_force="gtc",
+        status=OrderStatus.ACCEPTED,
+        venue_order_id=venue_order_id,
+        price=price,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # (a) WS order updates -> typed lifecycle events
 # --------------------------------------------------------------------------- #
@@ -171,11 +207,13 @@ def test_ws_open_emits_accepted() -> None:
     assert ev.venue_order_id == "VENUE123"
 
 
-def test_ws_open_twice_emits_accepted_only_once() -> None:
+def test_ws_open_twice_emits_accepted_each_time() -> None:
+    # The connector keeps no per-order state, so it emits ACCEPTED on every venue ack —
+    # AM dedups ACCEPTED by client_order_id, so a repeat is a benign no-op downstream.
     conn, sent, _ = _make_connector()
     conn._handle_ws_order(_ws_order(status="open"))
     conn._handle_ws_order(_ws_order(status="open"))
-    assert sum(isinstance(e, OrderAcceptedEvent) for e in sent) == 1
+    assert sum(isinstance(e, OrderAcceptedEvent) for e in sent) == 2
 
 
 def test_ws_partial_fill_first_emits_accepted_then_partially_filled() -> None:
@@ -305,27 +343,20 @@ async def test_request_snapshot_failed_leg_left_none() -> None:
 # --------------------------------------------------------------------------- #
 # (c) request_order_status -> lifecycle event / not-found reject
 # --------------------------------------------------------------------------- #
-@pytest.mark.parametrize(
-    "ids",
-    [
-        {"client_order_id": "qubx_BTCUSDT_1", "venue_order_id": "VENUE123"},
-        {"venue_order_id": "VENUE123"},
-    ],
-    ids=["both_ids", "venue_id_only"],
-)
 @pytest.mark.asyncio
-async def test_request_order_status_emits_event(ids: dict) -> None:
-    # Reconcile by both ids or by venue id alone: fetch by venue id and surface the order.
+async def test_request_order_status_emits_event() -> None:
+    # Reconcile of an order carrying a venue id: fetch by venue id (with the symbol read off
+    # the order) and surface the order.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_order = AsyncMock(return_value=_ws_order(status="closed", trades=[_ws_trade("TX", amount=1.0)]))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(**ids)
+    conn.request_order_status(_order(venue_order_id="VENUE123"))
     await _drive(conn)
 
-    exchange.fetch_order.assert_awaited_once_with("VENUE123", None)
-    # Reconcile fetch of a filled order with no prior ack: ACCEPTED then the terminal fill.
+    exchange.fetch_order.assert_awaited_once_with("VENUE123", CCXT_SYMBOL)
+    # Reconcile fetch of a filled order: ACCEPTED then the terminal fill.
     assert isinstance(sent[0], OrderAcceptedEvent)
     assert isinstance(sent[1], OrderFilledEvent)
     assert sent[1].fill.trade_id == "TX"
@@ -341,7 +372,7 @@ async def test_request_order_status_filled_without_trades_emits_status_only_fill
     exchange.fetch_order = AsyncMock(return_value=_ws_order(status="closed"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    conn.request_order_status(_order(venue_order_id="VENUE123"))
     await _drive(conn)
 
     assert isinstance(sent[0], OrderAcceptedEvent)
@@ -358,7 +389,7 @@ async def test_request_order_status_not_found_emits_reject_with_both_ids() -> No
     exchange.fetch_order = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    conn.request_order_status(_order(venue_order_id="VENUE123"))
     await _drive(conn)
 
     assert len(sent) == 1
@@ -376,55 +407,29 @@ async def test_request_order_status_network_error_leaves_inflight() -> None:
     exchange.fetch_order = AsyncMock(side_effect=ccxt.NetworkError("timeout"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+    conn.request_order_status(_order(venue_order_id="VENUE123"))
     await _drive(conn)
 
     assert sent == []
 
 
-def test_request_order_status_raises_when_no_id_given() -> None:
-    conn, _, _ = _make_connector()
-    with pytest.raises(Exception):
-        conn.request_order_status()
-    with pytest.raises(Exception):
-        conn.request_order_status(client_order_id="")
-
-
 @pytest.mark.asyncio
-async def test_request_order_status_cid_only_uncached_uses_cloid_variant_with_instrument() -> None:
-    # R7 lost-ack case: only the cloid is known and the connector never cached the order
-    # (snapshot-materialized RECOVERED order). The fetch must go through ccxt's
-    # client-order-id variant (Binance rejects a cloid passed as orderId with -1102) with
-    # the symbol resolved from the caller-provided instrument.
+async def test_request_order_status_cid_only_uses_cloid_variant() -> None:
+    # R7 lost-ack case: the order has no venue id yet (ack never seen). The fetch must go
+    # through ccxt's client-order-id variant (Binance rejects a cloid passed as orderId with
+    # -1102) with the symbol read off the order's instrument.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_order_with_client_order_id = AsyncMock(return_value=_ws_order(status="open"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", instrument=_instrument())
+    conn.request_order_status(_order(venue_order_id=None))
     await _drive(conn)
 
     exchange.fetch_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1", CCXT_SYMBOL)
     exchange.fetch_order.assert_not_called()
     assert isinstance(sent[0], OrderAcceptedEvent)
     assert sent[0].venue_order_id == "VENUE123"  # venue id recovered from the cloid fetch
-
-
-@pytest.mark.asyncio
-async def test_request_order_status_cid_only_upgrades_to_cached_venue_id() -> None:
-    # When the cache already learned the venue id (WS ack seen), a cid-only request is
-    # upgraded to the plain venue-id fetch — the more reliable path across venues.
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.fetch_order = AsyncMock(return_value=_ws_order(status="open"))
-    conn, sent, _ = _make_connector(exchange=exchange)
-    conn._handle_ws_order(_ws_order(status="open"))  # cache learns VENUE123 + symbol
-    sent.clear()
-
-    conn.request_order_status(client_order_id="qubx_BTCUSDT_1")
-    await _drive(conn)
-
-    exchange.fetch_order.assert_awaited_once_with("VENUE123", CCXT_SYMBOL)
 
 
 @pytest.mark.asyncio
@@ -435,7 +440,7 @@ async def test_request_order_status_cid_only_not_found_emits_reject() -> None:
     exchange.fetch_order_with_client_order_id = AsyncMock(side_effect=ccxt.OrderNotFound("unknown"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_order_status(client_order_id="qubx_BTCUSDT_1", instrument=_instrument())
+    conn.request_order_status(_order(venue_order_id=None))
     await _drive(conn)
 
     assert len(sent) == 1
@@ -457,154 +462,13 @@ async def test_request_order_status_venue_refusal_logs_warning_no_event() -> Non
     records: list = []
     sink_id = logger.add(lambda m: records.append(m.record), level="WARNING")
     try:
-        conn.request_order_status(client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
+        conn.request_order_status(_order(venue_order_id="VENUE123"))
         await _drive(conn)
     finally:
         logger.remove(sink_id)
 
     assert sent == []
     assert any("refused by venue" in r["message"] for r in records)
-
-
-# --------------------------------------------------------------------------- #
-# (d) order cache: submit populates it; cancel/update resolve the cached symbol;
-#     terminal WS update evicts it
-# --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_submit_populates_cache() -> None:
-    conn, _sent, _ = _make_connector()
-    conn.submit_order(_order_request())
-    await _drive(conn)
-    assert "qubx_BTCUSDT_1" in conn._orders
-    cached = conn._orders["qubx_BTCUSDT_1"]
-    assert cached.ccxt_symbol == CCXT_SYMBOL
-    assert cached.side == "buy"
-    assert cached.type == "limit"
-
-
-@pytest.mark.asyncio
-async def test_cancel_resolves_cached_symbol() -> None:
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.create_order = AsyncMock(return_value={})
-    exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123"})
-    conn, _sent, _ = _make_connector(exchange=exchange)
-
-    conn.submit_order(_order_request())
-    await _drive(conn)
-    conn.cancel_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123")
-    await _drive(conn)
-
-    # Closes the commit-3 gap: cancel_order now awaited WITH the cached ccxt symbol.
-    exchange.cancel_order.assert_awaited_once_with("VENUE123", CCXT_SYMBOL)
-
-
-@pytest.mark.asyncio
-async def test_update_edit_resolves_cached_symbol_and_side() -> None:
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.create_order = AsyncMock(return_value={})
-    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
-    conn, _sent, _ = _make_connector(exchange=exchange)
-
-    conn.submit_order(_order_request())
-    await _drive(conn)
-    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", venue_order_id="VENUE123", price=101.0, quantity=2.0)
-    await _drive(conn)
-
-    kwargs = exchange.edit_order.await_args.kwargs
-    assert kwargs["symbol"] == CCXT_SYMBOL
-    assert kwargs["side"] == "buy"
-    assert kwargs["type"] == "limit"
-
-
-@pytest.mark.asyncio
-async def test_update_cid_only_uses_cloid_edit_variant() -> None:
-    # R7 mirror on the write side: an update before the venue ack (no venue id anywhere)
-    # must go through ccxt's client-order-id edit variant with the cached
-    # symbol/type/side — a cloid passed to edit_order as orderId is Binance -1102.
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.create_order = AsyncMock(return_value={})
-    exchange.edit_order_with_client_order_id = AsyncMock(return_value={"id": "VENUE123"})
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.submit_order(_order_request())
-    await _drive(conn)
-    sent.clear()
-    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", price=101.0, quantity=2.0)
-    await _drive(conn)
-
-    exchange.edit_order_with_client_order_id.assert_awaited_once_with(
-        "qubx_BTCUSDT_1", CCXT_SYMBOL, "limit", "buy", 2.0, 101.0
-    )
-    exchange.edit_order.assert_not_called()
-    assert isinstance(sent[0], OrderUpdatedEvent)
-    assert sent[0].venue_order_id == "VENUE123"  # venue id recovered from the edit response
-
-
-@pytest.mark.asyncio
-async def test_update_cid_only_upgrades_to_cached_venue_id() -> None:
-    # When the cache already knows the venue id, a cid-only update edits by venue id.
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
-    conn, _sent, _ = _make_connector(exchange=exchange)
-    conn._handle_ws_order(_ws_order(status="open"))  # cache learns VENUE123 + symbol
-
-    conn.update_order(instrument=_instrument(), client_order_id="qubx_BTCUSDT_1", price=101.0, quantity=2.0)
-    await _drive(conn)
-
-    assert exchange.edit_order.await_args.kwargs["id"] == "VENUE123"
-    exchange.edit_order_with_client_order_id.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_snapshot_seeds_order_cache() -> None:
-    # R7 third leg: a snapshot can be the only place the connector sees a RECOVERED/
-    # EXTERNAL order — it must seed the venue-call cache so later cancel/update/status
-    # calls resolve the symbol and venue id instead of dying on ArgumentsRequired.
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.fetch_open_orders = AsyncMock(return_value=[_ws_order(status="open", cid="recovered-1", venue_id="V9")])
-    exchange.fetch_positions = AsyncMock(return_value=[])
-    exchange.fetch_balance = AsyncMock(return_value={"total": {}, "used": {}})
-    exchange.markets = {}
-    exchange.cancel_order = AsyncMock(return_value={"id": "V9"})
-    exchange.cancel_order_with_client_order_id = AsyncMock(return_value={"id": "V9"})
-    conn, _sent, _ = _make_connector(exchange=exchange)
-
-    conn.request_snapshot()
-    await _drive(conn)
-
-    assert "recovered-1" in conn._orders
-    assert conn._orders["recovered-1"].ccxt_symbol == CCXT_SYMBOL
-    assert conn._venue_to_cid.get("V9") == "recovered-1"
-
-    # A cid-only cancel of the snapshot-seen order now resolves venue id + symbol.
-    conn.cancel_order(instrument=_instrument(), client_order_id="recovered-1")
-    await _drive(conn)
-    exchange.cancel_order.assert_not_called()  # cid-only cancel stays on the cloid path
-    exchange.cancel_order_with_client_order_id.assert_awaited_once_with("recovered-1", CCXT_SYMBOL)
-
-
-def test_terminal_ws_update_evicts_cache() -> None:
-    conn, _sent, _ = _make_connector()
-    # First an open update populates the cache + venue index.
-    conn._handle_ws_order(_ws_order(status="open"))
-    assert "qubx_BTCUSDT_1" in conn._orders
-    assert conn._venue_to_cid.get("VENUE123") == "qubx_BTCUSDT_1"
-    # A terminal update evicts both.
-    conn._handle_ws_order(_ws_order(status="canceled"))
-    assert "qubx_BTCUSDT_1" not in conn._orders
-    assert "VENUE123" not in conn._venue_to_cid
-
-
-def test_ws_external_order_materialized_in_cache() -> None:
-    conn, _sent, _ = _make_connector()
-    conn._handle_ws_order(_ws_order(status="open", cid="manual-123", venue_id="V_EXT"))
-    assert "manual-123" in conn._orders
-    assert conn._orders["manual-123"].ccxt_symbol == CCXT_SYMBOL
 
 
 # --------------------------------------------------------------------------- #

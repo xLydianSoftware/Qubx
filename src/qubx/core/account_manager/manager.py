@@ -261,9 +261,7 @@ class AccountManager(IAccountViewer):
                     if reconcile.terminalize_missing(state, order, now):
                         diff.terminated.append(order)
                 else:
-                    connector.request_order_status(
-                        client_order_id=cid, venue_order_id=order.venue_order_id, instrument=order.instrument
-                    )
+                    connector.request_order_status(order)
                     state.bump_retry(cid)
                     unresolved.append(order)
             except Exception:
@@ -574,11 +572,7 @@ class AccountManager(IAccountViewer):
                         assert self._pm is not None  # ticks only register with a pm
                         self._pm.process_event(reconcile.giveup_event(order, retries))
                     else:
-                        self._connectors[exchange].request_order_status(
-                            client_order_id=cid,
-                            venue_order_id=order.venue_order_id,
-                            instrument=order.instrument,
-                        )
+                        self._connectors[exchange].request_order_status(order)
                         state.bump_retry(cid)
                         order.last_updated_at = now
                 except Exception:

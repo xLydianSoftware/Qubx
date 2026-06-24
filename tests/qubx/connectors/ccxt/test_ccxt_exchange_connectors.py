@@ -139,9 +139,10 @@ def test_okx_partial_status_emits_status_only_event() -> None:
     raw = _ws_order(status="open")
     raw["info"] = {"status": "PARTIALLY_FILLED"}
     conn._handle_ws_order(raw)
-    assert len(sent) == 1
-    ev = sent[0]
-    assert isinstance(ev, OrderPartiallyFilledEvent)
+    # The stateless connector synthesizes ACCEPTED ahead of the fill (AM dedups it); the
+    # fill itself is the status-only PartiallyFilled.
+    assert [type(e) for e in sent] == [OrderAcceptedEvent, OrderPartiallyFilledEvent]
+    ev = sent[-1]
     assert ev.client_order_id == "qubxBTCUSDT1"
     assert ev.venue_order_id == "VENUE123"
     assert ev.fill is None
@@ -149,7 +150,6 @@ def test_okx_partial_status_emits_status_only_event() -> None:
 
 def test_okx_watch_my_trades_emits_deal_event() -> None:
     conn, sent, _ = _make_connector(OkxCcxtConnector)
-    # Seed the venue->cid index via the open order so the trade resolves its cid.
     conn._handle_ws_order(_ws_order(status="open"))
     sent.clear()
 
@@ -157,7 +157,7 @@ def test_okx_watch_my_trades_emits_deal_event() -> None:
     assert len(sent) == 1
     ev = sent[0]
     assert isinstance(ev, DealEvent)
-    assert ev.client_order_id == "qubxBTCUSDT1"
+    assert ev.client_order_id is None  # stateless connector: the deal routes by venue id
     assert ev.venue_order_id == "VENUE123"
     assert ev.deal.trade_id == "T1"
     assert ev.deal.amount == 0.5
@@ -170,13 +170,13 @@ def test_okx_filled_status_emits_status_only_filled() -> None:
     sent.clear()
 
     # watch_orders reports the order FILLED (no trade) -> plain terminal status, no
-    # stitching: the deal already rode the trade stream as a DealEvent.
+    # stitching: the deal already rode the trade stream as a DealEvent. (The stateless
+    # connector also synthesizes ACCEPTED ahead of the terminal status; AM dedups it.)
     conn._handle_ws_order(_ws_order(status="closed"))
-    assert len(sent) == 1
-    ev = sent[0]
-    assert isinstance(ev, OrderFilledEvent)
-    assert ev.client_order_id == "qubxBTCUSDT1"
-    assert ev.fill is None
+    fills = [e for e in sent if isinstance(e, OrderFilledEvent)]
+    assert len(fills) == 1
+    assert fills[0].client_order_id == "qubxBTCUSDT1"
+    assert fills[0].fill is None
 
 
 def test_okx_filled_status_without_prior_trade_still_emits() -> None:
@@ -186,16 +186,15 @@ def test_okx_filled_status_without_prior_trade_still_emits() -> None:
     conn._handle_ws_order(_ws_order(status="open"))
     sent.clear()
     conn._handle_ws_order(_ws_order(status="closed"))
-    assert len(sent) == 1
-    ev = sent[0]
-    assert isinstance(ev, OrderFilledEvent)
-    assert ev.fill is None
+    fills = [e for e in sent if isinstance(e, OrderFilledEvent)]
+    assert len(fills) == 1
+    assert fills[0].fill is None
 
 
-def test_okx_trade_after_terminal_eviction_emits_deal_by_venue_id() -> None:
-    # The FILLED status evicts the connector's order cache; a trade landing after that
-    # can't resolve its cid but still rides as a DealEvent addressed by venue id — AM
-    # resolves it through its own venue-id index.
+def test_okx_trade_after_terminal_emits_deal_by_venue_id() -> None:
+    # A trade landing after the FILLED status can't be tied to a cid by the stateless
+    # connector (it keeps no venue->cid index), but still rides as a DealEvent addressed
+    # by venue id — AM resolves it through its own venue-id index.
     conn, sent, _ = _make_connector(OkxCcxtConnector)
     conn._handle_ws_order(_ws_order(status="open"))
     conn._handle_ws_order(_ws_order(status="closed"))
