@@ -17,14 +17,20 @@ from typing import Any
 import numpy as np
 
 from qubx import logger
-from qubx.core.account_manager.diffs import Differ, LocalOrderMissing
+from qubx.core.account_manager.diffs import Differ, DiffOrders, LocalOrderMissing
 from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state_machine import can_transition
 from qubx.core.basics import Instrument, Order, OrderStatus
-from qubx.core.events import AccountSnapshot, DealEvent
+from qubx.core.events import (
+    AccountSnapshot,
+    DealEvent,
+    OrderLostEvent,
+    OrderPartiallyFilledEvent,
+)
 from qubx.utils.time import to_timedelta
 
 
-# - Actions: the I/O vocabulary AM0 executes (extensible) ------------------------ #
+# - Actions: the I/O vocabulary AccountManager executes (extensible) ------------------------ #
 @dataclass(frozen=True)
 class RequestStatus:
     cid: str
@@ -43,7 +49,16 @@ class RequestHistDeals:
     since: np.datetime64
 
 
-Action = RequestStatus | RequestSnapshot | RequestHistDeals
+@dataclass(frozen=True)
+class RouteEvent:
+    # an account event the Reconciler synthesizes for the normal pipeline: AM feeds it to
+    # pm.process_event so the reducer applies it AND the strategy is notified (and a later
+    # duplicate WS event is deduped there). For decisions with no venue event of their own —
+    # e.g. the give-up LOST.
+    event: object
+
+
+Action = RequestStatus | RequestSnapshot | RequestHistDeals | RouteEvent | OrderPartiallyFilledEvent
 
 
 # - Inputs fed to tasks --------------------------------------------------------- #
@@ -112,7 +127,7 @@ class ResolveMissingOrder(Task):
         return self._done
 
     def handles(self, inp: Any) -> bool:
-        if isinstance(inp, Tick):
+        if isinstance(inp, (Tick, SnapshotIn)):
             return True
         if isinstance(inp, OrderIn):
             return self._matches(inp.event)
@@ -124,6 +139,13 @@ class ResolveMissingOrder(Task):
             # applies it) — drop the task
             self._done = True
             return []
+        if isinstance(inp, SnapshotIn):
+            # the order reappeared at the venue (still open), or its status was just applied
+            # terminal from this very snapshot — either way it is no longer "missing"
+            order = state.get_order(self._cid)
+            if (order is not None and order.status.is_terminal) or self._present_in(inp.snap):
+                self._done = True
+            return []
         if not isinstance(inp, Tick):
             return []
         if now < self._next_fetch_at:
@@ -132,19 +154,36 @@ class ResolveMissingOrder(Task):
             self._retries += 1
             self._next_fetch_at = now + self._wait
             return [RequestStatus(cid=self._cid, venue_id=self._venue_id, instrument=self._instrument)]
-        # give up: no venue answer after the retry budget → terminal LOST
+        # give up: no venue answer after the retry budget. Route a LOST event through the
+        # bus (AM -> pm.process_event) so the pipeline terminalizes it AND notifies the
+        # strategy — never a silent mutation here (a silent one would be invisible, and the
+        # later WS duplicate would be deduped by the venue-clock guard → strategy misses it).
         logger.warning(
-            f"[{state.exchange}] reconcile give-up on order <g>{self._cid}</g> (vid=<blue>{self._venue_id}</blue>) -> <r>LOST</r> "
-            f"after {self._retries} status fetches with no venue answer"
+            f"[{state.exchange}] reconcile give-up on order <g>{self._cid}</g> (vid=<blue>{self._venue_id}</blue>) "
+            f"-> <r>LOST</r> after {self._retries} status fetches with no venue answer"
         )
-        state.transition_order(self._cid, OrderStatus.LOST, now)
         self._done = True
-        return []
+        return [
+            RouteEvent(
+                OrderLostEvent(
+                    instrument=self._instrument,
+                    client_order_id=self._cid,
+                    venue_order_id=self._venue_id,
+                    reason=f"reconcile give-up after {self._retries} status fetches",
+                )
+            )
+        ]
 
     def _matches(self, event: object) -> bool:
         return getattr(event, "client_order_id", None) == self._cid or (
             self._venue_id is not None and getattr(event, "venue_order_id", None) == self._venue_id
         )
+
+    def _present_in(self, snap: AccountSnapshot) -> bool:
+        for o in snap.open_orders or []:
+            if o.client_order_id == self._cid or (self._venue_id is not None and o.venue_order_id == self._venue_id):
+                return True
+        return False
 
 
 # - Reconciler ------------------------------------------------------------------ #
@@ -179,13 +218,79 @@ class Reconciler:
 
     def on_snapshot(self, state: AccountState, snap: AccountSnapshot, now: np.datetime64) -> list[Action]:
         self._last_snapshot[state.exchange] = now  # the snapshot just arrived → reset due-timer
+        order_drifts: dict[str, Order] = {}  # cid -> snapshot order (deduped across field atoms)
         for d in self._differ.diff(state, snap):
+            logger.debug(d.describe())
             if isinstance(d, LocalOrderMissing):
                 self._spawn(
                     ResolveMissingOrder(d.order, now, wait=self._missing_wait, max_retries=self._missing_max_retries)
                 )
-            # positions (II) / balances (III) / order field drifts handled in later steps
-        return self._dispatch(SnapshotIn(snap), state, now)
+            elif isinstance(d, DiffOrders):
+                order_drifts[d.local.client_order_id] = d.origin
+            # positions (II) / balances (III) handled in later steps
+        # Order status/filled reconcile: the snapshot is authoritative for the order's own
+        # state (deals drive the ledger, NOT order status), and a missed WS status update may
+        # never arrive — so mutate status/filled in-mem (guarded), then route the fill event so
+        # the strategy is notified. (Position size diffs spawn the retrieve-deals task — II.)
+        actions: list[Action] = []
+        for snap_order in order_drifts.values():
+            if (ev := self._reconcile_order(state, snap_order)) is not None:
+                actions.append(RouteEvent(ev))
+        return actions + self._dispatch(SnapshotIn(snap), state, now)
+
+    def _reconcile_order(self, state: AccountState, snap_order: Order) -> Action | None:
+        """Reconcile one snapshot order into local state; return the fill event to route.
+
+        The snapshot is authoritative for the order's own status/filled (deals never move
+        order status, and a missed WS update may never arrive). Skips unless the snapshot
+        leg is strictly newer (monotonic venue clock), never resurrects a locally-terminal
+        order, and never wipes an in-flight pending marker (our cancel/update may still be
+        racing the venue — same rationale as the live accept-during-PENDING_CANCEL guard).
+        """
+        local = state.get_active_order(snap_order.client_order_id)
+        if local is None or local.status.is_terminal or not self._venue_newer(snap_order, local):
+            return None
+        if local.status.is_pending and not snap_order.status.is_terminal:
+            return None
+        self._apply_order_snapshot(state, local, snap_order)
+        return self._fill_event(local)
+
+    @staticmethod
+    def _venue_newer(snap: Order, local: Order) -> bool:
+        ts = snap.last_updated_at
+        return ts is not None and (local.last_updated_at is None or ts > local.last_updated_at)  # type: ignore
+
+    @staticmethod
+    def _apply_order_snapshot(state: AccountState, local: Order, snap: Order) -> None:
+        # status through transition_order (the sole indices/audit maintainer); on a snapshot
+        # the venue is authoritative, so an illegal transition is forced — but loudly.
+        if snap.status != local.status:
+            if not can_transition(local.status, snap.status):
+                logger.warning(
+                    f"[{state.exchange}] reconcile: forcing {local.client_order_id} "
+                    f"{local.status} -> {snap.status} (snapshot authoritative)"
+                )
+            state.transition_order(local.client_order_id, snap.status, snap.last_updated_at)
+        else:
+            local.last_updated_at = snap.last_updated_at
+        local.filled_quantity = snap.filled_quantity
+        local.avg_fill_price = snap.avg_fill_price
+
+    @staticmethod
+    def _fill_event(order: Order) -> Action | None:
+        # An order present in the snapshot's open_orders is, by definition, still open
+        # (ACCEPTED / PARTIALLY_FILLED) — a FILLED order is terminal and never listed there
+        # (it arrives via the missing -> RequestStatus fetch reply, carrying the real deal). So
+        # the only fill-progress event this path produces is a partial fill, fill=None (no real
+        # deal), routed so the strategy is notified.
+        if order.status == OrderStatus.PARTIALLY_FILLED:
+            return OrderPartiallyFilledEvent(
+                instrument=order.instrument,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                fill=None,
+            )
+        return None
 
     def on_event(self, state: AccountState, event: object, now: np.datetime64) -> list[Action]:
         inp = DealIn(event) if isinstance(event, DealEvent) else OrderIn(event)
@@ -206,13 +311,16 @@ class Reconciler:
         for key, task in list(self._tasks.items()):
             if only is not None and key not in only:
                 continue
+
             if not task.handles(inp):
                 continue
+
             acts = task.step(inp, state, now)
             if acts:
                 logger.debug(
                     f"[{state.exchange}] reconcile step on task <g>{key}</g>(<y>{type(inp).__name__}</y>) ==> <r>{acts}</r>"
                 )
+
             out += acts
             if task.done():
                 logger.debug(f"[{state.exchange}] reconcile task <g>{key}</g> done -> dropped")

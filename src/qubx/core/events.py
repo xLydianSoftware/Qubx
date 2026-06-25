@@ -113,6 +113,15 @@ class OrderExpiredEvent(OrderEvent):
 
 
 @msg
+class OrderLostEvent(OrderEvent):
+    """Reconciler give-up: an in-flight order the venue never confirmed after the
+    status-fetch budget was exhausted. Routed through the bus so the normal pipeline
+    terminalizes it to ``OrderStatus.LOST`` and notifies the strategy."""
+
+    reason: str = ""
+
+
+@msg
 class OrderUpdatedEvent(OrderEvent):
     new_price: float | None
     new_quantity: float | None
