@@ -1,0 +1,685 @@
+{
+  "nodes": [
+    {
+      "id": "grp_theses",
+      "type": "group",
+      "x": -2100,
+      "y": -1200,
+      "width": 520,
+      "height": 1700,
+      "label": "Theses",
+      "nodeLabel": "G1",
+      "color": "6"
+    },
+    {
+      "id": "grp_snap",
+      "type": "group",
+      "x": -1500,
+      "y": -1040,
+      "width": 2120,
+      "height": 280,
+      "label": "SnapshotPoll task (per exchange)",
+      "nodeLabel": "G2",
+      "color": "5"
+    },
+    {
+      "id": "grp_fsm1",
+      "type": "group",
+      "x": -1500,
+      "y": -720,
+      "width": 1640,
+      "height": 400,
+      "label": "FSM I — ResolveMissingOrder  (local order absent from snapshot)",
+      "nodeLabel": "G3",
+      "color": "4"
+    },
+    {
+      "id": "grp_fsm2",
+      "type": "group",
+      "x": -1500,
+      "y": -280,
+      "width": 2099,
+      "height": 453,
+      "label": "FSM II — ConfirmPositionBySnapshot  (size diff, deals not yet seen)",
+      "nodeLabel": "G4",
+      "color": "3"
+    },
+    {
+      "id": "grp_fsm3",
+      "type": "group",
+      "x": -1500,
+      "y": 200,
+      "width": 1640,
+      "height": 420,
+      "label": "FSM — AwaitOrderConfirm  (we sent order/update; ex _inflight_tick)",
+      "nodeLabel": "G5",
+      "color": "2"
+    },
+    {
+      "id": "grp_bal",
+      "type": "group",
+      "x": -1500,
+      "y": 660,
+      "width": 760,
+      "height": 200,
+      "label": "III — Balances / figures",
+      "nodeLabel": "G6",
+      "color": "1"
+    },
+    {
+      "id": "t1",
+      "type": "text",
+      "x": -2060,
+      "y": -1150,
+      "width": 440,
+      "height": 210,
+      "color": "6",
+      "text": "## Why reconcile\n\nLocal (qubx) vs exchange diverge:\n\n- lags — update not received yet\n- missed events (exchange or our side)\n- external change (manual / other bot)\n- position-size calc diffs qubx vs exch",
+      "nodeLabel": "N1"
+    },
+    {
+      "id": "t2",
+      "type": "text",
+      "x": -2060,
+      "y": -920,
+      "width": 440,
+      "height": 130,
+      "color": "6",
+      "text": "## Differ (done)\n\n`Differ.diff(local, origin) -> list[Diff]`\npure, clock-free except grace.\n`diffs.py`, 39 tests.",
+      "nodeLabel": "N2"
+    },
+    {
+      "id": "t3",
+      "type": "text",
+      "x": -2060,
+      "y": -770,
+      "width": 440,
+      "height": 170,
+      "color": "6",
+      "text": "## Split\n\n**Reconciler = pure** (state + diffs → decisions).\n**AM0 = I/O** (request_snapshot / request_order_status / hist deals).\nKeep old AM; build AM0 in parallel; rename later.",
+      "nodeLabel": "N3"
+    },
+    {
+      "id": "t4",
+      "type": "text",
+      "x": -2060,
+      "y": -580,
+      "width": 440,
+      "height": 220,
+      "color": "6",
+      "text": "## Venue timestamps (the enabler)\n\nStamp each snapshot object with its **own venue update ts**:\n- Order → `last_updated_at`\n- Position (has it) / Balance (add)\n\nNOT `as_of` (= request time).\nDeal.time already venue-clock (utils.py:188).\n→ every compare is venue-vs-venue.",
+      "nodeLabel": "N4"
+    },
+    {
+      "id": "t5",
+      "type": "text",
+      "x": -2060,
+      "y": -340,
+      "width": 440,
+      "height": 280,
+      "color": "6",
+      "text": "## Generic task engine\n\nReconciler = engine of FSM **tasks**.\nEngine is identity-agnostic: opaque `key -> task`.\n**One task per cid/key** (push refuses dup).\nEvents carry **candidate keys** — a deal → symbol AND order id → dispatch to any owning task.\nOne `pm.schedule(tick, step_all)`.",
+      "nodeLabel": "N5"
+    },
+    {
+      "id": "t6",
+      "type": "text",
+      "x": -2060,
+      "y": -40,
+      "width": 440,
+      "height": 160,
+      "color": "6",
+      "text": "## Pure FSM\n\n`step(state, input, now) -> (state', actions)`\ninput ∈ {tick, deal, order_event, snapshot_result}\nAM0 executes actions, feeds events + tick back in.",
+      "nodeLabel": "N6"
+    },
+    {
+      "id": "eng",
+      "type": "text",
+      "x": -1490,
+      "y": -1208,
+      "width": 1643,
+      "height": 86,
+      "color": "5",
+      "text": "<font size=+4 color='green'>**Reconciler = Task Engine** — opaque `key→task` · one task per key · `pm.schedule(tick, step_all)` · broadcast each event to tasks owning its candidate keys</font>",
+      "nodeLabel": "N7",
+      "editIndex": 4
+    },
+    {
+      "id": "sp1",
+      "type": "text",
+      "x": -1460,
+      "y": -960,
+      "width": 300,
+      "height": 90,
+      "color": "4",
+      "text": "**check due?**\n(snapshot interval)",
+      "nodeLabel": "N8"
+    },
+    {
+      "id": "sp2",
+      "type": "text",
+      "x": -1110,
+      "y": -960,
+      "width": 300,
+      "height": 90,
+      "color": "2",
+      "text": "**request snapshot**\n(AM0 → connector)",
+      "nodeLabel": "N9"
+    },
+    {
+      "id": "sp3",
+      "type": "text",
+      "x": -760,
+      "y": -960,
+      "width": 300,
+      "height": 90,
+      "color": "3",
+      "text": "**await snapshot_result**\n(3 legs, each venue-ts)",
+      "nodeLabel": "N10"
+    },
+    {
+      "id": "sp4",
+      "type": "text",
+      "x": -410,
+      "y": -960,
+      "width": 300,
+      "height": 90,
+      "color": "5",
+      "text": "**Differ.diff(local, snap)**",
+      "nodeLabel": "N11"
+    },
+    {
+      "id": "sp5",
+      "type": "text",
+      "x": -60,
+      "y": -960,
+      "width": 300,
+      "height": 90,
+      "color": "4",
+      "text": "**spawn tasks per diff →**",
+      "nodeLabel": "N12"
+    },
+    {
+      "id": "rmo_start",
+      "type": "text",
+      "x": -1460,
+      "y": -600,
+      "width": 320,
+      "height": 110,
+      "color": "4",
+      "text": "**MISSING**\norder not in snapshot,\npast grace",
+      "nodeLabel": "N13"
+    },
+    {
+      "id": "rmo_wait",
+      "type": "text",
+      "x": -1090,
+      "y": -595,
+      "width": 280,
+      "height": 100,
+      "color": "3",
+      "text": "**WAIT**\nlatency freedom",
+      "nodeLabel": "N14"
+    },
+    {
+      "id": "rmo_req",
+      "type": "text",
+      "x": -760,
+      "y": -595,
+      "width": 300,
+      "height": 100,
+      "color": "2",
+      "text": "**REQUEST_STATUS**\nfetch by cid (≤ n)",
+      "nodeLabel": "N15"
+    },
+    {
+      "id": "rmo_ok",
+      "type": "text",
+      "x": -301,
+      "y": -696,
+      "width": 320,
+      "height": 75,
+      "color": "4",
+      "text": "**RESOLVED → drop**\nreal fill/cancel/reject\nreplayed via normal event path",
+      "nodeLabel": "N16"
+    },
+    {
+      "id": "rmo_lost",
+      "type": "text",
+      "x": -293,
+      "y": -510,
+      "width": 320,
+      "height": 100,
+      "color": "1",
+      "text": "**LOST (terminal)**\nno info after n tries\n(new OrderStatus.LOST)",
+      "nodeLabel": "N17"
+    },
+    {
+      "id": "cp_start",
+      "type": "text",
+      "x": -1460,
+      "y": -150,
+      "width": 320,
+      "height": 100,
+      "color": "4",
+      "text": "**POS_DIFF**\nsnap size ≠ local,\nno deals seen",
+      "nodeLabel": "N18"
+    },
+    {
+      "id": "cp_upd",
+      "type": "text",
+      "x": -1100,
+      "y": -150,
+      "width": 300,
+      "height": 100,
+      "color": "2",
+      "text": "**UPDATE pos from snapshot**\nstamp venue ts",
+      "nodeLabel": "N19"
+    },
+    {
+      "id": "cp_wait",
+      "type": "text",
+      "x": -760,
+      "y": -150,
+      "width": 280,
+      "height": 100,
+      "color": "3",
+      "text": "**WAIT for confirming deals**",
+      "nodeLabel": "N20"
+    },
+    {
+      "id": "cp_logonly",
+      "type": "text",
+      "x": -760,
+      "y": 30,
+      "width": 340,
+      "height": 100,
+      "color": "5",
+      "text": "**deal.ts ≤ pos.last_venue_ts**\n→ LOG only, do NOT apply",
+      "nodeLabel": "N21"
+    },
+    {
+      "id": "cp_hist",
+      "type": "text",
+      "x": -440,
+      "y": -150,
+      "width": 300,
+      "height": 100,
+      "color": "2",
+      "text": "**timeout, no deals**\n→ REQUEST_HIST_DEALS",
+      "nodeLabel": "N22"
+    },
+    {
+      "id": "cp_histlog",
+      "type": "text",
+      "x": -100,
+      "y": -150,
+      "width": 300,
+      "height": 100,
+      "color": "5",
+      "text": "**log hist deals to DB**\ndo NOT apply to pos",
+      "nodeLabel": "N23"
+    },
+    {
+      "id": "cp_ok",
+      "type": "text",
+      "x": 260,
+      "y": -150,
+      "width": 260,
+      "height": 100,
+      "color": "4",
+      "text": "**OK → drop**",
+      "nodeLabel": "N24"
+    },
+    {
+      "id": "ac_start",
+      "type": "text",
+      "x": -1460,
+      "y": 320,
+      "width": 320,
+      "height": 100,
+      "color": "4",
+      "text": "**SENT**\norder/update sent",
+      "nodeLabel": "N25"
+    },
+    {
+      "id": "ac_wait",
+      "type": "text",
+      "x": -1100,
+      "y": 325,
+      "width": 280,
+      "height": 90,
+      "color": "3",
+      "text": "**WAIT (timeout)**",
+      "nodeLabel": "N26"
+    },
+    {
+      "id": "ac_req",
+      "type": "text",
+      "x": -651,
+      "y": 311,
+      "width": 300,
+      "height": 90,
+      "color": "2",
+      "text": "**REQUEST_STATUS (≤ n)**",
+      "nodeLabel": "N27"
+    },
+    {
+      "id": "ac_ok",
+      "type": "text",
+      "x": -245,
+      "y": 236,
+      "width": 320,
+      "height": 100,
+      "color": "4",
+      "text": "**CONFIRMED → drop**",
+      "nodeLabel": "N28"
+    },
+    {
+      "id": "ac_lost",
+      "type": "text",
+      "x": -257,
+      "y": 459,
+      "width": 340,
+      "height": 100,
+      "color": "1",
+      "text": "**give-up → synth reject / LOST**",
+      "nodeLabel": "N29"
+    },
+    {
+      "id": "bal",
+      "type": "text",
+      "x": -1460,
+      "y": 710,
+      "width": 680,
+      "height": 110,
+      "color": "4",
+      "text": "**No task.** Set balances / figures from snapshot as-is.\nKeep venue ts only for ordering vs late pushes.",
+      "nodeLabel": "N30"
+    },
+    {
+      "id": "node-1782315770978-0",
+      "type": "file",
+      "file": "reconciliation-redesign.md",
+      "x": -2451.5,
+      "y": 1121,
+      "width": 1223,
+      "height": 1081,
+      "nodeLabel": "M1",
+      "creationIndex": 5
+    }
+  ],
+  "edges": [
+    {
+      "id": "e_sp1",
+      "fromNode": "sp1",
+      "fromSide": "right",
+      "toNode": "sp2",
+      "toSide": "left",
+      "label": "due"
+    },
+    {
+      "id": "e_sp2",
+      "fromNode": "sp2",
+      "fromSide": "right",
+      "toNode": "sp3",
+      "toSide": "left"
+    },
+    {
+      "id": "e_sp3",
+      "fromNode": "sp3",
+      "fromSide": "right",
+      "toNode": "sp4",
+      "toSide": "left",
+      "label": "snapshot_result"
+    },
+    {
+      "id": "e_sp4",
+      "fromNode": "sp4",
+      "fromSide": "right",
+      "toNode": "sp5",
+      "toSide": "left",
+      "label": "diffs"
+    },
+    {
+      "id": "e_sp_rmo",
+      "fromNode": "sp5",
+      "fromSide": "bottom",
+      "toNode": "rmo_start",
+      "toSide": "top",
+      "label": "missing order"
+    },
+    {
+      "id": "e_sp_cp",
+      "fromNode": "sp5",
+      "fromSide": "bottom",
+      "toNode": "cp_start",
+      "toSide": "top",
+      "label": "pos diff"
+    },
+    {
+      "id": "e_rmo1",
+      "fromNode": "rmo_start",
+      "fromSide": "right",
+      "toNode": "rmo_wait",
+      "toSide": "left"
+    },
+    {
+      "id": "e_rmo2",
+      "fromNode": "rmo_wait",
+      "fromSide": "right",
+      "toNode": "rmo_req",
+      "toSide": "left",
+      "label": "waited > t"
+    },
+    {
+      "id": "e_rmo3",
+      "fromNode": "rmo_wait",
+      "fromSide": "top",
+      "toNode": "rmo_ok",
+      "toSide": "left",
+      "label": "event arrives"
+    },
+    {
+      "id": "e_rmo4",
+      "fromNode": "rmo_req",
+      "fromSide": "right",
+      "toNode": "rmo_ok",
+      "toSide": "bottom",
+      "label": "status / event"
+    },
+    {
+      "id": "e_rmo5",
+      "fromNode": "rmo_req",
+      "fromSide": "right",
+      "toNode": "rmo_lost",
+      "toSide": "left",
+      "label": "exhausted (n)"
+    },
+    {
+      "id": "e_rmo6",
+      "fromNode": "rmo_req",
+      "fromSide": "bottom",
+      "toNode": "rmo_wait",
+      "toSide": "bottom",
+      "label": "retry"
+    },
+    {
+      "id": "e_cp1",
+      "fromNode": "cp_start",
+      "fromSide": "right",
+      "toNode": "cp_upd",
+      "toSide": "left"
+    },
+    {
+      "id": "e_cp2",
+      "fromNode": "cp_upd",
+      "fromSide": "right",
+      "toNode": "cp_wait",
+      "toSide": "left"
+    },
+    {
+      "id": "e_cp3",
+      "fromNode": "cp_wait",
+      "fromSide": "right",
+      "toNode": "cp_ok",
+      "toSide": "top",
+      "label": "deals cover diff"
+    },
+    {
+      "id": "e_cp4",
+      "fromNode": "cp_wait",
+      "fromSide": "bottom",
+      "toNode": "cp_logonly",
+      "toSide": "top",
+      "label": "late deal (ts ≤ pos ts)"
+    },
+    {
+      "id": "e_cp5",
+      "fromNode": "cp_logonly",
+      "fromSide": "right",
+      "toNode": "cp_wait",
+      "toSide": "bottom",
+      "label": "keep waiting"
+    },
+    {
+      "id": "e_cp6",
+      "fromNode": "cp_wait",
+      "fromSide": "right",
+      "toNode": "cp_hist",
+      "toSide": "left",
+      "label": "timeout, no deals"
+    },
+    {
+      "id": "e_cp7",
+      "fromNode": "cp_hist",
+      "fromSide": "right",
+      "toNode": "cp_histlog",
+      "toSide": "left"
+    },
+    {
+      "id": "e_cp8",
+      "fromNode": "cp_histlog",
+      "fromSide": "right",
+      "toNode": "cp_ok",
+      "toSide": "left"
+    },
+    {
+      "id": "e_ac1",
+      "fromNode": "ac_start",
+      "fromSide": "right",
+      "toNode": "ac_wait",
+      "toSide": "left"
+    },
+    {
+      "id": "e_ac2",
+      "fromNode": "ac_wait",
+      "fromSide": "right",
+      "toNode": "ac_req",
+      "toSide": "left",
+      "label": "timeout"
+    },
+    {
+      "id": "e_ac3",
+      "fromNode": "ac_wait",
+      "fromSide": "top",
+      "toNode": "ac_ok",
+      "toSide": "left",
+      "label": "event arrives"
+    },
+    {
+      "id": "e_ac4",
+      "fromNode": "ac_req",
+      "fromSide": "right",
+      "toNode": "ac_ok",
+      "toSide": "bottom",
+      "label": "status / event"
+    },
+    {
+      "id": "e_ac5",
+      "fromNode": "ac_req",
+      "fromSide": "right",
+      "toNode": "ac_lost",
+      "toSide": "left",
+      "label": "give-up (n)"
+    },
+    {
+      "id": "e_ac6",
+      "fromNode": "ac_req",
+      "fromSide": "bottom",
+      "toNode": "ac_wait",
+      "toSide": "bottom",
+      "label": "retry"
+    },
+    {
+      "id": "eng-grp_snap-1782313962080",
+      "fromNode": "eng",
+      "fromSide": "bottom",
+      "toNode": "grp_snap",
+      "toSide": "top",
+      "toEnd": "arrow"
+    },
+    {
+      "id": "t6-node-1782315770978-0-1782315784865",
+      "fromNode": "t6",
+      "fromSide": "bottom",
+      "toNode": "node-1782315770978-0",
+      "toSide": "top",
+      "toEnd": "arrow"
+    },
+    {
+      "id": "t1-t2-1782315792118",
+      "fromNode": "t1",
+      "fromSide": "bottom",
+      "toNode": "t2",
+      "toSide": "top",
+      "toEnd": "arrow"
+    },
+    {
+      "id": "t2-t3-1782315796659",
+      "fromNode": "t2",
+      "fromSide": "bottom",
+      "toNode": "t3",
+      "toSide": "top",
+      "toEnd": "arrow"
+    },
+    {
+      "id": "t4-t5-1782315802811",
+      "fromNode": "t4",
+      "fromSide": "bottom",
+      "toNode": "t5",
+      "toSide": "top",
+      "toEnd": "arrow"
+    },
+    {
+      "id": "t5-t6-1782315818106",
+      "fromNode": "t5",
+      "fromSide": "bottom",
+      "toNode": "t6",
+      "toSide": "top",
+      "toEnd": "arrow"
+    },
+    {
+      "id": "bal-grp_bal-1782375093208",
+      "fromNode": "bal",
+      "fromSide": "top",
+      "toNode": "grp_bal",
+      "toSide": "top",
+      "toEnd": "arrow"
+    },
+    {
+      "id": "t3-t4-1782375173043",
+      "fromNode": "t3",
+      "fromSide": "bottom",
+      "toNode": "t4",
+      "toSide": "top",
+      "toEnd": "arrow"
+    }
+  ],
+  "viewport": {
+    "x": 2518.812755519215,
+    "y": -962.1600981193785,
+    "zoom": 0.9841373671300081
+  },
+  "creationCounter": 5
+}

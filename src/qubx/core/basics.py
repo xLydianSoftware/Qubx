@@ -669,6 +669,9 @@ class OrderStatus(StrEnum):
     CANCELED = "CANCELED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+    # Reconciler give-up terminal: an order we could not confirm at the venue after the
+    # status-fetch budget was exhausted (neither a fill/cancel/reject arrived nor a snapshot).
+    LOST = "LOST"
 
     @property
     def is_terminal(self) -> bool:
@@ -689,6 +692,7 @@ _TERMINAL_ORDER_STATUSES = frozenset(
         OrderStatus.CANCELED,
         OrderStatus.REJECTED,
         OrderStatus.EXPIRED,
+        OrderStatus.LOST,
     }
 )
 _INFLIGHT_ORDER_STATUSES = frozenset(
