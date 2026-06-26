@@ -130,6 +130,39 @@ def test_cancel_on_terminal_is_noop():
     assert r.order is None
 
 
+def test_cancel_with_matching_venue_id_transitions_to_terminal():
+    # A real cancel (the event's venue id == the order's current id) still cancels.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="B")
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="B"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.CANCELED
+
+
+def test_cancel_of_superseded_oid_after_modify_is_ignored():
+    # A cancel-and-replace modify (HL): the modify cancels the OLD oid A but emits its CANCELED
+    # carrying the SAME cloid as the now-live replacement, which already moved to a NEW oid B.
+    # Resolving by cloid would cancel the live order — the reducer must ignore a CANCELED whose
+    # venue id is not the order's current one.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="A")
+    # the modify's WS open(B) lands the order at the new oid (same cloid)
+    apply(state, OrderAcceptedEvent(instrument=None, client_order_id="c1", venue_order_id="B", accepted_at=T0), T1)
+    assert state.get_order("c1").venue_order_id == "B"
+    # the modify's stale CANCELED for the OLD oid A must NOT cancel the live order
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="A"), T1)
+    assert r.order is None  # ignored — empty ApplyResult
+    assert state.get_order("c1").status is OrderStatus.ACCEPTED  # the live order survives
+
+
+def test_cancel_without_venue_id_cancels_by_cloid():
+    # A pre-ack cancel (no venue id on the event) still resolves by cloid and cancels — the
+    # superseded-oid guard only fires when the event carries a (differing) venue id.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="A")
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.CANCELED
+
+
 def test_expire_transitions_to_terminal():
     state = _state()
     _order(state, status=OrderStatus.ACCEPTED)

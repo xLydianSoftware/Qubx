@@ -166,9 +166,27 @@ def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.dat
     return ApplyResult(order=order, order_change=OrderChange.ACCEPTED)
 
 
+def _is_superseded_oid_cancel(order: Order, event: OrderEvent) -> bool:
+    """True when a CANCELED addresses a venue id the order no longer holds.
+
+    A cancel-and-replace modify (Hyperliquid, and any venue whose ``edit`` is implemented as
+    atomic cancel+recreate) cancels the OLD venue order id but emits its CANCELED carrying the
+    SAME client_order_id as the now-live replacement — which already moved to a NEW venue id.
+    ``_resolve`` matches by client id first, so without this guard that stale CANCELED would
+    cancel the live order. A CANCELED whose venue id differs from the order's current one is for
+    a superseded id and must be ignored. (A cancel with no venue id, or one matching the order's
+    current id, is a real cancel and passes through.)
+    """
+    return (
+        event.venue_order_id is not None
+        and order.venue_order_id is not None
+        and event.venue_order_id != order.venue_order_id
+    )
+
+
 def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.datetime64) -> ApplyResult:
     order = _resolve(state, event)
-    if order is None or order.status.is_terminal:
+    if order is None or order.status.is_terminal or _is_superseded_oid_cancel(order, event):
         return ApplyResult()
     order = reconcile.transition(state, order.client_order_id, OrderStatus.CANCELED, now)
     return ApplyResult(order=order, order_change=OrderChange.CANCELED)
