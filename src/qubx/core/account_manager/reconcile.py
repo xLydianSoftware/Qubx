@@ -65,14 +65,16 @@ class ReconcileDiff:
     venue_figures: VenueAccountFigures | None = None
 
 
-def transition(state: AccountState, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
+def transition(
+    state: AccountState, cid: str, new_status: OrderStatus, now: np.datetime64, *, update_time: np.datetime64 | None = None
+) -> Order:
     """Validate-then-apply for an active order's status — the single legality chokepoint
     (the reducer and the manager delegate here; see the import rule above)."""
     order = state.get_active_order(cid)
     if order is None:
         raise KeyError(f"order {cid} not found in {state.exchange}")
     validate_transition(cid, order.status, new_status)
-    return state.transition_order(cid, new_status, now)
+    return state.transition_order(cid, new_status, now, update_time=update_time)
 
 
 def is_snapshot_stale(state: AccountState, as_of: np.datetime64) -> bool:
@@ -156,7 +158,10 @@ def reconcile_snapshot(
                         state.set_venue_id(existing.client_order_id, snap_order.venue_order_id)
             if existing is None:
                 diff.materialized.append(_materialize_from_snapshot(state, snap_order, snapshot.as_of))
-            elif existing.last_update_time is None or snapshot.as_of > existing.last_update_time:
+            # Compare the VENUE order update time (snapshot.as_of is the local request clock —
+            # it ratchets +interval every poll and would re-stamp an unchanged order forever);
+            # fall back to as_of for venues that omit a per-order update ts.
+            elif existing.last_update_time is None or (snap_order.last_update_time or snapshot.as_of) > existing.last_update_time:
                 _update_from_snapshot(state, existing, snap_order, snapshot.as_of, now)
                 diff.updated.append(existing)
 
@@ -235,7 +240,7 @@ def _materialize_from_snapshot(state: AccountState, snap_order: Order, as_of: np
         time_in_force=snap_order.time_in_force,
         filled_quantity=snap_order.filled_quantity,
         avg_fill_price=snap_order.avg_fill_price,
-        last_update_time=as_of,
+        last_update_time=snap_order.last_update_time if snap_order.last_update_time is not None else as_of,
     )
     state.add_order(order)
     if order.filled_quantity > 0.0:
@@ -271,7 +276,9 @@ def _update_from_snapshot(
     existing.avg_fill_price = snap_order.avg_fill_price
     existing.price = snap_order.price
     existing.quantity = snap_order.quantity
-    existing.last_update_time = as_of
+    # stamp the VENUE update time (so an unchanged order keeps a stable, real venue ts);
+    # fall back to as_of when the venue omits it.
+    existing.last_update_time = snap_order.last_update_time if snap_order.last_update_time is not None else as_of
 
 
 def _reconcile_status_from_snapshot(

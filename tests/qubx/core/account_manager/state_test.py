@@ -489,3 +489,10 @@ def test_prune_terminal_orders_ignores_non_terminal():
     state.add_order(_order("live"))  # SUBMITTED, never in the evict index
     state.prune_terminal_orders(T2, np.timedelta64(0, "s"))
     assert state.get_active_order("live") is not None
+
+
+def test_apply_balance_push_stamps_venue_last_update_time():
+    # the push as_of is the venue event time E -> it becomes the balance's last_update_time
+    state = AccountState("binance", "USDT")
+    assert state.apply_balance_push("USDT", 150.0, T1) is True
+    assert state.get_balance("USDT").last_update_time == T1

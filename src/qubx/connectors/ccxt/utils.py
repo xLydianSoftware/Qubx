@@ -147,6 +147,13 @@ def ccxt_convert_order_info(
     # Some venues omit clientOrderId (e.g. externally-placed orders); fall back to the
     # framework's external-order id convention (ext:<venue_id>) so it reads as EXTERNAL and
     # still has a stable, non-null client_order_id.
+    # Venue update time (venue clock): unified `lastUpdateTimestamp`, else raw `info.updateTime`
+    # (Binance UM). None when the venue gives neither — drives the reconciler's monotonic guard.
+    _lut = raw.get("lastUpdateTimestamp")
+    if _lut is None:
+        _lut = ri.get("updateTime")
+    last_update_time = recognize_time(int(_lut)) if _lut is not None else None
+
     client_order_id = raw.get("clientOrderId") or f"{EXTERNAL_CID_PREFIX}{raw['id']}"
     origin = classify_origin(client_order_id, framework_prefix=framework_prefix)
 
@@ -157,6 +164,7 @@ def ccxt_convert_order_info(
         type=_type,
         instrument=instrument,
         submitted_at=recognize_time(raw["timestamp"]),
+        last_update_time=last_update_time,
         # Unsigned, per the framework's positive-amount rule (direction lives in side).
         quantity=abs(amnt),
         price=float(price) if price is not None else None,
@@ -229,8 +237,13 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
         quantity=quantity,
         pos_average_price=info["entryPrice"],
     )
-    if info.get("markPrice", None) is not None:
-        pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
+    # Always stamp the venue update time (venue clock) — not only when markPrice is present —
+    # so the reconciler's monotonic position guard has it.
+    if info.get("timestamp") is not None:
+        _pts = pd.Timestamp(info["timestamp"], unit="ms").asm8
+        pos.last_update_time = _pts  # type: ignore
+        if info.get("markPrice") is not None:
+            pos.update_market_price(_pts, info["markPrice"], 1)
 
     # Use exchange-provided maintenance margin if available (more accurate than calculated)
     if info.get("maintenanceMargin") is not None:

@@ -163,7 +163,7 @@ def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.dat
         return ApplyResult()
     if not can_transition(order.status, OrderStatus.ACCEPTED):
         return ApplyResult()
-    order = reconcile.transition(state, order.client_order_id, OrderStatus.ACCEPTED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.ACCEPTED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.ACCEPTED)
 
 
@@ -171,7 +171,7 @@ def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.dat
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
-    order = reconcile.transition(state, order.client_order_id, OrderStatus.CANCELED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.CANCELED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.CANCELED)
 
 
@@ -179,7 +179,7 @@ def _handle_expired(state: AccountState, event: OrderExpiredEvent, now: np.datet
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
-    order = reconcile.transition(state, order.client_order_id, OrderStatus.EXPIRED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.EXPIRED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.EXPIRED)
 
 
@@ -189,7 +189,7 @@ def _handle_rejected(state: AccountState, event: OrderRejectedEvent, now: np.dat
         return ApplyResult()
     order.rejected_reason = event.reason
     order.error_code = event.code
-    order = reconcile.transition(state, order.client_order_id, OrderStatus.REJECTED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.REJECTED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.REJECTED)
 
 
@@ -228,7 +228,9 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
     return pos
 
 
-def _apply_execution(state: AccountState, order: Order, deal: Deal, now: np.datetime64) -> Deal | None:
+def _apply_execution(
+    state: AccountState, order: Order, deal: Deal, now: np.datetime64, *, update_time: np.datetime64 | None = None
+) -> Deal | None:
     """Shared already-counted gate for all three execution paths (DealEvent and the
     embedded fills on OrderFilled/OrderPartiallyFilled). Returns the deal to book —
     trimmed to the uncovered part when a snapshot partially covers it — or None when
@@ -260,14 +262,14 @@ def _apply_execution(state: AccountState, order: Order, deal: Deal, now: np.date
         # FETCHED before it fails the per-order guard in reconcile — otherwise that
         # stale snapshot resets the suppressed marker / mis-absorbs the deficit
         # (apply_fill bumps the booked paths; this covers the suppressed ones).
-        order.last_update_time = now
+        order.last_update_time = update_time if update_time is not None else now
         excess = qty - covered
         if excess <= eps:
             state.record_trade_id(cid, deal.trade_id)
             return None
         fee = deal.fee_amount * (excess / qty) if deal.fee_amount is not None else None
         deal = replace(deal, amount=excess if deal.amount > 0 else -excess, fee_amount=fee)
-    return deal if state.apply_fill(cid, deal, now) else None
+    return deal if state.apply_fill(cid, deal, now, update_time=update_time) else None
 
 
 def _reconcile_fill_gap(state: AccountState, order: Order, event: OrderFilledEvent, now: np.datetime64) -> Deal | None:
@@ -300,7 +302,7 @@ def _reconcile_fill_gap(state: AccountState, order: Order, event: OrderFilledEve
         price=price,
         aggressive=False,
     )
-    return _apply_execution(state, order, synthetic, now)
+    return _apply_execution(state, order, synthetic, now, update_time=event.last_update_time)
 
 
 def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime64) -> ApplyResult:
@@ -311,14 +313,14 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
         state.set_venue_id(order.client_order_id, event.venue_order_id)
     # fill is None on split-stream venues (the deal arrives separately via DealEvent):
     # the terminal transition still happens, only the booking is skipped.
-    deal = _apply_execution(state, order, event.fill, now) if event.fill is not None else None
+    deal = _apply_execution(state, order, event.fill, now, update_time=event.last_update_time) if event.fill is not None else None
     position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
     # Terminal fill-gap: book executions the venue counted but never delivered as deals so
     # position AND realized PnL converge now, not size-only at the next snapshot.
     if (gap := _reconcile_fill_gap(state, order, event, now)) is not None and order.instrument is not None:
         position = _book_deal(state, order.instrument, gap)
         deal = deal or gap
-    order = reconcile.transition(state, order.client_order_id, OrderStatus.FILLED, now)
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.FILLED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
 
 
@@ -330,7 +332,7 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
         state.set_venue_id(order.client_order_id, event.venue_order_id)
     # fill is None on split-stream venues (the deal arrives separately via DealEvent):
     # the status transition still happens, only the booking is skipped.
-    deal = _apply_execution(state, order, event.fill, now) if event.fill is not None else None
+    deal = _apply_execution(state, order, event.fill, now, update_time=event.last_update_time) if event.fill is not None else None
     position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
     # a pending cancel/update is resolved by the venue separately — don't disturb its status
     pending = order.status.is_pending
@@ -348,7 +350,7 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
             )
         return ApplyResult(deal=deal, position=position)
     if can_transition(order.status, OrderStatus.PARTIALLY_FILLED):
-        order = reconcile.transition(state, order.client_order_id, OrderStatus.PARTIALLY_FILLED, now)
+        order = reconcile.transition(state, order.client_order_id, OrderStatus.PARTIALLY_FILLED, now, update_time=event.last_update_time)
         return ApplyResult(order=order, order_change=OrderChange.PARTIALLY_FILLED, deal=deal, position=position)
     return ApplyResult(deal=deal, position=position)  # no status change -> execution only
 
@@ -369,7 +371,7 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
         return ApplyResult()
     if event.venue_order_id is not None:
         state.set_venue_id(order.client_order_id, event.venue_order_id)
-    deal = _apply_execution(state, order, event.deal, now)
+    deal = _apply_execution(state, order, event.deal, now, update_time=event.last_update_time)
     if deal is None:
         return ApplyResult()
     position = _book_deal(state, order.instrument, deal) if order.instrument is not None else None
@@ -387,20 +389,22 @@ def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datet
         order.price = event.new_price
     if event.new_quantity is not None:
         order.quantity = event.new_quantity
-    order.last_update_time = now
+    order.last_update_time = event.last_update_time if event.last_update_time is not None else now
     if order.status == OrderStatus.PENDING_UPDATE:
         target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
-        order = reconcile.transition(state, order.client_order_id, target, now)
+        order = reconcile.transition(state, order.client_order_id, target, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.UPDATED)
 
 
-def _revert_from_pending(state: AccountState, order: Order, change: OrderChange, now: np.datetime64) -> ApplyResult:
+def _revert_from_pending(
+    state: AccountState, order: Order, change: OrderChange, now: np.datetime64, *, update_time: np.datetime64 | None = None
+) -> ApplyResult:
     # Revert to the status captured on entry to PENDING_* — never inferred from
     # filled_quantity/venue_id (brittle when venues roll back partial fills). ACCEPTED
     # is the safe default for the rare order with no captured status. The transition
     # itself clears the capture (the target is non-pending).
     target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
-    order = reconcile.transition(state, order.client_order_id, target, now)
+    order = reconcile.transition(state, order.client_order_id, target, now, update_time=update_time)
     return ApplyResult(order=order, order_change=change)
 
 
@@ -408,14 +412,14 @@ def _handle_cancel_rejected(state: AccountState, event: OrderCancelRejectedEvent
     order = _active_order_for(state, event)
     if order is None or order.status != OrderStatus.PENDING_CANCEL:
         return ApplyResult()
-    return _revert_from_pending(state, order, OrderChange.CANCEL_REJECTED, now)
+    return _revert_from_pending(state, order, OrderChange.CANCEL_REJECTED, now, update_time=event.last_update_time)
 
 
 def _handle_update_rejected(state: AccountState, event: OrderUpdateRejectedEvent, now: np.datetime64) -> ApplyResult:
     order = _active_order_for(state, event)
     if order is None or order.status != OrderStatus.PENDING_UPDATE:
         return ApplyResult()
-    return _revert_from_pending(state, order, OrderChange.UPDATE_REJECTED, now)
+    return _revert_from_pending(state, order, OrderChange.UPDATE_REJECTED, now, update_time=event.last_update_time)
 
 
 def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now: np.datetime64) -> ApplyResult:

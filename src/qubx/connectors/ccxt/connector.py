@@ -382,6 +382,7 @@ class CcxtConnector(ChannelEmitter):
                 instrument=instrument,
                 client_order_id=order.client_order_id,
                 venue_order_id=order.require_venue_id(),
+                last_update_time=order.last_update_time,
                 accepted_at=self._time.time(),
             )
         )
@@ -943,7 +944,7 @@ class CcxtConnector(ChannelEmitter):
                 OrderAcceptedEvent(
                     instrument=instrument,
                     client_order_id=order.client_order_id,
-                    venue_order_id=order.venue_order_id,
+                    venue_order_id=order.venue_order_id, last_update_time=order.last_update_time,
                     accepted_at=order.submitted_at,
                 )
             )
@@ -957,21 +958,21 @@ class CcxtConnector(ChannelEmitter):
         if status == OrderStatus.CANCELED:
             self.send(
                 OrderCanceledEvent(
-                    instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+                    instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id, last_update_time=order.last_update_time
                 )
             )
             return
         if status == OrderStatus.EXPIRED:
             self.send(
                 OrderExpiredEvent(
-                    instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+                    instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id, last_update_time=order.last_update_time
                 )
             )
             return
         if status == OrderStatus.REJECTED:
             self.send(
                 OrderRejectedEvent(
-                    instrument=instrument, client_order_id=order.client_order_id, reason="rejected by venue"
+                    instrument=instrument, client_order_id=order.client_order_id, reason="rejected by venue", last_update_time=order.last_update_time
                 )
             )
             return
@@ -994,7 +995,7 @@ class CcxtConnector(ChannelEmitter):
                 OrderAcceptedEvent(
                     instrument=instrument,
                     client_order_id=order.client_order_id,
-                    venue_order_id=order.venue_order_id,
+                    venue_order_id=order.venue_order_id, last_update_time=order.last_update_time,
                     accepted_at=order.submitted_at,
                 )
             )
@@ -1049,7 +1050,7 @@ class CcxtConnector(ChannelEmitter):
                 OrderFilledEvent(
                     instrument=instrument,
                     client_order_id=order.client_order_id,
-                    venue_order_id=order.venue_order_id,
+                    venue_order_id=order.venue_order_id, last_update_time=order.last_update_time,
                     fill=None,
                     venue_filled_quantity=order.filled_quantity,
                     venue_avg_price=order.avg_fill_price,
@@ -1066,7 +1067,7 @@ class CcxtConnector(ChannelEmitter):
                     OrderPartiallyFilledEvent(
                         instrument=instrument,
                         client_order_id=order.client_order_id,
-                        venue_order_id=order.venue_order_id,
+                        venue_order_id=order.venue_order_id, last_update_time=order.last_update_time,
                         fill=deal,
                     )
                 )
@@ -1075,7 +1076,7 @@ class CcxtConnector(ChannelEmitter):
                     OrderFilledEvent(
                         instrument=instrument,
                         client_order_id=order.client_order_id,
-                        venue_order_id=order.venue_order_id,
+                        venue_order_id=order.venue_order_id, last_update_time=order.last_update_time,
                         fill=deal,
                         # Cumulative venue figures so the reducer can book any fills the
                         # venue counted but never delivered as deals (dropped WS messages).
@@ -1280,6 +1281,11 @@ class CcxtConnector(ChannelEmitter):
             logger.warning(f"[{self.exchange_name}] snapshot: fetch_balance failed: {raw_balance}")
         else:
             balances = self._convert_balances(raw_balance)
+            # Binance-futures REST gives no per-balance venue ts -> fall back to the snapshot
+            # request time (local) so a balance is never timestamp-less. A later WS push (venue E)
+            # supersedes it.
+            for _b in balances:
+                _b.last_update_time = as_of
             equity, available_margin, margin_ratio, withdrawable = self._extract_venue_figures(raw_balance)
 
         self.send(

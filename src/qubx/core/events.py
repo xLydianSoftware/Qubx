@@ -60,6 +60,7 @@ class OrderEvent(AccountMessage):
 
     client_order_id: str | None
     venue_order_id: str | None = None
+    last_update_time: np.datetime64 | None = None  # venue update ts (venue clock); None if unknown
 
 
 @msg

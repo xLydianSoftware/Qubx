@@ -285,7 +285,9 @@ class AccountState:
                 raise ValueError("terminal orders must have last_update_time set for eviction")
             self._pending_evict_index[cid] = order.last_update_time
 
-    def transition_order(self, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
+    def transition_order(
+        self, cid: str, new_status: OrderStatus, now: np.datetime64, *, update_time: np.datetime64 | None = None
+    ) -> Order:
         """Low-level status setter and the sole maintainer of every status-derived
         structure: the in-flight and pending-evict indices, the retry counter, and
         the pre-pending status capture.
@@ -295,7 +297,7 @@ class AccountState:
         order.transitions.append(OrderTransition(time=now, from_status=old_status, to_status=new_status))
         self._transition_counts[new_status.value] += 1
         order.status = new_status
-        order.last_update_time = now
+        order.last_update_time = update_time if update_time is not None else now
 
         if new_status.is_inflight:
             self._inflight_index.add(cid)
@@ -330,7 +332,7 @@ class AccountState:
         order.venue_order_id = venue_order_id
         self._venue_id_index[venue_order_id] = cid
 
-    def apply_fill(self, cid: str, fill: Deal, now: np.datetime64) -> bool:
+    def apply_fill(self, cid: str, fill: Deal, now: np.datetime64, *, update_time: np.datetime64 | None = None) -> bool:
         """Apply a fill, deduped by trade id. Returns True if newly applied, False if duplicate."""
         order = self._active_orders[cid]
         seen = self._seen_trade_ids.setdefault(cid, set())
@@ -339,7 +341,7 @@ class AccountState:
             return False
         seen.add(fill.trade_id)
         order.record_fill(fill.amount, fill.price)  # filled_quantity + avg-price math lives on Order
-        order.last_update_time = now
+        order.last_update_time = update_time if update_time is not None else now
         return True
 
     def is_trade_seen(self, cid: str, trade_id: str) -> bool:
@@ -503,6 +505,7 @@ class AccountState:
             delta = total - bal.total
             bal.total = total
             bal.free += delta
+        bal.last_update_time = as_of  # venue event time E (Deal.time clock domain)
         return True
 
     def apply_balance_snapshot(self, balance: Balance) -> bool:

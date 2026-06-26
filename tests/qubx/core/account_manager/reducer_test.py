@@ -606,3 +606,20 @@ def test_external_order_resolves_same_on_second_event():
     order = state.get_order_by_venue_id("EXT1")
     assert order is not None and order.client_order_id == "ext:EXT1"
     assert _present(state.get_position(BTC)).quantity == 0.5  # accumulated on one external order
+
+
+def test_event_venue_ts_stamps_order_last_update_time():
+    # when the event carries a venue update ts, the order is stamped with it (venue clock),
+    # NOT the local apply clock (T1). Falls back to now only when the event has none.
+    state = _state()
+    _order(state)
+    venue_ts = np.datetime64("2026-05-28T00:05:00", "ns")
+    r = apply(
+        state,
+        OrderAcceptedEvent(
+            instrument=None, client_order_id="c1", venue_order_id="V1", accepted_at=T0, last_update_time=venue_ts
+        ),
+        T1,
+    )
+    assert r.order is not None
+    assert r.order.last_update_time == venue_ts  # venue ts, not T1
