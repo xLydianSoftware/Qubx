@@ -1281,11 +1281,6 @@ class CcxtConnector(ChannelEmitter):
             logger.warning(f"[{self.exchange_name}] snapshot: fetch_balance failed: {raw_balance}")
         else:
             balances = self._convert_balances(raw_balance)
-            # Binance-futures REST gives no per-balance venue ts -> fall back to the snapshot
-            # request time (local) so a balance is never timestamp-less. A later WS push (venue E)
-            # supersedes it.
-            for _b in balances:
-                _b.last_update_time = as_of
             equity, available_margin, margin_ratio, withdrawable = self._extract_venue_figures(raw_balance)
 
         self.send(

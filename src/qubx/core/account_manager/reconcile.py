@@ -185,7 +185,7 @@ def reconcile_snapshot(
             push_as_of = state.get_balance_push_as_of(snap_bal.currency)
             if push_as_of is not None and push_as_of >= snapshot.as_of:
                 continue
-            if state.apply_balance_snapshot(snap_bal):
+            if state.apply_balance_snapshot(snap_bal, snapshot.as_of):
                 diff.balances.append(snap_bal)
 
     # Venue-reported account figures: prefer-venue-else-derive happens per metric in

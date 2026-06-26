@@ -508,11 +508,17 @@ class AccountState:
         bal.last_update_time = as_of  # venue event time E (Deal.time clock domain)
         return True
 
-    def apply_balance_snapshot(self, balance: Balance) -> bool:
+    def apply_balance_snapshot(self, balance: Balance, as_of: np.datetime64 | None = None) -> bool:
         existing = self._balances.get(balance.currency)
         changed = existing is None or (
             existing.total != balance.total or existing.free != balance.free or existing.locked != balance.locked
         )
+        # Timestamp rule: a WS push (venue E) is authoritative — never let the snapshot's local
+        # `as_of` clobber it. Use `as_of` only as a fallback for a currency with no push, and only
+        # when the values actually changed (so an idle balance doesn't ratchet every poll).
+        prior_ts = existing.last_update_time if existing is not None else None
+        has_push = self._balance_push_as_of.get(balance.currency) is not None
+        balance.last_update_time = as_of if (changed and not has_push) else prior_ts
         self.update_balance(balance.currency, balance)
         return changed
 

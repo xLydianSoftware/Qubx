@@ -496,3 +496,21 @@ def test_apply_balance_push_stamps_venue_last_update_time():
     state = AccountState("binance", "USDT")
     assert state.apply_balance_push("USDT", 150.0, T1) is True
     assert state.get_balance("USDT").last_update_time == T1
+
+
+def test_snapshot_does_not_clobber_push_balance_ts():
+    # once a WS push stamped the venue E, a later snapshot's local as_of must NOT overwrite it
+    state = AccountState("binance", "USDT")
+    state.apply_balance_push("USDT", 100.0, T1)  # venue E = T1
+    snap = Balance(exchange="binance", currency="USDT", free=90.0, locked=10.0, total=100.0)
+    state.apply_balance_snapshot(snap, T2)  # snapshot as_of T2 > T1
+    assert state.get_balance("USDT").last_update_time == T1  # push E preserved, not T2
+
+
+def test_snapshot_balance_no_push_uses_as_of_without_ratchet():
+    state = AccountState("binance", "USDT")
+    state.apply_balance_snapshot(Balance(exchange="binance", currency="USDT", total=50.0, free=50.0), T1)
+    assert state.get_balance("USDT").last_update_time == T1  # first snapshot -> as_of fallback
+    # identical balance at a later poll -> NOT ratcheted forward
+    state.apply_balance_snapshot(Balance(exchange="binance", currency="USDT", total=50.0, free=50.0), T2)
+    assert state.get_balance("USDT").last_update_time == T1

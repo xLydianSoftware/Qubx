@@ -332,7 +332,9 @@ class AccountManager(IAccountViewer):
         pos = state.get_position(instrument)
         if pos is None:  # only mark positions we hold; never create one per quote
             return
-        pos.update_market_price(self._time.time(), quote.mid_price(), state.conversion_rate(instrument))
+        pos.update_market_price(
+            self._time.time(), quote.mid_price(), state.conversion_rate(instrument), stamp_update_time=False
+        )
 
     # ---- reads (cross-exchange) -------------------------------------------- #
 

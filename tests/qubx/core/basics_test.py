@@ -234,3 +234,41 @@ def test_position_flatten_zeroes_quantity_but_keeps_realized(mocker):
     assert pos.r_pnl == 42.0  # realized preserved
     assert pos.position_avg_price == 100.0  # entry preserved
     assert pos.is_open() is False
+
+
+def test_position_mark_tick_does_not_clobber_last_update_time():
+    # last_update_time must track the venue SIZE/state update (deal / snapshot reconcile),
+    # NOT every mark-price tick — otherwise quotes ratchet it to local time and the
+    # reconciler's monotonic position guard breaks.
+    import numpy as np
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst)
+
+    t_size = np.datetime64("2026-05-28T00:00:00", "ns")  # a size/state update (e.g. snapshot/deal)
+    pos.update_market_price(t_size, 50_000.0, 1.0)
+    assert pos.last_update_time == t_size
+
+    t_tick = np.datetime64("2026-05-28T00:05:00", "ns")  # a later mark-only quote tick
+    pos.update_market_price_by_tick(Quote(t_tick, 50_010.0, 50_011.0, 0, 0), 1.0)
+    assert pos.last_update_price != 50_000.0  # mark IS updated...
+    assert pos.last_update_time == t_size  # ...but last_update_time is NOT clobbered
+
+
+def test_position_deal_stamps_last_update_time_as_datetime64():
+    # a deal (venue size change) must stamp last_update_time as a dt_64 venue timestamp,
+    # NOT a raw int-ns: it has to be monotonic-comparable with snapshot stamps (which are
+    # dt_64) and serialize consistently (control protocol does str() -> ISO, not a raw
+    # nanosecond integer like "1782478555172000000").
+    import numpy as np
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst)
+
+    t_deal = np.datetime64("2026-06-26T12:55:55.172", "ns")
+    pos.change_position_by(t_deal, 0.003, 59_251.6)
+
+    assert isinstance(pos.last_update_time, np.datetime64)  # dt_64, not int-ns
+    assert pos.last_update_time == t_deal

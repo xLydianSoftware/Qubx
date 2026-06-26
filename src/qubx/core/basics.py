@@ -1099,7 +1099,7 @@ class Position:
         return deal_pnl, comms
 
     def update_market_price_by_tick(self, tick: Quote | Trade, conversion_rate: float = 1) -> float:
-        return self.update_market_price(tick.time, self._price(tick), conversion_rate)
+        return self.update_market_price(tick.time, self._price(tick), conversion_rate, stamp_update_time=False)
 
     def update_position_by_deal(self, deal: Deal, conversion_rate: float = 1) -> tuple[float, float]:
         time = deal.time.as_unit("ns").asm8 if isinstance(deal.time, pd.Timestamp) else deal.time
@@ -1113,8 +1113,19 @@ class Position:
         # - deal contains cumulative amount
         # return self.update_position(time, deal.amount, deal.price, deal.aggressive, conversion_rate)
 
-    def update_market_price(self, timestamp: dt_64, price: float, conversion_rate: float) -> float:
-        self.last_update_time = timestamp  # type: ignore
+    def update_market_price(
+        self, timestamp: dt_64, price: float, conversion_rate: float, *, stamp_update_time: bool = True
+    ) -> float:
+        # stamp_update_time=False for mark-only ticks (quotes): they refresh the mark/PnL but must
+        # NOT move last_update_time, which tracks the venue SIZE/state update (deal / snapshot) so
+        # the reconciler's monotonic position guard works (a quote tick is not a venue size change).
+        if stamp_update_time:
+            # - always store a dt_64 venue timestamp (the deal path passes int-ns via
+            #   time_as_nsec, ticks pass int-ns tick.time) so it stays monotonic-comparable
+            #   with snapshot stamps and serializes as ISO, not a raw nanosecond integer
+            self.last_update_time = (
+                timestamp if isinstance(timestamp, np.datetime64) else np.datetime64(int(timestamp), "ns")
+            )  # type: ignore
         self.last_update_price = price
         self.last_update_conversion_rate = conversion_rate
 
