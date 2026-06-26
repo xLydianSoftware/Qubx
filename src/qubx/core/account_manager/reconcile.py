@@ -84,9 +84,9 @@ def is_snapshot_stale(state: AccountState, as_of: np.datetime64) -> bool:
 
 
 def _last_seen_at(order: Order) -> np.datetime64 | None:
-    # Age base for grace/staleness decisions: the freshest of last_updated_at and
+    # Age base for grace/staleness decisions: the freshest of last_update_time and
     # submitted_at (both are dt_64 | None). None means we cannot age the order at all.
-    return order.last_updated_at or order.submitted_at
+    return order.last_update_time or order.submitted_at
 
 
 def fill_qty_epsilon(instrument: Instrument | None) -> float:
@@ -156,7 +156,7 @@ def reconcile_snapshot(
                         state.set_venue_id(existing.client_order_id, snap_order.venue_order_id)
             if existing is None:
                 diff.materialized.append(_materialize_from_snapshot(state, snap_order, snapshot.as_of))
-            elif existing.last_updated_at is None or snapshot.as_of > existing.last_updated_at:
+            elif existing.last_update_time is None or snapshot.as_of > existing.last_update_time:
                 _update_from_snapshot(state, existing, snap_order, snapshot.as_of, now)
                 diff.updated.append(existing)
 
@@ -235,7 +235,7 @@ def _materialize_from_snapshot(state: AccountState, snap_order: Order, as_of: np
         time_in_force=snap_order.time_in_force,
         filled_quantity=snap_order.filled_quantity,
         avg_fill_price=snap_order.avg_fill_price,
-        last_updated_at=as_of,
+        last_update_time=as_of,
     )
     state.add_order(order)
     if order.filled_quantity > 0.0:
@@ -271,7 +271,7 @@ def _update_from_snapshot(
     existing.avg_fill_price = snap_order.avg_fill_price
     existing.price = snap_order.price
     existing.quantity = snap_order.quantity
-    existing.last_updated_at = as_of
+    existing.last_update_time = as_of
 
 
 def _reconcile_status_from_snapshot(
@@ -319,7 +319,7 @@ def terminalize_missing(state: AccountState, order: Order, now: np.datetime64) -
 
 def select_overdue_inflight(state: AccountState, now: np.datetime64, threshold: np.timedelta64) -> list[Order]:
     """In-flight orders not heard from for at least ``threshold`` — candidates for a
-    status poll or give-up. An order with neither last_updated_at nor submitted_at is
+    status poll or give-up. An order with neither last_update_time nor submitted_at is
     treated as just-seen and skipped (it cannot be aged)."""
     overdue = []
     for order in state.get_inflight_orders():

@@ -85,7 +85,7 @@ def _order(state: AccountState, cid: str = "c1", status: OrderStatus = OrderStat
         status=status,
         venue_order_id=venue_id,
         price=100.0,
-        last_updated_at=T0 if status.is_terminal else None,
+        last_update_time=T0 if status.is_terminal else None,
         origin=OrderOrigin.FRAMEWORK,
     )
     state.add_order(order)
@@ -99,7 +99,7 @@ def test_accept_transitions_and_sets_venue_id():
     assert r.order is not None
     assert r.order.status is OrderStatus.ACCEPTED
     assert r.order.venue_order_id == "V1"
-    assert r.order.last_updated_at == T1
+    assert r.order.last_update_time == T1
     assert r.order_change is OrderChange.ACCEPTED
     assert r.deal is None and r.position is None
 

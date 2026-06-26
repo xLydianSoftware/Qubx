@@ -270,7 +270,7 @@ def test_missing_accepted_order_gives_up_to_canceled():
 
 
 def test_missing_order_without_timestamps_skipped():
-    # F16: an order with neither last_updated_at nor submitted_at cannot be aged — it is
+    # F16: an order with neither last_update_time nor submitted_at cannot be aged — it is
     # treated as just-seen and skipped before any missing handling (no fetch, no give-up
     # even with the budget spent), so a just-submitted order racing the snapshot survives.
     am = _am()
@@ -295,10 +295,10 @@ def test_stale_snapshot_does_not_clobber_fresh_state():
     state = am._states["binance"]
     inst = _instrument()
     existing = _order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
-    existing.last_updated_at = np.datetime64("2026-05-28T02:00:00")
+    existing.last_update_time = np.datetime64("2026-05-28T02:00:00")
     existing.filled_quantity = 0.5
     state.add_order(existing)
-    # snapshot older than the order's last_updated_at must not overwrite
+    # snapshot older than the order's last_update_time must not overwrite
     snap_order = _order("cid-1", OrderStatus.FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
     snap_order.filled_quantity = 1.0
     am._time.t = np.datetime64("2026-05-28T03:00:00")
@@ -426,7 +426,7 @@ def test_existing_order_updated_from_fresh_snapshot():
     state = am._states["binance"]
     inst = _instrument()
     existing = _order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
-    existing.last_updated_at = np.datetime64("2026-05-28T00:30:00")
+    existing.last_update_time = np.datetime64("2026-05-28T00:30:00")
     state.add_order(existing)
     snap_order = _order("cid-1", OrderStatus.PARTIALLY_FILLED, "2026-05-28T00:00:00", vid="V1", instrument=inst)
     snap_order.filled_quantity = 0.4
@@ -437,7 +437,7 @@ def test_existing_order_updated_from_fresh_snapshot():
     assert updated.status is OrderStatus.PARTIALLY_FILLED
     assert updated.filled_quantity == 0.4
     assert updated.avg_fill_price == 49_900.0
-    assert updated.last_updated_at == np.datetime64("2026-05-28T01:00:00")
+    assert updated.last_update_time == np.datetime64("2026-05-28T01:00:00")
 
 
 def _raw_ccxt_open_order(cid="qubx_BTCUSDT_9", vid="900001"):
@@ -567,7 +567,7 @@ def test_snapshot_does_not_wipe_pending_marker_with_live_status():
     assert len(state.get_inflight_orders()) == 1  # sweep keeps polling the cancel
     # non-status property drift still reconciled
     assert order.filled_quantity == 0.3
-    assert order.last_updated_at == np.datetime64("2026-05-28T01:00:00")
+    assert order.last_update_time == np.datetime64("2026-05-28T01:00:00")
 
 
 def test_snapshot_terminal_status_resolves_pending_marker():
@@ -1156,7 +1156,7 @@ def test_genuine_excess_just_above_epsilon_still_books():
 def test_pre_suppression_snapshot_cannot_reset_suppressed_marker():
     # Fetch-window twin P4: a snapshot FETCHED before a suppression but applied after it
     # used to pass the per-order freshness guard (suppression never bumped
-    # last_updated_at) and reset the suppressed marker; the next snapshot's raise then
+    # last_update_time) and reset the suppressed marker; the next snapshot's raise then
     # re-armed the deficit and a genuinely-new execution was suppressed — its deal/
     # r_pnl/fee dropped forever. The suppression is an order-state observation: it bumps
     # freshness, the stale snapshot is rejected, the raise is absorbed.

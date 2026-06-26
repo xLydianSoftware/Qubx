@@ -810,7 +810,11 @@ class Order:
     # submission timestamp; grace-window reconcile measures order age from this field
     submitted_at: dt_64 | None = None
     accepted_at: dt_64 | None = None
-    last_updated_at: dt_64 | None = None
+    # Last update timestamp: the VENUE's update time when we have it (snapshot order
+    # `lastUpdateTimestamp`/`updateTime`, or the venue event's own ts), else our local
+    # processing time as a fallback. The single canonical update clock — drives the Differ
+    # grace gate, terminal eviction, and the reconciler's monotonic guard.
+    last_update_time: dt_64 | None = None
     rejected_reason: str | None = None
     # venue/connector error code accompanying a reject (e.g. the ccxt error class name);
     # None when the reject path carries no code (synthetic reconcile rejects).
@@ -849,7 +853,7 @@ class Order:
         self.filled_quantity += qty
 
     def __str__(self) -> str:
-        _id = self.venue_order_id or self.client_order_id
+        _id = (self.venue_order_id or "????") + (f" :: {self.client_order_id}" if self.client_order_id else "")
         return f"[{_id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price else ''} ({self.time_in_force}) [{self.status}]"
 
 
@@ -860,6 +864,10 @@ class Balance:
     free: float = 0.0
     locked: float = 0.0
     total: float = 0.0
+    # Venue update timestamp (venue clock). Available only from the WS push (event time `E`);
+    # the REST balance snapshot carries none on Binance UM (account updateTime=0). See the
+    # reconciliation design doc.
+    last_update_time: dt_64 | None = None
 
     def __str__(self) -> str:
         return f"{self.exchange}:{self.currency} free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
@@ -870,6 +878,7 @@ class Balance:
         self.free = balance.free
         self.locked = balance.locked
         self.total = balance.total
+        self.last_update_time = balance.last_update_time
 
 
 DEFAULT_MAINTENANCE_MARGIN = 0.05

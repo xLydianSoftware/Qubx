@@ -88,7 +88,7 @@ def _order(cid: str = "c1", status: OrderStatus = OrderStatus.SUBMITTED, venue_i
         status=status,
         venue_order_id=venue_id,
         price=100.0,
-        last_updated_at=T0 if status.is_terminal else None,
+        last_update_time=T0 if status.is_terminal else None,
         origin=OrderOrigin.FRAMEWORK,
     )
 
@@ -112,7 +112,7 @@ def test_apply_routes_by_instrument_and_delegates_to_reducer():
     am.get_state(EX).add_order(_order("c1", OrderStatus.SUBMITTED))
     r = am.apply(OrderAcceptedEvent(instrument=BTC, client_order_id="c1", venue_order_id="V1", accepted_at=T0))
     assert r.order is not None and r.order.status is OrderStatus.ACCEPTED
-    assert r.order.last_updated_at == T1  # the AM's clock, not the event timestamp
+    assert r.order.last_update_time == T1  # the AM's clock, not the event timestamp
 
 
 def test_apply_routes_by_order_id_across_exchanges():

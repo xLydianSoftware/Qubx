@@ -12,7 +12,7 @@ These tests define the intended API (names are proposed here, adjust at implemen
 
 import numpy as np
 
-from qubx import QubxLogConfig
+from qubx import QubxLogConfig, logger
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     Reconciler,
@@ -44,14 +44,14 @@ def _order(
     *,
     venue_id=_GEN,
     status: OrderStatus = OrderStatus.ACCEPTED,
-    last_updated_at: np.datetime64 = SETTLED,
+    last_update_time: np.datetime64 | None = SETTLED,
     price=50_000.0,
     quantity=1.0,
     filled=0.0,
 ) -> Order:
     # default: a unique exchange order id derived from the cid (so two distinct orders never
     # collide). Pass an explicit value to override, or `venue_id=None` for an unacked order.
-    # `last_updated_at` is the order's venue update ts (a later snapshot leg carries a newer one).
+    # last_update_time = the order's update timestamp (Differ grace gate + reconcile guard).
     vid = f"v_{cid}" if venue_id is _GEN else venue_id
     return Order(
         client_order_id=cid,
@@ -65,7 +65,7 @@ def _order(
         venue_order_id=vid,  # type: ignore
         price=price,
         submitted_at=SETTLED,
-        last_updated_at=last_updated_at,
+        last_update_time=last_update_time,
         origin=OrderOrigin.FRAMEWORK,
     )
 
@@ -231,7 +231,7 @@ def test_status_resolved():
                     "order1",
                     status=OrderStatus.PARTIALLY_FILLED,
                     filled=0.5,
-                    last_updated_at=_passed_seconds(T0, 4),  # newer venue ts than local
+                    last_update_time=_passed_seconds(T0, 4),  # newer VENUE ts than local
                 )
             ],
         ),
@@ -255,10 +255,16 @@ def test_snapshot_does_not_wipe_pending_cancel_marker():
         st,
         _origin(
             as_of=_passed_seconds(T0, 5),
-            open_orders=[_order("order1", status=OrderStatus.ACCEPTED, last_updated_at=_passed_seconds(T0, 4))],
+            open_orders=[_order("order1", status=OrderStatus.ACCEPTED, last_update_time=_passed_seconds(T0, 4))],
         ),
         _passed_seconds(T0, 5),
     )
     assert a == []  # nothing reconciled / routed
     assert st.get_order("order1").status == OrderStatus.PENDING_CANCEL  # type: ignore # marker preserved
+    QubxLogConfig.set_log_level("ERROR")
+
+
+def test_000():
+    QubxLogConfig.set_log_level("DEBUG")
+    logger.info(_order(None, venue_id="0x124234234"))
     QubxLogConfig.set_log_level("ERROR")

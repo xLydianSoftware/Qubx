@@ -257,8 +257,9 @@ class Reconciler:
 
     @staticmethod
     def _venue_newer(snap: Order, local: Order) -> bool:
-        ts = snap.last_updated_at
-        return ts is not None and (local.last_updated_at is None or ts > local.last_updated_at)  # type: ignore
+        # `last_update_time` carries the venue update time (snapshot leg vs our last venue event).
+        ts = snap.last_update_time
+        return ts is not None and (local.last_update_time is None or ts > local.last_update_time)  # type: ignore
 
     @staticmethod
     def _apply_order_snapshot(state: AccountState, local: Order, snap: Order) -> None:
@@ -270,9 +271,9 @@ class Reconciler:
                     f"[{state.exchange}] reconcile: forcing {local.client_order_id} "
                     f"{local.status} -> {snap.status} (snapshot authoritative)"
                 )
-            state.transition_order(local.client_order_id, snap.status, snap.last_updated_at)
+            state.transition_order(local.client_order_id, snap.status, snap.last_update_time)
         else:
-            local.last_updated_at = snap.last_updated_at
+            local.last_update_time = snap.last_update_time
         local.filled_quantity = snap.filled_quantity
         local.avg_fill_price = snap.avg_fill_price
 

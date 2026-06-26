@@ -281,9 +281,9 @@ class AccountState:
         if order.status.is_inflight:
             self._inflight_index.add(cid)
         elif order.status.is_terminal:
-            if order.last_updated_at is None:
-                raise ValueError("terminal orders must have last_updated_at set for eviction")
-            self._pending_evict_index[cid] = order.last_updated_at
+            if order.last_update_time is None:
+                raise ValueError("terminal orders must have last_update_time set for eviction")
+            self._pending_evict_index[cid] = order.last_update_time
 
     def transition_order(self, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
         """Low-level status setter and the sole maintainer of every status-derived
@@ -295,7 +295,7 @@ class AccountState:
         order.transitions.append(OrderTransition(time=now, from_status=old_status, to_status=new_status))
         self._transition_counts[new_status.value] += 1
         order.status = new_status
-        order.last_updated_at = now
+        order.last_update_time = now
 
         if new_status.is_inflight:
             self._inflight_index.add(cid)
@@ -339,7 +339,7 @@ class AccountState:
             return False
         seen.add(fill.trade_id)
         order.record_fill(fill.amount, fill.price)  # filled_quantity + avg-price math lives on Order
-        order.last_updated_at = now
+        order.last_update_time = now
         return True
 
     def is_trade_seen(self, cid: str, trade_id: str) -> bool:

@@ -577,7 +577,7 @@ class AccountManager(IAccountViewer):
                             instrument=order.instrument,
                         )
                         state.bump_retry(cid)
-                        order.last_updated_at = now
+                        order.last_update_time = now
                 except Exception:
                     # One bad order / connector error must not abort the rest of the sweep
                     # or skip terminal eviction (design.md "Ticks & sweeps"). Strategy-callback errors are

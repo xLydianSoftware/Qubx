@@ -328,7 +328,7 @@ class Differ:
             diffs.append(OrderAvgFillPriceMismatch(local=lo, origin=so))
 
     def _past_grace(self, order: Order, as_of: np.datetime64) -> bool:
-        seen_at = order.last_updated_at if order.last_updated_at is not None else order.submitted_at
+        seen_at = order.last_update_time if order.last_update_time is not None else order.submitted_at
         if seen_at is None:
             return False
         return bool((as_of - seen_at) >= self._grace)

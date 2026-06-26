@@ -260,7 +260,7 @@ def _apply_execution(state: AccountState, order: Order, deal: Deal, now: np.date
         # FETCHED before it fails the per-order guard in reconcile — otherwise that
         # stale snapshot resets the suppressed marker / mis-absorbs the deficit
         # (apply_fill bumps the booked paths; this covers the suppressed ones).
-        order.last_updated_at = now
+        order.last_update_time = now
         excess = qty - covered
         if excess <= eps:
             state.record_trade_id(cid, deal.trade_id)
@@ -387,7 +387,7 @@ def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datet
         order.price = event.new_price
     if event.new_quantity is not None:
         order.quantity = event.new_quantity
-    order.last_updated_at = now
+    order.last_update_time = now
     if order.status == OrderStatus.PENDING_UPDATE:
         target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
         order = reconcile.transition(state, order.client_order_id, target, now)

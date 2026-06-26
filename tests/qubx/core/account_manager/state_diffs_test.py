@@ -69,7 +69,7 @@ def _order(
     price: float = 50_000.0,
     filled_quantity: float = 0.0,
     avg_fill_price: float = 0.0,
-    last_updated_at: np.datetime64 | None = SETTLED,
+    last_update_time: np.datetime64 | None = SETTLED,
     submitted_at: np.datetime64 | None = SETTLED,
     origin: OrderOrigin = OrderOrigin.FRAMEWORK,
 ) -> Order:
@@ -86,7 +86,7 @@ def _order(
         filled_quantity=filled_quantity,
         avg_fill_price=avg_fill_price,
         submitted_at=submitted_at,
-        last_updated_at=last_updated_at,
+        last_update_time=last_update_time,
         origin=origin,
     )
 
@@ -196,31 +196,31 @@ def test_multi_field_drift_emits_one_atom_per_field():
 
 
 def test_local_only_past_grace_emits_local_missing():
-    local = _state(orders=[_order(cid="qubx_z", last_updated_at=SETTLED)])
+    local = _state(orders=[_order(cid="qubx_z", last_update_time=SETTLED)])
     diffs = _differ().diff(local, _snap(open_orders=[]))
     assert [type(d) for d in diffs] == [LocalOrderMissing]
     assert diffs[0].order.client_order_id == "qubx_z"
 
 
 def test_local_only_within_grace_emits_nothing():
-    local = _state(orders=[_order(last_updated_at=FRESH)])  # as_of - 3s < 5s
+    local = _state(orders=[_order(last_update_time=FRESH)])  # as_of - 3s < 5s
     assert _differ().diff(local, _snap(open_orders=[])) == []
 
 
 def test_local_only_changed_after_request_emits_nothing():
-    local = _state(orders=[_order(last_updated_at=AFTER)])  # seen_at > as_of
+    local = _state(orders=[_order(last_update_time=AFTER)])  # seen_at > as_of
     assert _differ().diff(local, _snap(open_orders=[])) == []
 
 
 def test_local_only_untimestamped_emits_nothing():
-    local = _state(orders=[_order(last_updated_at=None, submitted_at=None)])
+    local = _state(orders=[_order(last_update_time=None, submitted_at=None)])
     assert _differ().diff(local, _snap(open_orders=[])) == []
 
 
 def test_field_mismatch_within_grace_emits_nothing():
     # order present on BOTH sides with a real price drift, but changed within grace ->
     # the gate suppresses ALL atoms for it (not just the missing case)
-    local = _state(orders=[_order(price=50_000.0, last_updated_at=FRESH)])
+    local = _state(orders=[_order(price=50_000.0, last_update_time=FRESH)])
     origin = _snap(open_orders=[_order(price=50_100.0)])
     assert _differ().diff(local, origin) == []
 

@@ -47,7 +47,7 @@ def _order(
     cid: str = "qubx-1",
     status: OrderStatus = OrderStatus.SUBMITTED,
     venue_id: str | None = None,
-    last_updated_at: np.datetime64 | None = None,
+    last_update_time: np.datetime64 | None = None,
 ) -> Order:
     return Order(
         client_order_id=cid,
@@ -59,7 +59,7 @@ def _order(
         status=status,
         venue_order_id=venue_id,
         price=50_000.0,
-        last_updated_at=last_updated_at,
+        last_update_time=last_update_time,
         origin=OrderOrigin.FRAMEWORK,
     )
 
@@ -99,9 +99,9 @@ def test_add_order_with_venue_id_indexes_by_venue():
 
 def test_add_terminal_order_registers_eviction_not_inflight():
     state = AccountState("binance", "USDT")
-    state.add_order(_order(status=OrderStatus.FILLED, last_updated_at=T1))
+    state.add_order(_order(status=OrderStatus.FILLED, last_update_time=T1))
     assert "qubx-1" not in _inflight_cids(state)
-    # eviction is registered at last_updated_at (T1): not due before T1 + retention
+    # eviction is registered at last_update_time (T1): not due before T1 + retention
     retention = np.timedelta64(60, "s")
     state.prune_terminal_orders(T1 + retention - np.timedelta64(1, "ms"), retention)
     assert state.has_active_order("qubx-1")
@@ -109,10 +109,10 @@ def test_add_terminal_order_registers_eviction_not_inflight():
     assert not state.has_active_order("qubx-1")
 
 
-def test_add_terminal_order_without_last_updated_at_raises():
+def test_add_terminal_order_without_last_update_time_raises():
     state = AccountState("binance", "USDT")
-    with pytest.raises(ValueError, match="last_updated_at"):
-        state.add_order(_order(status=OrderStatus.CANCELED, last_updated_at=None))
+    with pytest.raises(ValueError, match="last_update_time"):
+        state.add_order(_order(status=OrderStatus.CANCELED, last_update_time=None))
 
 
 def test_add_order_refuses_duplicate_active_cid():
@@ -157,7 +157,7 @@ def test_transition_to_accepted_drains_inflight():
     state.add_order(_order())
     order = state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
     assert order.status is OrderStatus.ACCEPTED
-    assert order.last_updated_at == T1
+    assert order.last_update_time == T1
     assert "qubx-1" not in _inflight_cids(state)
 
 
@@ -476,8 +476,8 @@ def test_get_inflight_orders_tracks_index():
 
 def test_prune_terminal_orders_removes_only_expired():
     state = AccountState("binance", "USDT")
-    state.add_order(_order("old", status=OrderStatus.FILLED, last_updated_at=T0))
-    state.add_order(_order("recent", status=OrderStatus.FILLED, last_updated_at=T2))
+    state.add_order(_order("old", status=OrderStatus.FILLED, last_update_time=T0))
+    state.add_order(_order("recent", status=OrderStatus.FILLED, last_update_time=T2))
     state.prune_terminal_orders(T2, np.timedelta64(90, "s"))
     assert state.get_active_order("old") is None
     assert state.get_order("old") is not None  # moved to history
