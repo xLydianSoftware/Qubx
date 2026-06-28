@@ -67,6 +67,7 @@ class AccountState:
         "_applied_funding_buckets",
         "_position_push_as_of",
         "_balance_push_as_of",
+        "_position_reconcile_as_of",
     )
 
     def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
@@ -121,6 +122,9 @@ class AccountState:
         # for the state's lifetime (no eviction).
         self._position_push_as_of: dict[Instrument, np.datetime64] = {}
         self._balance_push_as_of: dict[str, np.datetime64] = {}
+        # - watermark: snapshot reconciled the size up to this venue time; a deal at/under it is
+        #   already in that size → reducer records but doesn't re-book it
+        self._position_reconcile_as_of: dict[Instrument, np.datetime64] = {}
 
     def __repr__(self) -> str:
         return (
@@ -188,6 +192,9 @@ class AccountState:
 
     def get_position_push_as_of(self, instrument: Instrument) -> np.datetime64 | None:
         return self._position_push_as_of.get(instrument)
+
+    def get_position_reconcile_as_of(self, instrument: Instrument) -> np.datetime64 | None:
+        return self._position_reconcile_as_of.get(instrument)
 
     def get_balance_push_as_of(self, currency: str) -> np.datetime64 | None:
         return self._balance_push_as_of.get(currency)
@@ -428,6 +435,11 @@ class AccountState:
         # accumulated accounting (r_pnl, commissions, funding). No-op if not held.
         pos = self._positions.get(instrument)
         if pos is not None:
+            if pos.quantity != 0.0:
+                logger.info(
+                    f"[{self.exchange}] reconcile: <r>flattened</r> position <y>{instrument}</y> "
+                    f"(was size={pos.quantity}); venue reports flat"
+                )
             pos.flatten()
 
     def update_balance(self, currency: str, balance: Balance) -> None:
@@ -449,10 +461,18 @@ class AccountState:
         existing = self._positions.get(snapshot.instrument)
         if existing is None:
             self._positions[snapshot.instrument] = snapshot
+            logger.info(
+                f"[{self.exchange}] reconcile: materialized position <y>{snapshot.instrument}</y> from snapshot "
+                f"-> size=<g>{snapshot.quantity}</g> avg={snapshot.position_avg_price}"
+            )
             return True
 
         changed = existing.quantity != snapshot.quantity or existing.position_avg_price != snapshot.position_avg_price
         if changed:
+            logger.info(
+                f"[{self.exchange}] reconcile: position <y>{snapshot.instrument}</y> from snapshot -> "
+                f"size {existing.quantity}->{snapshot.quantity} avg {existing.position_avg_price}->{snapshot.position_avg_price}"
+            )
             existing.reconcile_size(snapshot.quantity, snapshot.position_avg_price)
 
         # external margins first, so the mark refresh below skips recalculating them
@@ -475,6 +495,11 @@ class AccountState:
         """Record the venue event time of an applied position push. Staleness checks
         live in the reducer (this setter is dumb, like set_snapshot_fill_deficit)."""
         self._position_push_as_of[instrument] = as_of
+
+    def mark_position_reconcile(self, instrument: Instrument, as_of: np.datetime64) -> None:
+        """Set the position reconcile watermark (venue time). Dumb setter — the skip-re-book
+        guard lives in the reducer."""
+        self._position_reconcile_as_of[instrument] = as_of
 
     def apply_balance_push(
         self, currency: str, total: float, as_of: np.datetime64, *, free: float = np.nan, locked: float = np.nan
@@ -513,6 +538,12 @@ class AccountState:
         changed = existing is None or (
             existing.total != balance.total or existing.free != balance.free or existing.locked != balance.locked
         )
+        if changed:
+            old = "—" if existing is None else f"total={existing.total} free={existing.free} locked={existing.locked}"
+            logger.info(
+                f"[{self.exchange}] reconcile: balance <y>{balance.currency}</y> from snapshot -> "
+                f"total=<g>{balance.total}</g> free={balance.free} locked={balance.locked} (was {old})"
+            )
         # Timestamp rule: a WS push (venue E) is authoritative — never let the snapshot's local
         # `as_of` clobber it. Use `as_of` only as a fallback for a currency with no push, and only
         # when the values actually changed (so an idle balance doesn't ratchet every poll).

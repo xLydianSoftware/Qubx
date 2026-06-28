@@ -471,6 +471,78 @@ def test_deal_event_books_position():
     assert r.position is not None and r.position.quantity == 0.4
 
 
+def test_deal_at_or_before_position_reconcile_watermark_records_but_skips_book():
+    # situation II: a snapshot already reconciled the position size up to a venue watermark.
+    # A genuinely-missed deal whose venue time is <= that watermark was already captured by the
+    # snapshot size — it must still be RECORDED (returned -> logged + trade-id dedup) but NOT
+    # re-booked, else the position double-moves.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    state.set_position(BTC, Position(BTC, quantity=0.5, pos_average_price=50_000.0))
+    state.mark_position_reconcile(BTC, T1)  # snapshot accounted everything up to T1
+
+    stale = Deal(trade_id="t_old", order_id="v1", time=T0, amount=0.5, price=50_000.0, aggressive=True)  # T0 < T1
+    r = apply(state, DealEvent(instrument=BTC, client_order_id="c1", deal=stale), T1)
+    assert r.deal is not None  # recorded for the ledger (logs + dedup)
+    assert r.position is None  # but NOT booked
+    assert _present(state.get_position(BTC)).quantity == 0.5  # size unchanged
+
+    # a deal AFTER the watermark is a genuinely-new execution -> books normally
+    T2 = T1 + np.timedelta64(60, "s")
+    fresh = Deal(trade_id="t_new", order_id="v1", time=T2, amount=0.3, price=50_000.0, aggressive=True)
+    r2 = apply(state, DealEvent(instrument=BTC, client_order_id="c1", deal=fresh), T2)
+    assert r2.position is not None
+    assert _present(state.get_position(BTC)).quantity == 0.8
+
+
+def test_recovered_closing_deal_under_watermark_does_not_realize_rpnl():
+    # MEASUREMENT (situation II decision point): a position was DECREASED by a snapshot reconcile
+    # (size-only — r_pnl untouched), then the missed CLOSING deal is recovered (hist fetch) and
+    # pushed back. The venue-ts watermark skips _book_deal, so the deal is recorded (dedup) but its
+    # realized PnL is NOT booked. This documents the current r_pnl gap; the r_pnl assertion below is
+    # the decision point — flip it if we decide recovered deals must realize pnl (pnl-leg-only book).
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    # post-snapshot local position: LONG 0.003 @ 59_000 (snapshot already shrank it from 0.005)
+    state.set_position(BTC, Position(BTC, quantity=0.003, pos_average_price=59_000.0))
+    state.mark_position_reconcile(BTC, T1)  # snapshot accounted the size up to T1
+
+    # the missed closing SELL 0.002 @ 59_500 — if booked it would realize +1.0 and shrink to 0.001;
+    # venue time T0 <= watermark T1, so it's recognized as already-in-the-snapshot
+    closing = Deal(trade_id="hist1", order_id="v1", time=T0, amount=-0.002, price=59_500.0, aggressive=True)
+    r = apply(state, DealEvent(instrument=BTC, client_order_id="c1", deal=closing), T1)
+
+    pos = _present(state.get_position(BTC))
+    assert r.deal is not None  # recorded for the ledger + dedup
+    assert r.position is None  # booking skipped — no double-move
+    assert pos.quantity == 0.003  # size unchanged (snapshot already corrected it; NOT driven to 0.001)
+    assert pos.r_pnl == 0.0  # GAP: realized PnL of the missed close (+1.0) is NOT booked
+
+
+def test_old_deficit_mechanism_also_leaks_rpnl_on_covered_close():
+    # PROOF (answering "did the deficit actually solve the r_pnl leak?"): NO. The per-order deficit
+    # suppresses the COVERED deal's booking ENTIRELY (_apply_execution returns None -> no _book_deal
+    # -> no realized pnl) — same r_pnl outcome as the new venue-ts watermark. The deficit solved
+    # SIZE double-counting, never r_pnl realization. The only behavioral difference: deficit returns
+    # r.deal=None (deal not even surfaced), the watermark returns r.deal (recorded/deduped).
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    # post-(old)-snapshot: size already reconciled to 0.003 + a deficit armed for the 0.002 the
+    # snapshot counted into filled_quantity but that was never booked as a deal locally
+    state.set_position(BTC, Position(BTC, quantity=0.003, pos_average_price=59_000.0))
+    state.set_snapshot_fill_deficit("c1", 0.002)
+
+    # the missed closing SELL 0.002 @ 59_500 (would realize +1.0 if booked) -> fully covered
+    closing = Deal(trade_id="t_close", order_id="v1", time=T1, amount=-0.002, price=59_500.0, aggressive=True)
+    r = apply(state, DealEvent(instrument=BTC, client_order_id="c1", deal=closing), T1)
+
+    pos = _present(state.get_position(BTC))
+    assert r.deal is None  # deficit fully suppressed it — not even surfaced
+    assert r.position is None
+    assert pos.quantity == 0.003  # size unchanged (snapshot already corrected it)
+    assert pos.r_pnl == 0.0  # SAME GAP as the watermark: realized pnl of the missed close NOT booked
+
+
 def test_futures_fee_debits_settle_balance():
     state = _state()
     _seed_usdt(state, 1000.0)

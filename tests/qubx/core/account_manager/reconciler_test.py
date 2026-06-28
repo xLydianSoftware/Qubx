@@ -13,21 +13,31 @@ These tests define the intended API (names are proposed here, adjust at implemen
 import numpy as np
 
 from qubx import QubxLogConfig, logger
+from qubx.core.account_manager import reducer
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     Reconciler,
+    RequestHistDeals,
     RequestStatus,
     RouteEvent,
 )
 from qubx.core.account_manager.state import AccountState
-from qubx.core.basics import Order, OrderOrigin, OrderSide, OrderStatus, OrderType
-from qubx.core.events import AccountSnapshot, OrderCanceledEvent, OrderLostEvent, OrderPartiallyFilledEvent
+from qubx.core.basics import Balance, Deal, Instrument, Order, OrderOrigin, OrderSide, OrderStatus, OrderType, Position
+from qubx.core.events import (
+    AccountSnapshot,
+    DealEvent,
+    OrderCanceledEvent,
+    OrderLostEvent,
+    OrderPartiallyFilledEvent,
+)
 from qubx.core.lookups import lookup
 
 EXCHANGE = "BINANCE.UM"
 
 T0 = np.datetime64("2026-05-28T00:00:30", "ns")  # snapshot as_of / spawn time
 SETTLED = np.datetime64("2026-05-28T00:00:00", "ns")  # order last change — past grace
+D_ON = lambda: QubxLogConfig.set_log_level("DEBUG")
+D_OFF = lambda: QubxLogConfig.set_log_level("ERROR")
 
 
 def _inst(symbol: str = "BTCUSDT"):
@@ -42,6 +52,7 @@ _GEN = object()  # sentinel: generate a unique venue id from the cid
 def _order(
     cid: str,
     *,
+    instrument: Instrument = _inst(),
     venue_id=_GEN,
     status: OrderStatus = OrderStatus.ACCEPTED,
     last_update_time: np.datetime64 | None = SETTLED,
@@ -52,11 +63,12 @@ def _order(
     # default: a unique exchange order id derived from the cid (so two distinct orders never
     # collide). Pass an explicit value to override, or `venue_id=None` for an unacked order.
     # last_update_time = the order's update timestamp (Differ grace gate + reconcile guard).
+    # instrument defaults to BTCUSDT — pass _inst("ETHUSDT") etc. for multi-instrument scenarios.
     vid = f"v_{cid}" if venue_id is _GEN else venue_id
     return Order(
         client_order_id=cid,
         type=OrderType.LIMIT,
-        instrument=_inst(),
+        instrument=instrument,
         quantity=quantity,
         filled_quantity=filled,
         side=OrderSide.BUY,
@@ -77,13 +89,63 @@ def _local(*orders: Order) -> AccountState:
     return st
 
 
-def _origin(*, as_of=T0, open_orders=None) -> AccountSnapshot:
-    return AccountSnapshot(exchange=EXCHANGE, as_of=as_of, open_orders=open_orders)
+def _origin(*, as_of=T0, open_orders=None, positions=None, balances=None) -> AccountSnapshot:
+    return AccountSnapshot(
+        exchange=EXCHANGE, as_of=as_of, open_orders=open_orders, positions=positions, balances=balances
+    )
+
+
+def _balance(currency: str, *, free: float, locked: float = 0.0) -> Balance:
+    return Balance(exchange=EXCHANGE, currency=currency, free=free, locked=locked, total=free + locked)
+
+
+def _position(
+    qty: float, *, instrument: Instrument = _inst(), avg: float = 59_000.0, r_pnl: float = 0.0, ts: np.datetime64 = T0
+) -> Position:
+    # a position carrying its own venue update time (ts) — the reconcile watermark / hist-deals
+    # `since`. r_pnl is locally-accumulated accounting the snapshot must NOT clobber.
+    p = Position(instrument, quantity=qty, pos_average_price=avg, r_pnl=r_pnl)
+    p.last_update_time = ts  # type: ignore
+    return p
+
+
+def _deal(
+    ts: np.datetime64,
+    *,
+    instrument: Instrument = _inst(),
+    amount: float = 0.002,
+    price: float = 59_100.0,
+    trade_id: str = "td",
+    cid: str | None = None,
+    venue_id: str | None = None,
+) -> DealEvent:
+    # A DealEvent for driving on_event / reducer.apply in scenarios. Default: instrument-addressed
+    # only (no cid/venue id) — pass cid and/or venue_id to address a specific order, amount<0 to sell,
+    # ts as the venue trade time (vs the position watermark), and a unique trade_id to exercise dedup.
+    return DealEvent(
+        instrument=instrument,
+        client_order_id=cid,
+        venue_order_id=venue_id,
+        deal=Deal(
+            trade_id=trade_id,
+            order_id=venue_id or "v",
+            time=ts,
+            amount=amount,
+            price=price,
+            aggressive=True,
+        ),
+    )
 
 
 def _reconciler() -> Reconciler:
     # short windows so scenarios are a few ticks; differ grace 5s
-    return Reconciler(Differ(grace="5s"), snapshot_interval="30s", missing_wait="2s", missing_max_retries=2)
+    return Reconciler(
+        Differ(grace="5s"),
+        snapshot_interval="30s",
+        missing_wait="2s",
+        missing_max_retries=2,
+        position_confirm_wait="2s",
+    )
 
 
 def _passed_seconds(base, s: int):
@@ -167,7 +229,7 @@ def test_repeated_snapshot_keeps_one_task_per_missing_order():
 
 
 def test_missing_one_order_with_no_answer_ends_lost():
-    QubxLogConfig.set_log_level("DEBUG")
+    D_ON()
 
     rec = _reconciler()
 
@@ -185,7 +247,7 @@ def test_missing_one_order_with_no_answer_ends_lost():
     assert isinstance(out[0].event, OrderLostEvent) and out[0].event.client_order_id == "X1"
     assert st.get_order("X2").status == OrderStatus.ACCEPTED  # type: ignore # untouched
     assert rec.active_keys() == set()
-    QubxLogConfig.set_log_level("ERROR")
+    D_OFF()
 
 
 # NOTE: a terminal order (FILLED/CANCELED/...) never appears in a venue's open_orders, so a
@@ -194,7 +256,7 @@ def test_missing_one_order_with_no_answer_ends_lost():
 
 
 def test_missing_order_reappears_open_in_snapshot_resolves_without_lost():
-    QubxLogConfig.set_log_level("DEBUG")
+    D_ON()
     # the dangerous one: order missing in snap1 (a race), still OPEN in snap2 — no diff,
     # but the task must resolve on reappearance instead of grinding to LOST.
     rec = _reconciler()
@@ -212,7 +274,7 @@ def test_missing_order_reappears_open_in_snapshot_resolves_without_lost():
     rec.on_tick(st, _passed_seconds(T0, 8))  # drive well past give-up
     rec.on_tick(st, _passed_seconds(T0, 10))
     assert st.get_order("order1").status == OrderStatus.ACCEPTED  # type: ignore # still live, never LOST
-    QubxLogConfig.set_log_level("ERROR")
+    D_OFF()
 
 
 def test_status_resolved():
@@ -246,7 +308,7 @@ def test_status_resolved():
 
 
 def test_snapshot_does_not_wipe_pending_cancel_marker():
-    QubxLogConfig.set_log_level("DEBUG")
+    D_ON()
     # our cancel is in flight (PENDING_CANCEL). A snapshot poll still showing the order live
     # (non-terminal) must NOT wipe the pending marker — the venue resolves the race itself.
     rec = _reconciler()
@@ -261,10 +323,230 @@ def test_snapshot_does_not_wipe_pending_cancel_marker():
     )
     assert a == []  # nothing reconciled / routed
     assert st.get_order("order1").status == OrderStatus.PENDING_CANCEL  # type: ignore # marker preserved
-    QubxLogConfig.set_log_level("ERROR")
+    D_OFF()
 
 
-def test_000():
-    QubxLogConfig.set_log_level("DEBUG")
-    logger.info(_order(None, venue_id="0x124234234"))
-    QubxLogConfig.set_log_level("ERROR")
+# --------------------------------------------------------------------------- #
+# II. ConfirmPositionBySnapshot (position size diff -> recover missed deals)
+# --------------------------------------------------------------------------- #
+
+
+def test_position_size_diff_applies_snapshot_and_spawns_confirm_task():
+    # local 0.003, venue snapshot 0.005 — we missed a buy deal. The snapshot size is
+    # authoritative: applied surgically (locally-accumulated r_pnl survives), and a
+    # ConfirmPositionBySnapshot task is spawned to recover the missed deal for the record.
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.003, avg=59_000.0, r_pnl=5.0, ts=_passed_seconds(T0, -10)))
+
+    a = rec.on_snapshot(st, _origin(positions=[_position(0.005, avg=59_100.0, ts=T0)]), T0)
+
+    pos = st.get_position(_inst())
+    assert pos.quantity == 0.005  # type: ignore # size applied from the venue snapshot
+    assert pos.r_pnl == 5.0  # type: ignore # surgical — local accounting preserved
+    assert rec.active_keys() == {"BTCUSDT"}  # a ConfirmPositionBySnapshot task owns the symbol
+    assert a == []  # we WAIT for the late WS deals first — nothing fetched yet
+
+
+def test_position_confirm_late_deal_arrives_drops_task_without_fetch():
+    # the missed deal arrives on its own (late WS) within the wait window -> recovered, drop,
+    # no hist fetch needed.
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.003, ts=_passed_seconds(T0, -10)))
+    rec.on_snapshot(st, _origin(positions=[_position(0.005, ts=T0)]), T0)
+    assert rec.active_keys() == {"BTCUSDT"}
+
+    a = rec.on_event(st, _deal(_passed_seconds(T0, 1)), _passed_seconds(T0, 1))
+    assert rec.active_keys() == set()  # recovered by the arriving deal -> task dropped
+    assert a == []  # no RequestHistDeals
+
+
+def test_position_confirm_no_deal_fetches_hist_deals_after_window():
+    D_ON()
+    # no late deal by the window -> fetch the missed deals (since = position venue ts) so the
+    # ledger has them; the connector replays them as DealEvents (reducer venue-ts guard skips
+    # re-booking). One-shot -> task dropped.
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.003, ts=_passed_seconds(T0, -10)))
+    rec.on_snapshot(st, _origin(positions=[_position(0.005, ts=T0)]), T0)
+
+    assert rec.on_tick(st, _passed_seconds(T0, 1)) == []  # inside the wait window (2s)
+    a = rec.on_tick(st, _passed_seconds(T0, 3))  # past the window, no deal seen
+    assert a == [RequestHistDeals(instrument=_inst(), since=T0)]
+    assert rec.active_keys() == set()  # one-shot fetch -> dropped
+    D_OFF()
+
+
+def test_position_in_sync_does_not_spawn_task():
+    D_ON()
+    # snapshot agrees with local -> no diff, no task, no fetch.
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.005, avg=59_100.0, ts=_passed_seconds(T0, -10)))
+    a = rec.on_snapshot(st, _origin(positions=[_position(0.005, avg=59_100.0, ts=T0)]), T0)
+    assert a == []
+    assert rec.active_keys() == set()
+    D_OFF()
+
+
+def test_local_position_missing_flattens_and_spawns_confirm_task():
+    D_ON()
+    # local holds 0.005 but the snapshot (positions observed) lists none -> the venue says
+    # flat, so we missed the closing deals. Flatten locally (r_pnl preserved) and spawn a
+    # ConfirmPositionBySnapshot task to recover the closing deals for the record.
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.005, avg=59_000.0, r_pnl=7.0, ts=_passed_seconds(T0, -10)))
+
+    a = rec.on_snapshot(st, _origin(positions=[]), T0)  # observed + empty -> absent at venue
+
+    pos = st.get_position(_inst())
+    assert pos.quantity == 0.0  # type: ignore # flattened (venue authoritative)
+    assert pos.r_pnl == 7.0  # type: ignore # local accounting preserved
+    assert rec.active_keys() == {"BTCUSDT"}  # confirm task to recover the closing deals
+    assert a == []
+    D_OFF()
+
+
+# --------------------------------------------------------------------------- #
+# III. Balances (inline apply from snapshot — no task)
+# --------------------------------------------------------------------------- #
+
+
+def test_balance_mismatch_applied_from_snapshot():
+    D_ON()
+    rec = _reconciler()
+    st = _local()
+    st.update_balance("USDT", _balance("USDT", free=400.0))
+    a = rec.on_snapshot(st, _origin(balances=[_balance("USDT", free=465.0)]), T0)
+    assert st.get_balance("USDT").total == 465.0  # type: ignore # applied from the snapshot
+    assert a == []
+    assert rec.active_keys() == set()  # balances are inline — never spawn a task
+    D_OFF()
+
+
+def test_original_balance_missing_applied_from_snapshot():
+    D_ON()
+    # the snapshot reports a currency we don't track locally -> materialize it.
+    rec = _reconciler()
+    st = _local()
+    a = rec.on_snapshot(st, _origin(balances=[_balance("USDT", free=465.0)]), T0)
+    assert st.get_balance("USDT").total == 465.0  # type: ignore
+    assert a == []
+    assert rec.active_keys() == set()
+    D_OFF()
+
+
+def test_position_decrease_the_deals_arrived_with_small_latency():
+    # The missed CLOSING deal (traded BEFORE the snapshot, venue ts <= watermark) is DELIVERED late
+    # by WS but still within the confirm window. AM0 routes every DealEvent to BOTH reducer.apply
+    # (ledger) AND reconciler.on_event (task notification) — the arriving deal must satisfy the
+    # confirm task so NO RequestHistDeals is fetched (we already received it live).
+    rec = _reconciler()
+    st = _local()  # no local orders — the missed close's order already filled+evicted at the venue
+    # local LONG 0.005 @ 59_000; the venue closed 0.002 we missed -> snapshot shows 0.003
+    st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+
+    # snapshot decrease -> size-only reconcile (+ watermark=T0 + confirm task), pnl NOT realized
+    rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
+    assert st.get_position(_inst()).quantity == 0.003  # type: ignore
+    assert rec.active_keys() == {"BTCUSDT"}
+    assert rec.on_tick(st, T0) == []  # nothing fetched at spawn (inside the window)
+
+    # the FULL missed close (-0.002, == the missed delta) arrives late but within the 2s window. It
+    # TRADED before the snapshot (ts = T0-1 <= watermark) and is merely DELIVERED at T0+1 (latency).
+    hist = _deal(_passed_seconds(T0, -1), amount=-0.002, price=59_500.0, trade_id="hist1", venue_id="v_hist")
+
+    # ledger leg: watermark skips re-booking (already in the snapshot size) -> size stays 0.003
+    res = reducer.apply(st, hist, _passed_seconds(T0, 1), snapshot_grace=np.timedelta64(60, "s"))
+    assert res.position is None  # type: ignore # not re-booked (no double-move)
+    assert st.get_position(_inst()).quantity == 0.003  # type: ignore
+
+    # reconciler leg: the arriving deal FULLY covers the missed delta -> task satisfied, dropped
+    assert rec.on_event(st, hist, _passed_seconds(T0, 1)) == []
+    assert rec.active_keys() == set()  # fully recovered by the arriving deal
+
+    # window elapses -> NO RequestHistDeals (we already got the whole missed delta live)
+    assert rec.on_tick(st, _passed_seconds(T0, 3)) == []
+
+
+def test_position_decrease_partial_deal_still_fetches_remainder():
+    # Only PART of the missed delta arrives live (-0.001 of -0.002). The confirm task must NOT treat
+    # itself as recovered — when the window elapses it still fetches the remainder via RequestHistDeals
+    # (the hist reply is deduped against the -0.001 we already booked-skipped).
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+    rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
+    assert rec.active_keys() == {"BTCUSDT"}  # missed delta = 0.002
+
+    # only half the missed delta is delivered live within the window
+    half = _deal(_passed_seconds(T0, -1), amount=-0.001, price=59_500.0, trade_id="hist1", venue_id="v_hist")
+    reducer.apply(st, half, _passed_seconds(T0, 1), snapshot_grace=np.timedelta64(60, "s"))
+    assert rec.on_event(st, half, _passed_seconds(T0, 1)) == []  # partial — does NOT drop yet
+    assert rec.active_keys() == {"BTCUSDT"}  # still armed: 0.001 of 0.002 outstanding
+
+    # window elapses with the remainder still missing -> fetch it for the record
+    out = rec.on_tick(st, _passed_seconds(T0, 3))
+    assert out == [RequestHistDeals(instrument=_inst(), since=T0)]
+    assert rec.active_keys() == set()  # one-shot fetch -> dropped
+
+
+def test_position_decrease_then_pushed_historical_deals_end_to_end():
+    # END-TO-END (manual AM0 wiring): snapshot shrinks the position, the confirm task fetches the
+    # missed deals, and we actually PUSH those historical deals back through reducer.apply (exactly
+    # what the connector does on a RequestHistDeals reply). Measures the final state — notably the
+    # r_pnl gap: the recovered close is recorded + deduped but its realized PnL is NOT booked.
+    D_ON()
+    rec = _reconciler()
+    st = _local()  # no local orders — the missed close's order already filled+evicted at the venue
+    # local LONG 0.005 @ 59_000; the venue closed 0.002 we missed -> snapshot shows 0.003
+    st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+
+    # 1) snapshot decrease -> size-only reconcile (+ watermark + confirm task), pnl NOT realized
+    rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
+    pos = st.get_position(_inst())
+
+    assert pos.quantity == 0.003  # type: ignore # size corrected from the snapshot
+    assert pos.r_pnl == 0.0  # type: ignore # snapshot is size-only — no realized pnl
+    assert rec.active_keys() == {"BTCUSDT"}
+
+    # - check we will run task not right away
+    out = rec.on_tick(st, _passed_seconds(T0, 0))
+    assert not out
+    logger.info(f" -[0]--> {out} -----")
+
+    out = rec.on_tick(st, _passed_seconds(T0, 1))
+    assert not out
+    logger.info(f" -[1]--> {out} -----")
+
+    # 2) no late WS deal by the window -> fetch the missed deals since the venue watermark
+    out = rec.on_tick(st, _passed_seconds(T0, 3))
+    logger.info(f" -[3]--> {out} -----")
+    assert out == [RequestHistDeals(instrument=_inst(), since=T0)]
+    assert rec.active_keys() == set()  # one-shot fetch task dropped
+
+    # 3) the connector pushes the fetched HISTORICAL deal back as a normal DealEvent (addressed by
+    #    venue id only — its order already filled+evicted; the reducer materializes it external)
+    hist = _deal(
+        _passed_seconds(T0, -2),  # venue time <= watermark
+        amount=-0.002,
+        price=59_500.0,
+        trade_id="hist1",
+        venue_id="v_hist",
+    )
+    res = reducer.apply(st, hist, _passed_seconds(T0, 3), snapshot_grace=np.timedelta64(60, "s"))
+
+    pos = st.get_position(_inst())
+    assert res.deal is not None  # type: ignore # recorded (logged + trade-id dedup)
+    assert res.position is None  # type: ignore # booking skipped by the watermark -> no double-move
+    assert pos.quantity == 0.003  # type: ignore # size stays correct (NOT driven to 0.001)
+    assert pos.r_pnl == 0.0  # type: ignore # GAP: the missed close's realized pnl (+1.0) is not booked
+
+    # 4) a re-delivery of the SAME hist deal is deduped (idempotent recovery)
+    res2 = reducer.apply(st, hist, _passed_seconds(T0, 4), snapshot_grace=np.timedelta64(60, "s"))
+    assert res2.deal is None  # type: ignore # trade-id already seen
+    assert st.get_position(_inst()).quantity == 0.003  # type: ignore
+    D_OFF()

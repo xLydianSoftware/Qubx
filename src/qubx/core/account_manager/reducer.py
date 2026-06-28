@@ -202,6 +202,13 @@ def _covered_by_balance_push(state: AccountState, currency: str, venue_time: np.
     return as_of is not None and as_of >= venue_time
 
 
+def _reconciled_past(state: AccountState, instrument: Instrument, deal: Deal) -> bool:
+    # - true if a snapshot already booked this deal into the size (deal.time <= watermark, both
+    #   venue clock). Caller still records it for dedup/log; only the re-book is skipped.
+    watermark = state.get_position_reconcile_as_of(instrument)
+    return watermark is not None and deal.time <= watermark
+
+
 def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Position:
     """Apply a deal's effect to the position and balances. Caller dedups first.
 
@@ -374,7 +381,9 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
     deal = _apply_execution(state, order, event.deal, now, update_time=event.last_update_time)
     if deal is None:
         return ApplyResult()
-    position = _book_deal(state, order.instrument, deal) if order.instrument is not None else None
+    # - record (return) the deal but skip the book if a snapshot already has it (watermark)
+    book = order.instrument is not None and not _reconciled_past(state, order.instrument, deal)
+    position = _book_deal(state, order.instrument, deal) if book else None
     return ApplyResult(deal=deal, position=position)
 
 

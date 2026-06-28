@@ -17,10 +17,20 @@ from typing import Any
 import numpy as np
 
 from qubx import logger
-from qubx.core.account_manager.diffs import Differ, DiffOrders, LocalOrderMissing
+from qubx.core.account_manager.diffs import (
+    BalanceMismatch,
+    Differ,
+    LocalOrderMissing,
+    LocalPositionMissing,
+    OrderFieldMismatch,
+    OriginalBalanceMissing,
+    OriginalPositionMissing,
+    PositionFieldMismatch,
+    PositionSizeMismatch,
+)
 from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import can_transition
-from qubx.core.basics import Instrument, Order, OrderStatus
+from qubx.core.basics import Instrument, Order, OrderStatus, Position
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
@@ -30,9 +40,9 @@ from qubx.core.events import (
 from qubx.utils.time import to_timedelta
 
 
-# - Actions: the I/O vocabulary AccountManager executes (extensible) ------------------------ #
 @dataclass(frozen=True)
 class RequestStatus:
+    # - fetch one order's true status from the venue (missing/uncertain order)
     cid: str
     venue_id: str | None
     instrument: Instrument
@@ -40,44 +50,47 @@ class RequestStatus:
 
 @dataclass(frozen=True)
 class RequestSnapshot:
+    # - pull a fresh account snapshot for this exchange
     exchange: str
 
 
 @dataclass(frozen=True)
 class RequestHistDeals:
+    # - fetch trades since `since` to recover deals missed behind a position diff
     instrument: Instrument
     since: np.datetime64
 
 
 @dataclass(frozen=True)
 class RouteEvent:
-    # an account event the Reconciler synthesizes for the normal pipeline: AM feeds it to
-    # pm.process_event so the reducer applies it AND the strategy is notified (and a later
-    # duplicate WS event is deduped there). For decisions with no venue event of their own —
-    # e.g. the give-up LOST.
+    # - a synthesized event AM feeds to pm.process_event (reducer applies + strategy notified +
+    #   later WS dup deduped). For decisions with no venue event of their own, e.g. give-up LOST.
     event: object
 
 
 Action = RequestStatus | RequestSnapshot | RequestHistDeals | RouteEvent | OrderPartiallyFilledEvent
 
 
-# - Inputs fed to tasks --------------------------------------------------------- #
 class Tick:
+    # - the periodic clock input that drives task timers
     __slots__ = ()
 
 
 @dataclass(frozen=True)
 class OrderIn:
-    event: object  # an order-lifecycle event (OrderCanceledEvent, OrderFilledEvent, ...)
+    # - an order-lifecycle event routed to tasks (OrderCanceledEvent, OrderFilledEvent, ...)
+    event: object
 
 
 @dataclass(frozen=True)
 class DealIn:
+    # - a trade (DealEvent) routed to tasks
     deal: DealEvent
 
 
 @dataclass(frozen=True)
 class SnapshotIn:
+    # - a snapshot arrival routed to tasks (e.g. order reappeared)
     snap: AccountSnapshot
 
 
@@ -85,7 +98,6 @@ def _td(v: str | np.timedelta64) -> np.timedelta64:
     return to_timedelta(v).asm8 if isinstance(v, str) else v
 
 
-# - Tasks ----------------------------------------------------------------------- #
 class Task(ABC):
     """A pure FSM step. Carries an opaque ``key`` the Reconciler dedups & routes by; mutates
     the in-memory ``state`` it is handed and returns the actions it wants performed (no I/O).
@@ -104,12 +116,9 @@ class Task(ABC):
 
 
 class ResolveMissingOrder(Task):
-    """FSM I — a local order absent from the snapshot. WAIT (latency freedom) → fetch its
-    true status (≤ ``max_retries``) → resolved by the arriving event, or LOST on give-up.
-
-    The arriving real status (fill/cancel/reject, or the order reappearing) is applied by
-    the normal event path, not here; this task only nudges the venue and counts retries.
-    Knobs are its own constructor params — different task types configure independently.
+    """A local order absent from the snapshot. Wait, then fetch its status (≤ max_retries),
+    until an event resolves it or the budget runs out → LOST. The arriving status is applied
+    by the normal event path; this task only nudges the venue and counts retries.
     """
 
     def __init__(self, order: Order, now: np.datetime64, *, wait: np.timedelta64, max_retries: int):
@@ -135,13 +144,10 @@ class ResolveMissingOrder(Task):
 
     def step(self, inp: Any, state: AccountState, now: np.datetime64) -> list[Action]:
         if isinstance(inp, OrderIn):
-            # any order event for our id means the uncertainty is resolved (the normal path
-            # applies it) — drop the task
-            self._done = True
+            self._done = True  # - any event for our id resolves it (normal path applies it)
             return []
         if isinstance(inp, SnapshotIn):
-            # the order reappeared at the venue (still open), or its status was just applied
-            # terminal from this very snapshot — either way it is no longer "missing"
+            # - reappeared open, or just applied terminal → no longer missing
             order = state.get_order(self._cid)
             if (order is not None and order.status.is_terminal) or self._present_in(inp.snap):
                 self._done = True
@@ -149,15 +155,13 @@ class ResolveMissingOrder(Task):
         if not isinstance(inp, Tick):
             return []
         if now < self._next_fetch_at:
-            return []  # still waiting (latency freedom)
+            return []
         if self._retries < self._max_retries:
             self._retries += 1
             self._next_fetch_at = now + self._wait
             return [RequestStatus(cid=self._cid, venue_id=self._venue_id, instrument=self._instrument)]
-        # give up: no venue answer after the retry budget. Route a LOST event through the
-        # bus (AM -> pm.process_event) so the pipeline terminalizes it AND notifies the
-        # strategy — never a silent mutation here (a silent one would be invisible, and the
-        # later WS duplicate would be deduped by the venue-clock guard → strategy misses it).
+        # - budget exhausted → route LOST via the bus (never silent: a silent mutate is invisible
+        #   and the later WS dup gets deduped, so the strategy would miss it)
         logger.warning(
             f"[{state.exchange}] reconcile give-up on order <g>{self._cid}</g> (vid=<blue>{self._venue_id}</blue>) "
             f"-> <r>LOST</r> after {self._retries} status fetches with no venue answer"
@@ -186,8 +190,61 @@ class ResolveMissingOrder(Task):
         return False
 
 
-# - Reconciler ------------------------------------------------------------------ #
+class ConfirmPositionBySnapshot(Task):
+    """Recover the deals behind a position-size diff (snapshot already fixed the size).
+
+    Wait the window for late WS deals, crediting each against the missed delta. Fully covered →
+    drop, no fetch. Window elapses with any remainder → one RequestHistDeals, then drop.
+    """
+
+    def __init__(
+        self,
+        instrument: Instrument,
+        since: np.datetime64,
+        now: np.datetime64,
+        *,
+        wait: np.timedelta64,
+        expected_delta: float,
+    ):
+        self.key = instrument.symbol
+        self._instrument = instrument
+        self._since = since
+        self._deadline = now + wait
+        self._remaining = expected_delta  # - signed size still to recover (snapshot - prior)
+        self._eps = instrument.lot_size * 0.5  # - half-lot, matches the Differ
+        self._done = False
+
+    def done(self) -> bool:
+        return self._done
+
+    def handles(self, inp: Any) -> bool:
+        if isinstance(inp, Tick):
+            return True
+        if isinstance(inp, DealIn):
+            return getattr(inp.deal, "instrument", None) == self._instrument
+        return False
+
+    def step(self, inp: Any, state: AccountState, now: np.datetime64) -> list[Action]:
+        if isinstance(inp, DealIn):
+            # - signed credit, so an opposite-side trade doesn't falsely cover
+            self._remaining -= inp.deal.deal.amount
+            self._done = abs(self._remaining) <= self._eps
+            return []
+        if isinstance(inp, Tick) and now >= self._deadline:
+            self._done = True  # - hard deadline: exactly one fetch then drop
+            return [RequestHistDeals(instrument=self._instrument, since=self._since)]
+        return []
+
+
 class Reconciler:
+    _differ: Differ
+    _snapshot_interval: np.timedelta64  # - reconciler owns the due-timer
+    _missing_wait: np.timedelta64  # - knobs handed to ResolveMissingOrder tasks
+    _missing_max_retries: int
+    _position_confirm_wait: np.timedelta64  # - ConfirmPositionBySnapshot window
+    _tasks: dict[Hashable, Task]  # - opaque key -> task, one per key
+    _last_snapshot: dict[str, np.datetime64]  # - per-exchange last snapshot time
+
     def __init__(
         self,
         differ: Differ,
@@ -195,18 +252,18 @@ class Reconciler:
         snapshot_interval: str | np.timedelta64 = "30s",
         missing_wait: str | np.timedelta64 = "2s",
         missing_max_retries: int = 3,
+        position_confirm_wait: str | np.timedelta64 = "2s",
     ):
         self._differ = differ
-        self._snapshot_interval = _td(snapshot_interval)  # reconciler owns the due-timer
-        self._missing_wait = _td(missing_wait)  # knobs handed to ResolveMissingOrder tasks
+        self._snapshot_interval = _td(snapshot_interval)
+        self._missing_wait = _td(missing_wait)
         self._missing_max_retries = missing_max_retries
-        self._tasks: dict[Hashable, Task] = {}  # opaque key -> task, one per key
-        self._last_snapshot: dict[str, np.datetime64] = {}
+        self._position_confirm_wait = _td(position_confirm_wait)
+        self._tasks = {}
+        self._last_snapshot = {}
 
     def active_keys(self) -> set[Hashable]:
         return set(self._tasks)
-
-    # -- entry points (pure: return actions, mutate in-mem state) -- #
 
     def on_tick(self, state: AccountState, now: np.datetime64) -> list[Action]:
         actions: list[Action] = []
@@ -217,35 +274,75 @@ class Reconciler:
         return actions + self._dispatch(Tick(), state, now)
 
     def on_snapshot(self, state: AccountState, snap: AccountSnapshot, now: np.datetime64) -> list[Action]:
-        self._last_snapshot[state.exchange] = now  # the snapshot just arrived → reset due-timer
-        order_drifts: dict[str, Order] = {}  # cid -> snapshot order (deduped across field atoms)
-        for d in self._differ.diff(state, snap):
-            logger.debug(d.describe())
-            if isinstance(d, LocalOrderMissing):
-                self._spawn(
-                    ResolveMissingOrder(d.order, now, wait=self._missing_wait, max_retries=self._missing_max_retries)
-                )
-            elif isinstance(d, DiffOrders):
-                order_drifts[d.local.client_order_id] = d.origin
-            # positions (II) / balances (III) handled in later steps
-        # Order status/filled reconcile: the snapshot is authoritative for the order's own
-        # state (deals drive the ledger, NOT order status), and a missed WS status update may
-        # never arrive — so mutate status/filled in-mem (guarded), then route the fill event so
-        # the strategy is notified. (Position size diffs spawn the retrieve-deals task — II.)
+        # - applies are idempotent, so repeated field atoms for one order/position are safe.
+        #   leaf arms precede their base arm (a leaf must win). unhandled atoms are deferred.
+        self._last_snapshot[state.exchange] = now  # - reset the snapshot due-timer
         actions: list[Action] = []
-        for snap_order in order_drifts.values():
-            if (ev := self._reconcile_order(state, snap_order)) is not None:
-                actions.append(RouteEvent(ev))
+        for difference in self._differ.diff(state, snap):
+            logger.debug(difference.describe())
+            match difference:
+                case LocalOrderMissing(order=order):
+                    self._spawn(
+                        ResolveMissingOrder(order, now, wait=self._missing_wait, max_retries=self._missing_max_retries)
+                    )
+
+                case OrderFieldMismatch(origin=snap_order):
+                    if (ev := self._reconcile_order(state, snap_order)) is not None:
+                        actions.append(RouteEvent(ev))
+
+                # - size diff = missed deals
+                case PositionSizeMismatch(origin=snap_pos) | OriginalPositionMissing(position=snap_pos):
+                    self._reconcile_missed_position(state, snap, now, snap_pos)
+
+                # - avg/margin only = figure refresh, no missed deals
+                case PositionFieldMismatch(origin=snap_pos):
+                    state.reconcile_position_from_snapshot(snap_pos)
+
+                # - local holds it, venue flat = missed the close
+                case LocalPositionMissing(position=local_pos):
+                    self._flatten_missed_close(state, snap, now, local_pos.instrument)
+
+                case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
+                    state.apply_balance_snapshot(snap_bal, snap.as_of)
+
         return actions + self._dispatch(SnapshotIn(snap), state, now)
 
-    def _reconcile_order(self, state: AccountState, snap_order: Order) -> Action | None:
-        """Reconcile one snapshot order into local state; return the fill event to route.
+    def _reconcile_missed_position(
+        self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, snap_pos: Position
+    ) -> None:
+        # - apply the snapshot size, watermark it (reducer won't re-book deals it already covers),
+        #   then confirm-task the missed delta (snapshot - prior, captured before the apply).
+        prior = state.get_position(snap_pos.instrument)
+        delta = snap_pos.quantity - (prior.quantity if prior is not None else 0.0)
+        state.reconcile_position_from_snapshot(snap_pos)
+        since = snap_pos.last_update_time if snap_pos.last_update_time is not None else snap.as_of
+        state.mark_position_reconcile(snap_pos.instrument, since)
+        self._spawn(
+            ConfirmPositionBySnapshot(
+                snap_pos.instrument, since, now, wait=self._position_confirm_wait, expected_delta=delta
+            )
+        )
 
-        The snapshot is authoritative for the order's own status/filled (deals never move
-        order status, and a missed WS update may never arrive). Skips unless the snapshot
-        leg is strictly newer (monotonic venue clock), never resurrects a locally-terminal
-        order, and never wipes an in-flight pending marker (our cancel/update may still be
-        racing the venue — same rationale as the live accept-during-PENDING_CANCEL guard).
+    def _flatten_missed_close(
+        self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, instrument: Instrument
+    ) -> None:
+        # - flatten (keeps r_pnl/commissions/funding); missed delta is the whole prior size.
+        #   no venue position ts (absent from snapshot) → as_of is the watermark / hist `since`.
+        prior = state.get_position(instrument)
+        delta = -(prior.quantity if prior is not None else 0.0)
+        state.settle_position(instrument)
+        state.mark_position_reconcile(instrument, snap.as_of)
+        self._spawn(
+            ConfirmPositionBySnapshot(
+                instrument, snap.as_of, now, wait=self._position_confirm_wait, expected_delta=delta
+            )
+        )
+
+    def _reconcile_order(self, state: AccountState, snap_order: Order) -> Action | None:
+        """Apply a snapshot order's status/filled to local state; return the fill event to route.
+
+        Snapshot is authoritative for the order's own state. Guards: skip if locally terminal or
+        not venue-newer; never wipe an in-flight pending marker (the venue resolves that race).
         """
         local = state.get_active_order(snap_order.client_order_id)
         if local is None or local.status.is_terminal or not self._venue_newer(snap_order, local):
@@ -257,14 +354,13 @@ class Reconciler:
 
     @staticmethod
     def _venue_newer(snap: Order, local: Order) -> bool:
-        # `last_update_time` carries the venue update time (snapshot leg vs our last venue event).
         ts = snap.last_update_time
         return ts is not None and (local.last_update_time is None or ts > local.last_update_time)  # type: ignore
 
     @staticmethod
     def _apply_order_snapshot(state: AccountState, local: Order, snap: Order) -> None:
-        # status through transition_order (the sole indices/audit maintainer); on a snapshot
-        # the venue is authoritative, so an illegal transition is forced — but loudly.
+        # - go through transition_order (sole index/audit writer); venue wins, so force illegal
+        #   transitions but warn
         if snap.status != local.status:
             if not can_transition(local.status, snap.status):
                 logger.warning(
@@ -279,11 +375,8 @@ class Reconciler:
 
     @staticmethod
     def _fill_event(order: Order) -> Action | None:
-        # An order present in the snapshot's open_orders is, by definition, still open
-        # (ACCEPTED / PARTIALLY_FILLED) — a FILLED order is terminal and never listed there
-        # (it arrives via the missing -> RequestStatus fetch reply, carrying the real deal). So
-        # the only fill-progress event this path produces is a partial fill, fill=None (no real
-        # deal), routed so the strategy is notified.
+        # - open_orders only lists live orders, so the only progress here is a partial fill
+        #   (fill=None — no deal); FILLED arrives via the missing→RequestStatus reply
         if order.status == OrderStatus.PARTIALLY_FILLED:
             return OrderPartiallyFilledEvent(
                 instrument=order.instrument,
@@ -296,8 +389,6 @@ class Reconciler:
     def on_event(self, state: AccountState, event: object, now: np.datetime64) -> list[Action]:
         inp = DealIn(event) if isinstance(event, DealEvent) else OrderIn(event)
         return self._dispatch(inp, state, now, only=self._keys_of(event))
-
-    # -- task registry (one per key) + routing -- #
 
     def _spawn(self, task: Task) -> None:
         if task.key in self._tasks:  # one task per key — duplicate ignored

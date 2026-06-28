@@ -109,7 +109,7 @@ class OriginalOrderMissing(Diff):
 
 
 @diffatom
-class DiffOrders(Diff):
+class OrderFieldMismatch(Diff):
     """Base for per-field order MODIFY atoms. Leaves set ``FIELD`` (the Order attribute
     to compare) and optionally ``LABEL`` (the human name to render)."""
 
@@ -129,38 +129,38 @@ class DiffOrders(Diff):
 
 
 @diffatom
-class OrderStatusMismatch(DiffOrders):
+class OrderStatusMismatch(OrderFieldMismatch):
     FIELD = "status"
 
 
 @diffatom
-class OrderFilledQtyMismatch(DiffOrders):
+class OrderFilledQtyMismatch(OrderFieldMismatch):
     FIELD = "filled_quantity"
 
 
 @diffatom
-class OrderPriceMismatch(DiffOrders):
+class OrderPriceMismatch(OrderFieldMismatch):
     FIELD = "price"
 
 
 @diffatom
-class OrderVenueIdMismatch(DiffOrders):
+class OrderVenueIdMismatch(OrderFieldMismatch):
     FIELD = "venue_order_id"
 
 
 @diffatom
-class OrderQuantityMismatch(DiffOrders):
+class OrderQuantityMismatch(OrderFieldMismatch):
     FIELD = "quantity"
 
 
 @diffatom
-class OrderAvgFillPriceMismatch(DiffOrders):
+class OrderAvgFillPriceMismatch(OrderFieldMismatch):
     FIELD = "avg_fill_price"
 
 
 # -- positions -- #
 @diffatom
-class DiffPositions(Diff):
+class PositionFieldMismatch(Diff):
     """Base for per-field position MODIFY atoms."""
 
     local: Position
@@ -176,19 +176,19 @@ class DiffPositions(Diff):
 
 
 @diffatom
-class PositionSizeMismatch(DiffPositions):
+class PositionSizeMismatch(PositionFieldMismatch):
     FIELD = "quantity"
     LABEL = "size"
 
 
 @diffatom
-class PositionAvgPriceMismatch(DiffPositions):
+class PositionAvgPriceMismatch(PositionFieldMismatch):
     FIELD = "position_avg_price"
     LABEL = "avg_price"
 
 
 @diffatom
-class PositionMarginMismatch(DiffPositions):
+class PositionMarginMismatch(PositionFieldMismatch):
     FIELD = "maint_margin"
     LABEL = "maint_margin"
 
