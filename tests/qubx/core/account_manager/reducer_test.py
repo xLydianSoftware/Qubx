@@ -35,6 +35,7 @@ from qubx.core.events import (
     OrderCancelRejectedEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
+    OrderLostEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
     OrderUpdatedEvent,
@@ -127,6 +128,21 @@ def test_cancel_on_terminal_is_noop():
     state = _state()
     _order(state, status=OrderStatus.FILLED)
     r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1"), T1)
+    assert r.order is None
+
+
+def test_lost_transitions_to_terminal():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    r = apply(state, OrderLostEvent(instrument=None, client_order_id="c1", reason="give-up"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.LOST
+    assert r.order_change is OrderChange.LOST
+
+
+def test_lost_on_terminal_is_noop():
+    state = _state()
+    _order(state, status=OrderStatus.FILLED)
+    r = apply(state, OrderLostEvent(instrument=None, client_order_id="c1", reason="give-up"), T1)
     assert r.order is None
 
 

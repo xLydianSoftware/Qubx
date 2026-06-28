@@ -44,6 +44,7 @@ from qubx.core.events import (
     OrderEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
+    OrderLostEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
     OrderUpdatedEvent,
@@ -190,6 +191,16 @@ def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.dat
         return ApplyResult()
     order = reconcile.transition(state, order.client_order_id, OrderStatus.CANCELED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.CANCELED)
+
+
+def _handle_lost(state: AccountState, event: OrderLostEvent, now: np.datetime64) -> ApplyResult:
+    # - reconciler give-up: terminalize a never-confirmed order to LOST (terminal, so the
+    #   transition is always legal). Routed through the bus so the strategy is notified.
+    order = _resolve(state, event)
+    if order is None or order.status.is_terminal:
+        return ApplyResult()
+    order = reconcile.transition(state, order.client_order_id, OrderStatus.LOST, now, update_time=event.last_update_time)
+    return ApplyResult(order=order, order_change=OrderChange.LOST)
 
 
 def _handle_expired(state: AccountState, event: OrderExpiredEvent, now: np.datetime64) -> ApplyResult:
@@ -512,6 +523,7 @@ _HANDLERS = {
     DealEvent: _handle_deal,
     OrderUpdatedEvent: _handle_updated,
     OrderCanceledEvent: _handle_canceled,
+    OrderLostEvent: _handle_lost,
     OrderExpiredEvent: _handle_expired,
     OrderRejectedEvent: _handle_rejected,
     OrderCancelRejectedEvent: _handle_cancel_rejected,

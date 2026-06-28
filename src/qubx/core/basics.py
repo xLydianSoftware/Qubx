@@ -753,6 +753,7 @@ class OrderChange(StrEnum):
     UPDATED = "UPDATED"
     CANCEL_REJECTED = "CANCEL_REJECTED"
     UPDATE_REJECTED = "UPDATE_REJECTED"
+    LOST = "LOST"
 
 
 @dataclass
