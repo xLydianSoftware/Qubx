@@ -143,17 +143,21 @@ class ResolveMissingOrder(Task):
         return False
 
     def step(self, inp: Any, state: AccountState, now: np.datetime64) -> list[Action]:
-        if isinstance(inp, OrderIn):
-            self._done = True  # - any event for our id resolves it (normal path applies it)
-            return []
-        if isinstance(inp, SnapshotIn):
-            # - reappeared open, or just applied terminal → no longer missing
-            order = state.get_order(self._cid)
-            if (order is not None and order.status.is_terminal) or self._present_in(inp.snap):
-                self._done = True
-            return []
-        if not isinstance(inp, Tick):
-            return []
+        match inp:
+            case OrderIn():
+                self._done = True  # - any event for our id resolves it (normal path applies it)
+                return []
+            case SnapshotIn(snap=snap):
+                # - reappeared open, or just applied terminal → no longer missing
+                order = state.get_order(self._cid)
+                self._done = (order is not None and order.status.is_terminal) or self._present_in(snap)
+                return []
+            case Tick():
+                return self._on_tick(state, now)
+            case _:
+                return []
+
+    def _on_tick(self, state: AccountState, now: np.datetime64) -> list[Action]:
         if now < self._next_fetch_at:
             return []
         if self._retries < self._max_retries:
