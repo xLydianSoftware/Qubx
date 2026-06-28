@@ -272,3 +272,83 @@ def test_position_deal_stamps_last_update_time_as_datetime64():
 
     assert isinstance(pos.last_update_time, np.datetime64)  # dt_64, not int-ns
     assert pos.last_update_time == t_deal
+
+
+def test_update_position_realize_only_books_pnl_keeps_size():
+    # realize_only=True realizes the closing pnl but leaves size/avg/last_update_time untouched
+    # (situation II: the deal is already in an authoritative snapshot size).
+    import numpy as np
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=0.003, pos_average_price=59_000.0)
+    pos.last_update_time = np.datetime64("2026-06-26T00:00:00", "ns")  # type: ignore
+
+    # close 0.002 @ 59_500 (target 0.001), realize-only
+    pnl, _ = pos.update_position(TIME("2026-06-26T01:00:00"), 0.001, 59_500.0, realize_only=True)
+
+    assert pnl == approx(1.0)  # 0.002 * (59_500 - 59_000)
+    assert pos.r_pnl == approx(1.0)
+    assert pos.quantity == 0.003  # size NOT moved
+    assert pos.position_avg_price == 59_000.0  # avg NOT touched
+    assert pos.last_update_time == np.datetime64("2026-06-26T00:00:00", "ns")  # not restamped
+
+
+def test_update_position_realize_only_opening_realizes_nothing():
+    # a same-side (opening) move under realize_only realizes nothing and never touches size.
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=0.003, pos_average_price=59_000.0)
+
+    pnl, _ = pos.update_position(TIME("2026-06-26T01:00:00"), 0.005, 59_500.0, realize_only=True)
+
+    assert pnl == 0.0
+    assert pos.r_pnl == 0.0
+    assert pos.quantity == 0.003
+
+
+def test_update_position_by_deal_realize_only():
+    # the deal-driven entry point: realize_only books r_pnl from the deal, size stays put.
+    from qubx.core.basics import Deal as CoreDeal
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=0.003, pos_average_price=59_000.0)
+
+    deal = CoreDeal(
+        trade_id="t1", order_id="v1", time=TIME("2026-06-26T01:00:00"), amount=-0.002, price=59_500.0, aggressive=True
+    )
+    pos.update_position_by_deal(deal, realize_only=True)
+
+    assert pos.r_pnl == approx(1.0)
+    assert pos.quantity == 0.003  # size untouched
+
+
+def test_update_position_realize_only_books_fee_to_commissions():
+    # realize_only still books the fee into commissions (a tracker; balance stays snapshot-owned)
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=0.003, pos_average_price=59_000.0)
+
+    pos.update_position(TIME("2026-06-26T01:00:00"), 0.001, 59_500.0, fee_amount=0.5, realize_only=True)
+
+    assert pos.r_pnl == approx(1.0)
+    assert pos.commissions == approx(0.5)
+    assert pos.quantity == 0.003
+
+
+def test_update_position_with_conversion_rate():
+    # the multi-currency seam (dormant at conv=1.0 in prod): r_pnl and avg_funds are scaled into
+    # the funded currency by conversion_rate; the returned deal_pnl stays in quote units.
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst)
+
+    pos.update_position(TIME(0), 0.002, 50_000.0, conversion_rate=2.0)  # open long 0.002
+    assert pos.position_avg_price == 50_000.0
+    assert pos.position_avg_price_funds == 25_000.0  # avg / conv
+
+    pnl, _ = pos.update_position(TIME(1), 0.0, 51_000.0, conversion_rate=2.0)  # close
+    assert pnl == approx(2.0)  # returned realized in QUOTE units: 0.002 * (51_000 - 50_000)
+    assert pos.r_pnl == approx(1.0)  # accumulated in FUNDED currency: 2.0 / conv
+    assert pos.quantity == 0.0

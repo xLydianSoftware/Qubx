@@ -379,12 +379,14 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
     if event.venue_order_id is not None:
         state.set_venue_id(order.client_order_id, event.venue_order_id)
     deal = _apply_execution(state, order, event.deal, now, update_time=event.last_update_time)
-    if deal is None:
-        return ApplyResult()
-    # - record (return) the deal but skip the book if a snapshot already has it (watermark)
-    book = order.instrument is not None and not _reconciled_past(state, order.instrument, deal)
-    position = _book_deal(state, order.instrument, deal) if book else None
-    return ApplyResult(deal=deal, position=position)
+    if deal is None or order.instrument is None:
+        return ApplyResult(deal=deal)
+    if _reconciled_past(state, order.instrument, deal):
+        # - snapshot already owns size + balance; realize the deal's pnl only (no size/balance)
+        pos = state.ensure_position(order.instrument)
+        pos.update_position_by_deal(deal, state.conversion_rate(order.instrument), realize_only=True)
+        return ApplyResult(deal=deal, position=pos)
+    return ApplyResult(deal=deal, position=_book_deal(state, order.instrument, deal))
 
 
 def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datetime64) -> ApplyResult:

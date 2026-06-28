@@ -12,7 +12,7 @@ These tests define the intended API (names are proposed here, adjust at implemen
 
 import numpy as np
 
-from qubx import QubxLogConfig, logger
+from qubx import QubxLogConfig
 from qubx.core.account_manager import reducer
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
@@ -459,10 +459,11 @@ def test_position_decrease_the_deals_arrived_with_small_latency():
     # TRADED before the snapshot (ts = T0-1 <= watermark) and is merely DELIVERED at T0+1 (latency).
     hist = _deal(_passed_seconds(T0, -1), amount=-0.002, price=59_500.0, trade_id="hist1", venue_id="v_hist")
 
-    # ledger leg: watermark skips re-booking (already in the snapshot size) -> size stays 0.003
+    # ledger leg: watermark books r_pnl-only -> size stays 0.003, realized PnL lands
     res = reducer.apply(st, hist, _passed_seconds(T0, 1), snapshot_grace=np.timedelta64(60, "s"))
-    assert res.position is None  # type: ignore # not re-booked (no double-move)
-    assert st.get_position(_inst()).quantity == 0.003  # type: ignore
+    assert res.position is not None  # type: ignore # r_pnl realized
+    assert st.get_position(_inst()).quantity == 0.003  # type: ignore # size unchanged (no double-move)
+    assert st.get_position(_inst()).r_pnl == 1.0  # type: ignore # 0.002 * (59_500 - 59_000)
 
     # reconciler leg: the arriving deal FULLY covers the missed delta -> task satisfied, dropped
     assert rec.on_event(st, hist, _passed_seconds(T0, 1)) == []
@@ -496,57 +497,42 @@ def test_position_decrease_partial_deal_still_fetches_remainder():
 
 def test_position_decrease_then_pushed_historical_deals_end_to_end():
     # END-TO-END (manual AM0 wiring): snapshot shrinks the position, the confirm task fetches the
-    # missed deals, and we actually PUSH those historical deals back through reducer.apply (exactly
-    # what the connector does on a RequestHistDeals reply). Measures the final state — notably the
-    # r_pnl gap: the recovered close is recorded + deduped but its realized PnL is NOT booked.
-    D_ON()
+    # missed deals, and we PUSH those historical deals back through reducer.apply (what the connector
+    # does on a RequestHistDeals reply). Size stays venue-authoritative; the recovered close realizes
+    # its r_pnl (pnl-only book) and a re-delivery is deduped.
     rec = _reconciler()
     st = _local()  # no local orders — the missed close's order already filled+evicted at the venue
     # local LONG 0.005 @ 59_000; the venue closed 0.002 we missed -> snapshot shows 0.003
     st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
 
-    # 1) snapshot decrease -> size-only reconcile (+ watermark + confirm task), pnl NOT realized
+    # 1) snapshot decrease -> size-only reconcile (+ watermark + confirm task), pnl not yet realized
     rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
     pos = st.get_position(_inst())
-
     assert pos.quantity == 0.003  # type: ignore # size corrected from the snapshot
-    assert pos.r_pnl == 0.0  # type: ignore # snapshot is size-only — no realized pnl
+    assert pos.r_pnl == 0.0  # type: ignore # snapshot is size-only — no realized pnl yet
     assert rec.active_keys() == {"BTCUSDT"}
 
-    # - check we will run task not right away
-    out = rec.on_tick(st, _passed_seconds(T0, 0))
-    assert not out
-    logger.info(f" -[0]--> {out} -----")
-
-    out = rec.on_tick(st, _passed_seconds(T0, 1))
-    assert not out
-    logger.info(f" -[1]--> {out} -----")
+    assert rec.on_tick(st, T0) == []  # inside the window
+    assert rec.on_tick(st, _passed_seconds(T0, 1)) == []
 
     # 2) no late WS deal by the window -> fetch the missed deals since the venue watermark
     out = rec.on_tick(st, _passed_seconds(T0, 3))
-    logger.info(f" -[3]--> {out} -----")
     assert out == [RequestHistDeals(instrument=_inst(), since=T0)]
     assert rec.active_keys() == set()  # one-shot fetch task dropped
 
     # 3) the connector pushes the fetched HISTORICAL deal back as a normal DealEvent (addressed by
     #    venue id only — its order already filled+evicted; the reducer materializes it external)
-    hist = _deal(
-        _passed_seconds(T0, -2),  # venue time <= watermark
-        amount=-0.002,
-        price=59_500.0,
-        trade_id="hist1",
-        venue_id="v_hist",
-    )
+    hist = _deal(_passed_seconds(T0, -2), amount=-0.002, price=59_500.0, trade_id="hist1", venue_id="v_hist")
     res = reducer.apply(st, hist, _passed_seconds(T0, 3), snapshot_grace=np.timedelta64(60, "s"))
 
     pos = st.get_position(_inst())
     assert res.deal is not None  # type: ignore # recorded (logged + trade-id dedup)
-    assert res.position is None  # type: ignore # booking skipped by the watermark -> no double-move
-    assert pos.quantity == 0.003  # type: ignore # size stays correct (NOT driven to 0.001)
-    assert pos.r_pnl == 0.0  # type: ignore # GAP: the missed close's realized pnl (+1.0) is not booked
+    assert res.position is not None  # type: ignore # r_pnl realized (pnl-only book)
+    assert pos.quantity == 0.003  # type: ignore # size stays venue-authoritative (NOT driven to 0.001)
+    assert pos.r_pnl == 1.0  # type: ignore # 0.002 * (59_500 - 59_000) realized from the recovered close
 
-    # 4) a re-delivery of the SAME hist deal is deduped (idempotent recovery)
+    # 4) a re-delivery of the SAME hist deal is deduped (no double realization)
     res2 = reducer.apply(st, hist, _passed_seconds(T0, 4), snapshot_grace=np.timedelta64(60, "s"))
     assert res2.deal is None  # type: ignore # trade-id already seen
     assert st.get_position(_inst()).quantity == 0.003  # type: ignore
-    D_OFF()
+    assert st.get_position(_inst()).r_pnl == 1.0  # type: ignore # not double-realized

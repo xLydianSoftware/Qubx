@@ -1028,7 +1028,14 @@ class Position:
         raise ValueError(f"Unknown update type: {type(update)}")
 
     def change_position_by(
-        self, timestamp: dt_64, amount: float, exec_price: float, fee_amount: float = 0, conversion_rate: float = 1
+        self,
+        timestamp: dt_64,
+        amount: float,
+        exec_price: float,
+        fee_amount: float = 0,
+        conversion_rate: float = 1,
+        *,
+        realize_only: bool = False,
     ) -> tuple[float, float]:
         return self.update_position(
             timestamp,
@@ -1036,12 +1043,21 @@ class Position:
             exec_price,
             fee_amount,
             conversion_rate=conversion_rate,
+            realize_only=realize_only,
         )
 
     def update_position(
-        self, timestamp: dt_64, position: float, exec_price: float, fee_amount: float = 0, conversion_rate: float = 1
+        self,
+        timestamp: dt_64,
+        position: float,
+        exec_price: float,
+        fee_amount: float = 0,
+        conversion_rate: float = 1,
+        *,
+        realize_only: bool = False,
     ) -> tuple[float, float]:
-        # - realized PnL of this fill
+        # - realize_only=True books the closing pnl + fee but leaves size/avg/balance to a snapshot
+        #   reconcile (situation II: recovering deals already in an authoritative venue size)
         deal_pnl = 0
         quantity = self.quantity
         comms = 0
@@ -1055,13 +1071,19 @@ class Position:
             qty_closing = min(abs(self.quantity), abs(pos_change)) * direction if prev_direction != direction else 0
             qty_opening = pos_change if prev_direction == direction else pos_change - qty_closing
 
-            # - extract realized part of PnL
             if not np.isclose(qty_closing, 0.0):
-                _abs_qty_close = abs(qty_closing)
                 deal_pnl = qty_closing * self._qty_multiplier * (self.position_avg_price - exec_price)
 
+            if realize_only:
+                self.r_pnl += deal_pnl / conversion_rate
+                comms = fee_amount / conversion_rate
+                self.commissions += comms
+                return deal_pnl, comms
+
+            # - apply the realized close to the size
+            if not np.isclose(qty_closing, 0.0):
+                self.__pos_incr_qty -= abs(qty_closing)
                 quantity += qty_closing
-                self.__pos_incr_qty -= _abs_qty_close
 
                 # - reset average price to 0 if position is fully closed
                 # Use the rounded target position to avoid floating-point false positives
@@ -1101,7 +1123,9 @@ class Position:
     def update_market_price_by_tick(self, tick: Quote | Trade, conversion_rate: float = 1) -> float:
         return self.update_market_price(tick.time, self._price(tick), conversion_rate, stamp_update_time=False)
 
-    def update_position_by_deal(self, deal: Deal, conversion_rate: float = 1) -> tuple[float, float]:
+    def update_position_by_deal(
+        self, deal: Deal, conversion_rate: float = 1, *, realize_only: bool = False
+    ) -> tuple[float, float]:
         time = deal.time.as_unit("ns").asm8 if isinstance(deal.time, pd.Timestamp) else deal.time
         return self.change_position_by(
             timestamp=time,
@@ -1109,6 +1133,7 @@ class Position:
             exec_price=deal.price,
             fee_amount=deal.fee_amount or 0,
             conversion_rate=conversion_rate,
+            realize_only=realize_only,
         )
         # - deal contains cumulative amount
         # return self.update_position(time, deal.amount, deal.price, deal.aggressive, conversion_rate)
