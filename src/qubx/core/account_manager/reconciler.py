@@ -317,7 +317,15 @@ class Reconciler:
         # - apply the snapshot size, watermark it (reducer won't re-book deals it already covers),
         #   then confirm-task the missed delta (snapshot - prior, captured before the apply).
         prior = state.get_position(snap_pos.instrument)
-        delta = snap_pos.quantity - (prior.quantity if prior is not None else 0.0)
+        prior_qty = prior.quantity if prior is not None else 0.0
+        delta = snap_pos.quantity - prior_qty
+        # - flip: the missed deals crossed zero, so realize_only attributes the close leg against the
+        #   already-flipped avg → recovered r_pnl is partial (size/avg stay venue-authoritative)
+        if prior_qty != 0.0 and snap_pos.quantity != 0.0 and np.sign(prior_qty) != np.sign(snap_pos.quantity):
+            logger.warning(
+                f"[{state.exchange}] reconcile: <y>{snap_pos.instrument}</y> flipped "
+                f"{prior_qty} -> {snap_pos.quantity}; recovered-deal r_pnl may be incomplete"
+            )
         state.reconcile_position_from_snapshot(snap_pos)
         since = snap_pos.last_update_time if snap_pos.last_update_time is not None else snap.as_of
         state.mark_position_reconcile(snap_pos.instrument, since)
@@ -419,7 +427,10 @@ class Reconciler:
 
             out += acts
             if task.done():
-                logger.debug(f"[{state.exchange}] reconcile task <g>{key}</g> done -> dropped")
+                # - "resolved" = finished with no action (e.g. all deals arrived / order event seen);
+                #   "completed" = dropped after a terminal action (fetch / LOST)
+                reason = "completed" if acts else "resolved"
+                logger.debug(f"[{state.exchange}] reconcile {type(task).__name__} <g>{key}</g> {reason} -> dropped")
                 del self._tasks[key]
         return out
 

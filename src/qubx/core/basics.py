@@ -1074,6 +1074,7 @@ class Position:
             if not np.isclose(qty_closing, 0.0):
                 deal_pnl = qty_closing * self._qty_multiplier * (self.position_avg_price - exec_price)
 
+            # - update only realized pnl (in case we need to update by staled deals)
             if realize_only:
                 self.r_pnl += deal_pnl / conversion_rate
                 comms = fee_amount / conversion_rate

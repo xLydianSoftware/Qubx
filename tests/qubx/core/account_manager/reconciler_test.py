@@ -444,6 +444,7 @@ def test_position_decrease_the_deals_arrived_with_small_latency():
     # by WS but still within the confirm window. AM0 routes every DealEvent to BOTH reducer.apply
     # (ledger) AND reconciler.on_event (task notification) — the arriving deal must satisfy the
     # confirm task so NO RequestHistDeals is fetched (we already received it live).
+    D_ON()
     rec = _reconciler()
     st = _local()  # no local orders — the missed close's order already filled+evicted at the venue
     # local LONG 0.005 @ 59_000; the venue closed 0.002 we missed -> snapshot shows 0.003
@@ -471,12 +472,14 @@ def test_position_decrease_the_deals_arrived_with_small_latency():
 
     # window elapses -> NO RequestHistDeals (we already got the whole missed delta live)
     assert rec.on_tick(st, _passed_seconds(T0, 3)) == []
+    D_OFF()
 
 
 def test_position_decrease_partial_deal_still_fetches_remainder():
     # Only PART of the missed delta arrives live (-0.001 of -0.002). The confirm task must NOT treat
     # itself as recovered — when the window elapses it still fetches the remainder via RequestHistDeals
     # (the hist reply is deduped against the -0.001 we already booked-skipped).
+    D_ON()
     rec = _reconciler()
     st = _local()
     st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
@@ -493,6 +496,7 @@ def test_position_decrease_partial_deal_still_fetches_remainder():
     out = rec.on_tick(st, _passed_seconds(T0, 3))
     assert out == [RequestHistDeals(instrument=_inst(), since=T0)]
     assert rec.active_keys() == set()  # one-shot fetch -> dropped
+    D_OFF()
 
 
 def test_position_decrease_then_pushed_historical_deals_end_to_end():
@@ -500,6 +504,7 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
     # missed deals, and we PUSH those historical deals back through reducer.apply (what the connector
     # does on a RequestHistDeals reply). Size stays venue-authoritative; the recovered close realizes
     # its r_pnl (pnl-only book) and a re-delivery is deduped.
+    D_ON()
     rec = _reconciler()
     st = _local()  # no local orders — the missed close's order already filled+evicted at the venue
     # local LONG 0.005 @ 59_000; the venue closed 0.002 we missed -> snapshot shows 0.003
@@ -536,3 +541,4 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
     assert res2.deal is None  # type: ignore # trade-id already seen
     assert st.get_position(_inst()).quantity == 0.003  # type: ignore
     assert st.get_position(_inst()).r_pnl == 1.0  # type: ignore # not double-realized
+    D_OFF()
