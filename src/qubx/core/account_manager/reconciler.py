@@ -375,9 +375,18 @@ class Reconciler:
             actions.append(RequestSnapshot(state.exchange))
         return actions + self._dispatch(Tick(), state, now)
 
-    def on_snapshot(self, state: AccountState, snap: AccountSnapshot, now: np.datetime64) -> list[Action]:
+    def on_snapshot(
+        self,
+        state: AccountState,
+        snap: AccountSnapshot,
+        now: np.datetime64,
+        *,
+        changed_positions: list[Position] | None = None,
+    ) -> list[Action]:
         # - applies are idempotent, so repeated field atoms for one order/position are safe.
         #   leaf arms precede their base arm (a leaf must win). unhandled atoms are deferred.
+        #   changed_positions (opt-in) collects every reconciled position so the AM can fire
+        #   on_position_change at snapshot time.
         self._last_snapshot[state.exchange] = now  # - reset the snapshot due-timer
         # - as_of ratchet: drop an out-of-order snapshot wholesale (at/before the last applied)
         last_as_of = state.get_last_snapshot_as_of()
@@ -385,6 +394,7 @@ class Reconciler:
             logger.debug(f"[{state.exchange}] reconcile: stale snapshot as_of={snap.as_of} <= {last_as_of} — dropped")
             return []
         state.mark_snapshot_applied(snap.as_of)
+        changed = changed_positions if changed_positions is not None else []
         actions: list[Action] = []
         for difference in self._differ.diff(state, snap):
             logger.debug(difference.describe())
@@ -404,15 +414,16 @@ class Reconciler:
 
                 # - size diff = missed deals
                 case PositionSizeMismatch(origin=snap_pos) | OriginalPositionMissing(position=snap_pos):
-                    self._reconcile_missed_position(state, snap, now, snap_pos)
+                    changed.append(self._reconcile_missed_position(state, snap, now, snap_pos))
 
                 # - avg/margin only = figure refresh, no missed deals
                 case PositionFieldMismatch(origin=snap_pos):
-                    state.reconcile_position_from_snapshot(snap_pos)
+                    if state.reconcile_position_from_snapshot(snap_pos):
+                        changed.append(state.get_position(snap_pos.instrument))
 
                 # - local holds it, venue flat = missed the close
                 case LocalPositionMissing(position=local_pos):
-                    self._flatten_missed_close(state, snap, now, local_pos.instrument)
+                    changed.append(self._flatten_missed_close(state, snap, now, local_pos.instrument))
 
                 case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
                     state.apply_balance_snapshot(snap_bal, snap.as_of)
@@ -473,9 +484,10 @@ class Reconciler:
 
     def _reconcile_missed_position(
         self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, snap_pos: Position
-    ) -> None:
+    ) -> Position:
         # - apply the snapshot size, watermark it (reducer won't re-book deals it already covers),
         #   then confirm-task the missed delta (snapshot - prior, captured before the apply).
+        #   Returns the reconciled live position (for on_position_change).
         prior = state.get_position(snap_pos.instrument)
         prior_qty = prior.quantity if prior is not None else 0.0
         delta = snap_pos.quantity - prior_qty
@@ -494,12 +506,14 @@ class Reconciler:
                 snap_pos.instrument, since, now, wait=self._position_confirm_wait, expected_delta=delta
             )
         )
+        return state.get_position(snap_pos.instrument)
 
     def _flatten_missed_close(
         self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, instrument: Instrument
-    ) -> None:
+    ) -> Position:
         # - flatten (keeps r_pnl/commissions/funding); missed delta is the whole prior size.
         #   no venue position ts (absent from snapshot) → as_of is the watermark / hist `since`.
+        #   Returns the now-flat live position (for on_position_change).
         prior = state.get_position(instrument)
         delta = -(prior.quantity if prior is not None else 0.0)
         state.settle_position(instrument)
@@ -509,6 +523,7 @@ class Reconciler:
                 instrument, snap.as_of, now, wait=self._position_confirm_wait, expected_delta=delta
             )
         )
+        return state.get_position(instrument)
 
     def _reconcile_order(self, state: AccountState, snap_order: Order) -> Action | None:
         """Apply a snapshot order's status/filled to local state; return the fill event to route.
@@ -531,6 +546,10 @@ class Reconciler:
 
     @staticmethod
     def _apply_order_snapshot(state: AccountState, local: Order, snap: Order) -> None:
+        # - capture the venue id for an unacked order matched by cid (lost create-ack): the
+        #   snapshot carries the id the venue assigned; without this, later cancel/status-by-vid break
+        if snap.venue_order_id is not None and local.venue_order_id != snap.venue_order_id:
+            state.set_venue_id(local.client_order_id, snap.venue_order_id)
         # - go through transition_order (sole index/audit writer); venue wins, so force illegal
         #   transitions but warn
         if snap.status != local.status:

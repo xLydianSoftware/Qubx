@@ -149,13 +149,14 @@ class AccountManager(IAccountViewer):
 
     def _register_ticks(self) -> None:
         cfg = self._cfg
+        assert self._pm is not None
+
+        # One reconcile heartbeat drives the Reconciler: its on_tick gates the snapshot request
+        # (snapshot_interval) AND nudges the order/position tasks. Replaces the old inflight +
+        # snapshot ticks. Fires at the (fast) inflight interval so task timers stay responsive.
         if cfg.inflight_check_interval_ms > 0:
             self._pm.schedule(
-                timedelta_to_crontab(pd.Timedelta(cfg.inflight_check_interval_ms, "ms")), self._on_inflight_tick
-            )
-        if cfg.snapshot_check_interval_ms > 0:
-            self._pm.schedule(
-                timedelta_to_crontab(pd.Timedelta(cfg.snapshot_check_interval_ms, "ms")), self._on_snapshot_tick
+                timedelta_to_crontab(pd.Timedelta(cfg.inflight_check_interval_ms, "ms")), self._on_reconcile_tick
             )
         if cfg.liveness_check_interval_ms > 0:
             self._pm.schedule(
@@ -165,7 +166,12 @@ class AccountManager(IAccountViewer):
     # ---- order-entry bookkeeping (TradingManager calls these) ----------- #
 
     def add_order(self, order: Order) -> None:
-        self._states[order.instrument.exchange].add_order(order)
+        exchange = order.instrument.exchange
+        state = self._states[exchange]
+        state.add_order(order)
+
+        # - spawn AwaitOrderConfirm for the freshly-sent order (no immediate I/O)
+        self._reconcilers[exchange].on_order_sent(state, order, self._time.time())
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
         reconcile.transition(self._states[exchange], cid, new_status, self._time.time())
@@ -216,15 +222,18 @@ class AccountManager(IAccountViewer):
         if state is None:
             return ApplyResult()
         now = self._time.time()
-        result = reducer.apply(state, event, now, snapshot_grace=self._snapshot_grace)
-        if (diff := result.reconcile_diff) is not None:
-            if diff.missing:
-                self._resolve_missing_orders(state, diff)
-            self._log_reconcile_diff(state.exchange, diff)
-        # Stage-2 Reconciler: every order/deal event also drives its tasks (coverage accounting,
-        # resolve-by-event). No-op until on_snapshot spawns tasks (a later wiring step).
-        if isinstance(event, OrderEvent):
-            self._execute(state, self._reconcilers[state.exchange].on_event(state, event, now))
+        rec = self._reconcilers[state.exchange]
+        if isinstance(event, AccountSnapshotEvent):
+            # Snapshots are owned by the Reconciler now (diff + apply + tasks + venue figures).
+            # It collects the reconciled positions so the PM still fires on_position_change.
+            changed: list[Position] = []
+            self._execute(state, rec.on_snapshot(state, event.snapshot, now, changed_positions=changed))
+            result = ApplyResult(positions=changed)
+        else:
+            result = reducer.apply(state, event, now, snapshot_grace=self._snapshot_grace)
+            # Order/deal events also drive the Reconciler's tasks (coverage, resolve-by-event).
+            if isinstance(event, OrderEvent):
+                self._execute(state, rec.on_event(state, event, now))
         # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest)
         # registers no periodic ticks, so without this sweep terminal orders and their
         # side-table entries would grow unbounded there (and in live when
@@ -559,6 +568,17 @@ class AccountManager(IAccountViewer):
         self._last_eviction_sweep = now
         for state in self._states.values():
             state.prune_terminal_orders(now, self._terminal_retention)
+
+    def _on_reconcile_tick(self, ctx) -> None:
+        # The single reconcile heartbeat: drive each exchange's Reconciler (snapshot request +
+        # task timers) and execute the I/O it asks for, then run the terminal-eviction sweep.
+        now = self._time.time()
+        for exchange, state in self._states.items():
+            try:
+                self._execute(state, self._reconcilers[exchange].on_tick(state, now))
+            except Exception:
+                logger.exception(f"[{exchange}] reconcile tick failed")
+        self._sweep_terminal_evictions()
 
     def _on_inflight_tick(self, ctx) -> None:
         now = self._time.time()

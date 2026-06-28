@@ -10,7 +10,7 @@ rejects/lifecycle events for unknown orders all return empty results, so no call
 fires.
 """
 
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 
 import numpy as np
 
@@ -66,6 +66,8 @@ class ApplyResult:
     # balance push applied (the live state Balance) — internal/diff visibility only,
     # fires NO strategy callback by design (balances are read via ctx)
     balance: Balance | None = None
+    # positions reconciled by a snapshot (Reconciler path) — PM fires on_position_change per entry
+    positions: list[Position] = field(default_factory=list)
 
     def is_empty(self) -> bool:
         """All fields None — the suppress signal (see module docstring): no callback fires."""
@@ -76,6 +78,7 @@ class ApplyResult:
             and self.position is None
             and self.reconcile_diff is None
             and self.balance is None
+            and not self.positions
         )
 
 

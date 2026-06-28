@@ -1284,7 +1284,9 @@ class ProcessingManager(IProcessingManager):
             fn(self._context, *args)
         except Exception:
             logger.exception(f"position gatherer callback {getattr(fn, '__name__', fn)} raised")
-            self._emit_error_metric("strategy_callback_errors", callback=f"gatherer.{getattr(fn, '__name__', 'unknown')}")
+            self._emit_error_metric(
+                "strategy_callback_errors", callback=f"gatherer.{getattr(fn, '__name__', 'unknown')}"
+            )
 
     def _safe_fire_account_callback(self, event: AccountMessage, result: ApplyResult) -> None:
         # Purely ApplyResult-driven dispatch onto the three strategy callbacks: each set
@@ -1321,6 +1323,11 @@ class ProcessingManager(IProcessingManager):
         if result.position is not None:
             self._safe_call(self._strategy.on_position_change, result.position)
             self._safe_call_gatherer(self._position_gathering.on_position_change, result.position)
+        # Reconciler-path snapshot corrections (and legacy reconcile_diff) — one on_position_change
+        # per reconciled position.
+        for position in result.positions:
+            self._safe_call(self._strategy.on_position_change, position)
+            self._safe_call_gatherer(self._position_gathering.on_position_change, position)
         if result.reconcile_diff is not None:
             for position in result.reconcile_diff.positions:
                 self._safe_call(self._strategy.on_position_change, position)
