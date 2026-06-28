@@ -26,6 +26,7 @@ from qubx.core.basics import Balance, Deal, Instrument, Order, OrderOrigin, Orde
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
+    OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
@@ -145,6 +146,8 @@ def _reconciler() -> Reconciler:
         missing_wait="2s",
         missing_max_retries=2,
         position_confirm_wait="2s",
+        order_confirm_wait="2s",
+        order_confirm_max_retries=2,
     )
 
 
@@ -304,7 +307,7 @@ def test_status_resolved():
     assert o.status == OrderStatus.PARTIALLY_FILLED  # type: ignore # reconciled in-mem
     assert o.filled_quantity == 0.5  # type: ignore
     assert [type(x) for x in a] == [RouteEvent]  # and a fill event sent for notification
-    assert isinstance(a[0].event, OrderPartiallyFilledEvent) and a[0].event.client_order_id == "order1"
+    assert isinstance(a[0].event, OrderPartiallyFilledEvent) and a[0].event.client_order_id == "order1"  # type: ignore
 
 
 def test_snapshot_does_not_wipe_pending_cancel_marker():
@@ -324,6 +327,66 @@ def test_snapshot_does_not_wipe_pending_cancel_marker():
     assert a == []  # nothing reconciled / routed
     assert st.get_order("order1").status == OrderStatus.PENDING_CANCEL  # type: ignore # marker preserved
     D_OFF()
+
+
+# --------------------------------------------------------------------------- #
+# I.b AwaitOrderConfirm (order sent, awaiting venue confirmation)
+# --------------------------------------------------------------------------- #
+
+
+def test_order_sent_spawns_await_confirm_task():
+    rec = _reconciler()
+    st = _local(_order("X1", status=OrderStatus.SUBMITTED, venue_id=None))
+    a = rec.on_order_sent(st, st.get_order("X1"), T0)  # type: ignore
+    assert a == []  # nothing fetched yet — we WAIT for the venue ack
+    assert rec.active_keys() == {"X1"}
+
+
+def test_await_confirm_resolved_by_accept_event_drops_task():
+    rec = _reconciler()
+    st = _local(_order("X1", status=OrderStatus.SUBMITTED, venue_id=None))
+    rec.on_order_sent(st, st.get_order("X1"), T0)  # type: ignore
+    # - the venue's ack arrives on the normal event path -> the task is satisfied
+    rec.on_event(
+        st,
+        OrderAcceptedEvent(instrument=_inst(), client_order_id="X1", venue_order_id="v_X1", accepted_at=T0),
+        _passed_seconds(T0, 1),
+    )
+    assert rec.active_keys() == set()  # confirmed -> dropped, no LOST
+
+
+def test_await_confirm_drops_when_order_no_longer_inflight():
+    # the order got confirmed in state without an event routed to the task; the next tick sees it
+    # no longer in-flight -> done (no fetch, no LOST).
+    rec = _reconciler()
+    st = _local(_order("X1", status=OrderStatus.SUBMITTED, venue_id=None))
+    rec.on_order_sent(st, st.get_order("X1"), T0)  # type: ignore
+    st.get_order("X1").status = OrderStatus.ACCEPTED  # type: ignore # confirmed out-of-band
+    out = rec.on_tick(st, _passed_seconds(T0, 3))  # tick sees it no longer in-flight
+    assert rec.active_keys() == set()  # task dropped...
+    assert not any(isinstance(a, (RequestStatus, RouteEvent)) for a in out)  # ...with no fetch/LOST
+
+
+def test_await_confirm_unanswered_ends_lost():
+    rec = _reconciler()
+    st = _local(_order("X1", status=OrderStatus.SUBMITTED, venue_id=None))
+    rec.on_order_sent(st, st.get_order("X1"), T0)  # type: ignore
+    rec.on_tick(st, _passed_seconds(T0, 3))  # retry 1 -> RequestStatus
+    rec.on_tick(st, _passed_seconds(T0, 5))  # retry 2 -> RequestStatus
+    out = rec.on_tick(st, _passed_seconds(T0, 7))  # exhausted -> route LOST
+    assert [type(a) for a in out] == [RouteEvent]
+    assert isinstance(out[0].event, OrderLostEvent) and out[0].event.client_order_id == "X1"  # type: ignore
+    assert rec.active_keys() == set()
+
+
+def test_await_confirm_fetches_status_after_wait_window():
+    rec = _reconciler()
+    st = _local(_order("X1", status=OrderStatus.SUBMITTED, venue_id=None))
+    rec.on_order_sent(st, st.get_order("X1"), T0)  # type: ignore
+    rec.on_tick(st, T0)  # consume the initial snapshot-due so later ticks are clean
+    assert rec.on_tick(st, _passed_seconds(T0, 1)) == []  # inside the wait window (2s)
+    out = rec.on_tick(st, _passed_seconds(T0, 3))  # past it -> fetch status
+    assert out == [RequestStatus(cid="X1", venue_id=None, instrument=_inst())]
 
 
 # --------------------------------------------------------------------------- #

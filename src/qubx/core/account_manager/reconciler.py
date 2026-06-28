@@ -194,6 +194,90 @@ class ResolveMissingOrder(Task):
         return False
 
 
+class AwaitOrderConfirm(Task):
+    """
+    An order we sent that the venue hasn't confirmed. Wait, then fetch its status
+    (≤ max_retries) until a venue event confirms/terminalizes it, or give up → LOST.
+    Replaces the manager's inflight tick: time-driven, spawned on order-send.
+    """
+
+    def __init__(self, order: Order, now: np.datetime64, *, wait: np.timedelta64, max_retries: int):
+        self.key = order.client_order_id
+        self._cid = order.client_order_id
+        self._venue_id = order.venue_order_id
+        self._instrument = order.instrument
+        self._wait = wait
+        self._max_retries = max_retries
+        self._retries = 0
+        self._next_fetch_at = now + wait
+        self._done = False
+
+    def done(self) -> bool:
+        return self._done
+
+    def handles(self, inp: Any) -> bool:
+        if isinstance(inp, Tick):
+            return True
+
+        if isinstance(inp, OrderIn):
+            return self._matches(inp.event)
+
+        return False
+
+    def step(self, inp: Any, state: AccountState, now: np.datetime64) -> list[Action]:
+        match inp:
+            case OrderIn():
+                self._done = True  # - a venue event for our id confirms/terminalizes it
+                return []
+
+            case Tick():
+                return self._on_tick(state, now)
+
+            case _:
+                return []
+
+    def _on_tick(self, state: AccountState, now: np.datetime64) -> list[Action]:
+        order = state.get_order(self._cid)
+
+        if order is None or not order.status.is_inflight:
+            self._done = True  # - confirmed (ACCEPTED), terminal, or gone
+            return []
+
+        self._venue_id = order.venue_order_id or self._venue_id
+
+        if now < self._next_fetch_at:
+            return []
+
+        if self._retries < self._max_retries:
+            self._retries += 1
+            self._next_fetch_at = now + self._wait
+            return [RequestStatus(cid=self._cid, venue_id=self._venue_id, instrument=self._instrument)]
+
+        # - budget exhausted → route LOST via the bus (same as ResolveMissingOrder give-up)
+        logger.warning(
+            f"[{state.exchange}] reconcile give-up on unconfirmed order <g>{self._cid}</g> "
+            f"(vid=<blue>{self._venue_id}</blue>) -> <r>LOST</r> after {self._retries} status fetches"
+        )
+
+        self._done = True
+
+        return [
+            RouteEvent(
+                OrderLostEvent(
+                    instrument=self._instrument,
+                    client_order_id=self._cid,
+                    venue_order_id=self._venue_id,
+                    reason=f"send not confirmed after {self._retries} status fetches",
+                )
+            )
+        ]
+
+    def _matches(self, event: object) -> bool:
+        return getattr(event, "client_order_id", None) == self._cid or (
+            self._venue_id is not None and getattr(event, "venue_order_id", None) == self._venue_id
+        )
+
+
 class ConfirmPositionBySnapshot(Task):
     """Recover the deals behind a position-size diff (snapshot already fixed the size).
 
@@ -246,6 +330,8 @@ class Reconciler:
     _missing_wait: np.timedelta64  # - knobs handed to ResolveMissingOrder tasks
     _missing_max_retries: int
     _position_confirm_wait: np.timedelta64  # - ConfirmPositionBySnapshot window
+    _order_confirm_wait: np.timedelta64  # - AwaitOrderConfirm window
+    _order_confirm_max_retries: int
     _tasks: dict[Hashable, Task]  # - opaque key -> task, one per key
     _last_snapshot: dict[str, np.datetime64]  # - per-exchange last snapshot time
 
@@ -257,17 +343,28 @@ class Reconciler:
         missing_wait: str | np.timedelta64 = "2s",
         missing_max_retries: int = 3,
         position_confirm_wait: str | np.timedelta64 = "2s",
+        order_confirm_wait: str | np.timedelta64 = "5s",
+        order_confirm_max_retries: int = 5,
     ):
         self._differ = differ
         self._snapshot_interval = _td(snapshot_interval)
         self._missing_wait = _td(missing_wait)
         self._missing_max_retries = missing_max_retries
         self._position_confirm_wait = _td(position_confirm_wait)
+        self._order_confirm_wait = _td(order_confirm_wait)
+        self._order_confirm_max_retries = order_confirm_max_retries
         self._tasks = {}
         self._last_snapshot = {}
 
     def active_keys(self) -> set[Hashable]:
         return set(self._tasks)
+
+    def on_order_sent(self, state: AccountState, order: Order, now: np.datetime64) -> list[Action]:
+        # - spawn an AwaitOrderConfirm for a freshly-sent order (idempotent per cid)
+        self._spawn(
+            AwaitOrderConfirm(order, now, wait=self._order_confirm_wait, max_retries=self._order_confirm_max_retries)
+        )
+        return []
 
     def on_tick(self, state: AccountState, now: np.datetime64) -> list[Action]:
         actions: list[Action] = []
