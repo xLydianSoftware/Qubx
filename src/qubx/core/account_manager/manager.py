@@ -14,6 +14,14 @@ import pandas as pd
 from qubx import area_logger
 from qubx.core.account_manager import reconcile, reducer
 from qubx.core.account_manager.config import AccountManagerConfig
+from qubx.core.account_manager.diffs import Differ
+from qubx.core.account_manager.reconciler import (
+    Reconciler,
+    RequestHistDeals,
+    RequestSnapshot,
+    RequestStatus,
+    RouteEvent,
+)
 from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.account_manager.state import AccountState
 from qubx.core.basics import (
@@ -52,6 +60,7 @@ class AccountManager(IAccountViewer):
     _terminal_retention: np.timedelta64
     _liveness_unready_since: dict[str, np.datetime64]
     _last_eviction_sweep: np.datetime64
+    _reconcilers: dict[str, Reconciler]
 
     def __init__(
         self,
@@ -125,6 +134,18 @@ class AccountManager(IAccountViewer):
         }
         self._liveness_unready_since = {}
         self._last_eviction_sweep = time.time()
+        # Stage-2 Reconciler per exchange. Wired into on_event now (no-op until on_snapshot
+        # spawns tasks); on_snapshot/on_tick wiring + the old-path sweep land in a later step.
+        self._reconcilers = {
+            ex: Reconciler(
+                Differ(grace=self._snapshot_grace),
+                snapshot_interval=self._snapshot_interval,
+                missing_wait=self._inflight_threshold,
+                missing_max_retries=self._cfg.inflight_check_retries,
+                position_confirm_wait=self._inflight_threshold,
+            )
+            for ex in connectors
+        }
 
     def _register_ticks(self) -> None:
         cfg = self._cfg
@@ -200,6 +221,10 @@ class AccountManager(IAccountViewer):
             if diff.missing:
                 self._resolve_missing_orders(state, diff)
             self._log_reconcile_diff(state.exchange, diff)
+        # Stage-2 Reconciler: every order/deal event also drives its tasks (coverage accounting,
+        # resolve-by-event). No-op until on_snapshot spawns tasks (a later wiring step).
+        if isinstance(event, OrderEvent):
+            self._execute(state, self._reconcilers[state.exchange].on_event(state, event, now))
         # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest)
         # registers no periodic ticks, so without this sweep terminal orders and their
         # side-table entries would grow unbounded there (and in live when
@@ -209,6 +234,30 @@ class AccountManager(IAccountViewer):
         if now - self._last_eviction_sweep >= self._terminal_retention:
             self._sweep_terminal_evictions()
         return result
+
+    def _execute(self, state: AccountState, actions: list) -> None:
+        # - perform the I/O the Reconciler asked for (connector calls / event routing). Connector
+        #   calls stay manager-only; one bad action must not abort the rest.
+        connector = self._connectors.get(state.exchange)
+        for action in actions:
+            try:
+                match action:
+                    case RequestStatus(cid=cid):
+                        order = state.get_order(cid)
+                        if order is not None and connector is not None:
+                            connector.request_order_status(order)
+                    case RequestSnapshot():
+                        if connector is not None:
+                            connector.request_snapshot()
+                    case RouteEvent(event=routed):
+                        if self._pm is not None:
+                            self._pm.process_event(routed)
+                    case RequestHistDeals():
+                        logger.warning(f"[{state.exchange}] RequestHistDeals not yet wired (#4): {action}")
+                    case _:
+                        logger.warning(f"[{state.exchange}] unknown reconcile action: {action!r}")
+            except Exception:
+                logger.exception(f"[{state.exchange}] reconcile action failed: {action!r}")
 
     def _log_reconcile_diff(self, exchange: str, diff: reconcile.ReconcileDiff) -> None:
         # The operator surface for snapshot reconcile: one line per applied snapshot that
