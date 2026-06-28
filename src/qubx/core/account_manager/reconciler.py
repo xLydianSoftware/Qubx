@@ -24,13 +24,14 @@ from qubx.core.account_manager.diffs import (
     LocalPositionMissing,
     OrderFieldMismatch,
     OriginalBalanceMissing,
+    OriginalOrderMissing,
     OriginalPositionMissing,
     PositionFieldMismatch,
     PositionSizeMismatch,
 )
-from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state import AccountState, VenueAccountFigures
 from qubx.core.account_manager.state_machine import can_transition
-from qubx.core.basics import Instrument, Order, OrderStatus, Position
+from qubx.core.basics import EXTERNAL_CID_PREFIX, Instrument, Order, OrderOrigin, OrderStatus, Position
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
@@ -378,6 +379,12 @@ class Reconciler:
         # - applies are idempotent, so repeated field atoms for one order/position are safe.
         #   leaf arms precede their base arm (a leaf must win). unhandled atoms are deferred.
         self._last_snapshot[state.exchange] = now  # - reset the snapshot due-timer
+        # - as_of ratchet: drop an out-of-order snapshot wholesale (at/before the last applied)
+        last_as_of = state.get_last_snapshot_as_of()
+        if last_as_of is not None and snap.as_of <= last_as_of:
+            logger.debug(f"[{state.exchange}] reconcile: stale snapshot as_of={snap.as_of} <= {last_as_of} — dropped")
+            return []
+        state.mark_snapshot_applied(snap.as_of)
         actions: list[Action] = []
         for difference in self._differ.diff(state, snap):
             logger.debug(difference.describe())
@@ -386,6 +393,10 @@ class Reconciler:
                     self._spawn(
                         ResolveMissingOrder(order, now, wait=self._missing_wait, max_retries=self._missing_max_retries)
                     )
+
+                # - venue has an order we don't track -> recover it (RECOVERED / EXTERNAL)
+                case OriginalOrderMissing(order=snap_order):
+                    self._recover_order(state, snap_order, snap.as_of)
 
                 case OrderFieldMismatch(origin=snap_order):
                     if (ev := self._reconcile_order(state, snap_order)) is not None:
@@ -406,7 +417,59 @@ class Reconciler:
                 case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
                     state.apply_balance_snapshot(snap_bal, snap.as_of)
 
+        # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
+        #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.
+        if any(v is not None for v in (snap.equity, snap.available_margin, snap.margin_ratio, snap.withdrawable)):
+            state.set_venue_figures(
+                VenueAccountFigures(
+                    as_of=snap.as_of,
+                    equity=snap.equity,
+                    available_margin=snap.available_margin,
+                    margin_ratio=snap.margin_ratio,
+                    withdrawable=snap.withdrawable,
+                )
+            )
+
         return actions + self._dispatch(SnapshotIn(snap), state, now)
+
+    @staticmethod
+    def _recover_order(state: AccountState, snap_order: Order, as_of: np.datetime64) -> Order:
+        # - venue order absent locally: trust the producer-assigned origin (only the connector
+        #   knows its cid prefix). EXTERNAL keeps/derives an ext: cid; anything else is a
+        #   framework order seen back -> RECOVERED. No deficit: the position watermark guards
+        #   any replayed fills (situation II).
+        if snap_order.origin is OrderOrigin.EXTERNAL:
+            origin = OrderOrigin.EXTERNAL
+            cid = snap_order.client_order_id
+            if not cid.startswith(EXTERNAL_CID_PREFIX):
+                cid = f"{EXTERNAL_CID_PREFIX}{snap_order.venue_order_id}"
+        else:
+            origin = OrderOrigin.RECOVERED
+            cid = snap_order.client_order_id
+
+        # - recovered order
+        state.add_order(
+            order := Order(
+                client_order_id=cid,
+                venue_order_id=snap_order.venue_order_id,
+                origin=origin,
+                type=snap_order.type,
+                instrument=snap_order.instrument,
+                submitted_at=snap_order.submitted_at,
+                quantity=snap_order.quantity,
+                price=snap_order.price,
+                side=snap_order.side,
+                status=snap_order.status,
+                time_in_force=snap_order.time_in_force,
+                filled_quantity=snap_order.filled_quantity,
+                avg_fill_price=snap_order.avg_fill_price,
+                last_update_time=snap_order.last_update_time if snap_order.last_update_time is not None else as_of,
+            )
+        )
+        logger.info(
+            f"[{state.exchange}] reconcile: '{origin.value}' order <y>{cid}</y> recovered from snapshot (status={order.status})"
+        )
+        return order
 
     def _reconcile_missed_position(
         self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, snap_pos: Position

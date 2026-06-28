@@ -411,6 +411,49 @@ def test_position_size_diff_applies_snapshot_and_spawns_confirm_task():
     assert a == []  # we WAIT for the late WS deals first — nothing fetched yet
 
 
+def test_venue_figures_applied_from_snapshot():
+    # venue-reported equity/margins are captured; total_capital prefers the venue equity.
+    rec = _reconciler()
+    st = _local()
+    rec.on_snapshot(st, AccountSnapshot(exchange=EXCHANGE, as_of=T0, equity=12_345.0, available_margin=10_000.0), T0)
+    figs = st.get_venue_figures()
+    assert figs is not None and figs.equity == 12_345.0  # type: ignore
+    assert st.total_capital() == 12_345.0
+
+
+def test_original_order_missing_recovered_order():
+    # the venue reports an order we don't track -> recovers it (framework order seen back =
+    # RECOVERED), keeping its cid/status.
+    rec = _reconciler()
+    st = _local()  # no local orders
+    rec.on_snapshot(st, _origin(open_orders=[_order("ext1", venue_id="v_ext1", status=OrderStatus.ACCEPTED)]), T0)
+    o = st.get_order("ext1")
+    assert o is not None  # type: ignore
+    assert o.status == OrderStatus.ACCEPTED  # type: ignore
+    assert o.origin == OrderOrigin.RECOVERED  # type: ignore
+    assert o.venue_order_id == "v_ext1"  # type: ignore
+
+
+def test_stale_snapshot_is_dropped():
+    # the as_of ratchet: a snapshot at/before the last applied as_of is rejected wholesale —
+    # no diffs applied, no tasks spawned.
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.003, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+
+    rec.on_snapshot(st, _origin(as_of=T0, positions=[_position(0.005, avg=59_000.0, ts=T0)]), T0)
+    assert st.get_position(_inst()).quantity == 0.005  # type: ignore # first snapshot applied
+
+    # a stale snapshot (as_of < the applied T0) must be ignored entirely
+    a = rec.on_snapshot(
+        st,
+        _origin(as_of=_passed_seconds(T0, -5), positions=[_position(0.009, avg=59_000.0, ts=_passed_seconds(T0, -5))]),
+        _passed_seconds(T0, 1),
+    )
+    assert a == []
+    assert st.get_position(_inst()).quantity == 0.005  # unchanged by the stale snapshot
+
+
 def test_position_confirm_late_deal_arrives_drops_task_without_fetch():
     # the missed deal arrives on its own (late WS) within the wait window -> recovered, drop,
     # no hist fetch needed.
@@ -492,7 +535,7 @@ def test_balance_mismatch_applied_from_snapshot():
 
 def test_original_balance_missing_applied_from_snapshot():
     D_ON()
-    # the snapshot reports a currency we don't track locally -> materialize it.
+    # the snapshot reports a currency we don't track locally -> recover it.
     rec = _reconciler()
     st = _local()
     a = rec.on_snapshot(st, _origin(balances=[_balance("USDT", free=465.0)]), T0)
@@ -589,7 +632,7 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
     assert rec.active_keys() == set()  # one-shot fetch task dropped
 
     # 3) the connector pushes the fetched HISTORICAL deal back as a normal DealEvent (addressed by
-    #    venue id only — its order already filled+evicted; the reducer materializes it external)
+    #    venue id only — its order already filled+evicted; the reducer recovers it external)
     hist = _deal(_passed_seconds(T0, -2), amount=-0.002, price=59_500.0, trade_id="hist1", venue_id="v_hist")
     res = reducer.apply(st, hist, _passed_seconds(T0, 3), snapshot_grace=np.timedelta64(60, "s"))
 
