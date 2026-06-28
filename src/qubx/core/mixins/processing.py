@@ -1251,13 +1251,6 @@ class ProcessingManager(IProcessingManager):
             logger.exception(f"AM.apply raised on {type(event).__name__}")
             self._emit_error_metric("account_manager_apply_errors", event=type(event).__name__)
             return
-        if (diff := result.reconcile_diff) is not None:
-            # Ops counters for reconcile drift: the metric seam lives here on the PM (the
-            # AM holds no emitter), counting off the diff the AM already surfaced.
-            if diff.terminated:
-                self._emit_error_metric("reconcile_orders_terminated", value=float(len(diff.terminated)))
-            if diff.materialized:
-                self._emit_error_metric("reconcile_orders_materialized", value=float(len(diff.materialized)))
         self._safe_fire_account_callback(event, result)
 
     def _emit_error_metric(self, name: str, value: float = 1.0, **tags: str) -> None:
@@ -1323,15 +1316,10 @@ class ProcessingManager(IProcessingManager):
         if result.position is not None:
             self._safe_call(self._strategy.on_position_change, result.position)
             self._safe_call_gatherer(self._position_gathering.on_position_change, result.position)
-        # Reconciler-path snapshot corrections (and legacy reconcile_diff) — one on_position_change
-        # per reconciled position.
+        # Reconciler-path snapshot corrections — one on_position_change per reconciled position.
         for position in result.positions:
             self._safe_call(self._strategy.on_position_change, position)
             self._safe_call_gatherer(self._position_gathering.on_position_change, position)
-        if result.reconcile_diff is not None:
-            for position in result.reconcile_diff.positions:
-                self._safe_call(self._strategy.on_position_change, position)
-                self._safe_call_gatherer(self._position_gathering.on_position_change, position)
 
     def _notify_downstream_fill(self, instrument: Instrument | None, fill: Deal) -> None:
         if instrument is None:

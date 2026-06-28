@@ -1,6 +1,6 @@
 from typing import Protocol, runtime_checkable
 
-from qubx.core.basics import CtrlChannel, Instrument, Order, OrderRequest, Timestamped
+from qubx.core.basics import CtrlChannel, Instrument, Order, OrderRequest, Timestamped, dt_64
 from qubx.core.events import ChannelMessage
 
 
@@ -54,6 +54,11 @@ class IConnector(Protocol):
     def request_order_status(self, order: Order) -> None: ...
 
     def request_snapshot(self) -> None: ...
+
+    # Fetch trades for ``instrument`` since ``since`` (venue clock) and emit one DealEvent per
+    # trade — recovers executions missed behind a position size diff (the Reconciler's
+    # ConfirmPositionBySnapshot → RequestHistDeals).
+    def request_hist_deals(self, instrument: Instrument, since: dt_64) -> None: ...
 
     def is_ws_ready(self) -> bool: ...
     def reconnect(self) -> bool: ...  # synchronous WS reconnect; returns success

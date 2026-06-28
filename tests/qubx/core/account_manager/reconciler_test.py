@@ -567,7 +567,7 @@ def test_position_decrease_the_deals_arrived_with_small_latency():
     hist = _deal(_passed_seconds(T0, -1), amount=-0.002, price=59_500.0, trade_id="hist1", venue_id="v_hist")
 
     # ledger leg: watermark books r_pnl-only -> size stays 0.003, realized PnL lands
-    res = reducer.apply(st, hist, _passed_seconds(T0, 1), snapshot_grace=np.timedelta64(60, "s"))
+    res = reducer.apply(st, hist, _passed_seconds(T0, 1))
     assert res.position is not None  # type: ignore # r_pnl realized
     assert st.get_position(_inst()).quantity == 0.003  # type: ignore # size unchanged (no double-move)
     assert st.get_position(_inst()).r_pnl == 1.0  # type: ignore # 0.002 * (59_500 - 59_000)
@@ -594,7 +594,7 @@ def test_position_decrease_partial_deal_still_fetches_remainder():
 
     # only half the missed delta is delivered live within the window
     half = _deal(_passed_seconds(T0, -1), amount=-0.001, price=59_500.0, trade_id="hist1", venue_id="v_hist")
-    reducer.apply(st, half, _passed_seconds(T0, 1), snapshot_grace=np.timedelta64(60, "s"))
+    reducer.apply(st, half, _passed_seconds(T0, 1))
     assert rec.on_event(st, half, _passed_seconds(T0, 1)) == []  # partial — does NOT drop yet
     assert rec.active_keys() == {"BTCUSDT"}  # still armed: 0.001 of 0.002 outstanding
 
@@ -634,7 +634,7 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
     # 3) the connector pushes the fetched HISTORICAL deal back as a normal DealEvent (addressed by
     #    venue id only — its order already filled+evicted; the reducer recovers it external)
     hist = _deal(_passed_seconds(T0, -2), amount=-0.002, price=59_500.0, trade_id="hist1", venue_id="v_hist")
-    res = reducer.apply(st, hist, _passed_seconds(T0, 3), snapshot_grace=np.timedelta64(60, "s"))
+    res = reducer.apply(st, hist, _passed_seconds(T0, 3))
 
     pos = st.get_position(_inst())
     assert res.deal is not None  # type: ignore # recorded (logged + trade-id dedup)
@@ -643,7 +643,7 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
     assert pos.r_pnl == 1.0  # type: ignore # 0.002 * (59_500 - 59_000) realized from the recovered close
 
     # 4) a re-delivery of the SAME hist deal is deduped (no double realization)
-    res2 = reducer.apply(st, hist, _passed_seconds(T0, 4), snapshot_grace=np.timedelta64(60, "s"))
+    res2 = reducer.apply(st, hist, _passed_seconds(T0, 4))
     assert res2.deal is None  # type: ignore # trade-id already seen
     assert st.get_position(_inst()).quantity == 0.003  # type: ignore
     assert st.get_position(_inst()).r_pnl == 1.0  # type: ignore # not double-realized

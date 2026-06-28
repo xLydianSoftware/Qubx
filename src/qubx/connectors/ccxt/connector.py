@@ -55,6 +55,7 @@ from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
     BalanceUpdateEvent,
+    DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
@@ -75,6 +76,7 @@ from .exceptions import CcxtSymbolNotRecognized
 from .exchange_manager import ExchangeManager
 from .utils import (
     ccxt_convert_balance,
+    ccxt_convert_deal_info,
     ccxt_convert_order_info,
     ccxt_convert_positions,
     ccxt_extract_deals_from_exec,
@@ -1048,6 +1050,40 @@ class CcxtConnector(ChannelEmitter):
             self._emit_order_status_not_found(client_order_id, venue_order_id, instrument)
             return
         self._handle_ws_order(raw)
+
+    def request_hist_deals(self, instrument: Instrument, since: dt_64) -> None:
+        # Read the symbol off the instrument SYNCHRONOUSLY (see cancel_order).
+        self._spawn(self._hist_deals_async(instrument, instrument_to_ccxt_symbol(instrument), since))
+
+    async def _hist_deals_async(self, instrument: Instrument, symbol: str, since: dt_64) -> None:
+        """Fetch trades since ``since`` and emit one DealEvent per trade.
+
+        Recovers executions missed behind a position size diff (ConfirmPositionBySnapshot →
+        RequestHistDeals). Routed by the venue order id the trade carries — the connector keeps
+        no state, so AM resolves the originating order (and its cid). AM books each deal (deduped
+        by trade id) and the confirm task consumes them as coverage. Errors are logged, not raised
+        — the confirm task drops on timeout regardless. A single fetch (no pagination): the recovery
+        window is the position-reconcile watermark, recent and small; a result hitting the venue cap
+        is logged so a wider gap is operator-visible.
+        """
+        since_ms = int(since.astype("datetime64[ms]").astype("int64"))
+        try:
+            raw_trades = await self._em.exchange.fetch_my_trades(symbol, since=since_ms)
+        except NetworkError as e:
+            logger.warning(f"[{self.exchange_name}] hist deals fetch for {symbol} since {since} failed: {e}")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[{self.exchange_name}] error fetching hist deals for {symbol}: {e}")
+            return
+        for raw in raw_trades:
+            self.send(
+                DealEvent(
+                    instrument=instrument,
+                    client_order_id=None,  # AM resolves the order by the venue id
+                    venue_order_id=raw.get("order"),
+                    deal=ccxt_convert_deal_info(raw),
+                )
+            )
 
     def _emit_order_status_not_found(
         self, client_order_id: str | None, venue_order_id: str | None, instrument: Instrument

@@ -5,7 +5,6 @@ import numpy as np
 import pytest
 
 from qubx import logger
-from qubx.core.account_manager.reconcile import ReconcileDiff
 from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.basics import DataType, Deal, FundingPayment, MarketEvent, OrderChange
 from qubx.core.events import (
@@ -297,47 +296,12 @@ def test_stale_snapshot_is_suppressed():
 def test_applied_snapshot_fires_on_position_change_per_corrected_position():
     pm = make_pm()
     p1, p2 = MagicMock(), MagicMock()
-    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=ReconcileDiff(positions=[p1, p2]))
+    pm._account_manager.apply.return_value = ApplyResult(positions=[p1, p2])
     pm.process_event(_snapshot_event())
     assert pm._strategy.on_position_change.call_count == 2
     assert [c.args[1] for c in pm._strategy.on_position_change.call_args_list] == [p1, p2]
     pm._strategy.on_order.assert_not_called()
     pm._strategy.on_execution.assert_not_called()
-
-
-def test_snapshot_with_order_only_corrections_is_callback_silent():
-    # Reconcile order corrections carry no strategy callback (pending on_reconcile_complete).
-    pm = make_pm()
-    diff = ReconcileDiff(terminated=[MagicMock()], materialized=[MagicMock()], updated=[MagicMock()])
-    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=diff)
-    pm.process_event(_snapshot_event())
-    assert pm._strategy.mock_calls == []
-
-
-def test_reconcile_terminations_emit_counters():
-    # F8 ops counters: the PM emits reconcile_orders_terminated/materialized off the
-    # ApplyResult diff (the AM holds no emitter — the metric seam lives on the PM).
-    pm = make_pm()
-    emitter = _FakeEmitter()
-    pm._context.emitter = emitter
-    diff = ReconcileDiff(
-        terminated=[MagicMock(client_order_id="c1"), MagicMock(client_order_id="c2")],
-        materialized=[MagicMock(client_order_id="e1")],
-    )
-    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=diff)
-    pm.process_event(_snapshot_event())
-    by_name = {name: value for name, value, _ in emitter.calls}
-    assert by_name["reconcile_orders_terminated"] == 2.0
-    assert by_name["reconcile_orders_materialized"] == 1.0
-
-
-def test_clean_reconcile_emits_no_counters():
-    pm = make_pm()
-    emitter = _FakeEmitter()
-    pm._context.emitter = emitter
-    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=ReconcileDiff())
-    pm.process_event(_snapshot_event())
-    assert not any(name.startswith("reconcile_orders") for name, _, _ in emitter.calls)
 
 
 class _RemovedOrderCallbackStrategy(IStrategy):
@@ -708,7 +672,7 @@ def test_cancel_rejected_reaches_gatherer_on_order():
 def test_snapshot_corrections_fire_gatherer_on_position_change_per_position():
     pm = make_pm()
     p1, p2 = MagicMock(), MagicMock()
-    pm._account_manager.apply.return_value = ApplyResult(reconcile_diff=ReconcileDiff(positions=[p1, p2]))
+    pm._account_manager.apply.return_value = ApplyResult(positions=[p1, p2])
     pm.process_event(_snapshot_event())
     assert pm._position_gathering.on_position_change.call_count == 2
     assert [c.args[1] for c in pm._position_gathering.on_position_change.call_args_list] == [p1, p2]

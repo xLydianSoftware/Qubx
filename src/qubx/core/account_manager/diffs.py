@@ -286,7 +286,11 @@ class Differ:
 
     # -- orders -- #
     def _diff_orders(self, local: AccountState, origin: AccountSnapshot, diffs: list[Diff]) -> None:
-        snap_orders = origin.open_orders or []
+        # None = the order-fetch leg FAILED (not "venue has no orders") → skip entirely, never
+        # engage missing-handling. [] IS the venue's answer (no open orders) and is processed.
+        if origin.open_orders is None:
+            return
+        snap_orders = origin.open_orders
         by_vid = {o.venue_order_id: o for o in snap_orders if o.venue_order_id}
         by_cid = {o.client_order_id: o for o in snap_orders if o.client_order_id}
 

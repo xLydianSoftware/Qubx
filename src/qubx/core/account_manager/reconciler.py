@@ -426,7 +426,11 @@ class Reconciler:
                     changed.append(self._flatten_missed_close(state, snap, now, local_pos.instrument))
 
                 case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
-                    state.apply_balance_snapshot(snap_bal, snap.as_of)
+                    # - push-wins: a WS push at/after the snapshot's as_of supersedes it (venue event
+                    #   time vs local fetch clock) — skip the whole currency, not just the stamp
+                    push_as_of = state.get_balance_push_as_of(snap_bal.currency)
+                    if push_as_of is None or push_as_of < snap.as_of:
+                        state.apply_balance_snapshot(snap_bal, snap.as_of)
 
         # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
         #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.
@@ -541,6 +545,8 @@ class Reconciler:
 
     @staticmethod
     def _venue_newer(snap: Order, local: Order) -> bool:
+        # - venue-vs-venue only (the connector stamps last_update_time on snapshot orders); no
+        #   local-clock as_of fallback — that would reintroduce the cross-clock skew
         ts = snap.last_update_time
         return ts is not None and (local.last_update_time is None or ts > local.last_update_time)  # type: ignore
 

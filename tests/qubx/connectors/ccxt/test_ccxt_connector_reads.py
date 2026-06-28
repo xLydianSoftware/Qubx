@@ -36,6 +36,7 @@ from qubx.core.basics import (
 from qubx.core.events import (
     AccountSnapshotEvent,
     BalanceUpdateEvent,
+    DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderExpiredEvent,
@@ -336,6 +337,45 @@ async def test_request_snapshot_failed_leg_left_none() -> None:
     assert snap.open_orders == []
     assert snap.positions is None  # failed leg omitted, not wiped
     assert len(snap.balances) == 1
+
+
+# --------------------------------------------------------------------------- #
+# (b2) request_hist_deals -> one DealEvent per recovered trade
+# --------------------------------------------------------------------------- #
+@pytest.mark.asyncio
+async def test_request_hist_deals_emits_deal_event_per_trade() -> None:
+    # Recovers executions missed behind a position diff: fetch_my_trades since `since`,
+    # emit one DealEvent per trade (routed by the venue order id; AM resolves the order).
+    since = np.datetime64("2026-05-28T00:00:00")
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_my_trades = AsyncMock(
+        return_value=[_ws_trade("T1", 0.5, 100.0), _ws_trade("T2", 0.3, 101.0)]
+    )
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_hist_deals(_instrument(), since)
+    await _drive(conn)
+
+    assert exchange.fetch_my_trades.call_args.kwargs["since"] == int(since.astype("datetime64[ms]").astype("int64"))
+    assert [type(e) for e in sent] == [DealEvent, DealEvent]
+    assert sent[0].venue_order_id == "VENUE123"
+    assert sent[0].client_order_id is None  # AM resolves the order by venue id
+    assert sent[0].deal.trade_id == "T1"
+    assert sent[1].deal.trade_id == "T2"
+
+
+@pytest.mark.asyncio
+async def test_request_hist_deals_network_error_emits_nothing() -> None:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_my_trades = AsyncMock(side_effect=ccxt.NetworkError("boom"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_hist_deals(_instrument(), np.datetime64("2026-05-28T00:00:00"))
+    await _drive(conn)
+
+    assert sent == []
 
 
 # --------------------------------------------------------------------------- #

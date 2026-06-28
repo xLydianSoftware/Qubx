@@ -229,7 +229,7 @@ class TestRunStrategyYaml:
         config = load_strategy_config_from_yaml(temp_config_file)
         config.live.warmup = None
         # - non-default AM knob to assert config threading into the constructed AM
-        config.live.account_manager.inflight_check_retries = 7
+        config.live.account_manager.missing_order_retries = 7
 
         class MockStrategy(IStrategy):
             def on_init(self, initializer: IStrategyInitializer) -> None:
@@ -274,7 +274,7 @@ class TestRunStrategyYaml:
         assert not hasattr(ctx._account_manager, "_strategy")
 
         # - the live.account_manager block is threaded into the AM's config
-        assert ctx._account_manager._cfg.inflight_check_retries == 7
+        assert ctx._account_manager._cfg.missing_order_retries == 7
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")

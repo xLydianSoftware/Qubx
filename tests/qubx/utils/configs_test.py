@@ -47,7 +47,7 @@ live:
     logging:
         logger: CsvFileLogsWriter
     account_manager:
-        inflight_check_interval_ms: 1000
+        reconcile_tick_interval_ms: 1000
         liveness_check_threshold_ms: 60000
         terminal_order_history_size: 500
 """
@@ -55,14 +55,17 @@ live:
     config = load_strategy_config_from_yaml(config_yaml)
     assert config.live is not None
     am = config.live.account_manager
-    assert am.inflight_check_interval_ms == 1000
+    assert am.reconcile_tick_interval_ms == 1000
     assert am.liveness_check_threshold_ms == 60000
     assert am.terminal_order_history_size == 500
     # omitted fields keep the AccountManagerConfig dataclass defaults
-    assert am.inflight_check_threshold_ms == 5000
-    assert am.inflight_check_retries == 5
-    assert am.snapshot_check_interval_ms == 30000
-    assert am.snapshot_check_threshold_ms == 5000
+    assert am.snapshot_interval_ms == 30000
+    assert am.snapshot_grace_ms == 5000
+    assert am.missing_order_wait_ms == 5000
+    assert am.missing_order_retries == 5
+    assert am.order_confirm_wait_ms == 5000
+    assert am.order_confirm_retries == 5
+    assert am.position_confirm_wait_ms == 2000
     assert am.liveness_check_interval_ms == 5000
     assert am.terminal_order_retention_ms == 30000
 

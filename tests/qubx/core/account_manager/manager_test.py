@@ -226,12 +226,13 @@ def test_execute_dispatches_reconciler_actions():
             RequestStatus(cid="c1", venue_id="V1", instrument=BTC),
             RequestSnapshot(exchange=EX),
             RouteEvent(event=routed),
-            RequestHistDeals(instrument=BTC, since=T0),  # not wired yet (#4) -> logged, no call
+            RequestHistDeals(instrument=BTC, since=T0),
         ],
     )
 
     conn.request_order_status.assert_called_once_with(order)
     conn.request_snapshot.assert_called_once_with()
+    conn.request_hist_deals.assert_called_once_with(BTC, T0)
     am._pm.process_event.assert_called_once_with(routed)
 
 

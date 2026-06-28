@@ -46,8 +46,6 @@ from qubx.core.lookups import lookup
 T0 = np.datetime64("2026-05-28T00:00:00", "ns")
 T1 = np.datetime64("2026-05-28T00:01:00", "ns")
 
-SNAPSHOT_GRACE = np.timedelta64(60_000, "ms")
-
 _T = TypeVar("_T")
 
 
@@ -57,8 +55,7 @@ def _present(value: _T | None) -> _T:
 
 
 def apply(state: AccountState, event, now: np.datetime64) -> reducer.ApplyResult:
-    # our reducer.apply takes a kw-only snapshot_grace; irrelevant for order events
-    return reducer.apply(state, event, now, snapshot_grace=SNAPSHOT_GRACE)
+    return reducer.apply(state, event, now)
 
 
 _btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
@@ -511,30 +508,6 @@ def test_recovered_closing_deal_under_watermark_realizes_rpnl_only():
     assert pos.quantity == 0.003  # size unchanged (snapshot owns it; NOT driven to 0.001)
     assert pos.r_pnl == 1.0  # 0.002 * (59_500 - 59_000) realized from the recovered close
     assert state.get_balance("USDT").total == 100.0  # balance untouched (snapshot reconciled it)
-
-
-def test_old_deficit_mechanism_also_leaks_rpnl_on_covered_close():
-    # PROOF (answering "did the deficit actually solve the r_pnl leak?"): NO. The per-order deficit
-    # suppresses the COVERED deal's booking ENTIRELY (_apply_execution returns None -> no _book_deal
-    # -> no realized pnl) — same r_pnl outcome as the new venue-ts watermark. The deficit solved
-    # SIZE double-counting, never r_pnl realization. The only behavioral difference: deficit returns
-    # r.deal=None (deal not even surfaced), the watermark returns r.deal (recorded/deduped).
-    state = _state()
-    _order(state, status=OrderStatus.ACCEPTED)
-    # post-(old)-snapshot: size already reconciled to 0.003 + a deficit armed for the 0.002 the
-    # snapshot counted into filled_quantity but that was never booked as a deal locally
-    state.set_position(BTC, Position(BTC, quantity=0.003, pos_average_price=59_000.0))
-    state.set_snapshot_fill_deficit("c1", 0.002)
-
-    # the missed closing SELL 0.002 @ 59_500 (would realize +1.0 if booked) -> fully covered
-    closing = Deal(trade_id="t_close", order_id="v1", time=T1, amount=-0.002, price=59_500.0, aggressive=True)
-    r = apply(state, DealEvent(instrument=BTC, client_order_id="c1", deal=closing), T1)
-
-    pos = _present(state.get_position(BTC))
-    assert r.deal is None  # deficit fully suppressed it — not even surfaced
-    assert r.position is None
-    assert pos.quantity == 0.003  # size unchanged (snapshot already corrected it)
-    assert pos.r_pnl == 0.0  # SAME GAP as the watermark: realized pnl of the missed close NOT booked
 
 
 def test_futures_fee_debits_settle_balance():

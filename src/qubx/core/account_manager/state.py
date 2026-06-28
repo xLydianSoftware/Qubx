@@ -56,10 +56,7 @@ class AccountState:
         "_inflight_index",
         "_pending_evict_index",
         "_seen_trade_ids",
-        "_snapshot_fill_deficit",
-        "_snapshot_fill_suppressed",
         "_terminal_history",
-        "_retry_count",
         "_pre_pending_status",
         "_last_snapshot_as_of",
         "_transition_counts",
@@ -89,19 +86,8 @@ class AccountState:
         # fill (resting/canceled orders never allocate a set), dropped on
         # eviction so the memory dies with the order.
         self._seen_trade_ids: dict[str, set[str]] = {}
-        # cid -> execution quantity a snapshot counted (order totals AND position/balance
-        # legs) that was never booked locally: arriving executions are suppressed up to
-        # this deficit and book only the excess (reducer._apply_execution owns the rule).
-        # Same lifecycle as _seen_trade_ids: dropped on remove/evict.
-        self._snapshot_fill_deficit: dict[str, float] = {}
-        # cid -> quantity suppressed against the deficit since the order's last snapshot
-        # sync; the next snapshot's filled raise is absorbed by this before re-arming the
-        # deficit (reconcile._update_from_snapshot owns the rule). Same lifecycle.
-        self._snapshot_fill_suppressed: dict[str, float] = {}
         # bounded ring buffer of evicted terminals (FIFO); slow-path lookups
         self._terminal_history: deque[Order] = deque(maxlen=terminal_history_size)
-        # cid -> in-flight sweep poll count; reset on any status change
-        self._retry_count: dict[str, int] = {}
         # cid -> status captured on entry to PENDING_*; revert target on reject/give-up
         self._pre_pending_status: dict[str, OrderStatus] = {}
 
@@ -176,17 +162,8 @@ class AccountState:
     def get_pre_pending(self, cid: str) -> OrderStatus | None:
         return self._pre_pending_status.get(cid)
 
-    def get_retry(self, cid: str) -> int:
-        return self._retry_count.get(cid, 0)
-
     def get_last_snapshot_as_of(self) -> np.datetime64 | None:
         return self._last_snapshot_as_of
-
-    def get_snapshot_fill_deficit(self, cid: str) -> float:
-        return self._snapshot_fill_deficit.get(cid, 0.0)
-
-    def get_snapshot_fill_suppressed(self, cid: str) -> float:
-        return self._snapshot_fill_suppressed.get(cid, 0.0)
 
     def get_position_reconcile_as_of(self, instrument: Instrument) -> np.datetime64 | None:
         return self._position_reconcile_as_of.get(instrument)
@@ -318,13 +295,7 @@ class AccountState:
         else:
             self._pre_pending_status.pop(cid, None)
 
-        self._retry_count.pop(cid, None)
         return order
-
-    def bump_retry(self, cid: str) -> int:
-        count = self._retry_count.get(cid, 0) + 1
-        self._retry_count[cid] = count
-        return count
 
     def set_venue_id(self, cid: str, venue_order_id: str) -> None:
         order = self._active_orders[cid]
@@ -357,18 +328,6 @@ class AccountState:
         re-delivery on any path dedups via apply_fill."""
         self._seen_trade_ids.setdefault(cid, set()).add(trade_id)
 
-    def set_snapshot_fill_deficit(self, cid: str, qty: float) -> None:
-        if qty > 0.0:
-            self._snapshot_fill_deficit[cid] = qty
-        else:
-            self._snapshot_fill_deficit.pop(cid, None)
-
-    def set_snapshot_fill_suppressed(self, cid: str, qty: float) -> None:
-        if qty > 0.0:
-            self._snapshot_fill_suppressed[cid] = qty
-        else:
-            self._snapshot_fill_suppressed.pop(cid, None)
-
     def remove_order(self, cid: str) -> None:
         # Drop an order from state entirely (e.g. a submit that raised before reaching the
         # venue) — distinct from evict_to_history, which retains it in the ring buffer.
@@ -380,9 +339,6 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
-        self._snapshot_fill_deficit.pop(cid, None)
-        self._snapshot_fill_suppressed.pop(cid, None)
-        self._retry_count.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
 
     def evict_to_history(self, cid: str) -> None:
@@ -398,9 +354,6 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
-        self._snapshot_fill_deficit.pop(cid, None)
-        self._snapshot_fill_suppressed.pop(cid, None)
-        self._retry_count.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
         self._terminal_history.append(order)
 

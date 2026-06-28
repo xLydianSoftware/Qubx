@@ -181,12 +181,17 @@ class AccountManagerConfig(StrictBaseModel):
     """Tuning knobs for the central AccountManager. Mirrors
     ``qubx.core.account_manager.AccountManagerConfig`` 1:1 (fields and defaults)."""
 
-    inflight_check_interval_ms: int = 2_000
-    inflight_check_threshold_ms: int = 5_000
-    inflight_check_retries: int = 5
+    reconcile_tick_interval_ms: int = 2_000
+    snapshot_interval_ms: int = 30_000
+    snapshot_grace_ms: int = 5_000
 
-    snapshot_check_interval_ms: int = 30_000
-    snapshot_check_threshold_ms: int = 5_000
+    missing_order_wait_ms: int = 5_000
+    missing_order_retries: int = 5
+
+    order_confirm_wait_ms: int = 5_000
+    order_confirm_retries: int = 5
+
+    position_confirm_wait_ms: int = 2_000
 
     liveness_check_interval_ms: int = 5_000
     liveness_check_threshold_ms: int = 30_000

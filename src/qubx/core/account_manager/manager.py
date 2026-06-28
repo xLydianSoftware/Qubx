@@ -55,7 +55,6 @@ class AccountManager(IAccountViewer):
     _states: dict[str, AccountState]
     _snapshot_grace: np.timedelta64
     _snapshot_interval: np.timedelta64
-    _inflight_threshold: np.timedelta64
     _liveness_threshold: np.timedelta64
     _terminal_retention: np.timedelta64
     _liveness_unready_since: dict[str, np.datetime64]
@@ -117,9 +116,8 @@ class AccountManager(IAccountViewer):
         self._tcc = tcc or {}
         # Derived timedeltas (config is fixed for the AM's lifetime) — computed once
         # here rather than rebuilt on every tick/snapshot.
-        self._snapshot_grace = np.timedelta64(self._cfg.snapshot_check_threshold_ms, "ms")
-        self._snapshot_interval = np.timedelta64(self._cfg.snapshot_check_interval_ms, "ms")
-        self._inflight_threshold = np.timedelta64(self._cfg.inflight_check_threshold_ms, "ms")
+        self._snapshot_grace = np.timedelta64(self._cfg.snapshot_grace_ms, "ms")
+        self._snapshot_interval = np.timedelta64(self._cfg.snapshot_interval_ms, "ms")
         self._liveness_threshold = np.timedelta64(self._cfg.liveness_check_threshold_ms, "ms")
         self._terminal_retention = np.timedelta64(self._cfg.terminal_order_retention_ms, "ms")
         # base_currency is explicit, per exchange — resolved from config at the runner
@@ -140,9 +138,11 @@ class AccountManager(IAccountViewer):
             ex: Reconciler(
                 Differ(grace=self._snapshot_grace),
                 snapshot_interval=self._snapshot_interval,
-                missing_wait=self._inflight_threshold,
-                missing_max_retries=self._cfg.inflight_check_retries,
-                position_confirm_wait=self._inflight_threshold,
+                missing_wait=np.timedelta64(self._cfg.missing_order_wait_ms, "ms"),
+                missing_max_retries=self._cfg.missing_order_retries,
+                position_confirm_wait=np.timedelta64(self._cfg.position_confirm_wait_ms, "ms"),
+                order_confirm_wait=np.timedelta64(self._cfg.order_confirm_wait_ms, "ms"),
+                order_confirm_max_retries=self._cfg.order_confirm_retries,
             )
             for ex in connectors
         }
@@ -154,9 +154,9 @@ class AccountManager(IAccountViewer):
         # One reconcile heartbeat drives the Reconciler: its on_tick gates the snapshot request
         # (snapshot_interval) AND nudges the order/position tasks. Replaces the old inflight +
         # snapshot ticks. Fires at the (fast) inflight interval so task timers stay responsive.
-        if cfg.inflight_check_interval_ms > 0:
+        if cfg.reconcile_tick_interval_ms > 0:
             self._pm.schedule(
-                timedelta_to_crontab(pd.Timedelta(cfg.inflight_check_interval_ms, "ms")), self._on_reconcile_tick
+                timedelta_to_crontab(pd.Timedelta(cfg.reconcile_tick_interval_ms, "ms")), self._on_reconcile_tick
             )
         if cfg.liveness_check_interval_ms > 0:
             self._pm.schedule(
@@ -230,16 +230,16 @@ class AccountManager(IAccountViewer):
             self._execute(state, rec.on_snapshot(state, event.snapshot, now, changed_positions=changed))
             result = ApplyResult(positions=changed)
         else:
-            result = reducer.apply(state, event, now, snapshot_grace=self._snapshot_grace)
+            result = reducer.apply(state, event, now)
             # Order/deal events also drive the Reconciler's tasks (coverage, resolve-by-event).
             if isinstance(event, OrderEvent):
                 self._execute(state, rec.on_event(state, event, now))
         # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest)
         # registers no periodic ticks, so without this sweep terminal orders and their
         # side-table entries would grow unbounded there (and in live when
-        # inflight_check_interval_ms=0). One timestamp comparison per apply; the sweep
+        # reconcile_tick_interval_ms=0). One timestamp comparison per apply; the sweep
         # itself runs at most once per retention window. Live additionally sweeps from
-        # the inflight tick so eviction stays prompt during event silence.
+        # the reconcile tick so eviction stays prompt during event silence.
         if now - self._last_eviction_sweep >= self._terminal_retention:
             self._sweep_terminal_evictions()
         return result
@@ -261,64 +261,13 @@ class AccountManager(IAccountViewer):
                     case RouteEvent(event=routed):
                         if self._pm is not None:
                             self._pm.process_event(routed)
-                    case RequestHistDeals():
-                        logger.warning(f"[{state.exchange}] RequestHistDeals not yet wired (#4): {action}")
+                    case RequestHistDeals(instrument=instrument, since=since):
+                        if connector is not None:
+                            connector.request_hist_deals(instrument, since)
                     case _:
                         logger.warning(f"[{state.exchange}] unknown reconcile action: {action!r}")
             except Exception:
                 logger.exception(f"[{state.exchange}] reconcile action failed: {action!r}")
-
-    def _log_reconcile_diff(self, exchange: str, diff: reconcile.ReconcileDiff) -> None:
-        # The operator surface for snapshot reconcile: one line per applied snapshot that
-        # changed anything. WARNING when orders were terminalized/materialized/are still
-        # missing (drift an operator must act on), INFO for benign corrections. A diff
-        # carrying only venue_figures (present on virtually every live snapshot) stays silent.
-        if not (
-            diff.missing or diff.terminated or diff.materialized or diff.updated or diff.positions or diff.balances
-        ):
-            return
-        msg = (
-            f"[{exchange}] reconcile applied: "
-            f"terminated={[o.client_order_id for o in diff.terminated]}, "
-            f"materialized={[o.client_order_id for o in diff.materialized]}, "
-            f"missing={[o.client_order_id for o in diff.missing]}, "
-            f"updated={len(diff.updated)} orders, {len(diff.positions)} positions, {len(diff.balances)} balances"
-        )
-        if diff.terminated or diff.materialized or diff.missing:
-            logger.warning(msg)
-        else:
-            logger.info(msg)
-
-    def _resolve_missing_orders(self, state: AccountState, diff: reconcile.ReconcileDiff) -> None:
-        # Fetch-before-terminalize: an order missing from the snapshot past grace may have
-        # FILLED during a WS gap — request its true status (the connector replays the venue's
-        # answer through the normal event path: _handle_ws_order emits the real FILLED/
-        # CANCELED, OrderNotFound synthesizes the reject). The shared per-order retry counter
-        # is the fetch budget; once exhausted across snapshot cycles, give up and terminalize
-        # exactly as before. Resolved orders leave the budget via transition_order's reset.
-        connector = self._connectors[state.exchange]
-        now = self._time.time()
-        unresolved: list[Order] = []
-        for order in diff.missing:
-            cid = order.client_order_id
-            try:
-                if reconcile.retries_exhausted(state, cid, self._cfg.inflight_check_retries):
-                    logger.warning(
-                        f"[{state.exchange}] reconcile give-up: terminalizing {cid} "
-                        f"(status={order.status}, vid={order.venue_order_id}) after "
-                        f"{state.get_retry(cid)} status-fetch attempts"
-                    )
-                    if reconcile.terminalize_missing(state, order, now):
-                        diff.terminated.append(order)
-                else:
-                    connector.request_order_status(order)
-                    state.bump_retry(cid)
-                    unresolved.append(order)
-            except Exception:
-                # One bad order / connector error must not abort the rest of the resolution.
-                logger.exception(f"[{state.exchange}] missing-order status fetch failed for {cid}")
-                unresolved.append(order)
-        diff.missing[:] = unresolved
 
     def _state_for_event(self, event: AccountMessage) -> AccountState | None:
         if isinstance(event, AccountSnapshotEvent):
@@ -579,53 +528,6 @@ class AccountManager(IAccountViewer):
             except Exception:
                 logger.exception(f"[{exchange}] reconcile tick failed")
         self._sweep_terminal_evictions()
-
-    def _on_inflight_tick(self, ctx) -> None:
-        now = self._time.time()
-        for exchange, state in self._states.items():
-            for order in reconcile.select_overdue_inflight(state, now, self._inflight_threshold):
-                cid = order.client_order_id
-                try:
-                    if reconcile.retries_exhausted(state, cid, self._cfg.inflight_check_retries):
-                        # Give-up after the retry budget: synthesize the reject the venue
-                        # never sent and route it through pm.process_event — the same path
-                        # venue events take — so the normal handlers do the transition/
-                        # revert and the PM fires the strategy callback error-isolated
-                        # (with metrics). The AM never calls the strategy directly. The
-                        # tick runs on the strategy thread (PM-scheduled), so apply stays
-                        # single-mutator.
-                        # Give-ups (and WS reconnects) are WARNING-log-only counters: the
-                        # AM holds no metric emitter — that seam lives on the PM, which
-                        # does emit reconcile terminated/materialized off the ApplyResult
-                        # diff it already sees.
-                        retries = state.get_retry(cid)
-                        logger.warning(
-                            f"[{exchange}] inflight give-up: no venue answer for {cid} "
-                            f"(status={order.status}, vid={order.venue_order_id}) after "
-                            f"{retries} status-fetch attempts; synthesizing reject"
-                        )
-                        assert self._pm is not None  # ticks only register with a pm
-                        self._pm.process_event(reconcile.giveup_event(order, retries))
-                    else:
-                        self._connectors[exchange].request_order_status(order)
-                        state.bump_retry(cid)
-                        order.last_update_time = now
-                except Exception:
-                    # One bad order / connector error must not abort the rest of the sweep
-                    # or skip terminal eviction (design.md "Ticks & sweeps"). Strategy-callback errors are
-                    # already isolated inside the PM dispatch the give-up path routes through.
-                    logger.exception(f"[{exchange}] inflight sweep failed for {cid}")
-        self._sweep_terminal_evictions()
-
-    def _on_snapshot_tick(self, ctx) -> None:
-        now = self._time.time()
-        for exchange, state in self._states.items():
-            if reconcile.snapshot_due(state, now, self._snapshot_interval):
-                try:
-                    self._connectors[exchange].request_snapshot()
-                except Exception:
-                    # One bad connector must not abort the snapshot backstop for the rest.
-                    logger.exception(f"[{exchange}] periodic snapshot request failed")
 
     def _on_liveness_tick(self, ctx) -> None:
         now = self._time.time()

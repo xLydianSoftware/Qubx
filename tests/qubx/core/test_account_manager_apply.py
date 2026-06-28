@@ -983,31 +983,3 @@ def test_filled_without_venue_cumulative_is_unchanged():
     )
     assert state.get_order("cid-1").filled_quantity == 0.3
     assert state.get_position(inst).quantity == 0.3
-
-
-def test_gap_fill_suppressed_when_snapshot_deficit_already_covers_it():
-    # If a snapshot already counted the missing fills (armed a fill deficit + corrected size),
-    # the terminal gap reconciliation must NOT double-book: routed through _apply_execution,
-    # the synthetic fill is suppressed up to the deficit.
-    am = _am()
-    inst = _Inst()
-    state = am.get_state("binance")
-    add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
-    am.apply(
-        OrderPartiallyFilledEvent(
-            instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(trade_id="t1", amount=0.3)
-        )
-    )
-    state.set_snapshot_fill_deficit("cid-1", 0.7)  # a snapshot already counted the remaining 0.7
-    am.apply(
-        OrderFilledEvent(
-            instrument=inst,
-            client_order_id="cid-1",
-            venue_order_id="V1",
-            fill=None,
-            venue_filled_quantity=1.0,
-            venue_avg_price=50_000.0,
-        )
-    )
-    assert state.get_position(inst).quantity == 0.3  # suppressed: size came from the snapshot, not re-booked
-    assert state.get_snapshot_fill_deficit("cid-1") == 0.0  # deficit consumed

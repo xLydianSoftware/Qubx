@@ -376,7 +376,7 @@ def test_balance_push_as_of_accessor_defaults_none_then_tracks_marks():
 
 
 # --------------------------------------------------------------------------- #
-# side-tables: pre_pending_status / retry_count
+# side-tables: pre_pending_status
 # --------------------------------------------------------------------------- #
 
 
@@ -407,35 +407,14 @@ def test_pre_pending_cleared_on_leaving_pending():
     assert state.get_pre_pending("qubx-1") is None
 
 
-def test_retry_count_bump_and_default():
-    state = AccountState("binance", "USDT")
-    state.add_order(_order())
-    assert state.get_retry("qubx-1") == 0
-    assert state.bump_retry("qubx-1") == 1
-    assert state.bump_retry("qubx-1") == 2
-    assert state.get_retry("qubx-1") == 2
-
-
-def test_retry_count_resets_on_transition():
-    state = AccountState("binance", "USDT")
-    state.add_order(_order())
-    state.bump_retry("qubx-1")
-    state.bump_retry("qubx-1")
-    state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
-    assert state.get_retry("qubx-1") == 0
-
-
 def test_remove_order_drops_side_tables():
     state = AccountState("binance", "USDT")
     state.add_order(_order())
     state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
     state.transition_order("qubx-1", OrderStatus.PENDING_CANCEL, T2)
-    state.bump_retry("qubx-1")
     assert state.get_pre_pending("qubx-1") == OrderStatus.ACCEPTED
-    assert state.get_retry("qubx-1") == 1
     state.evict_to_history("qubx-1")
     assert state.get_pre_pending("qubx-1") is None
-    assert state.get_retry("qubx-1") == 0
 
 
 # --------------------------------------------------------------------------- #

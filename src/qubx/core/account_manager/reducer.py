@@ -10,13 +10,12 @@ rejects/lifecycle events for unknown orders all return empty results, so no call
 fires.
 """
 
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 import numpy as np
 
 from qubx import area_logger
 from qubx.core.account_manager import reconcile
-from qubx.core.account_manager.reconcile import ReconcileDiff
 from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import can_transition
 from qubx.core.basics import (
@@ -34,7 +33,6 @@ from qubx.core.basics import (
 )
 from qubx.core.events import (
     AccountMessage,
-    AccountSnapshotEvent,
     BalanceUpdateEvent,
     DealEvent,
     FundingPaymentEvent,
@@ -62,7 +60,6 @@ class ApplyResult:
     order_change: OrderChange | None = None  # paired with order
     deal: Deal | None = None  # new deal applied -> downstream fill consumers
     position: Position | None = None  # position changed
-    reconcile_diff: ReconcileDiff | None = None  # set when a snapshot reconcile applied
     # balance push applied (the live state Balance) — internal/diff visibility only,
     # fires NO strategy callback by design (balances are read via ctx)
     balance: Balance | None = None
@@ -76,7 +73,6 @@ class ApplyResult:
             and self.order_change is None
             and self.deal is None
             and self.position is None
-            and self.reconcile_diff is None
             and self.balance is None
             and not self.positions
         )
@@ -271,44 +267,12 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
 def _apply_execution(
     state: AccountState, order: Order, deal: Deal, now: np.datetime64, *, update_time: np.datetime64 | None = None
 ) -> Deal | None:
-    """Shared already-counted gate for all three execution paths (DealEvent and the
-    embedded fills on OrderFilled/OrderPartiallyFilled). Returns the deal to book —
-    trimmed to the uncovered part when a snapshot partially covers it — or None when
-    nothing should book (status transitions still proceed in the callers).
-
-    Trade-id dedup stays first-line: a re-delivered trade we already saw never touches
-    the deficit. Then the snapshot-fill deficit — the quantity a snapshot counted into
-    filled_quantity (position/balance legs reconciled with it) that we never booked as
-    deals — suppresses the arriving execution up to the counted amount: a fully covered
-    one records its trade id (re-deliveries still dedup) and books nothing; a larger one
-    books only the excess, fee pro-rated. Excess/remaining-deficit comparisons use the
-    half-lot epsilon (reconcile.fill_qty_epsilon): the deficit is float-subtraction
-    arithmetic, and an exact 0.0 gate booked ~1e-16 phantom dust deals. The rule is
-    clock-free (quantity is the only signal — no venue-vs-local time comparison), so a
-    genuinely-new execution that fits the deficit window is suppressed in place of the
-    covered one it stands in for: quantity totals stay exact either way, only per-deal
-    price/fee attribution can shift, and the next snapshot re-syncs sizes regardless.
+    """Shared booking gate for all three execution paths (DealEvent and the embedded fills
+    on OrderFilled/OrderPartiallyFilled). Returns the deal to book, or None when it was a
+    re-delivered trade we already saw (status transitions still proceed in the callers).
+    Trade-id dedup lives in apply_fill.
     """
     cid = order.client_order_id
-    deficit = state.get_snapshot_fill_deficit(cid)
-    if deficit > 0.0 and not state.is_trade_seen(cid, deal.trade_id):
-        eps = reconcile.fill_qty_epsilon(order.instrument)
-        qty = abs(deal.amount)
-        covered = min(qty, deficit)
-        remaining = deficit - covered
-        state.set_snapshot_fill_deficit(cid, 0.0 if remaining <= eps else remaining)
-        state.set_snapshot_fill_suppressed(cid, state.get_snapshot_fill_suppressed(cid) + covered)
-        # The suppression IS an order-state observation: bump freshness so a snapshot
-        # FETCHED before it fails the per-order guard in reconcile — otherwise that
-        # stale snapshot resets the suppressed marker / mis-absorbs the deficit
-        # (apply_fill bumps the booked paths; this covers the suppressed ones).
-        order.last_update_time = update_time if update_time is not None else now
-        excess = qty - covered
-        if excess <= eps:
-            state.record_trade_id(cid, deal.trade_id)
-            return None
-        fee = deal.fee_amount * (excess / qty) if deal.fee_amount is not None else None
-        deal = replace(deal, amount=excess if deal.amount > 0 else -excess, fee_amount=fee)
     return deal if state.apply_fill(cid, deal, now, update_time=update_time) else None
 
 
@@ -510,15 +474,6 @@ def _handle_balance_update(state: AccountState, event: BalanceUpdateEvent, now: 
     return ApplyResult(balance=state.get_balance(bal.currency))
 
 
-def _handle_snapshot(
-    state: AccountState, event: AccountSnapshotEvent, now: np.datetime64, grace: np.timedelta64
-) -> ApplyResult:
-    diff = reconcile.reconcile_snapshot(state, event.snapshot, now, grace)
-    if diff is None:  # stale/out-of-order snapshot, rejected by the as_of ratchet
-        return ApplyResult()
-    return ApplyResult(reconcile_diff=diff)
-
-
 _HANDLERS = {
     OrderAcceptedEvent: _handle_accepted,
     OrderPartiallyFilledEvent: _handle_partial_fill,
@@ -536,13 +491,8 @@ _HANDLERS = {
 }
 
 
-def apply(
-    state: AccountState, event: AccountMessage, now: np.datetime64, *, snapshot_grace: np.timedelta64
-) -> ApplyResult:
-    # The snapshot handler is the one dispatch target that needs config (the grace
-    # window), so it is routed explicitly rather than through the uniform table.
-    if isinstance(event, AccountSnapshotEvent):
-        return _handle_snapshot(state, event, now, snapshot_grace)
+def apply(state: AccountState, event: AccountMessage, now: np.datetime64) -> ApplyResult:
+    # Snapshots are owned by the Reconciler (driven from the AccountManager), never here.
     handler = _HANDLERS.get(type(event))
     if handler is None:
         logger.warning(f"unhandled AccountMessage: {type(event)}")
