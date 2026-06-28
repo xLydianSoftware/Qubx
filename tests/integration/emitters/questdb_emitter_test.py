@@ -188,7 +188,7 @@ class TestQuestDBEmitterIntegration:
         return mock
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
     def test_questdb_emitter_integration(
         self,

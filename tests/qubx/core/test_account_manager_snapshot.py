@@ -124,9 +124,7 @@ def test_missing_order_past_grace_requests_status_fetch_not_terminalized():
 
     order = state.get_order("cid-1")
     assert order.status is OrderStatus.SUBMITTED  # untouched until the venue answers
-    am._connectors["binance"].request_order_status.assert_called_once_with(
-        client_order_id="cid-1", venue_order_id="V1", instrument=inst
-    )
+    am._connectors["binance"].request_order_status.assert_called_once_with(order)
     assert state.get_retry("cid-1") == 1
     assert result.reconcile_diff is not None
     assert result.reconcile_diff.missing == [order]
@@ -239,9 +237,7 @@ def test_open_orders_empty_list_engages_missing_handling():
 
     fresh = state.get_order("cid-fresh")
     assert fresh.status is OrderStatus.ACCEPTED  # fetch rescue, not terminalized
-    am._connectors["binance"].request_order_status.assert_called_once_with(
-        client_order_id="cid-fresh", venue_order_id="VF", instrument=inst
-    )
+    am._connectors["binance"].request_order_status.assert_called_once_with(fresh)
     assert state.get_retry("cid-fresh") == 1
     spent = state.get_order("cid-spent")
     assert spent.status is OrderStatus.REJECTED  # budget gone -> give-up

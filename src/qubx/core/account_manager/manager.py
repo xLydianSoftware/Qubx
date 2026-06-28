@@ -11,7 +11,7 @@ from typing import Callable, Literal
 import numpy as np
 import pandas as pd
 
-from qubx import logger
+from qubx import area_logger
 from qubx.core.account_manager import reconcile, reducer
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.reducer import ApplyResult
@@ -33,6 +33,9 @@ from qubx.core.events import AccountMessage, AccountSnapshotEvent, BalanceUpdate
 from qubx.core.interfaces import IAccountViewer, IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
 
+# Module logger bound to the "account_manager" area (see reducer.py for the contract).
+logger = area_logger("account_manager")
+
 
 class AccountManager(IAccountViewer):
     _pm: IProcessingManager | None
@@ -49,11 +52,6 @@ class AccountManager(IAccountViewer):
     _terminal_retention: np.timedelta64
     _liveness_unready_since: dict[str, np.datetime64]
     _last_eviction_sweep: np.datetime64
-    _last_drift_snapshot: dict[str, np.datetime64]
-
-    # Min interval between drift-triggered snapshot requests, per exchange: a burst of
-    # drifting position pushes collapses into one REST correction.
-    _DRIFT_SNAPSHOT_MIN_INTERVAL = np.timedelta64(2_000, "ms")
 
     def __init__(
         self,
@@ -127,7 +125,6 @@ class AccountManager(IAccountViewer):
         }
         self._liveness_unready_since = {}
         self._last_eviction_sweep = time.time()
-        self._last_drift_snapshot = {}
 
     def _register_ticks(self) -> None:
         cfg = self._cfg
@@ -203,8 +200,6 @@ class AccountManager(IAccountViewer):
             if diff.missing:
                 self._resolve_missing_orders(state, diff)
             self._log_reconcile_diff(state.exchange, diff)
-        if result.position_drift is not None:
-            self._on_position_drift(state, result.position_drift, now)
         # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest)
         # registers no periodic ticks, so without this sweep terminal orders and their
         # side-table entries would grow unbounded there (and in live when
@@ -258,9 +253,7 @@ class AccountManager(IAccountViewer):
                     if reconcile.terminalize_missing(state, order, now):
                         diff.terminated.append(order)
                 else:
-                    connector.request_order_status(
-                        client_order_id=cid, venue_order_id=order.venue_order_id, instrument=order.instrument
-                    )
+                    connector.request_order_status(order)
                     state.bump_retry(cid)
                     unresolved.append(order)
             except Exception:
@@ -268,34 +261,6 @@ class AccountManager(IAccountViewer):
                 logger.exception(f"[{state.exchange}] missing-order status fetch failed for {cid}")
                 unresolved.append(order)
         diff.missing[:] = unresolved
-
-    def _on_position_drift(self, state: AccountState, pushed: Position, now: np.datetime64) -> None:
-        # A venue position push disagreed with local size. The reducer never applies it
-        # (sizes are owned by the deal ledger); the correction is the race-safe snapshot
-        # reconcile. Rate-limited per exchange so a burst of drifting pushes collapses
-        # into one REST request — drifts suppressed inside the window are still corrected
-        # by that pending snapshot.
-        instrument = pushed.instrument
-        local = state.get_position(instrument)
-        local_qty = local.quantity if local is not None else 0.0
-        last = self._last_drift_snapshot.get(state.exchange)
-        if last is not None and (now - last) < self._DRIFT_SNAPSHOT_MIN_INTERVAL:
-            logger.debug(
-                f"[{state.exchange}] position drift on {instrument.symbol} "
-                f"(local={local_qty}, pushed={pushed.quantity}) within rate window; snapshot already requested"
-            )
-            return
-        logger.warning(
-            f"[{state.exchange}] position drift on {instrument.symbol}: "
-            f"local={local_qty}, pushed={pushed.quantity}; requesting snapshot"
-        )
-        # Stamp before the request so a connector error doesn't re-fire every push;
-        # the periodic snapshot tick is the backstop.
-        self._last_drift_snapshot[state.exchange] = now
-        try:
-            self._connectors[state.exchange].request_snapshot()
-        except Exception:
-            logger.exception(f"[{state.exchange}] drift snapshot request failed")
 
     def _state_for_event(self, event: AccountMessage) -> AccountState | None:
         if isinstance(event, AccountSnapshotEvent):
@@ -573,11 +538,7 @@ class AccountManager(IAccountViewer):
                         assert self._pm is not None  # ticks only register with a pm
                         self._pm.process_event(reconcile.giveup_event(order, retries))
                     else:
-                        self._connectors[exchange].request_order_status(
-                            client_order_id=cid,
-                            venue_order_id=order.venue_order_id,
-                            instrument=order.instrument,
-                        )
+                        self._connectors[exchange].request_order_status(order)
                         state.bump_retry(cid)
                         order.last_update_time = now
                 except Exception:

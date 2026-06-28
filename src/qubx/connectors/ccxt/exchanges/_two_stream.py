@@ -73,10 +73,10 @@ class _TwoStreamCcxtConnector(CcxtConnector):
     def _handle_ws_trade(self, raw: dict[str, Any]) -> None:
         """Convert one ``watch_my_trades`` trade to a Deal and emit a ``DealEvent``.
 
-        Resolves the originating client_order_id from the venue id the trade carries
-        (``raw['order']``) via the connector's venue->cid index. The order's status
-        transitions (including the terminal FILLED) are driven by the watch_orders
-        stream, never here — AM books the deal against the order whichever stream
+        The deal is routed by the venue order id the trade carries (``raw['order']``); the
+        connector keeps no state, so AM resolves the originating order (and its cid) from that
+        id. The order's status transitions (including the terminal FILLED) are driven by the
+        watch_orders stream, never here — AM books the deal against the order whichever stream
         delivered first, deduped by trade_id.
         """
         try:
@@ -85,22 +85,11 @@ class _TwoStreamCcxtConnector(CcxtConnector):
             logger.warning(f"[{self.exchange_name}] WS trade for unknown symbol {raw.get('symbol')}; skipped")
             return
         deal = ccxt_convert_deal_info(raw)
-        venue_order_id = raw.get("order")
-        cid = self._venue_to_cid.get(venue_order_id) if venue_order_id is not None else None
-        if cid is None:
-            # The order's open/new report (which seeds the venue->cid index) may not have
-            # arrived yet, the order may already be evicted (terminal status beat the
-            # trade), or this is an external order. Emit routed by venue id — AM resolves
-            # (or materializes) the order from it.
-            logger.debug(
-                f"[{self.exchange_name}] trade {deal.trade_id} for venue id {venue_order_id}: "
-                "no cid in index; emitting deal by venue id"
-            )
         self.send(
             DealEvent(
                 instrument=instrument,
-                client_order_id=cid,  # None when not indexed — AM resolves by venue id
-                venue_order_id=venue_order_id,
+                client_order_id=None,  # AM resolves the order by the venue id
+                venue_order_id=raw.get("order"),
                 deal=deal,
             )
         )

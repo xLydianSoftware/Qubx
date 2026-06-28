@@ -1276,6 +1276,16 @@ class ProcessingManager(IProcessingManager):
             logger.exception(f"strategy callback {getattr(fn, '__name__', fn)} raised")
             self._emit_error_metric("strategy_callback_errors", callback=getattr(fn, "__name__", "unknown"))
 
+    def _safe_call_gatherer(self, fn: Callable, *args) -> None:
+        # Same ApplyResult-driven dispatch as the strategy callbacks, but onto the position
+        # gatherer (on_order / on_position_change). Default no-ops on IPositionGathering, so
+        # gatherers that don't override pay nothing; error-isolated like the strategy fires.
+        try:
+            fn(self._context, *args)
+        except Exception:
+            logger.exception(f"position gatherer callback {getattr(fn, '__name__', fn)} raised")
+            self._emit_error_metric("strategy_callback_errors", callback=f"gatherer.{getattr(fn, '__name__', 'unknown')}")
+
     def _safe_fire_account_callback(self, event: AccountMessage, result: ApplyResult) -> None:
         # Purely ApplyResult-driven dispatch onto the three strategy callbacks: each set
         # field fires its callback, an empty result means the AM suppressed the event
@@ -1299,6 +1309,7 @@ class ProcessingManager(IProcessingManager):
                 )
             if result.order is not None and result.order_change is not None:
                 self._safe_call(self._strategy.on_order, result.order, result.order_change)
+                self._safe_call_gatherer(self._position_gathering.on_order, result.order, result.order_change)
             if result.deal is not None:
                 if event.instrument is not None:
                     self._safe_call(self._strategy.on_execution, event.instrument, result.deal)
@@ -1309,9 +1320,11 @@ class ProcessingManager(IProcessingManager):
                 self._notify_downstream_fill(event.instrument, result.deal)
         if result.position is not None:
             self._safe_call(self._strategy.on_position_change, result.position)
+            self._safe_call_gatherer(self._position_gathering.on_position_change, result.position)
         if result.reconcile_diff is not None:
             for position in result.reconcile_diff.positions:
                 self._safe_call(self._strategy.on_position_change, position)
+                self._safe_call_gatherer(self._position_gathering.on_position_change, position)
 
     def _notify_downstream_fill(self, instrument: Instrument | None, fill: Deal) -> None:
         if instrument is None:

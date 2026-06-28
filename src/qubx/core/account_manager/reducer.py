@@ -14,7 +14,7 @@ from dataclasses import dataclass, replace
 
 import numpy as np
 
-from qubx import logger
+from qubx import area_logger
 from qubx.core.account_manager import reconcile
 from qubx.core.account_manager.reconcile import ReconcileDiff
 from qubx.core.account_manager.state import AccountState
@@ -48,8 +48,11 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
+
+# Module logger bound to the "account_manager" area: every line here carries that tag.
+# INFO/WARNING show as usual; DEBUG only when QUBX_DEBUG_AREAS includes account_manager.
+logger = area_logger("account_manager")
 
 
 @dataclass
@@ -59,9 +62,6 @@ class ApplyResult:
     deal: Deal | None = None  # new deal applied -> downstream fill consumers
     position: Position | None = None  # position changed
     reconcile_diff: ReconcileDiff | None = None  # set when a snapshot reconcile applied
-    # venue position push disagrees with local size — NOT applied to state; the
-    # AccountManager reacts with a rate-limited snapshot request (race-safe correction)
-    position_drift: Position | None = None
     # balance push applied (the live state Balance) — internal/diff visibility only,
     # fires NO strategy callback by design (balances are read via ctx)
     balance: Balance | None = None
@@ -74,7 +74,6 @@ class ApplyResult:
             and self.deal is None
             and self.position is None
             and self.reconcile_diff is None
-            and self.position_drift is None
             and self.balance is None
         )
 
@@ -167,9 +166,27 @@ def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.dat
     return ApplyResult(order=order, order_change=OrderChange.ACCEPTED)
 
 
+def _is_superseded_oid_cancel(order: Order, event: OrderEvent) -> bool:
+    """True when a CANCELED addresses a venue id the order no longer holds.
+
+    A cancel-and-replace modify (Hyperliquid, and any venue whose ``edit`` is implemented as
+    atomic cancel+recreate) cancels the OLD venue order id but emits its CANCELED carrying the
+    SAME client_order_id as the now-live replacement — which already moved to a NEW venue id.
+    ``_resolve`` matches by client id first, so without this guard that stale CANCELED would
+    cancel the live order. A CANCELED whose venue id differs from the order's current one is for
+    a superseded id and must be ignored. (A cancel with no venue id, or one matching the order's
+    current id, is a real cancel and passes through.)
+    """
+    return (
+        event.venue_order_id is not None
+        and order.venue_order_id is not None
+        and event.venue_order_id != order.venue_order_id
+    )
+
+
 def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.datetime64) -> ApplyResult:
     order = _resolve(state, event)
-    if order is None or order.status.is_terminal:
+    if order is None or order.status.is_terminal or _is_superseded_oid_cancel(order, event):
         return ApplyResult()
     order = reconcile.transition(state, order.client_order_id, OrderStatus.CANCELED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.CANCELED)
@@ -220,7 +237,9 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
     already covers it (see _covered_by_balance_push); position/r_pnl always book.
     """
     pos = state.ensure_position(instrument)
+    _before = pos.quantity
     realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
+    logger.debug("deal {} amt={} {}->{} tid={}", instrument.symbol, deal.amount, _before, pos.quantity, deal.trade_id)
     if instrument.is_futures():
         # TODO(account-mgmt): fee is folded into settle here (correct when
         # settle == portfolio base currency); revisit for instruments whose
@@ -466,22 +485,6 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
     return ApplyResult(position=pos)
 
 
-def _handle_position_update(state: AccountState, event: PositionUpdateEvent, now: np.datetime64) -> ApplyResult:
-    # Positions are tracked from fills (the deal ledger). A venue position push never
-    # writes size — it only VERIFIES local state: on drift the AccountManager refetches
-    # a snapshot to correct it.
-    instrument = event.position.instrument
-    last = state.get_position_push_as_of(instrument)
-    if last is not None and event.as_of <= last:
-        return ApplyResult()
-    state.mark_position_push(instrument, event.as_of)
-    local = state.get_position(instrument)
-    local_qty = local.quantity if local is not None else 0.0
-    if abs(event.position.quantity - local_qty) < instrument.lot_size:
-        return ApplyResult(position=local)
-    return ApplyResult(position_drift=event.position)
-
-
 def _handle_balance_update(state: AccountState, event: BalanceUpdateEvent, now: np.datetime64) -> ApplyResult:
     # Absolute apply through the per-currency as_of ratchet; total-only pushes (futures
     # carry no free/locked split -> NaN) preserve locked. Producer contract: a push
@@ -514,7 +517,6 @@ _HANDLERS = {
     OrderCancelRejectedEvent: _handle_cancel_rejected,
     OrderUpdateRejectedEvent: _handle_update_rejected,
     FundingPaymentEvent: _handle_funding_payment,
-    PositionUpdateEvent: _handle_position_update,
     BalanceUpdateEvent: _handle_balance_update,
 }
 

@@ -7,6 +7,7 @@ import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.handlers.ohlc import OhlcDataHandler
+from qubx.connectors.plugin import BuildContext
 from qubx.core.basics import CtrlChannel, Instrument, MarketType
 from qubx.core.series import Bar, Quote
 from qubx.health.dummy import DummyHealthMonitor
@@ -72,16 +73,16 @@ def mock_credentials():
 
 @pytest.fixture
 def data_provider(mock_exchange, mock_time_provider, ctrl_channel, mock_credentials):
+    ctx = BuildContext(
+        exchange_name="TEST",
+        time_provider=mock_time_provider,
+        channel=ctrl_channel,
+        credentials=mock_credentials,
+        health_monitor=DummyHealthMonitor(),
+        loop=Mock(),
+    )
     with patch("qubx.connectors.ccxt.factory.get_ccxt_exchange_manager", return_value=mock_exchange):
-        return CcxtDataProvider(
-            exchange_name="TEST",
-            time_provider=mock_time_provider,
-            channel=ctrl_channel,
-            health_monitor=DummyHealthMonitor(),
-            credentials=mock_credentials,
-            max_ws_retries=3,
-            warmup_timeout=10,
-        )
+        return CcxtDataProvider(ctx, max_ws_retries=3, warmup_timeout=10)
 
 
 class TestBasicFunctionality:

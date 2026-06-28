@@ -4,6 +4,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import numpy as np
 import pytest
 
+from qubx.connectors.plugin import BuildContext
 from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.lookups import lookup
@@ -92,14 +93,15 @@ class TestTardisDataProvider:
         monkeypatch.setattr(TardisDataProvider, "_start_websocket_connection", lambda self: async_mock)
 
         # Create a simplified provider without real thread or asyncio operations
-        provider = TardisDataProvider(
+        ctx = BuildContext(
             exchange_name="bitfinex",
             time_provider=mock_time_provider,
             channel=mock_channel,
+            credentials=MagicMock(),
             health_monitor=DummyHealthMonitor(),
-            host="localhost",
-            port=8000,
+            loop=MagicMock(),
         )
+        provider = TardisDataProvider(ctx, host="localhost", port=8000)
 
         # Mock the internal loop and thread
         provider._loop = MagicMock()

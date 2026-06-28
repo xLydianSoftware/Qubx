@@ -8,11 +8,14 @@ import pandas as pd
 import pytest
 
 from qubx import QubxLogConfig, logger
+from qubx.connectors.plugin import BuildContext
 from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.basics import CtrlChannel, DataType, LiveTimeProvider
 from qubx.core.lookups import lookup
 from qubx.core.series import Bar, Quote
 from qubx.health import DummyHealthMonitor
+from qubx.utils.misc import BackgroundEventLoop
+from qubx.utils.runner.accounts import AccountConfigurationManager
 
 TARDIS_HOST = os.environ.get("TARDIS_HOST", "quantlab")
 TARDIS_PORT = int(os.environ.get("TARDIS_PORT", "8011"))
@@ -53,11 +56,16 @@ class TestTardisDataProvider:
         self.instrument = instrument
 
         # Set up the data provider (exchange_name BITFINEX.F maps to tardis 'bitfinex-derivatives')
-        self.data_provider = TardisDataProvider(
+        ctx = BuildContext(
             exchange_name="BITFINEX.F",
             time_provider=self.time_provider,
             channel=self.channel,
+            credentials=AccountConfigurationManager(),
             health_monitor=DummyHealthMonitor(),
+            loop=BackgroundEventLoop().loop,
+        )
+        self.data_provider = TardisDataProvider(
+            ctx,
             host=TARDIS_HOST,
             port=TARDIS_PORT,  # WebSocket port - HTTP port will be port - 1
         )

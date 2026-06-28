@@ -39,7 +39,6 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
 from qubx.core.lookups import lookup
 
@@ -129,6 +128,39 @@ def test_cancel_on_terminal_is_noop():
     _order(state, status=OrderStatus.FILLED)
     r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1"), T1)
     assert r.order is None
+
+
+def test_cancel_with_matching_venue_id_transitions_to_terminal():
+    # A real cancel (the event's venue id == the order's current id) still cancels.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="B")
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="B"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.CANCELED
+
+
+def test_cancel_of_superseded_oid_after_modify_is_ignored():
+    # A cancel-and-replace modify (HL): the modify cancels the OLD oid A but emits its CANCELED
+    # carrying the SAME cloid as the now-live replacement, which already moved to a NEW oid B.
+    # Resolving by cloid would cancel the live order — the reducer must ignore a CANCELED whose
+    # venue id is not the order's current one.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="A")
+    # the modify's WS open(B) lands the order at the new oid (same cloid)
+    apply(state, OrderAcceptedEvent(instrument=None, client_order_id="c1", venue_order_id="B", accepted_at=T0), T1)
+    assert state.get_order("c1").venue_order_id == "B"
+    # the modify's stale CANCELED for the OLD oid A must NOT cancel the live order
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="A"), T1)
+    assert r.order is None  # ignored — empty ApplyResult
+    assert state.get_order("c1").status is OrderStatus.ACCEPTED  # the live order survives
+
+
+def test_cancel_without_venue_id_cancels_by_cloid():
+    # A pre-ack cancel (no venue id on the event) still resolves by cloid and cancels — the
+    # superseded-oid guard only fires when the event carries a (differing) venue id.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="A")
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.CANCELED
 
 
 def test_expire_transitions_to_terminal():
@@ -269,66 +301,13 @@ def test_dedup_across_deal_and_order_stream():
 
 
 # --------------------------------------------------------------------------- #
-# F26 — venue position/balance pushes
+# F26 — venue balance pushes
 # --------------------------------------------------------------------------- #
-
-
-def _venue_position(qty: float, price: float = 50_000.0) -> Position:
-    return Position(BTC, quantity=qty, pos_average_price=price)
 
 
 def _total_push(total: float, currency: str = "USDT") -> Balance:
     # futures pushes carry no free/locked split — total only (NaN split by contract)
     return Balance(exchange="binance", currency=currency, free=np.nan, locked=np.nan, total=total)
-
-
-def test_position_push_size_equal_returns_local_position():
-    # Size-equal push carries the LOCAL position (never the venue payload), so the
-    # purely field-driven dispatch fires on_position_change off local state.
-    state = _state()
-    _order(state, status=OrderStatus.ACCEPTED)
-    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5)), T1)
-    venue = _venue_position(0.5)
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=venue, as_of=T1), T1)
-    assert r.position is _present(state.get_position(BTC))
-    assert r.position is not venue
-    assert r.position_drift is None
-    assert state.get_position_push_as_of(BTC) == T1
-    assert _present(state.get_position(BTC)).quantity == 0.5
-
-
-def test_position_push_flat_on_empty_state_creates_nothing():
-    state = _state()
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.0), as_of=T1), T1)
-    assert r.is_empty()
-    assert state.get_position(BTC) is None
-    assert state.get_position_push_as_of(BTC) == T1
-
-
-def test_position_push_drift_flags_without_mutation():
-    state = _state()
-    _order(state, status=OrderStatus.ACCEPTED)
-    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5, 50_000.0)), T1)
-    venue = _venue_position(0.7, 49_000.0)
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=venue, as_of=T1), T1)
-    assert r.position_drift is venue
-    assert r.position is None and not r.is_empty()
-    local = _present(state.get_position(BTC))
-    assert local.quantity == 0.5  # zero mutation — the snapshot reconcile corrects size
-    assert local.position_avg_price == 50_000.0
-
-
-def test_position_push_stale_as_of_suppressed():
-    # Ratchet-dropped pushes return empty -> NOTHING fires (no fire-through off the
-    # event payload — that would deliver data older than already delivered).
-    state = _state()
-    apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.0), as_of=T1), T1)
-    # older AND same-time pushes are stale (<= ratchet), even when they would drift
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.7), as_of=T0), T1)
-    assert r.is_empty()
-    r = apply(state, PositionUpdateEvent(instrument=BTC, position=_venue_position(0.7), as_of=T1), T1)
-    assert r.is_empty()
-    assert state.get_position_push_as_of(BTC) == T1
 
 
 def test_balance_push_applies_absolutely_preserving_locked():

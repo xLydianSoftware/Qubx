@@ -4,9 +4,11 @@ This module owns both sides of the IConnector surface:
 
 - WRITE: submit / cancel / update + leverage / margin.
 - READ: the WS account-event subscription (``watch_orders`` → typed lifecycle
-  events), the full-account snapshot fetch, and single-order status reconcile —
-  plus a small order cache the write side consults to fill in the ccxt
-  symbol/side/type that cancel/edit require.
+  events), the full-account snapshot fetch, and single-order status reconcile.
+
+The connector is STATELESS — it keeps no per-order state. cancel / update /
+request_order_status receive the whole ``Order`` from the AccountManager (the single
+source of order state) and read the ccxt symbol / side / type / ids straight off it.
 
 Design contract (see docs/account-management/design.md, "Connectors (IConnector)"
 and its "Rejection boundary" subsection):
@@ -22,10 +24,6 @@ and its "Rejection boundary" subsection):
   error) are CAUGHT and EMITTED as OrderRejected/Cancel/UpdateRejected events on
   the channel — never raised — even when the venue returns them as a synchronous
   REST error.
-- The order cache is connector-local venue-call metadata (symbol/side/type/ids),
-  NOT framework account state. AccountManager owns the authoritative order/
-  position/balance state; the cache only exists so cancel/edit can rebuild the
-  venue payload and so WS updates can resolve the originating client_order_id.
 """
 
 import asyncio
@@ -33,14 +31,13 @@ import math
 import time
 from asyncio.exceptions import CancelledError
 from collections.abc import Coroutine
-from dataclasses import dataclass
 from typing import Any, Literal
 
 import ccxt
 import ccxt.pro
 from ccxt import AuthenticationError, ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
-from qubx import logger
+from qubx import connector_logger, logger
 from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
     Balance,
@@ -67,9 +64,8 @@ from qubx.core.events import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
-from qubx.core.exceptions import InvalidOrderParameters, ReadOnlyConnector
+from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.interfaces import IDataProvider, ITimeProvider
 from qubx.core.utils import recognize_time
 from qubx.utils.misc import AsyncThreadLoop
@@ -80,7 +76,6 @@ from .exchange_manager import ExchangeManager
 from .utils import (
     ccxt_convert_balance,
     ccxt_convert_order_info,
-    ccxt_convert_position,
     ccxt_convert_positions,
     ccxt_extract_deals_from_exec,
     ccxt_find_instrument,
@@ -115,26 +110,6 @@ _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
 # the order is left inflight for AM to reconcile, never terminal-rejected.
 
 
-@dataclass
-class _CachedOrder:
-    """Connector-local venue-call metadata for one order — NOT account state.
-
-    Holds exactly what the venue REST/WS calls need that the framework ids alone
-    don't carry: the ccxt ``symbol`` (cancel/edit require it on most venues), the
-    ``side`` and ``type`` (edit_order requires them), and the venue id once known
-    (so a cloid-keyed cache can still resolve a venue-id cancel). ``status`` is the
-    last ``OrderStatus`` we converted from a WS update, used only to drive the
-    new→ACCEPTED-once transition and terminal eviction.
-    """
-
-    instrument: Instrument
-    ccxt_symbol: str
-    side: str
-    type: str
-    venue_order_id: str | None = None
-    status: OrderStatus | None = None
-
-
 class CcxtConnector(ChannelEmitter):
     """IConnector implementation backed by a CCXT exchange (write side).
 
@@ -158,7 +133,6 @@ class CcxtConnector(ChannelEmitter):
         time_provider: ITimeProvider,
         exchange_manager: ExchangeManager,
         data_provider: IDataProvider,
-        read_only: bool = False,
         loop: asyncio.AbstractEventLoop | None = None,
         cancel_timeout: int = 30,
         cancel_retry_interval: int = 2,
@@ -167,22 +141,18 @@ class CcxtConnector(ChannelEmitter):
         **kwargs: Any,
     ):
         self.exchange_name = exchange_name
+        # Diagnostic logger gated by QUBX_DEBUG_AREAS=connector (all) or connector.<exchange> (one)
+        self._dbg = connector_logger(exchange_name)
         self.channel = channel
         self._time = time_provider
         self._em = exchange_manager
         self._data_provider = data_provider
-        self._read_only = read_only
         self._explicit_loop = loop
         self.cancel_timeout = cancel_timeout
         self.cancel_retry_interval = cancel_retry_interval
         self.max_cancel_retries = max_cancel_retries
         self.max_ws_retries = max_ws_retries
 
-        # Order cache (read side): client_order_id -> _CachedOrder, plus a
-        # venue_order_id -> client_order_id reverse index. Connector-local venue-call
-        # metadata, not account state (AM owns that).
-        self._orders: dict[str, _CachedOrder] = {}
-        self._venue_to_cid: dict[str, str] = {}
         # Memoized ccxt-symbol -> Instrument resolution shared by the WS loop and the
         # snapshot/order-status converters (ccxt_find_instrument populates it lazily).
         self._symbol_to_instrument: dict[str, Instrument] = {}
@@ -240,56 +210,6 @@ class CcxtConnector(ChannelEmitter):
         return self._loop.submit(coro).result(timeout=timeout)
 
     # ------------------------------------------------------------------ #
-    # Order cache (connector-local venue-call metadata)
-    # ------------------------------------------------------------------ #
-    def _resolve_cached(self, client_order_id: str | None, venue_order_id: str | None) -> _CachedOrder | None:
-        if client_order_id is not None and client_order_id in self._orders:
-            return self._orders[client_order_id]
-        if venue_order_id is not None:
-            cid = self._venue_to_cid.get(venue_order_id)
-            if cid is not None:
-                return self._orders.get(cid)
-        return None
-
-    def _index_venue_id(self, client_order_id: str | None, venue_order_id: str | None) -> None:
-        if client_order_id is None or venue_order_id is None:
-            return
-        cached = self._orders.get(client_order_id)
-        if cached is not None:
-            cached.venue_order_id = venue_order_id
-        self._venue_to_cid[venue_order_id] = client_order_id
-
-    def _cache_from_ws(self, order: Order) -> None:
-        """Insert/update the cache from a WS order update.
-
-        Materializes EXTERNAL orders seen on the venue (so a later cancel/update of a
-        manually-placed order resolves a symbol), refreshes the venue id/status, and
-        evicts on terminal status.
-        """
-        cid = order.client_order_id
-        if cid is None:
-            return
-        cached = self._orders.get(cid)
-        if cached is None:
-            cached = _CachedOrder(
-                instrument=order.instrument,
-                ccxt_symbol=instrument_to_ccxt_symbol(order.instrument),
-                side=order.side.lower(),
-                type=order.type.lower(),
-            )
-            self._orders[cid] = cached
-        if order.venue_order_id is not None:
-            self._index_venue_id(cid, order.venue_order_id)
-        cached.status = order.status
-        if order.status.is_terminal:
-            self._evict(cid)
-
-    def _evict(self, client_order_id: str) -> None:
-        cached = self._orders.pop(client_order_id, None)
-        if cached is not None and cached.venue_order_id is not None:
-            self._venue_to_cid.pop(cached.venue_order_id, None)
-
-    # ------------------------------------------------------------------ #
     # Write side — submit
     # ------------------------------------------------------------------ #
     def submit_order(self, request: OrderRequest) -> None:
@@ -299,8 +219,6 @@ class CcxtConnector(ChannelEmitter):
         caller (TradingManager) sees it immediately. The venue call is then fired
         on the exchange loop; its verdict rides the channel as an event.
         """
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
 
         instrument = request.instrument
         if instrument is None:
@@ -332,18 +250,6 @@ class CcxtConnector(ChannelEmitter):
                 continue
             payload["params"].setdefault(k, v)
 
-        # Cache the order BEFORE the async venue call: a cancel/update issued before
-        # the create round-trips (or before its WS ack) must still be able to resolve
-        # the ccxt symbol/side/type. The venue id is filled in by the REST ack or the
-        # first WS update.
-        if request.client_id is not None:
-            self._orders[request.client_id] = _CachedOrder(
-                instrument=instrument,
-                ccxt_symbol=payload["symbol"],
-                side=payload["side"],
-                type=payload["type"],
-            )
-
         self._spawn(self._submit_async(instrument, request.client_id, payload))
 
     async def _submit_async(self, instrument: Instrument, client_id: str | None, payload: dict[str, Any]) -> None:
@@ -372,8 +278,6 @@ class CcxtConnector(ChannelEmitter):
             return
 
         order = ccxt_convert_order_info(instrument, r, framework_prefix=self.cid_framework_prefix)
-        # Record the venue id on the cache so a subsequent cancel/update can prefer it.
-        self._index_venue_id(order.client_order_id, order.venue_order_id)
         # Immediate ack from the REST response. AM dedups this against the later WS
         # OrderAcceptedEvent (same client_order_id), so emitting both is safe and the
         # strategy gets the faster of the two.
@@ -401,14 +305,14 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Write side — cancel
     # ------------------------------------------------------------------ #
-    def cancel_order(self, *, client_order_id: str | None = None, venue_order_id: str | None = None) -> None:
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
-        if not client_order_id and not venue_order_id:
-            raise InvalidOrderParameters("cancel_order: client_order_id or venue_order_id is required")
-        self._spawn(self._cancel_async(client_order_id, venue_order_id))
+    def cancel_order(self, order: Order) -> None:
+        # Read every venue-call field off the Order SYNCHRONOUSLY — the async path must never
+        # touch the live, AM-mutated object. ``symbol`` is what most venues (e.g. Binance) need.
+        self._spawn(
+            self._cancel_async(order.client_order_id, order.venue_order_id, instrument_to_ccxt_symbol(order.instrument))
+        )
 
-    async def _cancel_async(self, client_order_id: str | None, venue_order_id: str | None) -> None:
+    async def _cancel_async(self, client_order_id: str | None, venue_order_id: str | None, symbol: str) -> None:
         """A successful REST cancel ack emits OrderCanceledEvent immediately; the WS
         read side also emits one and AM dedups. A definitive venue cancel-rejection
         emits OrderCancelRejectedEvent. A transient network failure is an UNKNOWN
@@ -416,7 +320,7 @@ class CcxtConnector(ChannelEmitter):
         AM to reconcile rather than terminal-rejected.
         """
         try:
-            ok, response = await self._cancel_with_retry(client_order_id, venue_order_id)
+            ok, response = await self._cancel_with_retry(client_order_id, venue_order_id, symbol)
         except ccxt.NetworkError as e:
             logger.warning(
                 f"[{self.exchange_name}] Network error cancelling {client_order_id or venue_order_id}: "
@@ -441,7 +345,7 @@ class CcxtConnector(ChannelEmitter):
         )
 
     async def _cancel_with_retry(
-        self, client_order_id: str | None, venue_order_id: str | None
+        self, client_order_id: str | None, venue_order_id: str | None, symbol: str
     ) -> tuple[bool, dict[str, Any] | None]:
         """Cancel with retry/backoff. Prefers venue_order_id; falls back to cloid.
 
@@ -450,14 +354,9 @@ class CcxtConnector(ChannelEmitter):
         ``ccxt.NetworkError`` when the outcome is UNKNOWN (transient connectivity, or
         retries exhausted without a definitive answer) so the caller leaves the order
         inflight rather than terminal-rejecting a cancel that may have landed. Does NOT
-        emit: the caller maps the outcome to an event. The ccxt ``symbol`` (which most
-        venues — e.g. Binance — require) is supplied from the order cache; if the order
-        is unknown (e.g. cancel of an external order we never submitted) we fall back to
-        passing none and let ccxt resolve it from the id alone.
+        emit: the caller maps the outcome to an event. ``symbol`` (which most venues — e.g.
+        Binance — require) comes straight off the order the AM passed.
         """
-        cached = self._resolve_cached(client_order_id, venue_order_id)
-        symbol = cached.ccxt_symbol if cached is not None else None
-
         # cloid-only path: single attempt (Binance rejects cancel-by-cloid without
         # an orderId; retrying is useless).
         if venue_order_id is None:
@@ -562,36 +461,43 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Write side — update
     # ------------------------------------------------------------------ #
-    def update_order(
-        self,
-        *,
-        client_order_id: str | None = None,
-        venue_order_id: str | None = None,
-        price: float | None = None,
-        quantity: float | None = None,
-    ) -> None:
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
-        if not client_order_id and not venue_order_id:
-            raise InvalidOrderParameters("update_order: client_order_id or venue_order_id is required")
-        self._spawn(self._update_async(client_order_id, venue_order_id, price, quantity))
+    def update_order(self, order: Order, *, price: float | None = None, quantity: float | None = None) -> None:
+        # Read venue-call fields off the Order SYNCHRONOUSLY (see cancel_order); editOrder
+        # needs side/type too, so pass them straight through.
+        self._spawn(
+            self._update_async(
+                order.client_order_id,
+                order.venue_order_id,
+                instrument_to_ccxt_symbol(order.instrument),
+                order.side.lower(),
+                order.type.lower(),
+                price,
+                quantity,
+            )
+        )
 
     async def _update_async(
-        self, client_order_id: str | None, venue_order_id: str | None, price: float | None, quantity: float | None
+        self,
+        client_order_id: str | None,
+        venue_order_id: str | None,
+        symbol: str,
+        side: str,
+        order_type: str,
+        price: float | None,
+        quantity: float | None,
     ) -> None:
         """Direct editOrder where the venue supports it, else cancel+recreate.
 
         The cancel+recreate fallback preserves the original client_order_id so the
         strategy sees a single OrderUpdatedEvent rather than a Canceled+Accepted pair.
         """
-        cached = self._resolve_cached(client_order_id, venue_order_id)
-        # Upgrade a cloid-only update with the cached venue id; without one the edit must
-        # go through ccxt's client-order-id variant (Binance rejects a cloid passed as
+        # The order carries its venue id once the venue acked; before that it is None and the
+        # edit goes through ccxt's client-order-id variant (Binance rejects a cloid passed as
         # orderId with -1102).
-        vid = venue_order_id or (cached.venue_order_id if cached is not None else None)
+        vid = venue_order_id
         try:
             if self._em.exchange.has.get("editOrder", False):
-                r = await self._edit_order_direct(client_order_id, vid, price, quantity, cached)
+                r = await self._edit_order_direct(client_order_id, vid, symbol, side, order_type, price, quantity)
             else:
                 r = await self._update_via_cancel_recreate(client_order_id, venue_order_id, price, quantity)
         except _VENUE_VERDICT_ERRORS as e:
@@ -627,18 +533,14 @@ class CcxtConnector(ChannelEmitter):
         self,
         client_order_id: str | None,
         venue_order_id: str | None,
+        symbol: str,
+        side: str,
+        order_type: str,
         price: float | None,
         quantity: float | None,
-        cached: _CachedOrder | None,
     ) -> dict[str, Any]:
-        # editOrder requires symbol/side/type on most venues (Binance resolves the
-        # market from `symbol`). These come from the order cache; if the order is
-        # unknown we pass the venue-tolerant fallbacks (symbol/side None, type limit)
-        # which works only on venues that can resolve the market from the id alone —
-        # elsewhere ccxt raises ArgumentsRequired, a venue verdict → update-reject.
-        symbol = cached.ccxt_symbol if cached is not None else None
-        order_type = cached.type if cached is not None else "limit"
-        side = cached.side if cached is not None else None
+        # editOrder requires symbol/side/type on most venues (Binance resolves the market from
+        # `symbol`) — all read straight off the order the AM passed.
         amount = abs(quantity) if quantity is not None else None
         if venue_order_id is None:
             # cloid-only (venue ack never seen): ccxt's client-order-id variant sends the
@@ -660,13 +562,13 @@ class CcxtConnector(ChannelEmitter):
     async def _update_via_cancel_recreate(
         self, client_order_id: str | None, venue_order_id: str | None, price: float | None, quantity: float | None
     ) -> dict[str, Any] | None:
-        # Raise BEFORE cancelling: cancel+recreate still needs the ORIGINAL order's full
-        # parameters (quantity/price/tif when the update leaves one unspecified) which the
-        # connector-local cache deliberately does not hold (AM owns that state). Cancelling
-        # first and then raising would leave the order DEAD at the venue while the strategy
-        # is told only "update rejected, order still alive". Until the recreate is wired,
-        # reject without touching the live order. TODO(account-mgmt): wire the recreate.
-        raise ccxt.NotSupported("cancel+recreate update requires the original order parameters")
+        # Raise BEFORE cancelling: cancelling first and then failing to recreate would leave
+        # the order DEAD at the venue while the strategy is told only "update rejected, order
+        # still alive". The AM now passes the whole Order, so wiring a real cancel+recreate
+        # (thread the order's side/type/tif + original price/qty) is straightforward — but it's
+        # deferred to the recreate follow-up. Until then, reject without touching the live order.
+        # TODO(account-mgmt): wire the recreate from the passed Order.
+        raise ccxt.NotSupported("cancel+recreate update is not yet wired for editOrder-less venues")
 
     def _emit_update_rejected(self, client_order_id: str | None, venue_order_id: str | None, error: Exception) -> None:
         logger.warning(f"[{self.exchange_name}] Update for {client_order_id or venue_order_id} rejected: {error}")
@@ -699,8 +601,6 @@ class CcxtConnector(ChannelEmitter):
     # Leverage / margin
     # ------------------------------------------------------------------ #
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
             self._run_sync(self._em.exchange.set_leverage(leverage, symbol))
@@ -710,8 +610,6 @@ class CcxtConnector(ChannelEmitter):
             return False
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
-        if self._read_only:
-            raise ReadOnlyConnector(f"{self.exchange_name} connector is read_only")
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
             ex = self._em.exchange
@@ -736,11 +634,11 @@ class CcxtConnector(ChannelEmitter):
 
         Base / Binance model: a single ``watch_orders()`` stream carries both
         order-status transitions and their fills, plus — on Binance derivatives
-        venues only (D4) — ``watch_positions``/``watch_balance`` push loops. On
-        Binance all of these resolve off the same listenKey user-data WS, so no
-        extra connections are opened. Each loop survives WS drops via ``_run_ws_loop``'s
-        retry/backoff and exits cleanly on cancellation / channel close. Split-feed
-        venues (OKX/Bitfinex) override ``_account_streams``, not this method.
+        venues only (D4) — a ``watch_balance`` push loop. On Binance both resolve
+        off the same listenKey user-data WS, so no extra connections are opened.
+        Each loop survives WS drops via ``_run_ws_loop``'s retry/backoff and exits
+        cleanly on cancellation / channel close. Split-feed venues (OKX/Bitfinex)
+        override ``_account_streams``, not this method.
         """
         await asyncio.gather(*self._account_streams())
         logger.debug(f"[{self.exchange_name}] account event streams ended")
@@ -749,11 +647,11 @@ class CcxtConnector(ChannelEmitter):
         """Build the account WS loops to gather — the venue stream-composition seam.
 
         Base = Binance model: the ``watch_orders`` loop (owns liveness via
-        ``mark_ready``), plus position/balance push loops gated on the Binance
-        family + a derivatives venue (F26 / D4). Pushes are emitted
-        as PositionUpdateEvent/BalanceUpdateEvent; the reducer applies them under the
-        conservative rule (positions never write size on the event path, balances
-        apply absolutely through the per-currency ratchet). Subclasses override to
+        ``mark_ready``), plus a balance push loop gated on the Binance family + a
+        derivatives venue (F26 / D4). Balance pushes are emitted as
+        BalanceUpdateEvent; the reducer applies them absolutely through the
+        per-currency ratchet. Position size is owned by the deal ledger and corrected
+        by snapshot reconcile (no venue position push loop). Subclasses override to
         compose differently (``_TwoStreamCcxtConnector`` splits orders/trades and
         adds no push streams).
         """
@@ -766,27 +664,12 @@ class CcxtConnector(ChannelEmitter):
                 mark_ready=True,
             )
         ]
-        # D4 scope: the push handlers parse Binance ACCOUNT_UPDATE shapes. Other
+        # D4 scope: the balance push handler parses Binance ACCOUNT_UPDATE shapes. Other
         # venues (hyperliquid, bybit, gateio) advertise the same has[] capability
-        # flags but emit shapes these handlers don't understand (e.g. hyperliquid
-        # positions carry no timestamp) — keep them snapshot-only until ported.
+        # flags but emit shapes this handler doesn't understand — keep them
+        # snapshot-only until ported.
         if not isinstance(ex, ccxt.pro.binance) or not self._is_derivatives_venue():
             return streams
-        if ex.has.get("watchPositions"):
-            # ccxt's watch_positions defaults to fetching (and awaiting) its own REST
-            # positions snapshot on first watch; AM already owns the snapshot fetch,
-            # so disable it to avoid a duplicate fetch_positions round-trip.
-            opts = ex.options.setdefault("watchPositions", {})
-            opts["fetchPositionsSnapshot"] = False
-            opts["awaitPositionsSnapshot"] = False
-            streams.append(
-                self._run_ws_loop(
-                    watch=ex.watch_positions,
-                    handle=self._handle_ws_position,
-                    stream="positions",
-                    mark_ready=False,
-                )
-            )
         if ex.has.get("watchBalance"):
             streams.append(
                 self._run_ws_loop(
@@ -907,39 +790,25 @@ class CcxtConnector(ChannelEmitter):
             logger.warning(f"[{self.exchange_name}] WS order for unknown symbol {raw.get('symbol')}; skipped")
             return
         order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
-        # Was this the first venue acknowledgement (no prior ACCEPTED in our cache)?
-        cached = self._orders.get(order.client_order_id) if order.client_order_id is not None else None
-        had_prior_ack = cached is not None and cached.status is not None
-        self._cache_from_ws(order)
-        self._emit_order_events(instrument, order, raw, had_prior_ack)
+        self._emit_order_events(instrument, order, raw)
 
-    def _emit_order_events(
-        self, instrument: Instrument, order: Order, raw: dict[str, Any], had_prior_ack: bool
-    ) -> None:
+    def _emit_order_events(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
         """Map a converted order's status to the typed lifecycle event(s).
 
-        Fill events carry the new Deal(s) extracted from the execution report; AM
-        dedups by trade_id, so emitting one event per deal is safe even if the venue
-        re-sends. We don't diff against a cached prior status beyond the new→ACCEPTED
-        gate — AM is idempotent on every other transition (late/duplicate events are
-        no-ops there), so the connector stays minimal.
+        Fill events carry the new Deal(s) extracted from the execution report; AM dedups
+        by trade_id, so emitting one event per deal is safe even if the venue re-sends. The
+        connector keeps no per-order state, so it emits ACCEPTED on every venue ack — AM
+        dedups ACCEPTED by client_order_id, so a repeat is a benign no-op and every other
+        transition is idempotent there too.
         """
         status = order.status  # OrderStatus enum (mapped from the ccxt status by utils)
 
         # A fill can be the FIRST event we observe for an order (fast aggressive fills,
         # or a venue that sends no separate "open" report). Synthesize the venue ACCEPTED
         # ack before the fill so the strategy's on_order sees ACCEPTED and the order
-        # lifecycle stays ordered. AM dedups ACCEPTED, so this is safe alongside the REST
-        # immediate-ack. Skipped when the venue id is missing (can't index the order).
-        if (
-            not had_prior_ack
-            and order.venue_order_id is not None
-            and status
-            in (
-                OrderStatus.PARTIALLY_FILLED,
-                OrderStatus.FILLED,
-            )
-        ):
+        # lifecycle stays ordered. AM dedups ACCEPTED. Skipped when the venue id is missing
+        # (can't index the order).
+        if order.venue_order_id is not None and status in (OrderStatus.PARTIALLY_FILLED, OrderStatus.FILLED):
             self.send(
                 OrderAcceptedEvent(
                     instrument=instrument,
@@ -976,29 +845,26 @@ class CcxtConnector(ChannelEmitter):
                 )
             )
             return
-        # ACCEPTED (mapped from new/open, and the safe default for any status the
-        # utils mapper couldn't recognize — it already logged that) → first venue ack
-        # becomes ACCEPTED. A repeat (e.g. the venue re-broadcasting an open order) is
-        # dropped here rather than re-emitting; AM would treat a duplicate ACCEPTED as
-        # benign, but not emitting keeps the channel quiet.
-        if not had_prior_ack:
-            if order.venue_order_id is None:
-                # An ACCEPTED ack with no venue id can't be indexed (AM keys the
-                # venue-id index off it). The venue's open/new report effectively
-                # always carries one, so this is an anomaly worth logging, not a "".
-                logger.warning(
-                    f"[{self.exchange_name}] open WS update for {order.client_order_id} carried no venue id; "
-                    "skipping ACCEPTED emit"
-                )
-                return
-            self.send(
-                OrderAcceptedEvent(
-                    instrument=instrument,
-                    client_order_id=order.client_order_id,
-                    venue_order_id=order.venue_order_id, last_update_time=order.last_update_time,
-                    accepted_at=order.submitted_at,
-                )
+        # ACCEPTED (mapped from new/open, and the safe default for any status the utils mapper
+        # couldn't recognize — it already logged that). Emitted on every venue ack; AM dedups a
+        # repeat (e.g. the venue re-broadcasting an open order). Skipped only when the venue id
+        # is missing — AM keys the venue-id index off it, and the venue's open/new report
+        # effectively always carries one, so its absence is an anomaly worth logging, not a "".
+        if order.venue_order_id is None:
+            logger.warning(
+                f"[{self.exchange_name}] open WS update for {order.client_order_id} carried no venue id; "
+                "skipping ACCEPTED emit"
             )
+            return
+        self.send(
+            OrderAcceptedEvent(
+                instrument=instrument,
+                client_order_id=order.client_order_id,
+                venue_order_id=order.venue_order_id,
+                last_update_time=order.last_update_time,
+                accepted_at=order.submitted_at,
+            )
+        )
 
     def _handle_partial_fill_status(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
         """Emit the PARTIALLY_FILLED fill(s) for a watch_orders report (base / Binance).
@@ -1059,6 +925,13 @@ class CcxtConnector(ChannelEmitter):
             return
         last = len(deals) - 1
         for i, deal in enumerate(deals):
+            self._dbg.debug(
+                "emit fill {} amt={} cum={} tid={}",
+                instrument.symbol,
+                deal.amount,
+                order.filled_quantity,
+                deal.trade_id,
+            )
             # On a full fill the LAST deal closes the order (OrderFilledEvent →
             # terminal); earlier deals are partials. On a partial-fill report every
             # deal is a partial.
@@ -1086,43 +959,8 @@ class CcxtConnector(ChannelEmitter):
                 )
 
     # ------------------------------------------------------------------ #
-    # Read side — WS position/balance pushes (F26)
+    # Read side — WS balance pushes (F26)
     # ------------------------------------------------------------------ #
-    def _handle_ws_position(self, raw: dict[str, Any]) -> None:
-        """Convert one ccxt unified position push into a PositionUpdateEvent.
-
-        The push is the venue's absolute post-trade state; the reducer never applies
-        its size on the event path (size-equal advances the ratchet, drift triggers a
-        rate-limited snapshot correction). ``as_of`` is the venue event time ``E``
-        (ccxt stamps it as ``timestamp``) — same clock domain as ``Deal.time``.
-        Hedge-mode entries (Binance ``ps`` != BOTH) are skipped: qubx positions are
-        net-only, and a per-side size would corrupt the drift comparison.
-        """
-        ps = (raw.get("info") or {}).get("ps")
-        if ps is not None and ps != "BOTH":
-            logger.warning(
-                f"[{self.exchange_name}] hedge-mode position push for {raw.get('symbol')} (ps={ps}) skipped: "
-                "qubx positions are net-only"
-            )
-            return
-        timestamp = raw.get("timestamp")
-        if timestamp is None:
-            logger.warning(
-                f"[{self.exchange_name}] position push for {raw.get('symbol')} carried no event time; skipped"
-            )
-            return
-        ex = self._em.exchange
-        position = ccxt_convert_position(raw, ex.name, ex.markets)
-        if position is None:
-            return
-        self.send(
-            PositionUpdateEvent(
-                instrument=position.instrument,
-                position=position,
-                as_of=recognize_time(timestamp),
-            )
-        )
-
     def _handle_ws_balances(self, raw: dict[str, Any]) -> None:
         """Emit one BalanceUpdateEvent per asset changed by a venue balance push.
 
@@ -1166,30 +1004,24 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Reconciliation primitives — READ side
     # ------------------------------------------------------------------ #
-    def request_order_status(
-        self,
-        *,
-        client_order_id: str | None = None,
-        venue_order_id: str | None = None,
-        instrument: Instrument | None = None,
-    ) -> None:
-        if not client_order_id and not venue_order_id:
-            raise InvalidOrderParameters("request_order_status: client_order_id or venue_order_id is required")
-        self._spawn(self._order_status_async(client_order_id, venue_order_id, instrument))
+    def request_order_status(self, order: Order) -> None:
+        # Read venue-call fields off the Order SYNCHRONOUSLY (see cancel_order). symbol is what
+        # Binance refuses the fetch without.
+        self._spawn(
+            self._order_status_async(
+                order.client_order_id,
+                order.venue_order_id,
+                instrument_to_ccxt_symbol(order.instrument),
+                order.instrument,
+            )
+        )
 
     async def _order_status_async(
-        self, client_order_id: str | None, venue_order_id: str | None, instrument: Instrument | None
+        self, client_order_id: str | None, venue_order_id: str | None, symbol: str, instrument: Instrument
     ) -> None:
-        cached = self._resolve_cached(client_order_id, venue_order_id)
-        # Symbol from the cache, else from the caller's instrument (snapshot-materialized
-        # orders the connector never cached) — Binance refuses a fetch without one.
-        symbol = cached.ccxt_symbol if cached is not None else None
-        if symbol is None and instrument is not None:
-            symbol = instrument_to_ccxt_symbol(instrument)
-        # Prefer the venue id (upgraded from the cache when the caller only has the cloid);
-        # a cloid-only fetch must use ccxt's client-order-id variant — Binance rejects a
-        # cloid passed as orderId with -1102 BadRequest, NOT OrderNotFound.
-        vid = venue_order_id or (cached.venue_order_id if cached is not None else None)
+        # Prefer the venue id; a cloid-only fetch must use ccxt's client-order-id variant —
+        # Binance rejects a cloid passed as orderId with -1102 BadRequest, NOT OrderNotFound.
+        vid = venue_order_id
         lookup_id = vid or client_order_id
         try:
             if vid is not None:
@@ -1198,7 +1030,7 @@ class CcxtConnector(ChannelEmitter):
                 assert client_order_id is not None
                 raw = await self._em.exchange.fetch_order_with_client_order_id(client_order_id, symbol)
         except ccxt.OrderNotFound:
-            self._emit_order_status_not_found(client_order_id, venue_order_id, cached)
+            self._emit_order_status_not_found(client_order_id, venue_order_id, instrument)
             return
         except NetworkError as e:
             logger.warning(f"[{self.exchange_name}] Network error fetching order {lookup_id}: {e}; leaving inflight")
@@ -1213,17 +1045,17 @@ class CcxtConnector(ChannelEmitter):
             logger.error(f"[{self.exchange_name}] error fetching order {lookup_id}: {e}")
             return
         if raw is None or raw.get("id") is None:
-            self._emit_order_status_not_found(client_order_id, venue_order_id, cached)
+            self._emit_order_status_not_found(client_order_id, venue_order_id, instrument)
             return
         self._handle_ws_order(raw)
 
     def _emit_order_status_not_found(
-        self, client_order_id: str | None, venue_order_id: str | None, cached: _CachedOrder | None
+        self, client_order_id: str | None, venue_order_id: str | None, instrument: Instrument
     ) -> None:
         """Emit the reconcile not-found reject, carrying both ids so AM routes by either."""
         self.send(
             OrderRejectedEvent(
-                instrument=cached.instrument if cached is not None else None,
+                instrument=instrument,
                 client_order_id=client_order_id,
                 venue_order_id=venue_order_id,
                 reason="reconcile: order not present at venue",
@@ -1263,10 +1095,6 @@ class CcxtConnector(ChannelEmitter):
                 except CcxtSymbolNotRecognized:
                     continue
                 order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
-                # Seed the venue-call cache: a snapshot can be the first (only) place the
-                # connector sees a RECOVERED/EXTERNAL order, and a later cancel/update/
-                # status fetch needs its symbol/side/type/venue id from here.
-                self._cache_from_ws(order)
                 open_orders.append(order)
 
         positions: list[Position] | None = None
@@ -1340,8 +1168,7 @@ class CcxtConnector(ChannelEmitter):
         """Start the WS account-event subscription and emit the initial snapshot.
 
         The exchange/connection itself is owned by the ExchangeManager (already
-        constructed). Read-only connectors keep this read surface alive (account events +
-        snapshots flow, but write methods raise ReadOnlyConnector).
+        constructed).
         """
         self._start_executions_stream()
         # Initial snapshot (design.md "connect / reconnect contract", case 1).

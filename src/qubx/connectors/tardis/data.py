@@ -9,9 +9,9 @@ import aiohttp
 import pandas as pd
 
 from qubx import logger
-from qubx.connectors.registry import CredentialsProvider, data_provider
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
-from qubx.core.interfaces import IDataProvider, IHealthMonitor
+from qubx.connectors.plugin import BuildContext
+from qubx.core.basics import DataType, Instrument
+from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, Quote, Trade
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop, synchronized
@@ -31,7 +31,6 @@ TARDIS_EXCHANGE_MAPPERS = {
 }
 
 
-@data_provider("tardis")
 class TardisDataProvider(IDataProvider):
     """
     Data provider implementation for Tardis market data service.
@@ -42,30 +41,26 @@ class TardisDataProvider(IDataProvider):
 
     def __init__(
         self,
-        exchange_name: str,
-        time_provider: ITimeProvider,
-        channel: CtrlChannel,
-        health_monitor: IHealthMonitor,
-        credentials: CredentialsProvider | None = None,
-        loop: asyncio.AbstractEventLoop | None = None,
+        ctx: BuildContext,
+        *,
         host: str = "localhost",
         port: int = 8011,
-        **kwargs,
     ):
-        self.time_provider = time_provider
-        self.channel = channel
-        self._exchange_name = exchange_name
-        self._exchange_id = TARDIS_EXCHANGE_MAPPERS.get(exchange_name.lower(), exchange_name.lower())
+        self.time_provider = ctx.time_provider
+        self.channel = ctx.channel
+        self._exchange_name = ctx.exchange_name
+        self._exchange_id = TARDIS_EXCHANGE_MAPPERS.get(ctx.exchange_name.lower(), ctx.exchange_name.lower())
         self._host = host
         self._port = port
-        self._health_monitor = health_monitor or DummyHealthMonitor()
+        self._health_monitor = ctx.health_monitor or DummyHealthMonitor()
 
+        loop = ctx.loop
         self._own_loop = loop is None
 
         if self._own_loop:
             self._event_loop = asyncio.new_event_loop()
             self._thread = threading.Thread(
-                target=self._run_event_loop, daemon=True, name=f"tardis-{exchange_name.lower()}-loop"
+                target=self._run_event_loop, daemon=True, name=f"tardis-{ctx.exchange_name.lower()}-loop"
             )
             self._thread.start()
             self._loop = AsyncThreadLoop(self._event_loop)

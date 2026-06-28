@@ -14,7 +14,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
+from qubx.connectors.plugin import BuildContext
 from qubx.core.basics import CtrlChannel, Instrument, LiveTimeProvider, MarketType
+from qubx.utils.misc import BackgroundEventLoop
 from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
@@ -75,15 +77,15 @@ def _make_channel() -> MagicMock:
 
 def _make_provider(channel: MagicMock) -> CcxtDataProvider:
     """Create a CcxtDataProvider for HYPERLIQUID.F (no credentials needed for public data)."""
-    return CcxtDataProvider(
+    ctx = BuildContext(
         exchange_name="HYPERLIQUID.F",
         time_provider=LiveTimeProvider(),
         channel=channel,
-        health_monitor=_make_health_monitor(),
         credentials=AccountConfigurationManager(),
-        max_ws_retries=3,
-        warmup_timeout=30,
+        health_monitor=_make_health_monitor(),
+        loop=BackgroundEventLoop().loop,
     )
+    return CcxtDataProvider(ctx, max_ws_retries=3, warmup_timeout=30)
 
 
 # ------------------------------------------------------------------

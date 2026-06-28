@@ -15,7 +15,7 @@ from qubx.core.basics import (
 )
 from qubx.core.connector import IConnector
 from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
-from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound
+from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound, ReadOnlyConnector
 from qubx.core.interfaces import (
     IHealthMonitor,
     IStrategyContext,
@@ -53,6 +53,7 @@ class TradingManager(ITradingManager):
 
     _client_id_store: ClientIdStore
     _exchange_to_connector: dict[str, IConnector]
+    _read_only: bool
 
     def __init__(
         self,
@@ -61,6 +62,7 @@ class TradingManager(ITradingManager):
         account_manager: AccountManager,
         health_monitor: IHealthMonitor,
         strategy_name: str,
+        read_only: bool = False,
     ) -> None:
         self._context = context
         self._account_manager = account_manager
@@ -68,6 +70,12 @@ class TradingManager(ITradingManager):
         self._strategy_name = strategy_name
         self._client_id_store = ClientIdStore()
         self._exchange_to_connector = dict(connectors)
+        self._read_only = read_only
+
+    def _ensure_writable(self) -> None:
+        """Single read-only gate for the venue-write boundary (trade/cancel/update)."""
+        if self._read_only:
+            raise ReadOnlyConnector("trading is read-only — write rejected")
 
     def _blacklist_clamp(self, instrument: Instrument, amount: float) -> float:
         """Reduce-only for blacklisted instruments: an order may only move the position
@@ -88,8 +96,7 @@ class TradingManager(ITradingManager):
             return 0.0
         if (current > 0) != (new > 0) and new != 0:  # would flip through zero
             logger.debug(
-                f"[Blacklist] :: clamping {instrument.symbol} order to close "
-                f"(current={current}, requested_new={new})"
+                f"[Blacklist] :: clamping {instrument.symbol} order to close (current={current}, requested_new={new})"
             )
             return -current
         return amount
@@ -103,6 +110,7 @@ class TradingManager(ITradingManager):
         client_id: str | None = None,
         **options,
     ) -> Order | None:
+        self._ensure_writable()
         amount = self._blacklist_clamp(instrument, amount)
         if amount == 0.0:
             return None
@@ -306,6 +314,7 @@ class TradingManager(ITradingManager):
         A synchronous connector failure reverts the order to its pre-pending status
         (via a synthetic OrderCancelRejectedEvent) and re-raises to the caller.
         """
+        self._ensure_writable()
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         order = self._resolve_order(order_id, client_order_id)
         if order is None:
@@ -324,10 +333,7 @@ class TradingManager(ITradingManager):
         )
         self._account_manager.transition_order(order.instrument.exchange, cid, OrderStatus.PENDING_CANCEL)
         try:
-            self._get_connector(order.instrument.exchange).cancel_order(
-                client_order_id=cid,
-                venue_order_id=order.venue_order_id,
-            )
+            self._get_connector(order.instrument.exchange).cancel_order(order)
         except Exception as e:
             # A synchronous raise means the cancel never reached the venue. Route the
             # synthetic reject through the PM (same path as the reconcile give-up) so the
@@ -365,6 +371,7 @@ class TradingManager(ITradingManager):
         A synchronous connector failure reverts the order to its pre-pending status
         (via a synthetic OrderUpdateRejectedEvent) and re-raises to the caller.
         """
+        self._ensure_writable()
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         order = self._resolve_order(order_id, client_order_id)
         if order is None:
@@ -384,12 +391,7 @@ class TradingManager(ITradingManager):
         cid = order.client_order_id
         self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
         try:
-            self._get_connector(instrument.exchange).update_order(
-                client_order_id=cid,
-                venue_order_id=order.venue_order_id,
-                price=adjusted_price,
-                quantity=abs(amount),
-            )
+            self._get_connector(instrument.exchange).update_order(order, price=adjusted_price, quantity=abs(amount))
         except Exception as e:
             # Same contract as cancel_order: synthetic reject through the PM reverts
             # PENDING_UPDATE via pre_pending, then the original exception re-raises.

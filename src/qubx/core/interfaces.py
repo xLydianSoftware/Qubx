@@ -1479,6 +1479,21 @@ class IPositionGathering:
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
 
+    def on_order(self, ctx: IStrategyContext, order: Order, change: OrderChange) -> None:
+        """Order-lifecycle change for an order, fired to every gatherer right after the
+        strategy's ``on_order`` (same ``ApplyResult``, error-isolated). ``order`` is in its
+        post-change state; ``change`` is ACCEPTED / PARTIALLY_FILLED / FILLED / CANCELED /
+        EXPIRED / REJECTED / UPDATED / CANCEL_REJECTED / UPDATE_REJECTED. On CANCEL_REJECTED /
+        UPDATE_REJECTED the order is STILL ALIVE at the venue. Default no-op.
+        """
+        ...
+
+    def on_position_change(self, ctx: IStrategyContext, position: Position) -> None:
+        """A position changed (fill, funding, venue push, or snapshot reconcile), fired to
+        every gatherer right after the strategy's ``on_position_change``. Default no-op.
+        """
+        ...
+
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """
         Called when an error occurs.

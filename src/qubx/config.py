@@ -83,6 +83,10 @@ class QubxSettings(BaseSettings):
     s3: dict[str, S3Account] = {}
     default_s3_account: str | None = None
     log_level: str = "WARNING"
+    # Comma-separated diagnostic areas to raise to DEBUG without flipping global log level,
+    # e.g. "account_manager,connector" or a specific connector "connector.hyperliquid".
+    # Hierarchical: enabling "connector" enables all "connector.*". See qubx.area_logger.
+    debug_areas: str = ""
     instrument_lookup: LookupConfig = LookupConfig()
     fees_lookup: LookupConfig = LookupConfig()
 

@@ -1,12 +1,11 @@
-import asyncio
 from collections import defaultdict
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format, instrument_to_ccxt_symbol
-from qubx.connectors.registry import CredentialsProvider, data_provider
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
-from qubx.core.interfaces import IDataProvider, IHealthMonitor
+from qubx.connectors.plugin import BuildContext
+from qubx.core.basics import DataType, Instrument, ITimeProvider
+from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, Quote
 from qubx.utils.misc import AsyncThreadLoop
 from qubx.utils.time import to_timedelta, to_timestamp
@@ -21,7 +20,6 @@ from .subscription_orchestrator import SubscriptionOrchestrator
 from .warmup_service import WarmupService
 
 
-@data_provider("ccxt")
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
     _exchange_manager: ExchangeManager
@@ -30,12 +28,8 @@ class CcxtDataProvider(IDataProvider):
 
     def __init__(
         self,
-        exchange_name: str,
-        time_provider: ITimeProvider,
-        channel: CtrlChannel,
-        health_monitor: IHealthMonitor,
-        credentials: CredentialsProvider,
-        loop: asyncio.AbstractEventLoop | None = None,
+        ctx: BuildContext,
+        *,
         max_ws_retries: int = 10,
         warmup_timeout: int = 120,
         orderbook_limit: int | None = None,
@@ -43,28 +37,26 @@ class CcxtDataProvider(IDataProvider):
     ):
         from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 
-        rate_limiter = kwargs.pop("rate_limiter", None)
-
-        settings = credentials.get_exchange_settings(exchange_name)
+        settings = ctx.credentials.get_exchange_settings(ctx.exchange_name)
         self._exchange_manager = get_ccxt_exchange_manager(
-            exchange=exchange_name,
+            exchange=ctx.exchange_name,
             use_testnet=settings.testnet,
-            health_monitor=health_monitor,
-            time_provider=time_provider,
-            loop=loop,
+            health_monitor=ctx.health_monitor,
+            time_provider=ctx.time_provider,
+            loop=ctx.loop,
             **kwargs,
         )
         self.orderbook_limit = orderbook_limit
 
         # Attach rate limiter to exchange manager (overrides CCXT's built-in throttle)
-        if rate_limiter is not None:
-            self._exchange_manager.attach_rate_limiter(rate_limiter)
+        if ctx.rate_limiter is not None:
+            self._exchange_manager.attach_rate_limiter(ctx.rate_limiter)
 
-        self.time_provider = time_provider
-        self.channel = channel
+        self.time_provider = ctx.time_provider
+        self.channel = ctx.channel
         self.max_ws_retries = max_ws_retries
         self._warmup_timeout = warmup_timeout
-        self._health_monitor = health_monitor
+        self._health_monitor = ctx.health_monitor
         self._exchange_id = str(self._exchange_manager.exchange.name)
 
         self._subscription_manager = SubscriptionManager()
@@ -87,7 +79,7 @@ class CcxtDataProvider(IDataProvider):
         )
         self._warmup_service = WarmupService(
             handler_factory=self._data_type_handler_factory,
-            channel=channel,
+            channel=ctx.channel,
             exchange_id=self._exchange_id,
             exchange_manager=self._exchange_manager,
             warmup_timeout=warmup_timeout,

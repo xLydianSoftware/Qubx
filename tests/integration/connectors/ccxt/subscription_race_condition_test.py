@@ -6,8 +6,10 @@ import pytest
 from qubx import QubxLogConfig, logger
 from qubx.connectors.ccxt.data import CcxtDataProvider
 from qubx.connectors.ccxt.factory import clear_exchange_manager_cache
+from qubx.connectors.plugin import BuildContext
 from qubx.core.basics import CtrlChannel, DataType, Instrument, LiveTimeProvider, MarketType
 from qubx.health import DummyHealthMonitor
+from qubx.utils.misc import BackgroundEventLoop
 from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
@@ -53,15 +55,15 @@ class TestCcxtSubscriptionRaceConditions:
         self.time_provider = LiveTimeProvider()
 
         # Mainnet public data — no credentials needed; the provider creates its own ExchangeManager
-        self.provider = CcxtDataProvider(
+        ctx = BuildContext(
             exchange_name="BINANCE.UM",
             time_provider=self.time_provider,
             channel=self.channel,
-            health_monitor=DummyHealthMonitor(),
             credentials=AccountConfigurationManager(),
-            max_ws_retries=3,
-            warmup_timeout=30,
+            health_monitor=DummyHealthMonitor(),
+            loop=BackgroundEventLoop().loop,
         )
+        self.provider = CcxtDataProvider(ctx, max_ws_retries=3, warmup_timeout=30)
 
         # Track received data
         self.received_data: dict[str, list] = {"ohlc": [], "trade": [], "orderbook": [], "quote": []}

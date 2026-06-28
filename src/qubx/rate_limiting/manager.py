@@ -48,6 +48,11 @@ class RateLimitManager:
         # Resolve egress IP
         self._egress_ip = self._resolve_egress_ip(config, loop)
 
+    @property
+    def is_enabled(self) -> bool:
+        """True when a rate-limit backend is configured (limiting is active)."""
+        return self._backend is not None
+
     def _create_backend(self, config) -> IRateLimitBackend:
         if config.backend == "redis" and config.redis_url:
             try:

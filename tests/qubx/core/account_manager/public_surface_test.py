@@ -19,7 +19,6 @@ from qubx.core.account_manager import (
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
-    PositionUpdateEvent,
 )
 
 
@@ -40,4 +39,3 @@ def test_account_event_surface_is_reexported_via_package_path():
     assert OrderRejectedEvent is events.OrderRejectedEvent
     assert OrderUpdatedEvent is events.OrderUpdatedEvent
     assert OrderUpdateRejectedEvent is events.OrderUpdateRejectedEvent
-    assert PositionUpdateEvent is events.PositionUpdateEvent

@@ -368,13 +368,9 @@ def test_apply_balance_push_mutates_held_reference_in_place():
     assert held.total == 200.0
 
 
-def test_push_as_of_accessors_default_none_then_track_marks():
+def test_balance_push_as_of_accessor_defaults_none_then_tracks_marks():
     state = AccountState("binance", "USDT")
-    inst = _instrument("BTCUSDT")
-    assert state.get_position_push_as_of(inst) is None
     assert state.get_balance_push_as_of("USDT") is None
-    state.mark_position_push(inst, T1)
-    assert state.get_position_push_as_of(inst) == T1
     state.apply_balance_push("USDT", 100.0, T2)
     assert state.get_balance_push_as_of("USDT") == T2
 
