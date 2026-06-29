@@ -31,6 +31,7 @@ from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
     AccountMessage,
     ChannelMessage,
+    DealEvent,
     OrderCancelRejectedEvent,
     OrderEvent,
     OrderUpdateRejectedEvent,
@@ -1306,6 +1307,13 @@ class ProcessingManager(IProcessingManager):
                 self._safe_call(self._strategy.on_order, result.order, result.order_change)
                 self._safe_call_gatherer(self._position_gathering.on_order, result.order, result.order_change)
             if result.deal is not None:
+                # A historical (RequestHistDeals) recovery deal is a reconciliation artifact, not a
+                # live execution — the position was already corrected by the snapshot. Record it in
+                # the ledger for the audit trail, but fire NOTHING strategy-facing: no on_execution,
+                # no tracker/gatherer reaction, and no realize-only on_position_change below.
+                if isinstance(event, DealEvent) and event.historical:
+                    self._record_recovered_deal(event.instrument, result.deal)
+                    return
                 if event.instrument is not None:
                     self._safe_call(self._strategy.on_execution, event.instrument, result.deal)
                 # A newly applied deal also drives framework-internal downstream consumers
@@ -1320,6 +1328,18 @@ class ProcessingManager(IProcessingManager):
         for position in result.positions:
             self._safe_call(self._strategy.on_position_change, position)
             self._safe_call_gatherer(self._position_gathering.on_position_change, position)
+
+    def _record_recovered_deal(self, instrument: Instrument | None, fill: Deal) -> None:
+        # Ledger-only sink for a historical recovery deal: persist it for the audit trail, but
+        # never touch trackers/gatherers/exporter (those drive live trading reactions). The
+        # internal position booking already happened in the reducer (realize-only).
+        if instrument is None:
+            return
+        try:
+            self._logging.save_deals(instrument, [fill])
+        except Exception:
+            logger.exception("deals writer raised (recovered deal)")
+            self._emit_error_metric("downstream_fill_errors", consumer="save_deals")
 
     def _notify_downstream_fill(self, instrument: Instrument | None, fill: Deal) -> None:
         if instrument is None:

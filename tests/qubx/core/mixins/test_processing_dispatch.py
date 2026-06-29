@@ -11,6 +11,7 @@ from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
     BalanceUpdateEvent,
+    DealEvent,
     FundingPaymentEvent,
     OrderAcceptedEvent,
     OrderCancelRejectedEvent,
@@ -46,6 +47,35 @@ def test_filled_event_routes_to_all_three_callbacks():
     pm._strategy.on_position_change.assert_called_once()
     assert pm._strategy.on_position_change.call_args.args[1] is position
     # downstream per-fill notification ran with the AM-confirmed deal
+    pm._position_gathering.on_execution_report.assert_called_once()
+    pm._logging.save_deals.assert_called_once()
+
+
+def test_historical_recovery_deal_is_ledger_only_no_strategy_facing():
+    # A RequestHistDeals recovery deal (DealEvent.historical) is a reconciliation artifact, not a
+    # live execution — it must NOT reach the strategy (on_execution / on_position_change) or the
+    # tracker/gatherer; only the ledger record (save_deals) runs.
+    pm = make_pm()
+    fill, position, instrument = _fill(), MagicMock(), MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(deal=fill, position=position)
+    pm.process_event(
+        DealEvent(instrument=instrument, client_order_id=None, venue_order_id="V1", deal=fill, historical=True)
+    )
+    pm._strategy.on_execution.assert_not_called()
+    pm._strategy.on_position_change.assert_not_called()
+    pm._position_gathering.on_execution_report.assert_not_called()
+    pm._position_gathering.on_position_change.assert_not_called()
+    pm._logging.save_deals.assert_called_once()  # ledger record kept
+
+
+def test_live_deal_fires_strategy_and_downstream():
+    # A normal (non-historical) deal keeps the full path: on_execution + downstream + on_position_change.
+    pm = make_pm()
+    fill, position, instrument = _fill(), MagicMock(), MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(deal=fill, position=position)
+    pm.process_event(DealEvent(instrument=instrument, client_order_id=None, venue_order_id="V1", deal=fill))
+    pm._strategy.on_execution.assert_called_once()
+    pm._strategy.on_position_change.assert_called_once()
     pm._position_gathering.on_execution_report.assert_called_once()
     pm._logging.save_deals.assert_called_once()
 
