@@ -263,6 +263,10 @@ class AccountManager(IAccountViewer):
                             self._pm.process_event(routed)
                     case RequestHistDeals(instrument=instrument, since=since):
                         if connector is not None:
+                            logger.debug(
+                                f"[{state.exchange}] reconcile: RequestHistDeals "
+                                f"<y>{instrument.symbol}</y> since {since} -> connector.request_hist_deals"
+                            )
                             connector.request_hist_deals(instrument, since)
                     case _:
                         logger.warning(f"[{state.exchange}] unknown reconcile action: {action!r}")

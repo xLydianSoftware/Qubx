@@ -1067,6 +1067,7 @@ class CcxtConnector(ChannelEmitter):
         is logged so a wider gap is operator-visible.
         """
         since_ms = int(since.astype("datetime64[ms]").astype("int64"))
+        logger.debug(f"[{self.exchange_name}] hist-deals: fetch_my_trades {symbol} since {since}")
         try:
             raw_trades = await self._em.exchange.fetch_my_trades(symbol, since=since_ms)
         except NetworkError as e:
@@ -1075,13 +1076,22 @@ class CcxtConnector(ChannelEmitter):
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] error fetching hist deals for {symbol}: {e}")
             return
+        logger.debug(
+            f"[{self.exchange_name}] hist-deals: {symbol} since {since} -> {len(raw_trades)} trade(s)"
+            f"{' (emitting DealEvents)' if raw_trades else ' (nothing to recover)'}"
+        )
         for raw in raw_trades:
+            deal = ccxt_convert_deal_info(raw)
+            logger.debug(
+                f"[{self.exchange_name}] hist-deals: {symbol} trade tid={deal.trade_id} "
+                f"amt={deal.amount} px={deal.price} order={raw.get('order')} t={deal.time}"
+            )
             self.send(
                 DealEvent(
                     instrument=instrument,
                     client_order_id=None,  # AM resolves the order by the venue id
                     venue_order_id=raw.get("order"),
-                    deal=ccxt_convert_deal_info(raw),
+                    deal=deal,
                 )
             )
 

@@ -398,39 +398,47 @@ class Reconciler:
         actions: list[Action] = []
         for difference in self._differ.diff(state, snap):
             logger.debug(difference.describe())
-            match difference:
-                case LocalOrderMissing(order=order):
-                    self._spawn(
-                        ResolveMissingOrder(order, now, wait=self._missing_wait, max_retries=self._missing_max_retries)
-                    )
+            # - each atom is applied in isolation: a handler that raises (e.g. a venue/state
+            #   surprise) must not sink the rest of the snapshot reconcile (balances/figures/
+            #   other positions). Log and move on; the next snapshot re-derives the diff.
+            try:
+                match difference:
+                    case LocalOrderMissing(order=order):
+                        self._spawn(
+                            ResolveMissingOrder(
+                                order, now, wait=self._missing_wait, max_retries=self._missing_max_retries
+                            )
+                        )
 
-                # - venue has an order we don't track -> recover it (RECOVERED / EXTERNAL)
-                case OriginalOrderMissing(order=snap_order):
-                    self._recover_order(state, snap_order, snap.as_of)
+                    # - venue has an order we don't track -> recover it (RECOVERED / EXTERNAL)
+                    case OriginalOrderMissing(order=snap_order):
+                        self._recover_order(state, snap_order, snap.as_of)
 
-                case OrderFieldMismatch(origin=snap_order):
-                    if (ev := self._reconcile_order(state, snap_order)) is not None:
-                        actions.append(RouteEvent(ev))
+                    case OrderFieldMismatch(origin=snap_order):
+                        if (ev := self._reconcile_order(state, snap_order)) is not None:
+                            actions.append(RouteEvent(ev))
 
-                # - size diff = missed deals
-                case PositionSizeMismatch(origin=snap_pos) | OriginalPositionMissing(position=snap_pos):
-                    changed.append(self._reconcile_missed_position(state, snap, now, snap_pos))
+                    # - size diff = missed deals
+                    case PositionSizeMismatch(origin=snap_pos) | OriginalPositionMissing(position=snap_pos):
+                        changed.append(self._reconcile_missed_position(state, snap, now, snap_pos))
 
-                # - avg/margin only = figure refresh, no missed deals
-                case PositionFieldMismatch(origin=snap_pos):
-                    if state.reconcile_position_from_snapshot(snap_pos):
-                        changed.append(state.get_position(snap_pos.instrument))
+                    # - avg/margin only = figure refresh, no missed deals
+                    case PositionFieldMismatch(origin=snap_pos):
+                        if state.reconcile_position_from_snapshot(snap_pos):
+                            changed.append(state.get_position(snap_pos.instrument))
 
-                # - local holds it, venue flat = missed the close
-                case LocalPositionMissing(position=local_pos):
-                    changed.append(self._flatten_missed_close(state, snap, now, local_pos.instrument))
+                    # - local holds it, venue flat = missed the close
+                    case LocalPositionMissing(position=local_pos):
+                        changed.append(self._flatten_missed_close(state, snap, now, local_pos.instrument))
 
-                case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
-                    # - push-wins: a WS push at/after the snapshot's as_of supersedes it (venue event
-                    #   time vs local fetch clock) — skip the whole currency, not just the stamp
-                    push_as_of = state.get_balance_push_as_of(snap_bal.currency)
-                    if push_as_of is None or push_as_of < snap.as_of:
-                        state.apply_balance_snapshot(snap_bal, snap.as_of)
+                    case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
+                        # - push-wins: a WS push at/after the snapshot's as_of supersedes it (venue event
+                        #   time vs local fetch clock) — skip the whole currency, not just the stamp
+                        push_as_of = state.get_balance_push_as_of(snap_bal.currency)
+                        if push_as_of is None or push_as_of < snap.as_of:
+                            state.apply_balance_snapshot(snap_bal, snap.as_of)
+            except Exception:
+                logger.exception(f"[{state.exchange}] reconcile: diff atom failed, skipping -> {difference.describe()}")
 
         # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
         #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.

@@ -237,6 +237,16 @@ def test_snapshot_only_emits_original_missing():
     assert diffs[0].order.venue_order_id == "vX"
 
 
+def test_terminal_local_order_not_original_missing_when_snapshot_lists_it_open():
+    # Snapshot-vs-fill race: a snapshot taken BEFORE a fill still lists the order as open,
+    # but locally it already went FILLED (terminal, still retained in active state). It must
+    # NOT be flagged OriginalOrderMissing — recovering it would re-add the cid (crash) and
+    # resurrect a terminal order. Our terminal view wins; the stale open copy is ignored.
+    local = _state(orders=[_order(cid="X1", venue_id="V1", status=OrderStatus.FILLED, filled_quantity=1.0)])
+    origin = _snap(open_orders=[_order(cid="X1", venue_id="V1", status=OrderStatus.ACCEPTED, filled_quantity=0.0)])
+    assert _differ().diff(local, origin) == []
+
+
 def test_cid_match_with_new_venue_id_emits_venue_id_mismatch():
     # unacked framework order: local has no venue id yet, snapshot reports it under our cid
     local = _state(orders=[_order(cid="qubx_a", venue_id=None)])

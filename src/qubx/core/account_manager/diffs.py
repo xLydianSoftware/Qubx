@@ -33,12 +33,14 @@ def diffatom[T](cls: type[T]) -> type[T]:
 
 
 def _fmt(v: object) -> str:
-    return f"{v:.2f}" if isinstance(v, float) else repr(v)
+    # .8g, not .2f: quantities can be far smaller than 0.01 (e.g. 0.001 BTC), and .2f
+    # rendered them as "0.00" in diff logs. %g keeps significant digits across scales.
+    return f"{v:.8g}" if isinstance(v, float) else repr(v)
 
 
 def _delta(local: object, origin: object) -> str:
     if isinstance(local, float) and isinstance(origin, float):
-        return f" (Δ {origin - local:+.2f})"
+        return f" (Δ {origin - local:+.8g})"
     return ""
 
 
@@ -294,9 +296,15 @@ class Differ:
         by_vid = {o.venue_order_id: o for o in snap_orders if o.venue_order_id}
         by_cid = {o.client_order_id: o for o in snap_orders if o.client_order_id}
 
-        local_active = [o for o in local.get_orders().values() if not o.status.is_terminal]
-        present_vids = {o.venue_order_id for o in local_active if o.venue_order_id}
-        present_cids = {o.client_order_id for o in local_active}
+        local_orders = list(local.get_orders().values())
+        local_active = [o for o in local_orders if not o.status.is_terminal]
+        # "present locally" for the OriginalOrderMissing check spans ALL retained orders,
+        # active AND terminal: a snapshot taken before a fill can still list a since-completed
+        # order as open, arriving after we already terminalized it. Matching only active orders
+        # would flag it missing -> recover -> re-add an existing cid (crash) / resurrect a
+        # terminal order. Our terminal view wins; the stale open copy is ignored.
+        present_vids = {o.venue_order_id for o in local_orders if o.venue_order_id}
+        present_cids = {o.client_order_id for o in local_orders}
 
         # local side: missing-from-snapshot + field mismatches (grace-gated)
         for lo in local_active:

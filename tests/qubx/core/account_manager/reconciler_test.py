@@ -434,6 +434,26 @@ def test_original_order_missing_recovered_order():
     assert o.venue_order_id == "v_ext1"  # type: ignore
 
 
+def test_one_failing_diff_atom_does_not_abort_the_snapshot(monkeypatch):
+    # A handler raising on one atom must not sink the rest of the snapshot reconcile
+    # (balances/figures/other positions). Each atom is applied in isolation.
+    rec = _reconciler()
+    st = _local()
+    snap = _origin(
+        open_orders=[_order("ext1", venue_id="v_ext1", status=OrderStatus.ACCEPTED)],  # -> _recover_order
+        balances=[_balance("USDT", free=1000.0)],  # -> apply_balance_snapshot
+    )
+
+    def _boom(*_a, **_k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(rec, "_recover_order", _boom)
+    rec.on_snapshot(st, snap, T0)  # must NOT raise
+
+    bal = st.get_balance("USDT")
+    assert bal is not None and bal.total == 1000.0  # type: ignore  # later atom still applied
+
+
 def test_stale_snapshot_is_dropped():
     # the as_of ratchet: a snapshot at/before the last applied as_of is rejected wholesale —
     # no diffs applied, no tasks spawned.
