@@ -355,6 +355,20 @@ def test_balance_below_tolerance_emits_nothing():
     assert _differ().diff(local, origin) == []
 
 
+def test_balance_sub_cent_drift_emits_nothing():
+    # margin/PnL float noise nudges free by < 1 cent every snapshot — must NOT reconcile
+    local = _state(balances=[_bal(free=1000.0, total=1000.0)])
+    origin = _snap(balances=[_bal(free=1000.0 + 0.009, total=1000.0)])
+    assert _differ().diff(local, origin) == []
+
+
+def test_balance_cent_or_more_drift_emits_mismatch():
+    # a change of 1 cent or more is a real difference and reconciles
+    local = _state(balances=[_bal(free=1000.0, total=1000.0)])
+    origin = _snap(balances=[_bal(free=1000.0 + 0.02, total=1000.0)])
+    assert [type(d) for d in _differ().diff(local, origin)] == [BalanceMismatch]
+
+
 # --------------------------------------------------------------------------- #
 # venue figures
 # --------------------------------------------------------------------------- #

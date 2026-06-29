@@ -20,8 +20,13 @@ from qubx.core.events import AccountSnapshot
 from qubx.utils.time import to_timedelta
 
 # Relative tolerance for floats that have no instrument lot/tick scale (margins,
-# balances, venue figures): abs(a - b) <= RTOL * max(|a|, |b|).
+# venue figures): abs(a - b) <= RTOL * max(|a|, |b|).
 RTOL = 1e-9
+
+# Balances ignore sub-cent drift: margin/unrealized-PnL float noise nudges free/locked by a
+# tiny amount on every snapshot, which would otherwise reconcile (and log) each poll. A change
+# under 1 cent is not a reconcilable difference. Absolute, because "1 cent" is absolute.
+BALANCE_ABS_TOL = 0.01
 
 
 # - Diff atoms ------------------------------------------------------------------ #
@@ -55,8 +60,13 @@ def _peps(instrument) -> float:
 
 
 def _close_rel(a: float, b: float) -> bool:
-    # relative tolerance for floats with no lot/tick scale (margins, balances, figures)
+    # relative tolerance for floats with no lot/tick scale (margins, figures)
     return abs(a - b) <= RTOL * max(abs(a), abs(b))
+
+
+def _close_bal(a: float, b: float) -> bool:
+    # balance legs: absolute 1-cent tolerance (ignore sub-cent margin/PnL float drift)
+    return abs(a - b) <= BALANCE_ABS_TOL
 
 
 def _material_pos(position: Position) -> bool:
@@ -390,7 +400,7 @@ class Differ:
                 continue
 
             if not (
-                _close_rel(lb.free, sb.free) and _close_rel(lb.locked, sb.locked) and _close_rel(lb.total, sb.total)
+                _close_bal(lb.free, sb.free) and _close_bal(lb.locked, sb.locked) and _close_bal(lb.total, sb.total)
             ):
                 diffs.append(BalanceMismatch(local=lb, origin=sb))
 
