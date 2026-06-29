@@ -510,6 +510,39 @@ def test_recovered_closing_deal_under_watermark_realizes_rpnl_only():
     assert state.get_balance("USDT").total == 100.0  # balance untouched (snapshot reconciled it)
 
 
+def test_historical_deal_for_untracked_order_materializes_terminal_not_phantom():
+    # situation II: a RequestHistDeals recovery deal arrives for an order we never tracked
+    # (already completed; restore was off). It must NOT create an ACCEPTED phantom that the
+    # next snapshot chases as a missing open order (status-fetch loop). Record it as a
+    # TERMINAL FILLED external order (audit) and realize-only against the snapshot-owned position.
+    state = _state()
+    state.set_position(BTC, Position(BTC, quantity=0.001, pos_average_price=60_055.0))
+    state.mark_position_reconcile(BTC, T1)  # snapshot owns the size up to T1
+    deal = Deal(trade_id="h1", order_id="V-DONE", time=T0, amount=0.001, price=60_055.0, aggressive=True)
+    r = apply(
+        state,
+        DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V-DONE", deal=deal, historical=True),
+        T1,
+    )
+
+    o = state.get_order_by_venue_id("V-DONE")
+    assert o is not None
+    assert o.status is OrderStatus.FILLED  # terminal audit record, NOT an ACCEPTED phantom
+    assert o.origin is OrderOrigin.EXTERNAL
+    assert r.deal is not None  # recorded for the ledger
+    assert _present(state.get_position(BTC)).quantity == 0.001  # snapshot owns size; realize-only
+
+
+def test_live_deal_for_untracked_order_still_materializes_accepted_external():
+    # Non-historical (live split-stream) deal on an unknown order keeps the old behavior:
+    # materialize an ACCEPTED external order (it exists at the venue).
+    state = _state()
+    deal = Deal(trade_id="d1", order_id="V-LIVE", time=T0, amount=0.001, price=60_000.0, aggressive=True)
+    apply(state, DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V-LIVE", deal=deal), T1)
+    o = state.get_order_by_venue_id("V-LIVE")
+    assert o is not None and o.status is OrderStatus.ACCEPTED and o.origin is OrderOrigin.EXTERNAL
+
+
 def test_futures_fee_debits_settle_balance():
     state = _state()
     _seed_usdt(state, 1000.0)

@@ -363,6 +363,9 @@ async def test_request_hist_deals_emits_deal_event_per_trade() -> None:
     assert sent[0].client_order_id is None  # AM resolves the order by venue id
     assert sent[0].deal.trade_id == "T1"
     assert sent[1].deal.trade_id == "T2"
+    # recovered trades are flagged historical -> reducer materializes a TERMINAL audit order
+    assert all(e.historical for e in sent)
+    assert sent[0].last_update_time == sent[0].deal.time
 
 
 @pytest.mark.asyncio

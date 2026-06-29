@@ -97,10 +97,20 @@ def _active_order_for(state: AccountState, event: OrderEvent) -> Order | None:
     return order
 
 
-def _materialize_external(state: AccountState, event: OrderEvent, instrument: Instrument, now: np.datetime64) -> Order:
-    # Unknown to us => external order (manual UI / another bot / pre-existing). A venue
-    # lifecycle event always carries the id the venue assigned; fall back to the cid
-    # for a stable identity only in the (malformed) case where it doesn't.
+def _materialize_external(
+    state: AccountState,
+    event: OrderEvent,
+    instrument: Instrument,
+    now: np.datetime64,
+    *,
+    status: OrderStatus = OrderStatus.ACCEPTED,
+) -> Order:
+    # Unknown to us => external order (manual UI / another bot / pre-existing, or a recovered
+    # historical trade). A venue lifecycle event always carries the id the venue assigned; fall
+    # back to the cid for a stable identity only in the (malformed) case where it doesn't.
+    # status defaults to ACCEPTED (a live external order exists at the venue); a recovered
+    # historical deal passes FILLED so the order is terminal (audit record, never chased as
+    # a missing open order). Terminal orders require last_update_time for eviction.
     venue_id = event.venue_order_id
     order = Order(
         client_order_id=f"{EXTERNAL_CID_PREFIX}{venue_id or event.client_order_id}",
@@ -112,21 +122,24 @@ def _materialize_external(state: AccountState, event: OrderEvent, instrument: In
         quantity=0.0,
         price=0.0,
         side=OrderSide.BUY,
-        status=OrderStatus.ACCEPTED,  # it exists at the venue
+        status=status,
         time_in_force="gtc",
+        last_update_time=(event.last_update_time or now) if status.is_terminal else None,
     )
     state.add_order(order)
     return order
 
 
-def _resolve_or_materialize(state: AccountState, event: OrderEvent, now: np.datetime64) -> Order | None:
+def _resolve_or_materialize(
+    state: AccountState, event: OrderEvent, now: np.datetime64, *, materialize_status: OrderStatus = OrderStatus.ACCEPTED
+) -> Order | None:
     if (order := _resolve(state, event)) is not None:
         return order
     if event.instrument is None:  # can't track a position without an instrument
         return None
     if event.client_order_id is None and event.venue_order_id is None:
         return None  # no identity at all — materializing would collide every such event on "ext:None"
-    return _materialize_external(state, event, event.instrument, now)
+    return _materialize_external(state, event, event.instrument, now, status=materialize_status)
 
 
 # A late event for an already-terminal order — and any accepted/canceled/expired event
@@ -362,8 +375,10 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
 def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> ApplyResult:
     # Status comes from order events; a deal only drives the ledger. A deal is
     # money-carrying, so an unknown order materializes as EXTERNAL (instrument-guarded
-    # in _resolve_or_materialize).
-    order = _resolve_or_materialize(state, event, now)
+    # in _resolve_or_materialize). A historical (RequestHistDeals) recovery deal materializes
+    # TERMINAL — the order already completed; an ACCEPTED phantom would be chased as missing.
+    materialize_status = OrderStatus.FILLED if event.historical else OrderStatus.ACCEPTED
+    order = _resolve_or_materialize(state, event, now, materialize_status=materialize_status)
     if order is None:
         return ApplyResult()
     if order.status.is_terminal and not state.has_active_order(order.client_order_id):

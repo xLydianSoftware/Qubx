@@ -1092,6 +1092,8 @@ class CcxtConnector(ChannelEmitter):
                     client_order_id=None,  # AM resolves the order by the venue id
                     venue_order_id=raw.get("order"),
                     deal=deal,
+                    last_update_time=deal.time,  # venue trade ts (terminal audit order eviction)
+                    historical=True,  # recovered trade -> materialize TERMINAL, not an ACCEPTED phantom
                 )
             )
 
