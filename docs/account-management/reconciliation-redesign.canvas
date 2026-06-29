@@ -49,8 +49,8 @@
       "type": "group",
       "x": -1500,
       "y": 200,
-      "width": 1640,
-      "height": 420,
+      "width": 1871,
+      "height": 428,
       "label": "FSM — AwaitOrderConfirm  (we sent order/update; ex _inflight_tick)",
       "nodeLabel": "G5",
       "color": "2"
@@ -96,7 +96,7 @@
       "width": 440,
       "height": 170,
       "color": "6",
-      "text": "## Split\n\n**Reconciler = pure** (state + diffs → decisions).\n**AM0 = I/O** (request_snapshot / request_order_status / hist deals).\nKeep old AM; build AM0 in parallel; rename later.",
+      "text": "## Split (DONE)\n\n**Reconciler = pure** (state + diffs → decisions).\n**AccountManager = I/O** (request_snapshot / request_order_status / request_hist_deals / RouteEvent).\nThe \"AM0\" driver was folded into AccountManager; old reconcile.py snapshot path deleted.",
       "nodeLabel": "N3"
     },
     {
@@ -107,7 +107,7 @@
       "width": 440,
       "height": 220,
       "color": "6",
-      "text": "## Venue timestamps (the enabler)\n\nStamp each snapshot object with its **own venue update ts**:\n- Order → `last_updated_at`\n- Position (has it) / Balance (add)\n\nNOT `as_of` (= request time).\nDeal.time already venue-clock (utils.py:188).\n→ every compare is venue-vs-venue.",
+      "text": "## Venue timestamps (DONE — the enabler)\n\nEach object carries its **own venue update ts** `last_update_time`:\n- Order → new field (≠ local-clock `last_updated_at` eviction key)\n- Position (had it) / Balance (added)\n\nNOT `as_of` (= request time).\nDeal.time already venue-clock (utils.py).\n→ every compare is venue-vs-venue. Balances are the weak leg (no snapshot ts) → push-wins tie-break.",
       "nodeLabel": "N4"
     },
     {
@@ -129,7 +129,7 @@
       "width": 440,
       "height": 160,
       "color": "6",
-      "text": "## Pure FSM\n\n`step(state, input, now) -> (state', actions)`\ninput ∈ {tick, deal, order_event, snapshot_result}\nAM0 executes actions, feeds events + tick back in.",
+      "text": "## Pure FSM\n\n`step(input, state, now) -> list[Action]` (mutates in-mem state)\ninput ∈ {Tick, DealIn, OrderIn, SnapshotIn}\nAccountManager executes actions, feeds events + tick back in.",
       "nodeLabel": "N6"
     },
     {
@@ -163,7 +163,7 @@
       "width": 300,
       "height": 90,
       "color": "2",
-      "text": "**request snapshot**\n(AM0 → connector)",
+      "text": "**request snapshot**\n(AccountManager → connector)",
       "nodeLabel": "N9"
     },
     {
@@ -295,7 +295,7 @@
       "width": 340,
       "height": 100,
       "color": "5",
-      "text": "**deal.ts ≤ pos.last_venue_ts**\n→ LOG only, do NOT apply",
+      "text": "**deal.ts ≤ pos watermark**\n→ realize r_pnl ONLY (size/balance owned by snapshot)",
       "nodeLabel": "N21"
     },
     {
@@ -317,7 +317,7 @@
       "width": 300,
       "height": 100,
       "color": "5",
-      "text": "**log hist deals to DB**\ndo NOT apply to pos",
+      "text": "**hist deals → DealEvent(historical=True)**\nuntracked order → terminal audit order;\nrealize-only vs watermark (no double-count)",
       "nodeLabel": "N23"
     },
     {
@@ -356,8 +356,8 @@
     {
       "id": "ac_req",
       "type": "text",
-      "x": -651,
-      "y": 311,
+      "x": -626,
+      "y": 336,
       "width": 300,
       "height": 90,
       "color": "2",
@@ -367,8 +367,8 @@
     {
       "id": "ac_ok",
       "type": "text",
-      "x": -245,
-      "y": 236,
+      "x": -95,
+      "y": 214,
       "width": 320,
       "height": 100,
       "color": "4",
@@ -378,8 +378,8 @@
     {
       "id": "ac_lost",
       "type": "text",
-      "x": -257,
-      "y": 459,
+      "x": -130,
+      "y": 491,
       "width": 340,
       "height": 100,
       "color": "1",
@@ -401,7 +401,7 @@
       "id": "node-1782315770978-0",
       "type": "file",
       "file": "reconciliation-redesign.md",
-      "x": -2451.5,
+      "x": -2451,
       "y": 1121,
       "width": 1223,
       "height": 1081,
@@ -677,9 +677,9 @@
     }
   ],
   "viewport": {
-    "x": 1964.812755519215,
-    "y": -1233.1442354865085,
-    "zoom": 0.9841373671300081
+    "x": 2435.0553191489357,
+    "y": -1039.573563829787,
+    "zoom": 0.9386170212765955
   },
   "creationCounter": 5
 }

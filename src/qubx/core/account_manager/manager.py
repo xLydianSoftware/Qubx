@@ -46,11 +46,12 @@ logger = area_logger("account_manager")
 
 
 class AccountManager(IAccountViewer):
+    account_id: str
+
     _pm: IProcessingManager | None
     _connectors: dict[str, IConnector]
     _time: ITimeProvider
     _cfg: AccountManagerConfig
-    account_id: str
     _tcc: dict[str, TransactionCostsCalculator]
     _states: dict[str, AccountState]
     _snapshot_grace: np.timedelta64
@@ -163,8 +164,6 @@ class AccountManager(IAccountViewer):
                 timedelta_to_crontab(pd.Timedelta(cfg.liveness_check_interval_ms, "ms")), self._on_liveness_tick
             )
 
-    # ---- order-entry bookkeeping (TradingManager calls these) ----------- #
-
     def add_order(self, order: Order) -> None:
         exchange = order.instrument.exchange
         state = self._states[exchange]
@@ -184,65 +183,75 @@ class AccountManager(IAccountViewer):
     # AM-internal, callers go through these.
 
     def seed_balance(self, exchange: str, balance: Balance) -> bool:
-        """Seed a startup balance (restored state, initial paper/backtest capital).
-        Returns False when this AM doesn't manage the exchange (record skipped)."""
-        state = self._states.get(exchange)
-        if state is None:
+        """
+        Seed a startup balance (restored state, initial paper/backtest capital).
+        Returns False when this AM doesn't manage the exchange (record skipped).
+        """
+        if (state := self._states.get(exchange)) is None:
             return False
         state.update_balance(balance.currency, balance)
         return True
 
     def seed_position(self, position: Position) -> bool:
-        """Seed a restored position (exchange derived from the instrument).
-        Returns False when this AM doesn't manage the exchange (record skipped)."""
-        state = self._states.get(position.instrument.exchange)
-        if state is None:
+        """
+        Seed a restored position (exchange derived from the instrument).
+        Returns False when this AM doesn't manage the exchange (record skipped).
+        """
+        if (state := self._states.get(position.instrument.exchange)) is None:
             return False
         state.set_position(position.instrument, position)
         return True
 
     def adjust_balance(self, exchange: str, currency: str, delta: float) -> None:
-        """Apply a cash delta (e.g. a simulated transfer leg) to an exchange balance,
-        creating the Balance if missing."""
+        """
+        Apply a cash delta (e.g. a simulated transfer leg) to an exchange balance,
+        creating the Balance if missing.
+        """
         self._states[exchange].adjust_balance(currency, delta)
 
     def settle_position(self, instrument: Instrument) -> None:
-        """Flatten a delisted/gone position in place (no trade): the venue already
+        """
+        Flatten a delisted/gone position in place (no trade): the venue already
         cash-settled it, so the universe manager reconciles the in-memory position to
         flat. Routed per-exchange via the instrument; no-op if the exchange is unmanaged
-        or the position isn't held."""
-        state = self._states.get(instrument.exchange)
-        if state is not None:
+        or the position isn't held.
+        """
+        if (state := self._states.get(instrument.exchange)) is not None:
             state.settle_position(instrument)
 
-    # ---- event path ------------------------------------------------------ #
-
     def apply(self, event: AccountMessage) -> ApplyResult:
-        state = self._state_for_event(event)
-        if state is None:
+        if (state := self._state_for_event(event)) is None:
             return ApplyResult()
         now = self._time.time()
+        result = self._apply_to_state(state, event, now)
+        self._maybe_sweep_evictions(now)
+        return result
+
+    def _apply_to_state(self, state: AccountState, event: AccountMessage, now: np.datetime64) -> ApplyResult:
         rec = self._reconcilers[state.exchange]
+        # Snapshots are owned by the Reconciler (diff + apply + tasks + venue figures); it
+        # collects the reconciled positions so the PM still fires on_position_change.
         if isinstance(event, AccountSnapshotEvent):
-            # Snapshots are owned by the Reconciler now (diff + apply + tasks + venue figures).
-            # It collects the reconciled positions so the PM still fires on_position_change.
             changed: list[Position] = []
             self._execute(state, rec.on_snapshot(state, event.snapshot, now, changed_positions=changed))
-            result = ApplyResult(positions=changed)
-        else:
-            result = reducer.apply(state, event, now)
-            # Order/deal events also drive the Reconciler's tasks (coverage, resolve-by-event).
-            if isinstance(event, OrderEvent):
-                self._execute(state, rec.on_event(state, event, now))
-        # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest)
-        # registers no periodic ticks, so without this sweep terminal orders and their
-        # side-table entries would grow unbounded there (and in live when
-        # reconcile_tick_interval_ms=0). One timestamp comparison per apply; the sweep
-        # itself runs at most once per retention window. Live additionally sweeps from
-        # the reconcile tick so eviction stays prompt during event silence.
+            return ApplyResult(positions=changed)
+
+        # Everything else goes through the reducer; order/deal events additionally drive the
+        # Reconciler's tasks (coverage, resolve-by-event).
+        result = reducer.apply(state, event, now)
+        if isinstance(event, OrderEvent):
+            self._execute(state, rec.on_event(state, event, now))
+
+        return result
+
+    def _maybe_sweep_evictions(self, now: np.datetime64) -> None:
+        # Opportunistic terminal eviction: SimulatedAccountManager (paper + backtest) registers
+        # no periodic ticks, so without this sweep terminal orders and their side-table entries
+        # would grow unbounded there (and in live when reconcile_tick_interval_ms=0). One
+        # timestamp comparison per apply; the sweep runs at most once per retention window. Live
+        # additionally sweeps from the reconcile tick so eviction stays prompt during event silence.
         if now - self._last_eviction_sweep >= self._terminal_retention:
             self._sweep_terminal_evictions()
-        return result
 
     def _execute(self, state: AccountState, actions: list) -> None:
         # - perform the I/O the Reconciler asked for (connector calls / event routing). Connector
@@ -255,12 +264,19 @@ class AccountManager(IAccountViewer):
                         order = state.get_order(cid)
                         if order is not None and connector is not None:
                             connector.request_order_status(order)
+
                     case RequestSnapshot():
                         if connector is not None:
                             connector.request_snapshot()
+
                     case RouteEvent(event=routed):
+                        # - HACK, do NOT copy: process_event is SYNCHRONOUS, and _execute runs
+                        #   inside apply() — so this re-enters apply() recursively (same thread,
+                        #   bounded, so it works). The clean form is to enqueue on the channel and
+                        #   let the next drain apply it
                         if self._pm is not None:
                             self._pm.process_event(routed)
+
                     case RequestHistDeals(instrument=instrument, since=since):
                         if connector is not None:
                             logger.debug(
@@ -268,51 +284,54 @@ class AccountManager(IAccountViewer):
                                 f"<y>{instrument.symbol}</y> since {since} -> connector.request_hist_deals"
                             )
                             connector.request_hist_deals(instrument, since)
+
                     case _:
                         logger.warning(f"[{state.exchange}] unknown reconcile action: {action!r}")
             except Exception:
                 logger.exception(f"[{state.exchange}] reconcile action failed: {action!r}")
 
     def _state_for_event(self, event: AccountMessage) -> AccountState | None:
-        if isinstance(event, AccountSnapshotEvent):
-            return self._states.get(event.snapshot.exchange)
-        if isinstance(event, BalanceUpdateEvent):
-            # Balance pushes carry no instrument — route strictly by the balance's
-            # exchange (the single-state fallback below would misroute a push stamped
-            # for an unmanaged exchange).
-            return self._states.get(event.balance.exchange)
-        if event.instrument is not None:
-            return self._states.get(event.instrument.exchange)
-        # No instrument — route an order event by its identifiers so a reject emitted
-        # without one (e.g. SimulatedConnector on update-of-missing-order) still reaches
-        # the right state.
-        if isinstance(event, OrderEvent):
-            for state in self._states.values():
-                if state.get_order(event.client_order_id) is not None:
-                    return state
-            if event.venue_order_id is not None:
-                for state in self._states.values():
-                    if state.get_order_by_venue_id(event.venue_order_id) is not None:
-                        return state
-        if len(self._states) == 1:
-            return next(iter(self._states.values()))
-        logger.debug(f"cannot route {type(event).__name__} with no instrument/identifiers — dropped")
-        return None
+        # - route by the most specific locator the event carries
+        match event:
+            case AccountSnapshotEvent():
+                return self._states.get(event.snapshot.exchange)
 
-    # ---- market data ------------------------------------------------------ #
+            case BalanceUpdateEvent():
+                # balance pushes carry no instrument — route strictly by the balance's exchange
+                # (the sole-state fallback would misroute a push for an unmanaged exchange)
+                return self._states.get(event.balance.exchange)
+
+            case _ if event.instrument is not None:
+                return self._states.get(event.instrument.exchange)
+
+        # no instrument: an order event (e.g. a reject emitted without one) routes by its own
+        # ids; otherwise the sole managed state, else give up.
+        state = self._state_holding_order(event) if isinstance(event, OrderEvent) else None
+        if state is None and len(self._states) == 1:
+            state = next(iter(self._states.values()))
+        if state is None:
+            logger.warning(f"cannot route {type(event).__name__} with no instrument/identifiers — dropped")
+        return state
+
+    def _state_holding_order(self, event: OrderEvent) -> AccountState | None:
+        # - the state already tracking this order — by cid (primary id) first, then venue id
+        states = self._states.values()
+        by_cid = next((s for s in states if s.get_order(event.client_order_id) is not None), None)
+        if by_cid is not None or event.venue_order_id is None:
+            return by_cid
+        return next((s for s in states if s.get_order_by_venue_id(event.venue_order_id) is not None), None)
 
     def on_market_quote(self, instrument, quote) -> None:
-        state = self._states.get(instrument.exchange)
-        if state is None:
+        if (state := self._states.get(instrument.exchange)) is None:
             return
-        pos = state.get_position(instrument)
-        if pos is None:  # only mark positions we hold; never create one per quote
+
+        # only mark positions we hold; never create one per quote
+        if (pos := state.get_position(instrument)) is None:
             return
+
         pos.update_market_price(
             self._time.time(), quote.mid_price(), state.conversion_rate(instrument), stamp_update_time=False
         )
-
-    # ---- reads (cross-exchange) -------------------------------------------- #
 
     def get_state(self, exchange: str) -> AccountState:
         return self._states[exchange]
@@ -327,38 +346,45 @@ class AccountManager(IAccountViewer):
             orders = self._states[exchange].get_orders()
         else:
             orders = {cid: o for s in self._states.values() for cid, o in s.get_orders().items()}
+
         # Public "open orders" view: terminal orders are retained in active_orders
         # during the grace window for late-event resolution, but callers reading
         # get_orders() want only live orders.
         orders = {cid: o for cid, o in orders.items() if not o.status.is_terminal}
+
         if instrument is not None:
             orders = {cid: o for cid, o in orders.items() if o.instrument == instrument}
+
         if origin is not None:
             orders = {cid: o for cid, o in orders.items() if o.origin == origin}
+
         return orders
 
     def get_order(self, client_order_id: str, exchange: str | None = None) -> Order | None:
         if exchange is not None:
             return self._states[exchange].get_order(client_order_id)
+
         if len(self._states) == 1:
             return next(iter(self._states.values())).get_order(client_order_id)
+
         # multi-exchange, caller didn't say which: framework cids are globally unique
         for state in self._states.values():
             if (order := state.get_order(client_order_id)) is not None:
                 return order
+
         return None
 
     def get_position(self, instrument):
-        state = self._states.get(instrument.exchange)
-        if state is None:
+        if (state := self._states.get(instrument.exchange)) is None:
             return None
-        pos = state.get_position(instrument)
-        if pos is None:
+
+        if (pos := state.get_position(instrument)) is None:
             # Consumers (gatherers, trackers, sizers, ctx.positions[instrument]) expect
             # a Position object for any known instrument, not None. Materialize an empty
             # one so a never-traded instrument reads as flat rather than KeyError-ing.
             pos = Position(instrument=instrument)
             state.set_position(instrument, pos)
+
         return pos
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
@@ -379,9 +405,11 @@ class AccountManager(IAccountViewer):
         currency = currency.upper()
         if exchange is not None:
             return self._states[exchange].get_balance(currency) or Balance(exchange, currency)
+
         for state in self._states.values():
             if (b := state.get_balance(currency)) is not None:
                 return b
+
         return Balance(next(iter(self._states)), currency)
 
     def get_balances(self, exchange: str | None = None) -> list[Balance]:

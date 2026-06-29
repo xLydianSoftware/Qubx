@@ -6,7 +6,7 @@ analogue of ``git diff`` producing a list of deltas. It is pure (never mutates e
 side) and clock-free except for the ``as_of``-based grace gate on orders. Deciding what
 to DO with the diffs — merging them into local state — is stage 2 (a separate module).
 
-See docs/account-management/reconciliator-redesign.md.
+See docs/account-management/reconciliation-redesign.md.
 """
 
 from dataclasses import dataclass
