@@ -794,7 +794,7 @@ class StrategyContext(IStrategyContext):
         order_id: str | None = None,
         client_order_id: str | None = None,
         exchange: str | None = None,
-    ) -> None:
+    ) -> Order:
         """Update an existing limit order with new price and amount."""
         return self._trading_manager.update_order(
             order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
