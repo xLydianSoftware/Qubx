@@ -13,20 +13,23 @@ adapted to what this branch actually built; deliberate departures are collected 
 
 ```
 ProcessingManager   — drains the channel, routes AccountMessages to AccountManager.apply,
-                      fires strategy callbacks from the ApplyResult (error-isolated),
-                      owns the ops-metric seam (apply errors, reconcile drift counters)
+                      fires strategy callbacks from the ApplyResult (error-isolated)
         │
-AccountManager      — routes an event to the right per-exchange AccountState, applies it
-                      via the reducer, owns the periodic ticks (in-flight sweep, snapshot,
-                      liveness) and the apply-path terminal-eviction sweep, makes every
-                      connector call (status fetch / snapshot / reconnect).
+AccountManager      — routes an event to the right per-exchange AccountState; applies order/
+                      deal events via the reducer and drives the Reconciler (on_event); routes
+                      snapshot events to the Reconciler (on_snapshot); owns the reconcile +
+                      liveness ticks and the apply-path terminal-eviction sweep; executes the
+                      Reconciler's actions — the only place connector calls / event routing happen.
                       SimulatedAccountManager = the same minus ticks (paper + backtest)
         │
-reducer.apply()     — applies one event to one AccountState, drives the state machine,
-                      returns ApplyResult (pure mutation; no callbacks/connectors/clock)
+reducer.apply()     — applies one (non-snapshot) event to one AccountState, drives the state
+                      machine, returns ApplyResult (pure mutation; no callbacks/connectors/clock)
         │
-reconcile.py        — reconciliation logic: snapshot reconcile, the sweep decision
-                      helpers, and the shared validate+transition chokepoint
+Reconciler          — owns snapshots: Differ (stage 1) + diff→task engine (stage 2). Pure —
+   (+ diffs.py)       returns list[Action], mutates in-mem state, no I/O. See reconciliation-
+                      redesign.md.
+        │
+reconcile.py        — the shared validate+transition chokepoint, fill_qty_epsilon, liveness_overdue
         │
 AccountState        — per-exchange data + indices + derived metrics (pure store)
 state_machine       — legal order transitions (pure, I/O-free)
@@ -91,13 +94,15 @@ legality, runs no reconcile rules, fires no callbacks, depends on no clock.
 - `add_order` **refuses a duplicate active cid** (raises): silent overwrite orphaned the
   caller's Order reference and left stale index entries behind.
 - Indices (mutator-maintained): venue-id, in-flight, pending-evict, `seen_trade_ids`
-  (fill dedup), snapshot-fill deficit/suppressed (covered-execution suppression, see
-  Reconciler), terminal-history ring buffer, applied-funding buckets (bounded,
-  oldest-evicted).
-- Side-tables (maintained by `transition_order`): `retry_count` (sweep/fetch budget),
-  `pre_pending_status` (revert target). Captured on first entry to a PENDING_* state, so
-  `PENDING_UPDATE → PENDING_CANCEL` keeps the original; cleared on leaving pending.
-  Both dropped on eviction. Chosen over fields-on-`Order` to keep `Order` a clean record.
+  (fill dedup), terminal-history ring buffer, applied-funding buckets (bounded,
+  oldest-evicted), per-instrument position-reconcile watermark (`_position_reconcile_as_of`,
+  the realize-only guard for situation-II recovered deals).
+- Side-table (maintained by `transition_order`): `pre_pending_status` (revert target),
+  captured on first entry to a PENDING_* state so `PENDING_UPDATE → PENDING_CANCEL` keeps the
+  original; cleared on leaving pending, dropped on eviction. Chosen over fields-on-`Order` to
+  keep `Order` a clean record. (The old `retry_count` and snapshot-fill deficit/suppressed
+  side-tables were deleted with the reconciler redesign — retries are now task-local in the
+  Reconciler, and the deficit was replaced by the venue-clock watermark.)
 - Snapshot ratchet: `get_last_snapshot_as_of` / `mark_snapshot_applied`. The stale-check
   itself is a reconcile *rule* → lives in the reconciler, not here.
 - `prune_terminal_orders(now, retention)` — grace-window eviction into history.
@@ -206,7 +211,7 @@ Order **status** events drive the lifecycle; a **`DealEvent`** drives the ledger
     Position size, `r_pnl` and `cumulative_funding` always book.
   - Dispatch: balance pushes fire **no** strategy callback (see Strategy callbacks);
     position size changes reach `on_position_change` only via the deal path or the
-    snapshot reconcile diff.
+    snapshot reconcile (`ApplyResult.positions`).
 
   Venue balance changes reach state at WS latency; position size relies on the deal ledger
   plus the ~30 s snapshot reconcile (and the on-connect / reconnect / liveness-timeout
@@ -239,12 +244,15 @@ construction** fails loudly on incompatible overrides and on the removed pre-col
 names, and the `qubx init` templates ship the current signatures. Cancel/update reject
 reasons stay PM-log-only (the STILL-ALIVE warnings), not stored on the order.
 Framework-internal fill consumers (trackers, gatherers, logging, export) are fed off
-`result.deal` — the deduped truth — independent of the strategy callback.
+`result.deal` — the deduped truth — independent of the strategy callback. Exception: a
+**historical recovery deal** (`DealEvent.historical`, from `RequestHistDeals`) is ledger-only —
+it reaches `save_deals` but neither the strategy nor the trackers/gatherers (it's a
+reconciliation artifact, not a live execution).
 
 ## `apply` contract
 
 ```python
-def apply(state, event, now, *, snapshot_grace) -> ApplyResult: ...
+def apply(state, event, now) -> ApplyResult: ...   # AM.apply; reducer.apply for non-snapshot events
 
 @dataclass
 class ApplyResult:
@@ -252,113 +260,77 @@ class ApplyResult:
     order_change: OrderChange | None = None # paired with order
     deal: Deal | None = None                # new deal applied -> on_execution + downstream fill consumers
     position: Position | None = None        # position changed -> on_position_change
-    reconcile_diff: ReconcileDiff | None = None  # snapshot reconcile -> on_position_change per corrected position
+    positions: list[Position] = []          # snapshot-reconciled positions -> on_position_change per entry
     balance: Balance | None = None          # balance push applied -> internal visibility only, NO strategy callback
 ```
 
 - The reducer **mutates state and returns the result**; it fires no callbacks (testable
-  without a strategy; a raising callback stays away from state mutation). The grace
-  window — the one config value the reducer needs — is passed kw-only rather than stored.
-- The **ProcessingManager** fires callbacks from the result, error-isolated, and counts
-  reconcile drift (`terminated`/`materialized`) off the diff — the metric seam lives on
-  the PM; the AM holds no emitter.
+  without a strategy; a raising callback stays away from state mutation). Snapshot events
+  don't go through the reducer at all — `AccountManager.apply` routes them to
+  `Reconciler.on_snapshot`, which collects the reconciled positions into `result.positions`.
+- The **ProcessingManager** fires callbacks from the result, error-isolated.
 - **None-as-suppress:** an empty result means the AM suppressed the event (late/
   duplicate/terminal/unknown/deduped funding/stale snapshot — already logged) and nothing
   fires. Each set field fires its callback: `order` + `order_change` → `on_order`,
-  `deal` → `on_execution` (plus downstream fill consumers), `position` →
-  `on_position_change`, `reconcile_diff` → `on_position_change` per corrected position.
+  `deal` → `on_execution` (plus downstream fill consumers — **except** a historical recovery
+  deal, which is ledger-only), `position` / each of `positions` → `on_position_change`.
   `BalanceUpdateEvent` fires nothing strategy-side either way (see Strategy callbacks).
 
 ## Reconciler
 
-Split along the logic-vs-orchestration line: `reconcile.py` owns the *logic* (snapshot
-reconcile, sweep decision helpers, `transition`), the reducer routes the snapshot *event*
-(`_handle_snapshot` delegates and surfaces the `ReconcileDiff`), and the **AccountManager
-drives the ticks** and makes every connector call.
+Split along the logic-vs-orchestration line: the **`Reconciler`** (pure — `reconciler.py` +
+`diffs.py`) owns snapshots end-to-end (diff + apply + tasks + venue figures) and returns a
+`list[Action]`; the **`AccountManager`** drives the ticks, routes events into the Reconciler,
+and executes its actions (every connector call). `reconcile.py` keeps only the shared
+`transition` chokepoint + `fill_qty_epsilon` + `liveness_overdue`.
 
-### Snapshot reconcile
+> Full detail — the Differ atoms, the task FSMs (`ResolveMissingOrder` / `AwaitOrderConfirm` /
+> `ConfirmPositionBySnapshot`), and the Mermaid diagrams — lives in
+> **`reconciliation-redesign.md`**. This section is the summary.
 
-`reconcile_snapshot(state, snapshot, now, grace) -> ReconcileDiff | None`, in order:
+### Snapshot reconcile (Reconciler.on_snapshot)
 
-1. **as_of ratchet** — a snapshot at or before the last applied one is rejected wholesale
-   (returns None; the PM fires nothing).
-2. **Missing detection** — a cached live order is "present" if its venue id **or its cid**
-   appears in the snapshot's open orders (the cid fallback covers an unacked framework
-   order whose create-ack was lost). Untimestamped orders are skipped (cannot be aged —
-   could be a just-submitted order racing the snapshot); the rest must be missing past
-   `grace`.
-3. **Fetch-before-terminalize** — missing orders are *reported* on `diff.missing`, not
-   terminalized: the order may have FILLED during a WS gap and a blind CANCELED would
-   lose the execution forever. The manager requests the true status per missing order
-   (the answer replays through the normal event path: a real FILLED/CANCELED, or a
-   synthesized reject on OrderNotFound), spending the shared per-order retry budget;
-   only on exhaustion does `terminalize_missing` apply REJECTED (never acked) /
-   CANCELED (was live).
-4. **Materialize / update** — snapshot orders we don't hold materialize with
-   `classify_origin` (framework prefix → `RECOVERED`, keeping the cid; else
-   `ext:<venue_id>` → `EXTERNAL`). Known orders update under a freshness guard
-   (`as_of > last_updated_at`, so a fresh live fill isn't clobbered); a pending marker
-   is never wiped by a live venue status (the venue resolves the race; a terminal status
-   *is* the resolution). When a snapshot raises `filled_quantity`, the raise is held per
-   order as a **covered-quantity deficit** — the snapshot's position/balance legs
-   already counted those executions. An arriving execution on any path (`DealEvent` or
-   embedded fill) is suppressed up to the remaining deficit: fully covered records the
-   trade id (dedup stays intact) and books nothing; one larger than the deficit books
-   only the excess, fee pro-rated. The deficit is consumed as it suppresses, and the
-   quantity suppressed since the last sync is absorbed from the next snapshot's raise
-   before re-arming (the venue's filled figure already includes it). The rule is
-   deliberately **clock-free** — quantity is the only signal, never a venue-vs-local
-   time comparison (the balance tie-break below stays the sole sanctioned cross-domain
-   one). Residual ambiguity: a genuinely-new post-snapshot execution that fits the
-   deficit window is indistinguishable from a redelivered covered one and is suppressed
-   in its place — quantity totals stay exact either way (total suppression is bounded by
-   what snapshots counted), only per-deal price/fee attribution can shift. The mirror
-   case (a post-suppression snapshot whose raise belongs to a different in-flight fill
-   mis-absorbing the marker) has the same envelope: sizes transiently overshoot and
-   fully re-sync on the next snapshot; per-deal attribution may shift. Both are inherent
-   to the clock-free design and self-healing — rollout note, not a defect.
-5. **Positions — surgical** (`reconcile_position_from_snapshot`): the snapshot is
-   authoritative for size/avg-price and venue-reported margin/mark **only**; locally
-   accumulated accounting (`r_pnl`, commissions, funding) always survives. Never routes
-   through `reset_by_position`. Positions deliberately keep **no** per-record freshness
-   guard: size is owned by the deal ledger on the event path (there is no WS position
-   push), so the snapshot is the sole size-correction authority and the place where
-   non-order-driven changes (liquidation/ADL) surface. Balances overwrite
-   (identity-preserving) — except a
-   currency whose push `as_of` is at/after the snapshot's `as_of`: the absolute push is
-   the at-least-as-fresh figure (tie-break favors the push; snapshot `as_of` is the
-   local fetch clock, push `as_of` is venue event time).
-6. **Venue figures** — set when the snapshot carries any; absence keeps the previous
-   capture (means "not observed", not "gone").
-
-The manager logs the operator-facing line per applied snapshot (WARNING when orders were
-terminated/materialized/missing, INFO for benign corrections; a figures-only diff stays
-silent), and the PM emits the drift counters.
+1. **as_of ratchet** — a snapshot at/before the last applied one is dropped wholesale.
+2. **Differ.diff(state, snapshot)** → a flat `list[Diff]`; each atom is applied in its own
+   `try/except` (one bad atom can't abort the rest), then venue figures last.
+3. **Orders** — `OriginalOrderMissing → _recover_order` (framework prefix → `RECOVERED` keeping
+   the cid, else `ext:<venue_id>` → `EXTERNAL`); a since-completed order we hold terminal is
+   *not* re-recovered. `LocalOrderMissing → ResolveMissingOrder` task (wait → fetch status ≤ n →
+   resolve via the real event, or give up by routing `OrderLostEvent`). `OrderFieldMismatch →
+   _reconcile_order` (fix status/filled in-mem, route `OrderPartiallyFilledEvent`).
+4. **Positions — surgical** (`reconcile_position_from_snapshot`): snapshot is authoritative for
+   size/avg-price/margin/mark **only**; `r_pnl`/commissions/funding always survive. A size diff
+   spawns `ConfirmPositionBySnapshot` and stamps a per-instrument **venue-clock watermark**: a
+   later deal at/under it books **realize-only** (r_pnl, no size/balance move) — this replaces the
+   old covered-quantity *deficit*. Missed deals are recovered via `RequestHistDeals`
+   (`since = watermark − 2s`), pushed back as `DealEvent(historical=True)` → recorded in the ledger
+   but **ledger-only** (no strategy `on_execution`/`on_position_change`), materialized as a terminal
+   audit order (never an `ACCEPTED` phantom). A local position absent from an observed snapshot →
+   flatten (keeps accounting).
+5. **Balances** — overwrite (identity-preserving) under a **1-cent absolute tolerance** (sub-cent
+   margin/PnL drift doesn't reconcile), except a currency whose WS-push `as_of` ≥ the snapshot's
+   `as_of` (push-wins tie-break). **Venue figures** — set when present; absence keeps the prior capture.
 
 ### Ticks & sweeps
 
-`AccountManagerConfig` (defaults): in-flight sweep every 2s — poll an in-flight order
-not heard from for 5s, give up after 5 retries; snapshot freshness check every 30s;
-liveness check every 5s — WS unready for 30s → `reconnect()`; terminal retention 30s,
-history ring 10k. Tunable per deployment via the `live.account_manager` YAML block
-(1:1 onto the dataclass).
+`AccountManagerConfig` (defaults), tunable via the `live.account_manager` YAML block (1:1 onto the
+dataclass): one **reconcile heartbeat** `reconcile_tick_interval_ms`=2000 drives
+`Reconciler.on_tick` (the snapshot due-timer `snapshot_interval_ms`=30000 + the order/position task
+nudges) **and** the terminal-eviction sweep — it replaces the old separate inflight + snapshot
+ticks. `snapshot_grace_ms`=5000 (Differ grace); `missing_order_wait_ms`/`order_confirm_wait_ms`=5000
++ `_retries`=5; `position_confirm_wait_ms`=2000; liveness check every 5s (unready 30s → `reconnect()`);
+terminal retention 30s, history ring 10k.
 
-- Ticks register via `pm.schedule` in `set_processing_manager` — the AM is built before
-  the PM in live (the AM↔PM construction cycle), so wiring is late and idempotent. They
-  run on the processing thread, preserving the single-mutator invariant.
-- **Give-up = synthetic event through the PM.** When the retry budget is exhausted, the
-  manager synthesizes the reject the venue never sent (`giveup_event`: REJECTED for
-  SUBMITTED, cancel/update-rejected for PENDING_* → reverts via `pre_pending`) and routes
-  it through `pm.process_event` — the same path venue events take. The AM never calls
-  the strategy directly. One bad order / connector error never aborts the rest of the
-  sweep (see the in-code comment referencing this section).
-- **Terminal eviction is not tick-dependent:** `AccountManager.apply` runs an
-  opportunistic sweep when `terminal_retention` has elapsed since the last one — paper
-  and backtest (`SimulatedAccountManager` registers no ticks) and the
-  `inflight_check_interval_ms=0` edge all evict; live additionally sweeps from the
-  in-flight tick so eviction stays prompt during event silence.
-- Liveness: a failed/raising `reconnect()` keeps the unready timestamp, so the next tick
-  retries instead of restarting the full threshold.
+- Ticks register via `pm.schedule` in `set_processing_manager` (the AM↔PM cycle — late, idempotent),
+  on the processing thread, preserving the single-mutator invariant.
+- **Give-up = routed event.** A `ResolveMissingOrder`/`AwaitOrderConfirm` task that exhausts its
+  fetches terminalizes to `LOST` by routing `OrderLostEvent` through `pm.process_event` (the same
+  path venue events take); the AM never calls the strategy directly.
+- **Terminal eviction is not tick-dependent:** `AccountManager.apply` runs an opportunistic sweep
+  once `terminal_retention` elapses — paper/backtest (no ticks) and `reconcile_tick_interval_ms=0`
+  still evict; live additionally sweeps from the reconcile tick.
+- Liveness: a failed/raising `reconnect()` keeps the unready timestamp, so the next tick retries
+  instead of restarting the full threshold.
 
 ## Connectors (IConnector)
 
@@ -424,24 +396,23 @@ Sanctioned departures, detailed in the sections above:
 6. Terminal-but-retained deal booking + post-eviction suppression.
 7. Unprefixed (public) `AccountState` mutators, framework-internal by contract.
 8. Events in `core/events.py`, not in the `account_manager` package.
-9. kw-only `snapshot_grace` on `reducer.apply`.
+9. Snapshots owned by a pure `Reconciler` (Differ + task engine), not the reducer.
 10. Funding payments as account events with bucketed dedup.
 11. Per-order transition audit + per-status counters.
-12. `AccountManagerConfig` + the three ticks + the apply-path eviction sweep.
+12. `AccountManagerConfig` + the single reconcile tick (+ liveness) + the apply-path eviction sweep.
 13. `SimulatedAccountManager` for paper/backtest.
 14. Restoration/seeding via AM-level `seed_*`/`adjust_balance`.
 15. Unbounded channel instead of bounded-with-drop-protection.
 16. Cancel/update synchronous-raise contract: synthetic reject through the PM + re-raise.
-17. Fetch-before-terminalize for orders missing from snapshots.
-18. Surgical position reconcile (local accounting always survives a snapshot).
+17. Order recovery via temporal tasks (`ResolveMissingOrder` → fetch → LOST give-up).
+18. Surgical position reconcile (local accounting survives) + venue-clock realize-only watermark.
 
 ## Deferred / open
 
-- **`on_reconcile_complete(ctx, diff)`**: snapshot order-corrections stay callback-silent
-  beyond the per-position `on_position_change` fan-out. Precondition: `ReconcileDiff`
-  lives in `core/account_manager/reconcile.py` while `manager.py` imports
-  `core.interfaces`, so declaring the signature on `IStrategy` requires relocating
-  `ReconcileDiff` first.
+- **`on_reconcile_complete(ctx, ...)`**: snapshot order-corrections stay callback-silent
+  beyond the per-position `on_position_change` fan-out (`ReconcileDiff` was deleted in the
+  reconciler redesign). If a strategy-facing summary of a reconcile is wanted, the Reconciler
+  would surface it (e.g. on `ApplyResult`) for the PM to fan out.
 - **Venue figures beyond Binance/OKX**: Binance and OKX snapshot legs extract venue
   figures; Bitfinex is documented derive-only (figures absent from `fetch_balance`);
   other venues derive (sound fallback).
