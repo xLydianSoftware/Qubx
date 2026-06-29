@@ -16,6 +16,7 @@ from qubx import QubxLogConfig
 from qubx.core.account_manager import reducer
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
+    HIST_DEALS_LOOKBACK,
     Reconciler,
     RequestHistDeals,
     RequestStatus,
@@ -500,7 +501,7 @@ def test_position_confirm_no_deal_fetches_hist_deals_after_window():
 
     assert rec.on_tick(st, _passed_seconds(T0, 1)) == []  # inside the wait window (2s)
     a = rec.on_tick(st, _passed_seconds(T0, 3))  # past the window, no deal seen
-    assert a == [RequestHistDeals(instrument=_inst(), since=T0)]
+    assert a == [RequestHistDeals(instrument=_inst(), since=T0 - HIST_DEALS_LOOKBACK)]
     assert rec.active_keys() == set()  # one-shot fetch -> dropped
     D_OFF()
 
@@ -620,7 +621,7 @@ def test_position_decrease_partial_deal_still_fetches_remainder():
 
     # window elapses with the remainder still missing -> fetch it for the record
     out = rec.on_tick(st, _passed_seconds(T0, 3))
-    assert out == [RequestHistDeals(instrument=_inst(), since=T0)]
+    assert out == [RequestHistDeals(instrument=_inst(), since=T0 - HIST_DEALS_LOOKBACK)]
     assert rec.active_keys() == set()  # one-shot fetch -> dropped
     D_OFF()
 
@@ -648,7 +649,7 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
 
     # 2) no late WS deal by the window -> fetch the missed deals since the venue watermark
     out = rec.on_tick(st, _passed_seconds(T0, 3))
-    assert out == [RequestHistDeals(instrument=_inst(), since=T0)]
+    assert out == [RequestHistDeals(instrument=_inst(), since=T0 - HIST_DEALS_LOOKBACK)]
     assert rec.active_keys() == set()  # one-shot fetch task dropped
 
     # 3) the connector pushes the fetched HISTORICAL deal back as a normal DealEvent (addressed by

@@ -40,6 +40,12 @@ from qubx.core.events import (
 )
 from qubx.utils.time import to_timedelta
 
+# Hist-deals fetch reaches slightly before the position watermark: the triggering trade can sit
+# at/just-before the snapshot's position update ts, and fetch_my_trades(since=...) would exclude
+# it. Kept small (seconds) so it only catches this episode's boundary trade, not old history —
+# re-fetched deals are deduped by trade_id and realize-only-guarded anyway.
+HIST_DEALS_LOOKBACK = np.timedelta64(2, "s")
+
 
 @dataclass(frozen=True)
 class RequestStatus:
@@ -321,7 +327,9 @@ class ConfirmPositionBySnapshot(Task):
             return []
         if isinstance(inp, Tick) and now >= self._deadline:
             self._done = True  # - hard deadline: exactly one fetch then drop
-            return [RequestHistDeals(instrument=self._instrument, since=self._since)]
+            # - reach a hair before the watermark so a trade exactly at it isn't excluded; the
+            #   watermark itself (realize-only guard) is unchanged, so booking stays correct
+            return [RequestHistDeals(instrument=self._instrument, since=self._since - HIST_DEALS_LOOKBACK)]
         return []
 
 
