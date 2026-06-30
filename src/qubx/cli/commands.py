@@ -40,13 +40,16 @@ def main(debug: bool, debug_port: int, log_level: str):
     warnings.filterwarnings("ignore", category=SyntaxWarning)
 
     os.environ["PYDEVD_DISABLE_FILE_VALIDATION"] = "1"
-    log_level = log_level.upper() if not debug else "DEBUG"
 
+    # load .env first so a QUBX_LOG_LEVEL it defines lands in os.environ before we read it
     env_file = Path.cwd().joinpath(".env")
     if env_file.exists():
         logger.info(f"Loading environment variables from {env_file}")
         load_dotenv(env_file)
-        log_level = os.getenv("QUBX_LOG_LEVEL", log_level)
+
+    # precedence: explicit --debug > QUBX_LOG_LEVEL (shell env or .env) > --log-level/LOG_LEVEL default.
+    # The env read MUST be unconditional — gating it on .env existence silently ignored an exported var.
+    log_level = "DEBUG" if debug else os.getenv("QUBX_LOG_LEVEL", log_level).upper()
 
     QubxLogConfig.set_log_level(log_level)
 

@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "canvases": {
+    "docs/account-management/reconciliation-redesign.canvas": {
+      "1": {
+        "nodeId": "node-1782315770978-0",
+        "viewport": {
+          "x": 2435.0553191489357,
+          "y": -1039.573563829787,
+          "zoom": 0.9386170212765955
+        }
+      },
+      "`": {
+        "nodeId": "t6",
+        "viewport": {
+          "x": 1670.692172291615,
+          "y": -735.5021073533478,
+          "zoom": 0.6861657699310744
+        }
+      }
+    }
+  }
+}

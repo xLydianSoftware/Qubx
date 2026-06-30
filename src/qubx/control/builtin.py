@@ -343,6 +343,7 @@ def _get_positions(ctx: IStrategyContext, **kwargs) -> ActionResult:
             "unrealized_pnl": _rm(pos.unrealized_pnl()),
             "realized_pnl": _rm(pos.r_pnl),
             "market_value": _rm(pos.market_value_funds),
+            "last_updated_time": str(pos.last_update_time),
         }
     return ActionResult(status="ok", data={"positions": positions})
 
@@ -351,7 +352,12 @@ def _get_balances(ctx: IStrategyContext, **kwargs) -> ActionResult:
     balances = {}
     for bal in ctx.get_balances():
         key = f"{bal.exchange}:{bal.currency}"
-        balances[key] = {"total": _rm(bal.total), "free": _rm(bal.free), "locked": _rm(bal.locked)}
+        balances[key] = {
+            "total": _rm(bal.total),
+            "free": _rm(bal.free),
+            "locked": _rm(bal.locked),
+            "last_updated_time": str(bal.last_update_time),
+        }
     return ActionResult(status="ok", data={"balances": balances})
 
 
@@ -377,6 +383,7 @@ def _get_orders(
                 "price": order.price,
                 "status": order.status,
                 "client_id": order.client_order_id,
+                "last_updated_time": str(order.last_update_time),
             }
         )
     return ActionResult(status="ok", data={"orders": orders_data})

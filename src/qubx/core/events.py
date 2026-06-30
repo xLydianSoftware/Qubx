@@ -60,6 +60,7 @@ class OrderEvent(AccountMessage):
 
     client_order_id: str | None
     venue_order_id: str | None = None
+    last_update_time: np.datetime64 | None = None  # venue update ts (venue clock); None if unknown
 
 
 @msg
@@ -97,9 +98,14 @@ class DealEvent(OrderEvent):
     venues (Binance) deliver status+deal together, so the deal rides embedded on the fill
     events above. Split-stream venues (OKX/Bitfinex) deliver executions on a separate
     stream — each trade arrives as one DealEvent and the AccountManager correlates it to
-    the order by id, deduped by ``deal.trade_id``. Never changes order status."""
+    the order by id, deduped by ``deal.trade_id``. Never changes order status.
+
+    ``historical`` marks a deal recovered via ``RequestHistDeals`` (a trade fetched for an
+    already-completed order behind a position diff). The reducer then records it as a
+    TERMINAL external order (audit, no missing-order chase) instead of an ACCEPTED phantom."""
 
     deal: Deal
+    historical: bool = False
 
 
 @msg
@@ -110,6 +116,15 @@ class OrderCanceledEvent(OrderEvent):
 @msg
 class OrderExpiredEvent(OrderEvent):
     pass
+
+
+@msg
+class OrderLostEvent(OrderEvent):
+    """Reconciler give-up: an in-flight order the venue never confirmed after the
+    status-fetch budget was exhausted. Routed through the bus so the normal pipeline
+    terminalizes it to ``OrderStatus.LOST`` and notifies the strategy."""
+
+    reason: str = ""
 
 
 @msg

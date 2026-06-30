@@ -13,7 +13,7 @@ from qubx.core.account_manager import AccountState
 from qubx.core.basics import Order, OrderOrigin, OrderStatus, Position
 
 
-def _make_order(cid="qubx-1", status=OrderStatus.SUBMITTED, venue_id=None, last_updated_at=None):
+def _make_order(cid="qubx-1", status=OrderStatus.SUBMITTED, venue_id=None, last_update_time=None):
     return Order(
         client_order_id=cid,
         venue_order_id=venue_id,
@@ -26,7 +26,7 @@ def _make_order(cid="qubx-1", status=OrderStatus.SUBMITTED, venue_id=None, last_
         side="BUY",
         status=status,
         time_in_force="gtc",
-        last_updated_at=last_updated_at,
+        last_update_time=last_update_time,
     )
 
 

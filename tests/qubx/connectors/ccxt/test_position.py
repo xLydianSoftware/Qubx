@@ -20,6 +20,35 @@ from tests.qubx.connectors.ccxt.data.ccxt_responses import (
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
+def test_ccxt_order_stamps_venue_last_update_time():
+    # the order's last_update_time must carry the VENUE update ts (ccxt lastUpdateTimestamp,
+    # else raw info.updateTime), so the reconciler's monotonic guard works in prod.
+    from qubx.core.utils import recognize_time
+
+    instrument = lookup.find_symbol("BINANCE", "ACAUSDT")
+    o = ccxt_convert_order_info(instrument, C5new)
+    assert o.last_update_time == recognize_time(C5new["lastUpdateTimestamp"])
+
+    # fallback to raw info.updateTime when the unified field is absent
+    raw = {**C5new, "lastUpdateTimestamp": None, "info": {"updateTime": "1712231523596"}}
+    o2 = ccxt_convert_order_info(instrument, raw)
+    assert o2.last_update_time == recognize_time(1712231523596)
+
+    # neither present -> None (no venue ts)
+    raw3 = {**C5new, "lastUpdateTimestamp": None, "info": {}}
+    assert ccxt_convert_order_info(instrument, raw3).last_update_time is None
+
+
+def test_ccxt_position_stamps_venue_last_update_time():
+    from qubx.connectors.ccxt.utils import ccxt_convert_position
+    from tests.qubx.connectors.ccxt.test_utils import BINANCE_MARKETS, POSITIONS_BINANCE_UM
+
+    p = POSITIONS_BINANCE_UM[0]
+    expected = pd.Timestamp(p["timestamp"], unit="ms").asm8
+    assert ccxt_convert_position(p, "BINANCE.UM", BINANCE_MARKETS).last_update_time == expected
+    # stamped even when the venue omits markPrice (the relaxed guard)
+    assert ccxt_convert_position({**p, "markPrice": None}, "BINANCE.UM", BINANCE_MARKETS).last_update_time == expected
+
 
 class TestStrats:
     def test_ccxt_exec_report_conversion(self):
@@ -181,6 +210,29 @@ def test_convert_order_info_market_order_price_is_none():
     # (matches Order.price: float | None).
     instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
     order = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market"))
+    assert order.price is None
+
+
+def test_convert_order_info_trigger_order_uses_trigger_price():
+    # A STOP_MARKET carries no limit price (ccxt price=None); the trigger level lives in
+    # triggerPrice/stopPrice. The locally-tracked stop stores the trigger as its price, so the
+    # converter must mirror it — else every snapshot diffs price (e.g. 57966.5 -> None) on the
+    # same live order, flapping the reconciler.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    o1 = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market", triggerPrice=57966.5))
+    assert o1.price == 57966.5
+    # legacy unified stopPrice and Binance info.stopPrice (string) are also honoured
+    o2 = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market", stopPrice=57966.5))
+    assert o2.price == 57966.5
+    o3 = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market", info={"stopPrice": "57966.5"}))
+    assert o3.price == 57966.5
+
+
+def test_convert_order_info_plain_market_zero_stopprice_stays_none():
+    # Binance reports stopPrice="0" for a plain (non-trigger) market order; that must NOT be
+    # mistaken for a trigger level — price stays None.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market", info={"stopPrice": "0"}))
     assert order.price is None
 
 

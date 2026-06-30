@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -306,6 +307,7 @@ class SimulationRunner:
 
                     if not self._process_event(instrument, data_type, event, is_hist, _run, stop):
                         break
+
                     dt = np.datetime64(int(event.time), "ns")
                     # - update progress bar and status writer every 1% of simulation time
                     if dt - prev_dt > update_delta:
@@ -318,7 +320,15 @@ class SimulationRunner:
 
         logger.info(f"{self.__class__.__name__} ::: Simulation finished at {stop} :::")
 
-    def _process_event(self, instrument, data_type, event, is_hist, _run, stop_time):
+    def _process_event(
+        self,
+        instrument: Instrument,
+        data_type: str,
+        event: Any,
+        is_hist: bool,
+        fn_processor: Callable[[Instrument, str, Any, bool], bool],
+        stop_time,
+    ):
         """Process a single simulation event with proper time advancement and scheduler checks."""
         # During warmup, clamp future timestamps to current time
         if self.warmup_mode and hasattr(event, "time"):
@@ -326,10 +336,7 @@ class SimulationRunner:
             if event.time > current_real_time:
                 event.time = current_real_time
 
-        if not _run(instrument, data_type, event, is_hist):
-            return False
-
-        return True
+        return fn_processor(instrument, data_type, event, is_hist)
 
     def _handle_no_data_scenario(self, stop_time):
         """Handle scenario when no data is available but scheduler might have events."""

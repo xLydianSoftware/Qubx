@@ -56,16 +56,14 @@ class AccountState:
         "_inflight_index",
         "_pending_evict_index",
         "_seen_trade_ids",
-        "_snapshot_fill_deficit",
-        "_snapshot_fill_suppressed",
         "_terminal_history",
-        "_retry_count",
         "_pre_pending_status",
         "_last_snapshot_as_of",
         "_transition_counts",
         "_venue_figures",
         "_applied_funding_buckets",
         "_balance_push_as_of",
+        "_position_reconcile_as_of",
     )
 
     def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
@@ -88,19 +86,8 @@ class AccountState:
         # fill (resting/canceled orders never allocate a set), dropped on
         # eviction so the memory dies with the order.
         self._seen_trade_ids: dict[str, set[str]] = {}
-        # cid -> execution quantity a snapshot counted (order totals AND position/balance
-        # legs) that was never booked locally: arriving executions are suppressed up to
-        # this deficit and book only the excess (reducer._apply_execution owns the rule).
-        # Same lifecycle as _seen_trade_ids: dropped on remove/evict.
-        self._snapshot_fill_deficit: dict[str, float] = {}
-        # cid -> quantity suppressed against the deficit since the order's last snapshot
-        # sync; the next snapshot's filled raise is absorbed by this before re-arming the
-        # deficit (reconcile._update_from_snapshot owns the rule). Same lifecycle.
-        self._snapshot_fill_suppressed: dict[str, float] = {}
         # bounded ring buffer of evicted terminals (FIFO); slow-path lookups
         self._terminal_history: deque[Order] = deque(maxlen=terminal_history_size)
-        # cid -> in-flight sweep poll count; reset on any status change
-        self._retry_count: dict[str, int] = {}
         # cid -> status captured on entry to PENDING_*; revert target on reject/give-up
         self._pre_pending_status: dict[str, OrderStatus] = {}
 
@@ -119,6 +106,9 @@ class AccountState:
         # covered-delta guards. Currency-keyed and tiny, so retained for the state's
         # lifetime (no eviction).
         self._balance_push_as_of: dict[str, np.datetime64] = {}
+        # - watermark: snapshot reconciled the size up to this venue time; a deal at/under it is
+        #   already in that size → reducer records but doesn't re-book it
+        self._position_reconcile_as_of: dict[Instrument, np.datetime64] = {}
 
     def __repr__(self) -> str:
         return (
@@ -172,17 +162,11 @@ class AccountState:
     def get_pre_pending(self, cid: str) -> OrderStatus | None:
         return self._pre_pending_status.get(cid)
 
-    def get_retry(self, cid: str) -> int:
-        return self._retry_count.get(cid, 0)
-
     def get_last_snapshot_as_of(self) -> np.datetime64 | None:
         return self._last_snapshot_as_of
 
-    def get_snapshot_fill_deficit(self, cid: str) -> float:
-        return self._snapshot_fill_deficit.get(cid, 0.0)
-
-    def get_snapshot_fill_suppressed(self, cid: str) -> float:
-        return self._snapshot_fill_suppressed.get(cid, 0.0)
+    def get_position_reconcile_as_of(self, instrument: Instrument) -> np.datetime64 | None:
+        return self._position_reconcile_as_of.get(instrument)
 
     def get_balance_push_as_of(self, currency: str) -> np.datetime64 | None:
         return self._balance_push_as_of.get(currency)
@@ -276,21 +260,22 @@ class AccountState:
         if order.status.is_inflight:
             self._inflight_index.add(cid)
         elif order.status.is_terminal:
-            if order.last_updated_at is None:
-                raise ValueError("terminal orders must have last_updated_at set for eviction")
-            self._pending_evict_index[cid] = order.last_updated_at
+            if order.last_update_time is None:
+                raise ValueError("terminal orders must have last_update_time set for eviction")
+            self._pending_evict_index[cid] = order.last_update_time
 
-    def transition_order(self, cid: str, new_status: OrderStatus, now: np.datetime64) -> Order:
+    def transition_order(
+        self, cid: str, new_status: OrderStatus, now: np.datetime64, *, update_time: np.datetime64 | None = None
+    ) -> Order:
         """Low-level status setter and the sole maintainer of every status-derived
         structure: the in-flight and pending-evict indices, the retry counter, and
         the pre-pending status capture.
         """
         order = self._active_orders[cid]
         old_status = order.status
-        order.transitions.append(OrderTransition(time=now, from_status=old_status, to_status=new_status))
         self._transition_counts[new_status.value] += 1
         order.status = new_status
-        order.last_updated_at = now
+        order.last_update_time = update_time if update_time is not None else now
 
         if new_status.is_inflight:
             self._inflight_index.add(cid)
@@ -309,13 +294,7 @@ class AccountState:
         else:
             self._pre_pending_status.pop(cid, None)
 
-        self._retry_count.pop(cid, None)
         return order
-
-    def bump_retry(self, cid: str) -> int:
-        count = self._retry_count.get(cid, 0) + 1
-        self._retry_count[cid] = count
-        return count
 
     def set_venue_id(self, cid: str, venue_order_id: str) -> None:
         order = self._active_orders[cid]
@@ -325,7 +304,7 @@ class AccountState:
         order.venue_order_id = venue_order_id
         self._venue_id_index[venue_order_id] = cid
 
-    def apply_fill(self, cid: str, fill: Deal, now: np.datetime64) -> bool:
+    def apply_fill(self, cid: str, fill: Deal, now: np.datetime64, *, update_time: np.datetime64 | None = None) -> bool:
         """Apply a fill, deduped by trade id. Returns True if newly applied, False if duplicate."""
         order = self._active_orders[cid]
         seen = self._seen_trade_ids.setdefault(cid, set())
@@ -334,7 +313,7 @@ class AccountState:
             return False
         seen.add(fill.trade_id)
         order.record_fill(fill.amount, fill.price)  # filled_quantity + avg-price math lives on Order
-        order.last_updated_at = now
+        order.last_update_time = update_time if update_time is not None else now
         return True
 
     def is_trade_seen(self, cid: str, trade_id: str) -> bool:
@@ -348,18 +327,6 @@ class AccountState:
         re-delivery on any path dedups via apply_fill."""
         self._seen_trade_ids.setdefault(cid, set()).add(trade_id)
 
-    def set_snapshot_fill_deficit(self, cid: str, qty: float) -> None:
-        if qty > 0.0:
-            self._snapshot_fill_deficit[cid] = qty
-        else:
-            self._snapshot_fill_deficit.pop(cid, None)
-
-    def set_snapshot_fill_suppressed(self, cid: str, qty: float) -> None:
-        if qty > 0.0:
-            self._snapshot_fill_suppressed[cid] = qty
-        else:
-            self._snapshot_fill_suppressed.pop(cid, None)
-
     def remove_order(self, cid: str) -> None:
         # Drop an order from state entirely (e.g. a submit that raised before reaching the
         # venue) — distinct from evict_to_history, which retains it in the ring buffer.
@@ -371,9 +338,6 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
-        self._snapshot_fill_deficit.pop(cid, None)
-        self._snapshot_fill_suppressed.pop(cid, None)
-        self._retry_count.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
 
     def evict_to_history(self, cid: str) -> None:
@@ -389,9 +353,6 @@ class AccountState:
         self._inflight_index.discard(cid)
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
-        self._snapshot_fill_deficit.pop(cid, None)
-        self._snapshot_fill_suppressed.pop(cid, None)
-        self._retry_count.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
         self._terminal_history.append(order)
 
@@ -421,6 +382,11 @@ class AccountState:
         # accumulated accounting (r_pnl, commissions, funding). No-op if not held.
         pos = self._positions.get(instrument)
         if pos is not None:
+            if pos.quantity != 0.0:
+                logger.info(
+                    f"[{self.exchange}] reconcile: <r>flattened</r> position <y>{instrument}</y> "
+                    f"(was size={pos.quantity}); venue reports flat"
+                )
             pos.flatten()
 
     def update_balance(self, currency: str, balance: Balance) -> None:
@@ -442,10 +408,18 @@ class AccountState:
         existing = self._positions.get(snapshot.instrument)
         if existing is None:
             self._positions[snapshot.instrument] = snapshot
+            logger.info(
+                f"[{self.exchange}] reconcile: materialized position <y>{snapshot.instrument}</y> from snapshot "
+                f"-> size=<g>{snapshot.quantity}</g> avg={snapshot.position_avg_price}"
+            )
             return True
 
         changed = existing.quantity != snapshot.quantity or existing.position_avg_price != snapshot.position_avg_price
         if changed:
+            logger.info(
+                f"[{self.exchange}] reconcile: position <y>{snapshot.instrument}</y> from snapshot -> "
+                f"size {existing.quantity}->{snapshot.quantity} avg {existing.position_avg_price}->{snapshot.position_avg_price}"
+            )
             existing.reconcile_size(snapshot.quantity, snapshot.position_avg_price)
 
         # external margins first, so the mark refresh below skips recalculating them
@@ -463,6 +437,11 @@ class AccountState:
                 existing.last_update_time, existing.last_update_price, existing.last_update_conversion_rate
             )
         return changed
+
+    def mark_position_reconcile(self, instrument: Instrument, as_of: np.datetime64) -> None:
+        """Set the position reconcile watermark (venue time). Dumb setter — the skip-re-book
+        guard lives in the reducer."""
+        self._position_reconcile_as_of[instrument] = as_of
 
     def apply_balance_push(
         self, currency: str, total: float, as_of: np.datetime64, *, free: float = np.nan, locked: float = np.nan
@@ -493,13 +472,26 @@ class AccountState:
             delta = total - bal.total
             bal.total = total
             bal.free += delta
+        bal.last_update_time = as_of  # venue event time E (Deal.time clock domain)
         return True
 
-    def apply_balance_snapshot(self, balance: Balance) -> bool:
+    def apply_balance_snapshot(self, balance: Balance, as_of: np.datetime64 | None = None) -> bool:
         existing = self._balances.get(balance.currency)
         changed = existing is None or (
             existing.total != balance.total or existing.free != balance.free or existing.locked != balance.locked
         )
+        if changed:
+            old = "—" if existing is None else f"total={existing.total} free={existing.free} locked={existing.locked}"
+            logger.info(
+                f"[{self.exchange}] reconcile: balance <y>{balance.currency}</y> from snapshot -> "
+                f"total=<g>{balance.total}</g> free={balance.free} locked={balance.locked} (was {old})"
+            )
+        # Timestamp rule: a WS push (venue E) is authoritative — never let the snapshot's local
+        # `as_of` clobber it. Use `as_of` only as a fallback for a currency with no push, and only
+        # when the values actually changed (so an idle balance doesn't ratchet every poll).
+        prior_ts = existing.last_update_time if existing is not None else None
+        has_push = self._balance_push_as_of.get(balance.currency) is not None
+        balance.last_update_time = as_of if (changed and not has_push) else prior_ts
         self.update_balance(balance.currency, balance)
         return changed
 

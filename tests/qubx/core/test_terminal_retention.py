@@ -99,15 +99,15 @@ def test_terminal_evicted_after_grace():
     assert state.get_order("cid-1").status is OrderStatus.FILLED
 
 
-def test_terminal_eviction_runs_on_inflight_tick():
-    # live cadence: the inflight tick itself must run the eviction sweep
+def test_terminal_eviction_runs_on_reconcile_tick():
+    # live cadence: the reconcile heartbeat itself must run the eviction sweep
     am = _am()
     state = am.get_state("binance")
     inst = _instrument()
     _add(state, instrument=inst)
     am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill()))
     am._time.adv(31_000)
-    am._on_inflight_tick(None)
+    am._on_reconcile_tick(None)
     assert not state.has_active_order("cid-1")
     assert state.get_order("cid-1") is not None  # retained in terminal history
 

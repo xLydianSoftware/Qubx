@@ -10,6 +10,7 @@ from qubx.core.basics import (
     OrderStatus,
     Timestamped,
     TransactionCostsCalculator,
+    dt_64,
 )
 from qubx.core.connector import ChannelEmitter
 from qubx.core.events import (
@@ -195,6 +196,12 @@ class SimulatedConnector(ChannelEmitter):
                 reason="reconcile: order not present at venue",
             )
         )
+
+    def request_hist_deals(self, instrument: Instrument, since: dt_64) -> None:
+        # No-op: the simulated OME books every fill as a deal at match time, so there are
+        # never executions to recover (and sim snapshots carry no positions, so the
+        # position-confirm task that would request these never fires).
+        pass
 
     def request_snapshot(self) -> None:
         open_orders = list(self._ome.get_open_orders().values())

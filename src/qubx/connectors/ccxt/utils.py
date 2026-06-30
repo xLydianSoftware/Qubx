@@ -107,30 +107,45 @@ def ccxt_convert_order_info(
     if isinstance(ri, list):
         # we don't handle case when order info is a list
         ri = {}
+
     # Prioritize outer level (exchange-specific parsing) for amount
     amnt_raw = raw.get("amount") or ri.get("origQty")
     if amnt_raw is None:
         # Try alternative fields for different exchanges
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
     amnt = float(amnt_raw)
+
     # None for market orders (no limit price) — matches Order.price: float | None.
     price = raw.get("price")
+    if price is None:
+        # - trigger/conditional orders (STOP_MARKET) carry no limit price; the trigger level
+        #   lives in triggerPrice/stopPrice. The locally-tracked stop stores the trigger as its
+        #   price, so mirror it — else every snapshot diffs price (57966.5 -> None) on the same
+        #   live order. Binance reports stopPrice="0" for plain market orders, so guard on > 0.
+        _trigger = raw.get("triggerPrice") or raw.get("stopPrice") or ri.get("stopPrice")
+        if _trigger is not None and float(_trigger) > 0:
+            price = _trigger
     # ccxt's unified fill fields; None-safe (venues omit them on fresh acks).
+
     _filled = raw.get("filled")
     filled_quantity = abs(float(_filled)) if _filled is not None else 0.0
+
     _average = raw.get("average")
     avg_fill_price = float(_average) if _average is not None else None
+
     status = ccxt_status_to_order_status(raw.get("status"), ri)
     if status is OrderStatus.ACCEPTED and filled_quantity > 0.0:
         # ccxt's unified status collapses partial fills into "open", and the info.status
         # refinement is venue-specific (OKX carries the state under info.state) — the
         # unified `filled` field is the venue-agnostic partial-fill signal.
         status = OrderStatus.PARTIALLY_FILLED
+
     side_raw = raw["side"]
     if side_raw is None:
         side = "UNKNOWN"
     else:
         side = side_raw.upper()
+
     # Prioritize outer level (exchange-specific parsing overrides) over inner level
     _type = raw.get("type", ri.get("type"))
     if _type is None:
@@ -138,6 +153,7 @@ def ccxt_convert_order_info(
         _type = "UNKNOWN"
     else:
         _type = _type.upper()
+
     options = {}
     if raw.get("reduceOnly"):
         options["reduceOnly"] = True
@@ -147,6 +163,13 @@ def ccxt_convert_order_info(
     # Some venues omit clientOrderId (e.g. externally-placed orders); fall back to the
     # framework's external-order id convention (ext:<venue_id>) so it reads as EXTERNAL and
     # still has a stable, non-null client_order_id.
+    # Venue update time (venue clock): unified `lastUpdateTimestamp`, else raw `info.updateTime`
+    # (Binance UM). None when the venue gives neither — drives the reconciler's monotonic guard.
+    _lut = raw.get("lastUpdateTimestamp")
+    if _lut is None:
+        _lut = ri.get("updateTime")
+    last_update_time = recognize_time(int(_lut)) if _lut is not None else None
+
     client_order_id = raw.get("clientOrderId") or f"{EXTERNAL_CID_PREFIX}{raw['id']}"
     origin = classify_origin(client_order_id, framework_prefix=framework_prefix)
 
@@ -157,6 +180,7 @@ def ccxt_convert_order_info(
         type=_type,
         instrument=instrument,
         submitted_at=recognize_time(raw["timestamp"]),
+        last_update_time=last_update_time,
         # Unsigned, per the framework's positive-amount rule (direction lives in side).
         quantity=abs(amnt),
         price=float(price) if price is not None else None,
@@ -229,8 +253,13 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
         quantity=quantity,
         pos_average_price=info["entryPrice"],
     )
-    if info.get("markPrice", None) is not None:
-        pos.update_market_price(pd.Timestamp(info["timestamp"], unit="ms").asm8, info["markPrice"], 1)
+    # Always stamp the venue update time (venue clock) — not only when markPrice is present —
+    # so the reconciler's monotonic position guard has it.
+    if info.get("timestamp") is not None:
+        _pts = pd.Timestamp(info["timestamp"], unit="ms").asm8
+        pos.last_update_time = _pts  # type: ignore
+        if info.get("markPrice") is not None:
+            pos.update_market_price(_pts, info["markPrice"], 1)
 
     # Use exchange-provided maintenance margin if available (more accurate than calculated)
     if info.get("maintenanceMargin") is not None:
@@ -454,6 +483,10 @@ def prepare_ccxt_order_payload(
     so reduce-only must arrive already resolved from the caller.
     """
     params: dict[str, Any] = {}
+    # order_type arrives UPPERCASE from the trading manager (OrderType StrEnum, e.g.
+    # "STOP_MARKET") — normalize so the trigger detection / split below are case-insensitive.
+    # A lowercase-only startswith silently dropped triggerPrice → Binance rejected stop orders.
+    order_type = order_type.lower()
     _is_trigger_order = order_type.startswith("stop_")
 
     if quote is None:

@@ -669,6 +669,9 @@ class OrderStatus(StrEnum):
     CANCELED = "CANCELED"
     REJECTED = "REJECTED"
     EXPIRED = "EXPIRED"
+    # Reconciler give-up terminal: an order we could not confirm at the venue after the
+    # status-fetch budget was exhausted (neither a fill/cancel/reject arrived nor a snapshot).
+    LOST = "LOST"
 
     @property
     def is_terminal(self) -> bool:
@@ -689,6 +692,7 @@ _TERMINAL_ORDER_STATUSES = frozenset(
         OrderStatus.CANCELED,
         OrderStatus.REJECTED,
         OrderStatus.EXPIRED,
+        OrderStatus.LOST,
     }
 )
 _INFLIGHT_ORDER_STATUSES = frozenset(
@@ -749,6 +753,7 @@ class OrderChange(StrEnum):
     UPDATED = "UPDATED"
     CANCEL_REJECTED = "CANCEL_REJECTED"
     UPDATE_REJECTED = "UPDATE_REJECTED"
+    LOST = "LOST"
 
 
 @dataclass
@@ -806,7 +811,11 @@ class Order:
     # submission timestamp; grace-window reconcile measures order age from this field
     submitted_at: dt_64 | None = None
     accepted_at: dt_64 | None = None
-    last_updated_at: dt_64 | None = None
+    # Last update timestamp: the VENUE's update time when we have it (snapshot order
+    # `lastUpdateTimestamp`/`updateTime`, or the venue event's own ts), else our local
+    # processing time as a fallback. The single canonical update clock — drives the Differ
+    # grace gate, terminal eviction, and the reconciler's monotonic guard.
+    last_update_time: dt_64 | None = None
     rejected_reason: str | None = None
     # venue/connector error code accompanying a reject (e.g. the ccxt error class name);
     # None when the reject path carries no code (synthetic reconcile rejects).
@@ -817,10 +826,6 @@ class Order:
     # paths set EXTERNAL / RECOVERED explicitly.
     origin: OrderOrigin = OrderOrigin.FRAMEWORK
     options: dict[str, Any] = field(default_factory=dict)
-    # Status-transition audit trail, appended on every AM-driven status change (the single
-    # writer is AccountState.transition_order). Bounded by the order's lifetime + the
-    # terminal-history ring buffer. Exposed via ctx.get_order_history(client_order_id).
-    transitions: list[OrderTransition] = field(default_factory=list)
 
     def require_venue_id(self) -> str:
         if self.venue_order_id is None:
@@ -845,7 +850,7 @@ class Order:
         self.filled_quantity += qty
 
     def __str__(self) -> str:
-        _id = self.venue_order_id or self.client_order_id
+        _id = (self.venue_order_id or "????") + (f" :: {self.client_order_id}" if self.client_order_id else "")
         return f"[{_id}] {self.type} {self.side} {self.quantity} of {self.instrument} {('@ ' + str(self.price)) if self.price else ''} ({self.time_in_force}) [{self.status}]"
 
 
@@ -856,6 +861,10 @@ class Balance:
     free: float = 0.0
     locked: float = 0.0
     total: float = 0.0
+    # Venue update timestamp (venue clock). Available only from the WS push (event time `E`);
+    # the REST balance snapshot carries none on Binance UM (account updateTime=0). See the
+    # reconciliation design doc.
+    last_update_time: dt_64 | None = None
 
     def __str__(self) -> str:
         return f"{self.exchange}:{self.currency} free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
@@ -866,6 +875,7 @@ class Balance:
         self.free = balance.free
         self.locked = balance.locked
         self.total = balance.total
+        self.last_update_time = balance.last_update_time
 
 
 DEFAULT_MAINTENANCE_MARGIN = 0.05
@@ -1015,7 +1025,14 @@ class Position:
         raise ValueError(f"Unknown update type: {type(update)}")
 
     def change_position_by(
-        self, timestamp: dt_64, amount: float, exec_price: float, fee_amount: float = 0, conversion_rate: float = 1
+        self,
+        timestamp: dt_64,
+        amount: float,
+        exec_price: float,
+        fee_amount: float = 0,
+        conversion_rate: float = 1,
+        *,
+        realize_only: bool = False,
     ) -> tuple[float, float]:
         return self.update_position(
             timestamp,
@@ -1023,12 +1040,21 @@ class Position:
             exec_price,
             fee_amount,
             conversion_rate=conversion_rate,
+            realize_only=realize_only,
         )
 
     def update_position(
-        self, timestamp: dt_64, position: float, exec_price: float, fee_amount: float = 0, conversion_rate: float = 1
+        self,
+        timestamp: dt_64,
+        position: float,
+        exec_price: float,
+        fee_amount: float = 0,
+        conversion_rate: float = 1,
+        *,
+        realize_only: bool = False,
     ) -> tuple[float, float]:
-        # - realized PnL of this fill
+        # - realize_only=True books the closing pnl + fee but leaves size/avg/balance to a snapshot
+        #   reconcile (situation II: recovering deals already in an authoritative venue size)
         deal_pnl = 0
         quantity = self.quantity
         comms = 0
@@ -1042,13 +1068,20 @@ class Position:
             qty_closing = min(abs(self.quantity), abs(pos_change)) * direction if prev_direction != direction else 0
             qty_opening = pos_change if prev_direction == direction else pos_change - qty_closing
 
-            # - extract realized part of PnL
             if not np.isclose(qty_closing, 0.0):
-                _abs_qty_close = abs(qty_closing)
                 deal_pnl = qty_closing * self._qty_multiplier * (self.position_avg_price - exec_price)
 
+            # - update only realized pnl (in case we need to update by staled deals)
+            if realize_only:
+                self.r_pnl += deal_pnl / conversion_rate
+                comms = fee_amount / conversion_rate
+                self.commissions += comms
+                return deal_pnl, comms
+
+            # - apply the realized close to the size
+            if not np.isclose(qty_closing, 0.0):
+                self.__pos_incr_qty -= abs(qty_closing)
                 quantity += qty_closing
-                self.__pos_incr_qty -= _abs_qty_close
 
                 # - reset average price to 0 if position is fully closed
                 # Use the rounded target position to avoid floating-point false positives
@@ -1086,9 +1119,11 @@ class Position:
         return deal_pnl, comms
 
     def update_market_price_by_tick(self, tick: Quote | Trade, conversion_rate: float = 1) -> float:
-        return self.update_market_price(tick.time, self._price(tick), conversion_rate)
+        return self.update_market_price(tick.time, self._price(tick), conversion_rate, stamp_update_time=False)
 
-    def update_position_by_deal(self, deal: Deal, conversion_rate: float = 1) -> tuple[float, float]:
+    def update_position_by_deal(
+        self, deal: Deal, conversion_rate: float = 1, *, realize_only: bool = False
+    ) -> tuple[float, float]:
         time = deal.time.as_unit("ns").asm8 if isinstance(deal.time, pd.Timestamp) else deal.time
         return self.change_position_by(
             timestamp=time,
@@ -1096,12 +1131,24 @@ class Position:
             exec_price=deal.price,
             fee_amount=deal.fee_amount or 0,
             conversion_rate=conversion_rate,
+            realize_only=realize_only,
         )
         # - deal contains cumulative amount
         # return self.update_position(time, deal.amount, deal.price, deal.aggressive, conversion_rate)
 
-    def update_market_price(self, timestamp: dt_64, price: float, conversion_rate: float) -> float:
-        self.last_update_time = timestamp  # type: ignore
+    def update_market_price(
+        self, timestamp: dt_64, price: float, conversion_rate: float, *, stamp_update_time: bool = True
+    ) -> float:
+        # stamp_update_time=False for mark-only ticks (quotes): they refresh the mark/PnL but must
+        # NOT move last_update_time, which tracks the venue SIZE/state update (deal / snapshot) so
+        # the reconciler's monotonic position guard works (a quote tick is not a venue size change).
+        if stamp_update_time:
+            # - always store a dt_64 venue timestamp (the deal path passes int-ns via
+            #   time_as_nsec, ticks pass int-ns tick.time) so it stays monotonic-comparable
+            #   with snapshot stamps and serializes as ISO, not a raw nanosecond integer
+            self.last_update_time = (
+                timestamp if isinstance(timestamp, np.datetime64) else np.datetime64(int(timestamp), "ns")
+            )  # type: ignore
         self.last_update_price = price
         self.last_update_conversion_rate = conversion_rate
 

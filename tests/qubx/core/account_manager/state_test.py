@@ -47,7 +47,7 @@ def _order(
     cid: str = "qubx-1",
     status: OrderStatus = OrderStatus.SUBMITTED,
     venue_id: str | None = None,
-    last_updated_at: np.datetime64 | None = None,
+    last_update_time: np.datetime64 | None = None,
 ) -> Order:
     return Order(
         client_order_id=cid,
@@ -59,7 +59,7 @@ def _order(
         status=status,
         venue_order_id=venue_id,
         price=50_000.0,
-        last_updated_at=last_updated_at,
+        last_update_time=last_update_time,
         origin=OrderOrigin.FRAMEWORK,
     )
 
@@ -99,9 +99,9 @@ def test_add_order_with_venue_id_indexes_by_venue():
 
 def test_add_terminal_order_registers_eviction_not_inflight():
     state = AccountState("binance", "USDT")
-    state.add_order(_order(status=OrderStatus.FILLED, last_updated_at=T1))
+    state.add_order(_order(status=OrderStatus.FILLED, last_update_time=T1))
     assert "qubx-1" not in _inflight_cids(state)
-    # eviction is registered at last_updated_at (T1): not due before T1 + retention
+    # eviction is registered at last_update_time (T1): not due before T1 + retention
     retention = np.timedelta64(60, "s")
     state.prune_terminal_orders(T1 + retention - np.timedelta64(1, "ms"), retention)
     assert state.has_active_order("qubx-1")
@@ -109,10 +109,10 @@ def test_add_terminal_order_registers_eviction_not_inflight():
     assert not state.has_active_order("qubx-1")
 
 
-def test_add_terminal_order_without_last_updated_at_raises():
+def test_add_terminal_order_without_last_update_time_raises():
     state = AccountState("binance", "USDT")
-    with pytest.raises(ValueError, match="last_updated_at"):
-        state.add_order(_order(status=OrderStatus.CANCELED, last_updated_at=None))
+    with pytest.raises(ValueError, match="last_update_time"):
+        state.add_order(_order(status=OrderStatus.CANCELED, last_update_time=None))
 
 
 def test_add_order_refuses_duplicate_active_cid():
@@ -157,7 +157,7 @@ def test_transition_to_accepted_drains_inflight():
     state.add_order(_order())
     order = state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
     assert order.status is OrderStatus.ACCEPTED
-    assert order.last_updated_at == T1
+    assert order.last_update_time == T1
     assert "qubx-1" not in _inflight_cids(state)
 
 
@@ -376,7 +376,7 @@ def test_balance_push_as_of_accessor_defaults_none_then_tracks_marks():
 
 
 # --------------------------------------------------------------------------- #
-# side-tables: pre_pending_status / retry_count
+# side-tables: pre_pending_status
 # --------------------------------------------------------------------------- #
 
 
@@ -407,35 +407,14 @@ def test_pre_pending_cleared_on_leaving_pending():
     assert state.get_pre_pending("qubx-1") is None
 
 
-def test_retry_count_bump_and_default():
-    state = AccountState("binance", "USDT")
-    state.add_order(_order())
-    assert state.get_retry("qubx-1") == 0
-    assert state.bump_retry("qubx-1") == 1
-    assert state.bump_retry("qubx-1") == 2
-    assert state.get_retry("qubx-1") == 2
-
-
-def test_retry_count_resets_on_transition():
-    state = AccountState("binance", "USDT")
-    state.add_order(_order())
-    state.bump_retry("qubx-1")
-    state.bump_retry("qubx-1")
-    state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
-    assert state.get_retry("qubx-1") == 0
-
-
 def test_remove_order_drops_side_tables():
     state = AccountState("binance", "USDT")
     state.add_order(_order())
     state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
     state.transition_order("qubx-1", OrderStatus.PENDING_CANCEL, T2)
-    state.bump_retry("qubx-1")
     assert state.get_pre_pending("qubx-1") == OrderStatus.ACCEPTED
-    assert state.get_retry("qubx-1") == 1
     state.evict_to_history("qubx-1")
     assert state.get_pre_pending("qubx-1") is None
-    assert state.get_retry("qubx-1") == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -472,8 +451,8 @@ def test_get_inflight_orders_tracks_index():
 
 def test_prune_terminal_orders_removes_only_expired():
     state = AccountState("binance", "USDT")
-    state.add_order(_order("old", status=OrderStatus.FILLED, last_updated_at=T0))
-    state.add_order(_order("recent", status=OrderStatus.FILLED, last_updated_at=T2))
+    state.add_order(_order("old", status=OrderStatus.FILLED, last_update_time=T0))
+    state.add_order(_order("recent", status=OrderStatus.FILLED, last_update_time=T2))
     state.prune_terminal_orders(T2, np.timedelta64(90, "s"))
     assert state.get_active_order("old") is None
     assert state.get_order("old") is not None  # moved to history
@@ -485,3 +464,28 @@ def test_prune_terminal_orders_ignores_non_terminal():
     state.add_order(_order("live"))  # SUBMITTED, never in the evict index
     state.prune_terminal_orders(T2, np.timedelta64(0, "s"))
     assert state.get_active_order("live") is not None
+
+
+def test_apply_balance_push_stamps_venue_last_update_time():
+    # the push as_of is the venue event time E -> it becomes the balance's last_update_time
+    state = AccountState("binance", "USDT")
+    assert state.apply_balance_push("USDT", 150.0, T1) is True
+    assert state.get_balance("USDT").last_update_time == T1
+
+
+def test_snapshot_does_not_clobber_push_balance_ts():
+    # once a WS push stamped the venue E, a later snapshot's local as_of must NOT overwrite it
+    state = AccountState("binance", "USDT")
+    state.apply_balance_push("USDT", 100.0, T1)  # venue E = T1
+    snap = Balance(exchange="binance", currency="USDT", free=90.0, locked=10.0, total=100.0)
+    state.apply_balance_snapshot(snap, T2)  # snapshot as_of T2 > T1
+    assert state.get_balance("USDT").last_update_time == T1  # push E preserved, not T2
+
+
+def test_snapshot_balance_no_push_uses_as_of_without_ratchet():
+    state = AccountState("binance", "USDT")
+    state.apply_balance_snapshot(Balance(exchange="binance", currency="USDT", total=50.0, free=50.0), T1)
+    assert state.get_balance("USDT").last_update_time == T1  # first snapshot -> as_of fallback
+    # identical balance at a later poll -> NOT ratcheted forward
+    state.apply_balance_snapshot(Balance(exchange="binance", currency="USDT", total=50.0, free=50.0), T2)
+    assert state.get_balance("USDT").last_update_time == T1

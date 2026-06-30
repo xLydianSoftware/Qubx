@@ -35,7 +35,7 @@ def _make_order(status=OrderStatus.SUBMITTED, cid="cid-1"):
         status=status,
         time_in_force="gtc",
         # add_order requires a terminal-at timestamp on terminal adds (eviction registration)
-        last_updated_at=np.datetime64("2026-05-28T00:00:00") if status.is_terminal else None,
+        last_update_time=np.datetime64("2026-05-28T00:00:00") if status.is_terminal else None,
     )
 
 

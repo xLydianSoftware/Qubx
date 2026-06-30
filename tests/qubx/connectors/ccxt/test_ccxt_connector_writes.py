@@ -7,7 +7,7 @@ deterministically without crossing a real thread/loop boundary.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import ccxt
 import pytest
@@ -187,14 +187,29 @@ async def test_submit_builds_payload_limit_with_client_id() -> None:
 
 @pytest.mark.asyncio
 async def test_submit_payload_reduce_only_and_trigger() -> None:
+    # order_type arrives UPPERCASE from the trading manager (OrderType StrEnum) — the trigger
+    # detection must be case-insensitive (a lowercase-only startswith dropped triggerPrice live).
     conn, _sent, exchange = _make_connector()
-    conn.submit_order(_order_request(order_type="stop_limit", price=120.0, options={"reduceOnly": True}))
+    conn.submit_order(_order_request(order_type="STOP_LIMIT", price=120.0, options={"reduceOnly": True}))
     await _drive(conn)
 
     payload = exchange.create_order.await_args.kwargs
     assert payload["params"]["reduceOnly"] is True
     assert payload["params"]["triggerPrice"] == 120.0
     assert payload["type"] == "limit"  # stop_ prefix stripped
+
+
+@pytest.mark.asyncio
+async def test_submit_stop_market_sets_trigger_price() -> None:
+    # The live AtrRiskTracker case: a STOP_MARKET (uppercase) must carry triggerPrice or Binance
+    # rejects "requires a triggerPrice extra param for a stop_market order".
+    conn, _sent, exchange = _make_connector()
+    conn.submit_order(_order_request(order_type="STOP_MARKET", price=58331.5))
+    await _drive(conn)
+
+    payload = exchange.create_order.await_args.kwargs
+    assert payload["params"]["triggerPrice"] == 58331.5
+    assert payload["type"] == "market"  # stop_ prefix stripped
 
 
 @pytest.mark.asyncio
@@ -372,6 +387,40 @@ async def test_cancel_by_venue_id_emits_canceled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_stop_order_uses_trigger_surface() -> None:
+    # A STOP order lives on the venue's conditional/algo surface; the cancel must pass
+    # params={'trigger': True} (driven by order.type), else Binance answers -2011 and the
+    # live stop can't be cancelled (e.g. on a flatten signal).
+    exchange = Mock()
+    exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1"})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.cancel_order(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_MARKET))
+    await _drive(conn)
+
+    exchange.cancel_order.assert_awaited_once_with("VENUE123", "BTC/USDT:USDT", params={"trigger": True})
+    assert isinstance(sent[0], OrderCanceledEvent)
+
+
+@pytest.mark.asyncio
+async def test_cancel_stop_order_by_cloid_uses_trigger_surface() -> None:
+    # Same for the cloid path (venue id not seen yet).
+    exchange = Mock()
+    exchange.cancel_order_with_client_order_id = AsyncMock(return_value={"id": "VENUE123"})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.cancel_order(_order(venue_order_id=None, order_type=OrderType.STOP_MARKET))
+    await _drive(conn)
+
+    exchange.cancel_order_with_client_order_id.assert_awaited_once_with(
+        "qubx_BTCUSDT_1", "BTC/USDT:USDT", params={"trigger": True}
+    )
+    assert isinstance(sent[0], OrderCanceledEvent)
+
+
+@pytest.mark.asyncio
 async def test_cancel_by_cloid_uses_cloid_endpoint() -> None:
     # No venue id yet (ack not seen) -> cloid endpoint, symbol from the order's instrument.
     exchange = Mock()
@@ -384,6 +433,27 @@ async def test_cancel_by_cloid_uses_cloid_endpoint() -> None:
 
     exchange.cancel_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1", "BTC/USDT:USDT")
     assert isinstance(sent[0], OrderCanceledEvent)
+
+
+@pytest.mark.asyncio
+async def test_cancel_acked_order_gone_at_venue_emits_nothing_no_retry() -> None:
+    # An ACKED order (has venue id) that the venue already removed (filled/expired/canceled)
+    # before our cancel lands answers -2011 "Unknown order sent". Because it was acked, that is
+    # DEFINITIVE ("gone"), not the submit/cancel race — so the connector must NOT retry and must
+    # emit nothing (the WS terminal + snapshot reconciler resolve it), avoiding the 32s retry storm.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.cancel_order = AsyncMock(
+        side_effect=ccxt.ExchangeError('binanceusdm {"code":-2011,"msg":"Unknown order sent."}')
+    )
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    with patch("qubx.connectors.ccxt.connector.asyncio.sleep", AsyncMock()):
+        conn.cancel_order(_order(venue_order_id="VENUE123"))
+        await _drive(conn)
+
+    exchange.cancel_order.assert_awaited_once()  # - definitive 'gone' -> no retry storm
+    assert sent == []  # - neither canceled nor cancel-rejected; WS/snapshot resolve the terminal
 
 
 @pytest.mark.asyncio

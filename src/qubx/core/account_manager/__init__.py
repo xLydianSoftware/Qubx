@@ -6,7 +6,8 @@
 - ``state_machine`` — pure order-lifecycle transition rules (the bug-magnet, isolated).
 - ``reducer``       — pure free-function event handlers + ApplyResult, the apply()
                       contract the ProcessingManager fires callbacks from.
-- ``reconcile``     — snapshot-reconcile logic (ReconcileDiff) + sweep decision helpers.
+- ``reconciler``    — FSM task engine owning snapshot reconcile + order/position tasks.
+- ``reconcile``     — order-transition chokepoint + shared leaf helpers.
 - ``config``        — AccountManagerConfig (tick intervals/thresholds/retention).
 
 The account events themselves live in ``qubx.core.events`` (shared with connectors and
@@ -16,7 +17,6 @@ surface as the event-typed apply path it implements.
 
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.manager import AccountManager, SimulatedAccountManager
-from qubx.core.account_manager.reconcile import ReconcileDiff
 from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.account_manager.state import AccountState, VenueAccountFigures
 from qubx.core.account_manager.state_machine import (
@@ -65,7 +65,6 @@ __all__ = [
     "SimulatedAccountManager",
     "AccountManagerConfig",
     "ApplyResult",
-    "ReconcileDiff",
     "VenueAccountFigures",
     "TRANSITIONS",
     "can_transition",

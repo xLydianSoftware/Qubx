@@ -73,7 +73,7 @@ def _order(cid: str = "c1", status: OrderStatus = OrderStatus.SUBMITTED, venue_i
         status=status,
         venue_order_id=venue_id,
         price=100.0,
-        last_updated_at=T0 if status.is_terminal else None,
+        last_update_time=T0 if status.is_terminal else None,
         origin=OrderOrigin.FRAMEWORK,
     )
 
@@ -97,7 +97,7 @@ def test_apply_routes_by_instrument_and_delegates_to_reducer():
     am.get_state(EX).add_order(_order("c1", OrderStatus.SUBMITTED))
     r = am.apply(OrderAcceptedEvent(instrument=BTC, client_order_id="c1", venue_order_id="V1", accepted_at=T0))
     assert r.order is not None and r.order.status is OrderStatus.ACCEPTED
-    assert r.order.last_updated_at == T1  # the AM's clock, not the event timestamp
+    assert r.order.last_update_time == T1  # the AM's clock, not the event timestamp
 
 
 def test_apply_routes_by_order_id_across_exchanges():
@@ -205,3 +205,40 @@ def test_balance_push_for_unmanaged_exchange_is_dropped():
     r = am.apply(BalanceUpdateEvent(instrument=None, balance=push, as_of=T1))
     assert r.is_empty()
     assert am.get_state(EX).get_balance("USDT") is None
+
+
+def test_execute_dispatches_reconciler_actions():
+    # the action executor performs the I/O the Reconciler asks for: connector status/snapshot
+    # calls and routing a synthesized event back through the processing manager.
+    from qubx.core.account_manager.reconciler import RequestHistDeals, RequestSnapshot, RequestStatus, RouteEvent
+
+    am = _am()
+    am.set_processing_manager(MagicMock())
+    state = am.get_state(EX)
+    order = _order("c1", OrderStatus.ACCEPTED, venue_id="V1")
+    state.add_order(order)
+    conn = am._connectors[EX]
+    routed = OrderCanceledEvent(instrument=BTC, client_order_id="c1")
+
+    am._execute(
+        state,
+        [
+            RequestStatus(cid="c1", venue_id="V1", instrument=BTC),
+            RequestSnapshot(exchange=EX),
+            RouteEvent(event=routed),
+            RequestHistDeals(instrument=BTC, since=T0),
+        ],
+    )
+
+    conn.request_order_status.assert_called_once_with(order)
+    conn.request_snapshot.assert_called_once_with()
+    conn.request_hist_deals.assert_called_once_with(BTC, T0)
+    am._pm.process_event.assert_called_once_with(routed)
+
+
+def test_execute_request_status_for_unknown_order_is_noop():
+    from qubx.core.account_manager.reconciler import RequestStatus
+
+    am = _am()
+    am._execute(am.get_state(EX), [RequestStatus(cid="nope", venue_id=None, instrument=BTC)])
+    am._connectors[EX].request_order_status.assert_not_called()

@@ -35,6 +35,7 @@ from qubx.core.events import (
     OrderCancelRejectedEvent,
     OrderExpiredEvent,
     OrderFilledEvent,
+    OrderLostEvent,
     OrderPartiallyFilledEvent,
     OrderRejectedEvent,
     OrderUpdatedEvent,
@@ -45,8 +46,6 @@ from qubx.core.lookups import lookup
 T0 = np.datetime64("2026-05-28T00:00:00", "ns")
 T1 = np.datetime64("2026-05-28T00:01:00", "ns")
 
-SNAPSHOT_GRACE = np.timedelta64(60_000, "ms")
-
 _T = TypeVar("_T")
 
 
@@ -56,8 +55,7 @@ def _present(value: _T | None) -> _T:
 
 
 def apply(state: AccountState, event, now: np.datetime64) -> reducer.ApplyResult:
-    # our reducer.apply takes a kw-only snapshot_grace; irrelevant for order events
-    return reducer.apply(state, event, now, snapshot_grace=SNAPSHOT_GRACE)
+    return reducer.apply(state, event, now)
 
 
 _btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
@@ -84,7 +82,7 @@ def _order(state: AccountState, cid: str = "c1", status: OrderStatus = OrderStat
         status=status,
         venue_order_id=venue_id,
         price=100.0,
-        last_updated_at=T0 if status.is_terminal else None,
+        last_update_time=T0 if status.is_terminal else None,
         origin=OrderOrigin.FRAMEWORK,
     )
     state.add_order(order)
@@ -98,7 +96,7 @@ def test_accept_transitions_and_sets_venue_id():
     assert r.order is not None
     assert r.order.status is OrderStatus.ACCEPTED
     assert r.order.venue_order_id == "V1"
-    assert r.order.last_updated_at == T1
+    assert r.order.last_update_time == T1
     assert r.order_change is OrderChange.ACCEPTED
     assert r.deal is None and r.position is None
 
@@ -127,6 +125,21 @@ def test_cancel_on_terminal_is_noop():
     state = _state()
     _order(state, status=OrderStatus.FILLED)
     r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1"), T1)
+    assert r.order is None
+
+
+def test_lost_transitions_to_terminal():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    r = apply(state, OrderLostEvent(instrument=None, client_order_id="c1", reason="give-up"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.LOST
+    assert r.order_change is OrderChange.LOST
+
+
+def test_lost_on_terminal_is_noop():
+    state = _state()
+    _order(state, status=OrderStatus.FILLED)
+    r = apply(state, OrderLostEvent(instrument=None, client_order_id="c1", reason="give-up"), T1)
     assert r.order is None
 
 
@@ -450,6 +463,86 @@ def test_deal_event_books_position():
     assert r.position is not None and r.position.quantity == 0.4
 
 
+def test_deal_at_or_before_position_reconcile_watermark_books_pnl_only():
+    # situation II: snapshot owns the size up to a venue watermark. A deal at/under it is booked
+    # r_pnl-ONLY — size is NOT moved (snapshot already has it). A deal after the watermark is a
+    # genuinely-new execution and books fully.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    state.set_position(BTC, Position(BTC, quantity=0.5, pos_average_price=50_000.0))
+    state.mark_position_reconcile(BTC, T1)  # snapshot accounted everything up to T1
+
+    # a same-side (opening) deal under the watermark: realizes nothing, must not move size
+    stale = Deal(trade_id="t_old", order_id="v1", time=T0, amount=0.5, price=50_000.0, aggressive=True)  # T0 < T1
+    r = apply(state, DealEvent(instrument=BTC, client_order_id="c1", deal=stale), T1)
+    assert r.deal is not None  # recorded for the ledger (logs + dedup)
+    assert _present(state.get_position(BTC)).quantity == 0.5  # size NOT moved (snapshot owns it)
+    assert _present(state.get_position(BTC)).r_pnl == 0.0  # opening deal realizes nothing
+
+    # a deal AFTER the watermark is a genuinely-new execution -> books fully
+    T2 = T1 + np.timedelta64(60, "s")
+    fresh = Deal(trade_id="t_new", order_id="v1", time=T2, amount=0.3, price=50_000.0, aggressive=True)
+    r2 = apply(state, DealEvent(instrument=BTC, client_order_id="c1", deal=fresh), T2)
+    assert r2.position is not None
+    assert _present(state.get_position(BTC)).quantity == 0.8
+
+
+def test_recovered_closing_deal_under_watermark_realizes_rpnl_only():
+    # situation II: snapshot owns size + balance; a recovered close (venue ts <= watermark) is booked
+    # r_pnl-ONLY — realized PnL lands on the position, but size and balance are untouched (no
+    # double-move, no double-count).
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    # post-snapshot local position: LONG 0.003 @ 59_000 (snapshot already shrank it from 0.005)
+    state.set_position(BTC, Position(BTC, quantity=0.003, pos_average_price=59_000.0))
+    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", free=100.0, total=100.0))
+    state.mark_position_reconcile(BTC, T1)  # snapshot accounted the size up to T1
+
+    # the missed closing SELL 0.002 @ 59_500 (realizes +1.0); venue time T0 <= watermark T1
+    closing = Deal(trade_id="hist1", order_id="v1", time=T0, amount=-0.002, price=59_500.0, aggressive=True)
+    r = apply(state, DealEvent(instrument=BTC, client_order_id="c1", deal=closing), T1)
+
+    pos = _present(state.get_position(BTC))
+    assert r.deal is not None  # recorded for the ledger + dedup
+    assert r.position is not None  # position returned — r_pnl was realized
+    assert pos.quantity == 0.003  # size unchanged (snapshot owns it; NOT driven to 0.001)
+    assert pos.r_pnl == 1.0  # 0.002 * (59_500 - 59_000) realized from the recovered close
+    assert state.get_balance("USDT").total == 100.0  # balance untouched (snapshot reconciled it)
+
+
+def test_historical_deal_for_untracked_order_materializes_terminal_not_phantom():
+    # situation II: a RequestHistDeals recovery deal arrives for an order we never tracked
+    # (already completed; restore was off). It must NOT create an ACCEPTED phantom that the
+    # next snapshot chases as a missing open order (status-fetch loop). Record it as a
+    # TERMINAL FILLED external order (audit) and realize-only against the snapshot-owned position.
+    state = _state()
+    state.set_position(BTC, Position(BTC, quantity=0.001, pos_average_price=60_055.0))
+    state.mark_position_reconcile(BTC, T1)  # snapshot owns the size up to T1
+    deal = Deal(trade_id="h1", order_id="V-DONE", time=T0, amount=0.001, price=60_055.0, aggressive=True)
+    r = apply(
+        state,
+        DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V-DONE", deal=deal, historical=True),
+        T1,
+    )
+
+    o = state.get_order_by_venue_id("V-DONE")
+    assert o is not None
+    assert o.status is OrderStatus.FILLED  # terminal audit record, NOT an ACCEPTED phantom
+    assert o.origin is OrderOrigin.EXTERNAL
+    assert r.deal is not None  # recorded for the ledger
+    assert _present(state.get_position(BTC)).quantity == 0.001  # snapshot owns size; realize-only
+
+
+def test_live_deal_for_untracked_order_still_materializes_accepted_external():
+    # Non-historical (live split-stream) deal on an unknown order keeps the old behavior:
+    # materialize an ACCEPTED external order (it exists at the venue).
+    state = _state()
+    deal = Deal(trade_id="d1", order_id="V-LIVE", time=T0, amount=0.001, price=60_000.0, aggressive=True)
+    apply(state, DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V-LIVE", deal=deal), T1)
+    o = state.get_order_by_venue_id("V-LIVE")
+    assert o is not None and o.status is OrderStatus.ACCEPTED and o.origin is OrderOrigin.EXTERNAL
+
+
 def test_futures_fee_debits_settle_balance():
     state = _state()
     _seed_usdt(state, 1000.0)
@@ -585,3 +678,20 @@ def test_external_order_resolves_same_on_second_event():
     order = state.get_order_by_venue_id("EXT1")
     assert order is not None and order.client_order_id == "ext:EXT1"
     assert _present(state.get_position(BTC)).quantity == 0.5  # accumulated on one external order
+
+
+def test_event_venue_ts_stamps_order_last_update_time():
+    # when the event carries a venue update ts, the order is stamped with it (venue clock),
+    # NOT the local apply clock (T1). Falls back to now only when the event has none.
+    state = _state()
+    _order(state)
+    venue_ts = np.datetime64("2026-05-28T00:05:00", "ns")
+    r = apply(
+        state,
+        OrderAcceptedEvent(
+            instrument=None, client_order_id="c1", venue_order_id="V1", accepted_at=T0, last_update_time=venue_ts
+        ),
+        T1,
+    )
+    assert r.order is not None
+    assert r.order.last_update_time == venue_ts  # venue ts, not T1

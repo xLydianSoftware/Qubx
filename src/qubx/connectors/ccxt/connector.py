@@ -47,6 +47,7 @@ from qubx.core.basics import (
     Order,
     OrderRequest,
     OrderStatus,
+    OrderType,
     Position,
     dt_64,
 )
@@ -55,6 +56,7 @@ from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
     BalanceUpdateEvent,
+    DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
@@ -75,6 +77,7 @@ from .exceptions import CcxtSymbolNotRecognized
 from .exchange_manager import ExchangeManager
 from .utils import (
     ccxt_convert_balance,
+    ccxt_convert_deal_info,
     ccxt_convert_order_info,
     ccxt_convert_positions,
     ccxt_extract_deals_from_exec,
@@ -286,6 +289,7 @@ class CcxtConnector(ChannelEmitter):
                 instrument=instrument,
                 client_order_id=order.client_order_id,
                 venue_order_id=order.require_venue_id(),
+                last_update_time=order.last_update_time,
                 accepted_at=self._time.time(),
             )
         )
@@ -307,11 +311,21 @@ class CcxtConnector(ChannelEmitter):
     def cancel_order(self, order: Order) -> None:
         # Read every venue-call field off the Order SYNCHRONOUSLY — the async path must never
         # touch the live, AM-mutated object. ``symbol`` is what most venues (e.g. Binance) need.
+        # A stop/conditional order lives on the venue's trigger surface, so the cancel must
+        # target it (else Binance answers -2011 for a live order and the cancel silently fails).
+        is_trigger = order.type in (OrderType.STOP_MARKET, OrderType.STOP_LIMIT)
         self._spawn(
-            self._cancel_async(order.client_order_id, order.venue_order_id, instrument_to_ccxt_symbol(order.instrument))
+            self._cancel_async(
+                order.client_order_id,
+                order.venue_order_id,
+                instrument_to_ccxt_symbol(order.instrument),
+                is_trigger,
+            )
         )
 
-    async def _cancel_async(self, client_order_id: str | None, venue_order_id: str | None, symbol: str) -> None:
+    async def _cancel_async(
+        self, client_order_id: str | None, venue_order_id: str | None, symbol: str, is_trigger: bool = False
+    ) -> None:
         """A successful REST cancel ack emits OrderCanceledEvent immediately; the WS
         read side also emits one and AM dedups. A definitive venue cancel-rejection
         emits OrderCancelRejectedEvent. A transient network failure is an UNKNOWN
@@ -319,12 +333,17 @@ class CcxtConnector(ChannelEmitter):
         AM to reconcile rather than terminal-rejected.
         """
         try:
-            ok, response = await self._cancel_with_retry(client_order_id, venue_order_id, symbol)
+            ok, response = await self._cancel_with_retry(client_order_id, venue_order_id, symbol, is_trigger)
         except ccxt.NetworkError as e:
             logger.warning(
                 f"[{self.exchange_name}] Network error cancelling {client_order_id or venue_order_id}: "
                 f"{e}; leaving inflight"
             )
+            return
+        if ok is None:
+            # Order already gone at the venue (filled/expired/canceled before our cancel landed).
+            # Emit nothing — the WS terminal + snapshot reconciler resolve the true terminal state.
+            logger.debug(f"[{self.exchange_name}] cancel: {client_order_id or venue_order_id} already gone; no event")
             return
         if ok:
             self._emit_canceled_from_response(client_order_id, venue_order_id, response)
@@ -344,12 +363,15 @@ class CcxtConnector(ChannelEmitter):
         )
 
     async def _cancel_with_retry(
-        self, client_order_id: str | None, venue_order_id: str | None, symbol: str
-    ) -> tuple[bool, dict[str, Any] | None]:
+        self, client_order_id: str | None, venue_order_id: str | None, symbol: str, is_trigger: bool = False
+    ) -> tuple[bool | None, dict[str, Any] | None]:
         """Cancel with retry/backoff. Prefers venue_order_id; falls back to cloid.
 
         Returns ``(ok, venue_response)`` for a DEFINITIVE outcome: ``(True, r)`` on a
-        confirmed cancel, ``(False, None)`` on a venue refusal (→ cancel-reject). RAISES
+        confirmed cancel, ``(False, None)`` on a venue refusal (→ cancel-reject),
+        ``(None, None)`` when the order is already GONE at the venue (acked order the venue
+        already removed → emit nothing; the WS terminal + snapshot reconciler resolve it).
+        RAISES
         ``ccxt.NetworkError`` when the outcome is UNKNOWN (transient connectivity, or
         retries exhausted without a definitive answer) so the caller leaves the order
         inflight rather than terminal-rejecting a cancel that may have landed. Does NOT
@@ -361,7 +383,13 @@ class CcxtConnector(ChannelEmitter):
         if venue_order_id is None:
             assert client_order_id is not None
             try:
-                r = await self._em.exchange.cancel_order_with_client_order_id(client_order_id, symbol)
+                r = (
+                    await self._em.exchange.cancel_order_with_client_order_id(
+                        client_order_id, symbol, params={"trigger": True}
+                    )
+                    if is_trigger
+                    else await self._em.exchange.cancel_order_with_client_order_id(client_order_id, symbol)
+                )
                 return True, r
             except ccxt.NetworkError:
                 # Transient (incl. ExchangeNotAvailable / OnMaintenance / rate-limit):
@@ -380,27 +408,46 @@ class CcxtConnector(ChannelEmitter):
         last_network_error: ccxt.NetworkError | None = None
         while True:
             try:
-                r = await self._em.exchange.cancel_order(venue_order_id, symbol)
+                r = (
+                    await self._em.exchange.cancel_order(venue_order_id, symbol, params={"trigger": True})
+                    if is_trigger
+                    else await self._em.exchange.cancel_order(venue_order_id, symbol)
+                )
                 return True, r
             except ccxt.OperationRejected as err:
-                if self._classify_cancel_error(err) == "reject":
+                # acked=True: we have a venue id, so an "unknown order" is GONE, not the race.
+                verdict = self._classify_cancel_error(err, acked=True)
+                if verdict == "reject":
                     logger.debug(f"[{venue_order_id}] Could not cancel order: {err}")
                     return False, None
+                if verdict == "gone":
+                    logger.debug(f"[{venue_order_id}] already gone at venue; nothing to cancel: {err}")
+                    return None, None
                 logger.debug(f"[{venue_order_id}] Order not found for cancellation, might retry: {err}")
                 last_network_error = None
             except ccxt.NetworkError as e:
                 # Transient connectivity (incl. ExchangeNotAvailable / rate-limit): retry,
                 # and raise on exhaustion so the UNKNOWN outcome leaves the order inflight.
-                if self._classify_cancel_error(e) == "reject":
+                verdict = self._classify_cancel_error(e, acked=True)
+                if verdict == "reject":
                     logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
                     return False, None
+                if verdict == "gone":
+                    logger.debug(f"[{venue_order_id}] already gone at venue; nothing to cancel: {e}")
+                    return None, None
                 last_network_error = e
                 logger.warning(f"[{venue_order_id}] Network error while cancelling: {e}")
             except ccxt.ExchangeError as e:
                 # Definitive venue refusal (non-network) → cancel-reject after retries.
-                if self._classify_cancel_error(e) == "reject":
+                verdict = self._classify_cancel_error(e, acked=True)
+                if verdict == "reject":
                     logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
                     return False, None
+                if verdict == "gone":
+                    # Order existed (we have its id) but is already gone at the venue — the WS
+                    # terminal + snapshot reconciler resolve it; don't retry, don't reject.
+                    logger.debug(f"[{venue_order_id}] already gone at venue; nothing to cancel: {e}")
+                    return None, None
                 last_network_error = None
                 logger.warning(f"[{venue_order_id}] Exchange error while cancelling: {e}")
             except Exception as err:  # noqa: BLE001
@@ -420,20 +467,24 @@ class CcxtConnector(ChannelEmitter):
             logger.debug(f"Retrying cancel for {venue_order_id} in {backoff_time}s (retry {retries})")
             await asyncio.sleep(backoff_time)
 
-    def _classify_cancel_error(self, err: Exception) -> Literal["retry", "reject"]:
+    def _classify_cancel_error(self, err: Exception, *, acked: bool = False) -> Literal["retry", "reject", "gone"]:
         """Venue-specific triage of one failed cancel attempt (mirrors the
         ``_extract_venue_figures`` seam): ``"retry"`` when the venue may still produce a
-        definitive answer, ``"reject"`` on a definitive refusal. The base impl matches
-        Binance's error strings; venue subclasses override.
+        definitive answer, ``"reject"`` on a definitive refusal, ``"gone"`` when the order
+        provably no longer exists at the venue. The base impl matches Binance's error
+        strings; venue subclasses override.
+
+        ``acked`` = the order had a venue id (so it WAS accepted). An "unknown order" then
+        means it is already gone (filled/expired/canceled), not the submit/cancel race —
+        retrying is pointless. Without an ack it IS the race (the order may appear shortly).
         """
+        msg = str(err).lower()
+        if "unknown order" in msg or "order does not exist" in msg or "order not found" in msg:
+            return "gone" if acked else "retry"
         if isinstance(err, ccxt.OperationRejected):
-            msg = str(err).lower()
-            if "unknown order" in msg or "order does not exist" in msg or "order not found" in msg:
-                # Not visible at the venue yet (submit/cancel race) — may appear shortly.
-                return "retry"
             # e.g. already filled — cancelling is permanently impossible.
             return "reject"
-        if "Mandatory parameter 'orderId' was not sent" in str(err):
+        if "mandatory parameter 'orderid' was not sent" in msg:
             # Binance's refusal of a missing/invalid orderId — retrying cannot help
             # (ccxt surfaces it as either NetworkError or ExchangeError).
             return "reject"
@@ -813,6 +864,7 @@ class CcxtConnector(ChannelEmitter):
                     instrument=instrument,
                     client_order_id=order.client_order_id,
                     venue_order_id=order.venue_order_id,
+                    last_update_time=order.last_update_time,
                     accepted_at=order.submitted_at,
                 )
             )
@@ -826,21 +878,30 @@ class CcxtConnector(ChannelEmitter):
         if status == OrderStatus.CANCELED:
             self.send(
                 OrderCanceledEvent(
-                    instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+                    instrument=instrument,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
+                    last_update_time=order.last_update_time,
                 )
             )
             return
         if status == OrderStatus.EXPIRED:
             self.send(
                 OrderExpiredEvent(
-                    instrument=instrument, client_order_id=order.client_order_id, venue_order_id=order.venue_order_id
+                    instrument=instrument,
+                    client_order_id=order.client_order_id,
+                    venue_order_id=order.venue_order_id,
+                    last_update_time=order.last_update_time,
                 )
             )
             return
         if status == OrderStatus.REJECTED:
             self.send(
                 OrderRejectedEvent(
-                    instrument=instrument, client_order_id=order.client_order_id, reason="rejected by venue"
+                    instrument=instrument,
+                    client_order_id=order.client_order_id,
+                    reason="rejected by venue",
+                    last_update_time=order.last_update_time,
                 )
             )
             return
@@ -860,6 +921,7 @@ class CcxtConnector(ChannelEmitter):
                 instrument=instrument,
                 client_order_id=order.client_order_id,
                 venue_order_id=order.venue_order_id,
+                last_update_time=order.last_update_time,
                 accepted_at=order.submitted_at,
             )
         )
@@ -915,6 +977,7 @@ class CcxtConnector(ChannelEmitter):
                     instrument=instrument,
                     client_order_id=order.client_order_id,
                     venue_order_id=order.venue_order_id,
+                    last_update_time=order.last_update_time,
                     fill=None,
                     venue_filled_quantity=order.filled_quantity,
                     venue_avg_price=order.avg_fill_price,
@@ -939,6 +1002,7 @@ class CcxtConnector(ChannelEmitter):
                         instrument=instrument,
                         client_order_id=order.client_order_id,
                         venue_order_id=order.venue_order_id,
+                        last_update_time=order.last_update_time,
                         fill=deal,
                     )
                 )
@@ -948,6 +1012,7 @@ class CcxtConnector(ChannelEmitter):
                         instrument=instrument,
                         client_order_id=order.client_order_id,
                         venue_order_id=order.venue_order_id,
+                        last_update_time=order.last_update_time,
                         fill=deal,
                         # Cumulative venue figures so the reducer can book any fills the
                         # venue counted but never delivered as deals (dropped WS messages).
@@ -1004,29 +1069,47 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     def request_order_status(self, order: Order) -> None:
         # Read venue-call fields off the Order SYNCHRONOUSLY (see cancel_order). symbol is what
-        # Binance refuses the fetch without.
+        # Binance refuses the fetch without. A stop/conditional order lives on the venue's
+        # trigger surface, so the fetch must target it (else Binance answers -2013 not-found
+        # for a live order -> false reject).
+        is_trigger = order.type in (OrderType.STOP_MARKET, OrderType.STOP_LIMIT)
         self._spawn(
             self._order_status_async(
                 order.client_order_id,
                 order.venue_order_id,
                 instrument_to_ccxt_symbol(order.instrument),
                 order.instrument,
+                is_trigger,
             )
         )
 
     async def _order_status_async(
-        self, client_order_id: str | None, venue_order_id: str | None, symbol: str, instrument: Instrument
+        self,
+        client_order_id: str | None,
+        venue_order_id: str | None,
+        symbol: str,
+        instrument: Instrument,
+        is_trigger: bool = False,
     ) -> None:
         # Prefer the venue id; a cloid-only fetch must use ccxt's client-order-id variant —
         # Binance rejects a cloid passed as orderId with -1102 BadRequest, NOT OrderNotFound.
         vid = venue_order_id
         lookup_id = vid or client_order_id
+        ex = self._em.exchange
         try:
             if vid is not None:
-                raw = await self._em.exchange.fetch_order(vid, symbol)
+                raw = (
+                    await ex.fetch_order(vid, symbol, params={"trigger": True})
+                    if is_trigger
+                    else await ex.fetch_order(vid, symbol)
+                )
             else:
                 assert client_order_id is not None
-                raw = await self._em.exchange.fetch_order_with_client_order_id(client_order_id, symbol)
+                raw = (
+                    await ex.fetch_order_with_client_order_id(client_order_id, symbol, params={"trigger": True})
+                    if is_trigger
+                    else await ex.fetch_order_with_client_order_id(client_order_id, symbol)
+                )
         except ccxt.OrderNotFound:
             self._emit_order_status_not_found(client_order_id, venue_order_id, instrument)
             return
@@ -1047,6 +1130,52 @@ class CcxtConnector(ChannelEmitter):
             return
         self._handle_ws_order(raw)
 
+    def request_hist_deals(self, instrument: Instrument, since: dt_64) -> None:
+        # Read the symbol off the instrument SYNCHRONOUSLY (see cancel_order).
+        self._spawn(self._hist_deals_async(instrument, instrument_to_ccxt_symbol(instrument), since))
+
+    async def _hist_deals_async(self, instrument: Instrument, symbol: str, since: dt_64) -> None:
+        """Fetch trades since ``since`` and emit one DealEvent per trade.
+
+        Recovers executions missed behind a position size diff (ConfirmPositionBySnapshot →
+        RequestHistDeals). Routed by the venue order id the trade carries — the connector keeps
+        no state, so AM resolves the originating order (and its cid). AM books each deal (deduped
+        by trade id) and the confirm task consumes them as coverage. Errors are logged, not raised
+        — the confirm task drops on timeout regardless. A single fetch (no pagination): the recovery
+        window is the position-reconcile watermark, recent and small; a result hitting the venue cap
+        is logged so a wider gap is operator-visible.
+        """
+        since_ms = int(since.astype("datetime64[ms]").astype("int64"))
+        logger.debug(f"[{self.exchange_name}] hist-deals: fetch_my_trades {symbol} since {since}")
+        try:
+            raw_trades = await self._em.exchange.fetch_my_trades(symbol, since=since_ms)
+        except NetworkError as e:
+            logger.warning(f"[{self.exchange_name}] hist deals fetch for {symbol} since {since} failed: {e}")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[{self.exchange_name}] error fetching hist deals for {symbol}: {e}")
+            return
+        logger.debug(
+            f"[{self.exchange_name}] hist-deals: {symbol} since {since} -> {len(raw_trades)} trade(s)"
+            f"{' (emitting DealEvents)' if raw_trades else ' (nothing to recover)'}"
+        )
+        for raw in raw_trades:
+            deal = ccxt_convert_deal_info(raw)
+            logger.debug(
+                f"[{self.exchange_name}] hist-deals: {symbol} trade tid={deal.trade_id} "
+                f"amt={deal.amount} px={deal.price} order={raw.get('order')} t={deal.time}"
+            )
+            self.send(
+                DealEvent(
+                    instrument=instrument,
+                    client_order_id=None,  # AM resolves the order by the venue id
+                    venue_order_id=raw.get("order"),
+                    deal=deal,
+                    last_update_time=deal.time,  # venue trade ts (terminal audit order eviction)
+                    historical=True,  # recovered trade -> materialize TERMINAL, not an ACCEPTED phantom
+                )
+            )
+
     def _emit_order_status_not_found(
         self, client_order_id: str | None, venue_order_id: str | None, instrument: Instrument
     ) -> None:
@@ -1060,6 +1189,53 @@ class CcxtConnector(ChannelEmitter):
                 code="OrderNotFound",
             )
         )
+
+    async def _fetch_trigger_open_orders(self) -> list[dict]:
+        """Fetch untriggered stop/conditional ("algo") open orders.
+
+        Binance USDⓂ serves these from a SEPARATE endpoint, disjoint from the regular
+        open-orders one — the unified ccxt ``params={'trigger': True}`` routes to it.
+        A venue with no such surface raises NotSupported/BadRequest → treated as "no
+        trigger orders" ([]); transient errors propagate (the caller leaves order
+        reconcile for the next tick rather than orphaning unseen stops).
+        """
+        try:
+            return await self._em.exchange.fetch_open_orders(params={"trigger": True})
+        except (ccxt.NotSupported, ccxt.BadRequest) as e:
+            logger.debug(f"[{self.exchange_name}] snapshot: no trigger open-orders surface ({e}); regular only")
+            return []
+
+    def _merge_open_orders(self, raw_orders, raw_trigger_orders) -> list[Order] | None:
+        """Merge regular + trigger raw open orders into framework Orders (dedup by venue id).
+
+        Returns None if EITHER order leg failed: a partial list would mark the unseen
+        leg's live orders as missing → false reconcile-away. None makes reconcile skip
+        order diffing this tick (positions/balances still apply).
+        """
+        if isinstance(raw_orders, BaseException):
+            logger.warning(f"[{self.exchange_name}] snapshot: fetch_open_orders failed: {raw_orders}")
+            return None
+        if isinstance(raw_trigger_orders, BaseException):
+            logger.warning(
+                f"[{self.exchange_name}] snapshot: fetch_open_orders(trigger) failed: {raw_trigger_orders};"
+                " skipping order reconcile this tick"
+            )
+            return None
+        open_orders: list[Order] = []
+        seen: set[str] = set()
+        for raw in [*raw_orders, *raw_trigger_orders]:
+            try:
+                instrument = self._instrument_for_symbol(raw["symbol"])
+            except CcxtSymbolNotRecognized:
+                continue
+            order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
+            key = order.venue_order_id or order.client_order_id
+            if key is not None and key in seen:
+                continue
+            if key is not None:
+                seen.add(key)
+            open_orders.append(order)
+        return open_orders
 
     def request_snapshot(self) -> None:
         self._spawn(self._snapshot_async())
@@ -1076,24 +1252,14 @@ class CcxtConnector(ChannelEmitter):
         as_of: dt_64 = self._time.time()
         results = await asyncio.gather(
             ex.fetch_open_orders(),
+            self._fetch_trigger_open_orders(),
             ex.fetch_positions(),
             ex.fetch_balance(),
             return_exceptions=True,
         )
-        raw_orders, raw_positions, raw_balance = results
+        raw_orders, raw_trigger_orders, raw_positions, raw_balance = results
 
-        open_orders: list[Order] | None = None
-        if isinstance(raw_orders, BaseException):
-            logger.warning(f"[{self.exchange_name}] snapshot: fetch_open_orders failed: {raw_orders}")
-        else:
-            open_orders = []
-            for raw in raw_orders:
-                try:
-                    instrument = self._instrument_for_symbol(raw["symbol"])
-                except CcxtSymbolNotRecognized:
-                    continue
-                order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
-                open_orders.append(order)
+        open_orders = self._merge_open_orders(raw_orders, raw_trigger_orders)
 
         positions: list[Position] | None = None
         if isinstance(raw_positions, BaseException):
