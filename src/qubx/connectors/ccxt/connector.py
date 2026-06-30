@@ -340,6 +340,11 @@ class CcxtConnector(ChannelEmitter):
                 f"{e}; leaving inflight"
             )
             return
+        if ok is None:
+            # Order already gone at the venue (filled/expired/canceled before our cancel landed).
+            # Emit nothing — the WS terminal + snapshot reconciler resolve the true terminal state.
+            logger.debug(f"[{self.exchange_name}] cancel: {client_order_id or venue_order_id} already gone; no event")
+            return
         if ok:
             self._emit_canceled_from_response(client_order_id, venue_order_id, response)
         else:
@@ -359,11 +364,14 @@ class CcxtConnector(ChannelEmitter):
 
     async def _cancel_with_retry(
         self, client_order_id: str | None, venue_order_id: str | None, symbol: str, is_trigger: bool = False
-    ) -> tuple[bool, dict[str, Any] | None]:
+    ) -> tuple[bool | None, dict[str, Any] | None]:
         """Cancel with retry/backoff. Prefers venue_order_id; falls back to cloid.
 
         Returns ``(ok, venue_response)`` for a DEFINITIVE outcome: ``(True, r)`` on a
-        confirmed cancel, ``(False, None)`` on a venue refusal (→ cancel-reject). RAISES
+        confirmed cancel, ``(False, None)`` on a venue refusal (→ cancel-reject),
+        ``(None, None)`` when the order is already GONE at the venue (acked order the venue
+        already removed → emit nothing; the WS terminal + snapshot reconciler resolve it).
+        RAISES
         ``ccxt.NetworkError`` when the outcome is UNKNOWN (transient connectivity, or
         retries exhausted without a definitive answer) so the caller leaves the order
         inflight rather than terminal-rejecting a cancel that may have landed. Does NOT
@@ -407,24 +415,39 @@ class CcxtConnector(ChannelEmitter):
                 )
                 return True, r
             except ccxt.OperationRejected as err:
-                if self._classify_cancel_error(err) == "reject":
+                # acked=True: we have a venue id, so an "unknown order" is GONE, not the race.
+                verdict = self._classify_cancel_error(err, acked=True)
+                if verdict == "reject":
                     logger.debug(f"[{venue_order_id}] Could not cancel order: {err}")
                     return False, None
+                if verdict == "gone":
+                    logger.debug(f"[{venue_order_id}] already gone at venue; nothing to cancel: {err}")
+                    return None, None
                 logger.debug(f"[{venue_order_id}] Order not found for cancellation, might retry: {err}")
                 last_network_error = None
             except ccxt.NetworkError as e:
                 # Transient connectivity (incl. ExchangeNotAvailable / rate-limit): retry,
                 # and raise on exhaustion so the UNKNOWN outcome leaves the order inflight.
-                if self._classify_cancel_error(e) == "reject":
+                verdict = self._classify_cancel_error(e, acked=True)
+                if verdict == "reject":
                     logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
                     return False, None
+                if verdict == "gone":
+                    logger.debug(f"[{venue_order_id}] already gone at venue; nothing to cancel: {e}")
+                    return None, None
                 last_network_error = e
                 logger.warning(f"[{venue_order_id}] Network error while cancelling: {e}")
             except ccxt.ExchangeError as e:
                 # Definitive venue refusal (non-network) → cancel-reject after retries.
-                if self._classify_cancel_error(e) == "reject":
+                verdict = self._classify_cancel_error(e, acked=True)
+                if verdict == "reject":
                     logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
                     return False, None
+                if verdict == "gone":
+                    # Order existed (we have its id) but is already gone at the venue — the WS
+                    # terminal + snapshot reconciler resolve it; don't retry, don't reject.
+                    logger.debug(f"[{venue_order_id}] already gone at venue; nothing to cancel: {e}")
+                    return None, None
                 last_network_error = None
                 logger.warning(f"[{venue_order_id}] Exchange error while cancelling: {e}")
             except Exception as err:  # noqa: BLE001
@@ -444,20 +467,24 @@ class CcxtConnector(ChannelEmitter):
             logger.debug(f"Retrying cancel for {venue_order_id} in {backoff_time}s (retry {retries})")
             await asyncio.sleep(backoff_time)
 
-    def _classify_cancel_error(self, err: Exception) -> Literal["retry", "reject"]:
+    def _classify_cancel_error(self, err: Exception, *, acked: bool = False) -> Literal["retry", "reject", "gone"]:
         """Venue-specific triage of one failed cancel attempt (mirrors the
         ``_extract_venue_figures`` seam): ``"retry"`` when the venue may still produce a
-        definitive answer, ``"reject"`` on a definitive refusal. The base impl matches
-        Binance's error strings; venue subclasses override.
+        definitive answer, ``"reject"`` on a definitive refusal, ``"gone"`` when the order
+        provably no longer exists at the venue. The base impl matches Binance's error
+        strings; venue subclasses override.
+
+        ``acked`` = the order had a venue id (so it WAS accepted). An "unknown order" then
+        means it is already gone (filled/expired/canceled), not the submit/cancel race —
+        retrying is pointless. Without an ack it IS the race (the order may appear shortly).
         """
+        msg = str(err).lower()
+        if "unknown order" in msg or "order does not exist" in msg or "order not found" in msg:
+            return "gone" if acked else "retry"
         if isinstance(err, ccxt.OperationRejected):
-            msg = str(err).lower()
-            if "unknown order" in msg or "order does not exist" in msg or "order not found" in msg:
-                # Not visible at the venue yet (submit/cancel race) — may appear shortly.
-                return "retry"
             # e.g. already filled — cancelling is permanently impossible.
             return "reject"
-        if "Mandatory parameter 'orderId' was not sent" in str(err):
+        if "mandatory parameter 'orderid' was not sent" in msg:
             # Binance's refusal of a missing/invalid orderId — retrying cannot help
             # (ccxt surfaces it as either NetworkError or ExchangeError).
             return "reject"

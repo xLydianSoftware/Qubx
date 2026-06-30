@@ -7,7 +7,7 @@ deterministically without crossing a real thread/loop boundary.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import ccxt
 import pytest
@@ -433,6 +433,27 @@ async def test_cancel_by_cloid_uses_cloid_endpoint() -> None:
 
     exchange.cancel_order_with_client_order_id.assert_awaited_once_with("qubx_BTCUSDT_1", "BTC/USDT:USDT")
     assert isinstance(sent[0], OrderCanceledEvent)
+
+
+@pytest.mark.asyncio
+async def test_cancel_acked_order_gone_at_venue_emits_nothing_no_retry() -> None:
+    # An ACKED order (has venue id) that the venue already removed (filled/expired/canceled)
+    # before our cancel lands answers -2011 "Unknown order sent". Because it was acked, that is
+    # DEFINITIVE ("gone"), not the submit/cancel race — so the connector must NOT retry and must
+    # emit nothing (the WS terminal + snapshot reconciler resolve it), avoiding the 32s retry storm.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.cancel_order = AsyncMock(
+        side_effect=ccxt.ExchangeError('binanceusdm {"code":-2011,"msg":"Unknown order sent."}')
+    )
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    with patch("qubx.connectors.ccxt.connector.asyncio.sleep", AsyncMock()):
+        conn.cancel_order(_order(venue_order_id="VENUE123"))
+        await _drive(conn)
+
+    exchange.cancel_order.assert_awaited_once()  # - definitive 'gone' -> no retry storm
+    assert sent == []  # - neither canceled nor cancel-rejected; WS/snapshot resolve the terminal
 
 
 @pytest.mark.asyncio
