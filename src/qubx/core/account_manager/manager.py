@@ -438,12 +438,6 @@ class AccountManager(IAccountViewer):
     def find_order_by_client_id(self, client_id: str) -> Order | None:
         return self.get_order(client_id)
 
-    def get_order_history(self, client_order_id: str) -> list[OrderTransition]:
-        """The status-transition audit trail for an order — searches active orders then the
-        terminal-history ring buffer; empty if the order is unknown or already evicted."""
-        order = self.get_order(client_order_id)
-        return list(order.transitions) if order is not None else []
-
     def get_metrics(self) -> dict[str, dict[str, int]]:
         """Per-exchange audit counters: exchange -> {order-status: transitions into it}.
         Operator/debug surface — not wired to emitters; never reset within a session."""

@@ -145,10 +145,18 @@ def test_out_of_order_snapshot_skipped():
     state = am._states["binance"]
     inst = _instrument()
     am._time.t = np.datetime64("2026-05-28T03:00:00")
-    am.apply(_snap_event(as_of="2026-05-28T02:00:00", positions=[Position(instrument=inst, quantity=2.0, pos_average_price=50_000.0)]))
+    am.apply(
+        _snap_event(
+            as_of="2026-05-28T02:00:00", positions=[Position(instrument=inst, quantity=2.0, pos_average_price=50_000.0)]
+        )
+    )
     assert state.get_position(inst).quantity == 2.0
     # an OLDER snapshot must be skipped entirely (no clobber)
-    am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[Position(instrument=inst, quantity=9.0, pos_average_price=50_000.0)]))
+    am.apply(
+        _snap_event(
+            as_of="2026-05-28T01:00:00", positions=[Position(instrument=inst, quantity=9.0, pos_average_price=50_000.0)]
+        )
+    )
     assert state.get_position(inst).quantity == 2.0
 
 
@@ -350,7 +358,6 @@ def test_snapshot_terminalization_runs_full_transition_machinery():
     # the stale inflight entry is gone -> no pointless venue polling on the next tick
     assert state.get_inflight_orders() == []
     # audit trail + counters recorded the transition
-    assert [(t.from_status, t.to_status) for t in order.transitions] == [(OrderStatus.SUBMITTED, OrderStatus.FILLED)]
     assert state.get_transition_counts()[OrderStatus.FILLED.value] == 1
     # eviction registered: the retention sweep moves it to history instead of leaking it
     am._time.adv(31_000)
@@ -412,9 +419,6 @@ def test_snapshot_illegal_edge_forced_with_indices_fixed():
 
     order = state.get_order("cid-1")
     assert order.status is OrderStatus.ACCEPTED
-    assert [(t.from_status, t.to_status) for t in order.transitions] == [
-        (OrderStatus.PARTIALLY_FILLED, OrderStatus.ACCEPTED)
-    ]
     assert state.get_inflight_orders() == []
 
 
@@ -715,5 +719,3 @@ def test_sim_capital_getters_derive_consistently():
     assert am.get_total_capital("binance") == 1000.0
     assert am.get_available_margin("binance") == 900.0
     assert am.get_withdrawable_balance("binance") == am.get_available_margin("binance") == 900.0
-
-

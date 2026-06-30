@@ -467,6 +467,10 @@ def prepare_ccxt_order_payload(
     so reduce-only must arrive already resolved from the caller.
     """
     params: dict[str, Any] = {}
+    # order_type arrives UPPERCASE from the trading manager (OrderType StrEnum, e.g.
+    # "STOP_MARKET") — normalize so the trigger detection / split below are case-insensitive.
+    # A lowercase-only startswith silently dropped triggerPrice → Binance rejected stop orders.
+    order_type = order_type.lower()
     _is_trigger_order = order_type.startswith("stop_")
 
     if quote is None:

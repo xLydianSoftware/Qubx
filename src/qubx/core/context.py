@@ -659,9 +659,6 @@ class StrategyContext(IStrategyContext):
     def find_order_by_client_id(self, client_id: str) -> Order | None:
         return self.account.find_order_by_client_id(client_id)
 
-    def get_order_history(self, client_order_id: str) -> list[OrderTransition]:
-        return self.account.get_order_history(client_order_id)
-
     def position_report(self, exchange: str | None = None) -> dict:
         return self.account.position_report(exchange)
 
@@ -794,9 +791,11 @@ class StrategyContext(IStrategyContext):
         order_id: str | None = None,
         client_order_id: str | None = None,
         exchange: str | None = None,
-    ) -> Order:
-        """Update an existing limit order with new price and amount."""
-        return self._trading_manager.update_order(
+    ) -> None:
+        """
+        Update an existing limit order with new price and amount.
+        """
+        self._trading_manager.update_order(
             order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
         )
 

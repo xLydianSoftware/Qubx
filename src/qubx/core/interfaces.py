@@ -298,14 +298,6 @@ class IAccountViewer:
         """
         ...
 
-    def get_order_history(self, client_order_id: str) -> list[OrderTransition]:
-        """Status-transition audit trail for an order (active or recently terminal).
-
-        Returns an empty list if the order is unknown or already evicted from the
-        terminal-history buffer.
-        """
-        ...
-
     def find_order_by_client_id(self, client_id: str) -> Order | None:
         """Find an order by its client ID.
 
@@ -904,7 +896,7 @@ class ITradingManager:
         order_id: str | None = None,
         client_order_id: str | None = None,
         exchange: str | None = None,
-    ) -> Order:
+    ) -> None:
         """Update an existing limit order with new price and amount.
 
         Exactly one identifier must be provided:

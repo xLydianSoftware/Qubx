@@ -3,7 +3,18 @@ from unittest.mock import MagicMock
 import numpy as np
 
 from qubx.core.account_manager import AccountManager
-from qubx.core.basics import Deal, Instrument, MarketType, Order, OrderChange, OrderOrigin, OrderStatus
+from qubx.core.basics import (
+    Deal,
+    Instrument,
+    ITimeProvider,
+    MarketType,
+    Order,
+    OrderChange,
+    OrderOrigin,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+)
 from qubx.core.events import (
     DealEvent,
     OrderAcceptedEvent,
@@ -25,7 +36,7 @@ def _assert_empty(result):
     assert result.position is None
 
 
-class _T:
+class _T(ITimeProvider):
     def time(self):
         return np.datetime64("2026-05-28T00:00:00")
 
@@ -61,12 +72,12 @@ def add_order(state, cid="cid-1", status=OrderStatus.SUBMITTED, instrument=None,
             client_order_id=cid,
             venue_order_id=None,
             origin=OrderOrigin.FRAMEWORK,
-            type="LIMIT",
+            type=OrderType.LIMIT,
             instrument=instrument,
             submitted_at=np.datetime64("2026-05-28T00:00:00"),
             quantity=quantity,
             price=50_000.0,
-            side="BUY",
+            side=OrderSide.BUY,
             status=status,
             time_in_force="gtc",
         )
@@ -850,26 +861,6 @@ def test_cancel_rejected_with_no_instrument_reverts_pending_cancel():
     assert result.order is not None
     assert result.order.client_order_id == "cid-pc"
     assert result.order_change is OrderChange.CANCEL_REJECTED
-
-
-def test_get_order_history_records_transitions():
-    # B5 audit log: every AM-driven status change is appended to Order.transitions and
-    # surfaced via get_order_history (searches active orders + terminal-history buffer).
-    am = _am()
-    inst = _Inst()
-    add_order(am.get_state("binance"), status=OrderStatus.SUBMITTED, instrument=inst, quantity=1.0)
-    am.apply(
-        OrderAcceptedEvent(
-            instrument=inst, client_order_id="cid-1", venue_order_id="V1", accepted_at=np.datetime64("2026-05-28")
-        )
-    )
-    am.apply(OrderFilledEvent(instrument=inst, client_order_id="cid-1", venue_order_id="V1", fill=_fill(amount=1.0)))
-    history = am.get_order_history("cid-1")
-    assert [(t.from_status, t.to_status) for t in history] == [
-        (OrderStatus.SUBMITTED, OrderStatus.ACCEPTED),
-        (OrderStatus.ACCEPTED, OrderStatus.FILLED),
-    ]
-    assert am.get_order_history("does-not-exist") == []
 
 
 def test_get_metrics_counts_transitions_by_status():

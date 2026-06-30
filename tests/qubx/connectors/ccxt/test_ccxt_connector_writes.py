@@ -187,14 +187,29 @@ async def test_submit_builds_payload_limit_with_client_id() -> None:
 
 @pytest.mark.asyncio
 async def test_submit_payload_reduce_only_and_trigger() -> None:
+    # order_type arrives UPPERCASE from the trading manager (OrderType StrEnum) — the trigger
+    # detection must be case-insensitive (a lowercase-only startswith dropped triggerPrice live).
     conn, _sent, exchange = _make_connector()
-    conn.submit_order(_order_request(order_type="stop_limit", price=120.0, options={"reduceOnly": True}))
+    conn.submit_order(_order_request(order_type="STOP_LIMIT", price=120.0, options={"reduceOnly": True}))
     await _drive(conn)
 
     payload = exchange.create_order.await_args.kwargs
     assert payload["params"]["reduceOnly"] is True
     assert payload["params"]["triggerPrice"] == 120.0
     assert payload["type"] == "limit"  # stop_ prefix stripped
+
+
+@pytest.mark.asyncio
+async def test_submit_stop_market_sets_trigger_price() -> None:
+    # The live AtrRiskTracker case: a STOP_MARKET (uppercase) must carry triggerPrice or Binance
+    # rejects "requires a triggerPrice extra param for a stop_market order".
+    conn, _sent, exchange = _make_connector()
+    conn.submit_order(_order_request(order_type="STOP_MARKET", price=58331.5))
+    await _drive(conn)
+
+    payload = exchange.create_order.await_args.kwargs
+    assert payload["params"]["triggerPrice"] == 58331.5
+    assert payload["type"] == "market"  # stop_ prefix stripped
 
 
 @pytest.mark.asyncio

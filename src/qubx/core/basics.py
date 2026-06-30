@@ -826,10 +826,6 @@ class Order:
     # paths set EXTERNAL / RECOVERED explicitly.
     origin: OrderOrigin = OrderOrigin.FRAMEWORK
     options: dict[str, Any] = field(default_factory=dict)
-    # Status-transition audit trail, appended on every AM-driven status change (the single
-    # writer is AccountState.transition_order). Bounded by the order's lifetime + the
-    # terminal-history ring buffer. Exposed via ctx.get_order_history(client_order_id).
-    transitions: list[OrderTransition] = field(default_factory=list)
 
     def require_venue_id(self) -> str:
         if self.venue_order_id is None:

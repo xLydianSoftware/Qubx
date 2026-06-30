@@ -273,7 +273,6 @@ class AccountState:
         """
         order = self._active_orders[cid]
         old_status = order.status
-        order.transitions.append(OrderTransition(time=now, from_status=old_status, to_status=new_status))
         self._transition_counts[new_status.value] += 1
         order.status = new_status
         order.last_update_time = update_time if update_time is not None else now
