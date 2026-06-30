@@ -387,6 +387,40 @@ async def test_cancel_by_venue_id_emits_canceled() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_stop_order_uses_trigger_surface() -> None:
+    # A STOP order lives on the venue's conditional/algo surface; the cancel must pass
+    # params={'trigger': True} (driven by order.type), else Binance answers -2011 and the
+    # live stop can't be cancelled (e.g. on a flatten signal).
+    exchange = Mock()
+    exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1"})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.cancel_order(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_MARKET))
+    await _drive(conn)
+
+    exchange.cancel_order.assert_awaited_once_with("VENUE123", "BTC/USDT:USDT", params={"trigger": True})
+    assert isinstance(sent[0], OrderCanceledEvent)
+
+
+@pytest.mark.asyncio
+async def test_cancel_stop_order_by_cloid_uses_trigger_surface() -> None:
+    # Same for the cloid path (venue id not seen yet).
+    exchange = Mock()
+    exchange.cancel_order_with_client_order_id = AsyncMock(return_value={"id": "VENUE123"})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.cancel_order(_order(venue_order_id=None, order_type=OrderType.STOP_MARKET))
+    await _drive(conn)
+
+    exchange.cancel_order_with_client_order_id.assert_awaited_once_with(
+        "qubx_BTCUSDT_1", "BTC/USDT:USDT", params={"trigger": True}
+    )
+    assert isinstance(sent[0], OrderCanceledEvent)
+
+
+@pytest.mark.asyncio
 async def test_cancel_by_cloid_uses_cloid_endpoint() -> None:
     # No venue id yet (ack not seen) -> cloid endpoint, symbol from the order's instrument.
     exchange = Mock()

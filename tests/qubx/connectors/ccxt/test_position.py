@@ -213,6 +213,29 @@ def test_convert_order_info_market_order_price_is_none():
     assert order.price is None
 
 
+def test_convert_order_info_trigger_order_uses_trigger_price():
+    # A STOP_MARKET carries no limit price (ccxt price=None); the trigger level lives in
+    # triggerPrice/stopPrice. The locally-tracked stop stores the trigger as its price, so the
+    # converter must mirror it — else every snapshot diffs price (e.g. 57966.5 -> None) on the
+    # same live order, flapping the reconciler.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    o1 = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market", triggerPrice=57966.5))
+    assert o1.price == 57966.5
+    # legacy unified stopPrice and Binance info.stopPrice (string) are also honoured
+    o2 = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market", stopPrice=57966.5))
+    assert o2.price == 57966.5
+    o3 = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market", info={"stopPrice": "57966.5"}))
+    assert o3.price == 57966.5
+
+
+def test_convert_order_info_plain_market_zero_stopprice_stays_none():
+    # Binance reports stopPrice="0" for a plain (non-trigger) market order; that must NOT be
+    # mistaken for a trigger level — price stays None.
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    order = ccxt_convert_order_info(instrument, _raw_order(price=None, type="market", info={"stopPrice": "0"}))
+    assert order.price is None
+
+
 def test_convert_deal_info_tolerates_empty_fee_and_missing_taker():
     # CCXT may send fee={} (or cost=None) and omit takerOrMaker — must not KeyError/TypeError.
     raw = {"order": "O1", "timestamp": 1_716_854_400_000, "side": "buy", "price": 100.0, "amount": 1.0, "fee": {}}

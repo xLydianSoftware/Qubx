@@ -107,30 +107,45 @@ def ccxt_convert_order_info(
     if isinstance(ri, list):
         # we don't handle case when order info is a list
         ri = {}
+
     # Prioritize outer level (exchange-specific parsing) for amount
     amnt_raw = raw.get("amount") or ri.get("origQty")
     if amnt_raw is None:
         # Try alternative fields for different exchanges
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
     amnt = float(amnt_raw)
+
     # None for market orders (no limit price) — matches Order.price: float | None.
     price = raw.get("price")
+    if price is None:
+        # - trigger/conditional orders (STOP_MARKET) carry no limit price; the trigger level
+        #   lives in triggerPrice/stopPrice. The locally-tracked stop stores the trigger as its
+        #   price, so mirror it — else every snapshot diffs price (57966.5 -> None) on the same
+        #   live order. Binance reports stopPrice="0" for plain market orders, so guard on > 0.
+        _trigger = raw.get("triggerPrice") or raw.get("stopPrice") or ri.get("stopPrice")
+        if _trigger is not None and float(_trigger) > 0:
+            price = _trigger
     # ccxt's unified fill fields; None-safe (venues omit them on fresh acks).
+
     _filled = raw.get("filled")
     filled_quantity = abs(float(_filled)) if _filled is not None else 0.0
+
     _average = raw.get("average")
     avg_fill_price = float(_average) if _average is not None else None
+
     status = ccxt_status_to_order_status(raw.get("status"), ri)
     if status is OrderStatus.ACCEPTED and filled_quantity > 0.0:
         # ccxt's unified status collapses partial fills into "open", and the info.status
         # refinement is venue-specific (OKX carries the state under info.state) — the
         # unified `filled` field is the venue-agnostic partial-fill signal.
         status = OrderStatus.PARTIALLY_FILLED
+
     side_raw = raw["side"]
     if side_raw is None:
         side = "UNKNOWN"
     else:
         side = side_raw.upper()
+
     # Prioritize outer level (exchange-specific parsing overrides) over inner level
     _type = raw.get("type", ri.get("type"))
     if _type is None:
@@ -138,6 +153,7 @@ def ccxt_convert_order_info(
         _type = "UNKNOWN"
     else:
         _type = _type.upper()
+
     options = {}
     if raw.get("reduceOnly"):
         options["reduceOnly"] = True

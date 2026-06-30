@@ -469,7 +469,10 @@ class BrokerSideRiskController(RiskController):
                         logger.debug(
                             f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: sending <g>take limit</g> order at {_waiting.target.take}"
                         )
-                        order = ctx.trade(instrument, -pos, _waiting.target.take)
+                        # - reduce_only: a protective leg must never FLIP the position; if it
+                        #   fires stale (position already flat) the venue rejects it instead of
+                        #   opening a reverse position.
+                        order = ctx.trade(instrument, -pos, _waiting.target.take, reduce_only=True)
                         _waiting.take_order_id = order.client_order_id
 
                         # - if order was executed immediately we don't need to send stop order.
@@ -502,6 +505,7 @@ class BrokerSideRiskController(RiskController):
                             stop_type="market",
                             fill_at_signal_price=True,
                             avoid_stop_order_price_validation=True,
+                            reduce_only=True,  # - protective: never flip the position on a stale trigger
                         )
                         _waiting.stop_order_id = order.client_order_id
                     except Exception as e:
@@ -511,7 +515,11 @@ class BrokerSideRiskController(RiskController):
 
         # - check tracked signal
         if (_tracking := self._trackings.get(instrument)) is not None:
-            if _tracking.status == State.OPEN and abs(pos) <= instrument.min_size:
+            # - position is flat only when strictly below min_size: a position of EXACTLY
+            #   min_size is a real (smallest tradeable) position, not a close. Using <= here
+            #   misread a min-size entry as flat and tore down the just-sent stop+take. A
+            #   genuine close lands at pos == 0, which < min_size still catches.
+            if _tracking.status == State.OPEN and abs(pos) < instrument.min_size:
                 if self._is_deal_for(ctx, deal, _tracking.take_order_id):
                     _tracking.status = State.RISK_TRIGGERED
                     _tracking.take_executed_price = deal.price
@@ -589,6 +597,7 @@ class BrokerSideRiskController(RiskController):
                 stop_type="market",
                 fill_at_signal_price=True,
                 avoid_stop_order_price_validation=True,
+                reduce_only=True,  # - protective: never flip the position on a stale trigger
             )
             _tracked.stop_order_id = order.client_order_id
         except Exception as e:
@@ -620,8 +629,7 @@ class BrokerSideRiskController(RiskController):
             logger.debug(
                 f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: sending updated <g>take</g> order at {new_take_level}"
             )
-            # - for simulation purposes we assume that stop order will be executed at stop price
-            order = ctx.trade(instrument, -pos, new_take_level)
+            order = ctx.trade(instrument, -pos, new_take_level, reduce_only=True)  # - protective: never flip
             _tracked.take_order_id = order.client_order_id
         except Exception as e:
             logger.error(f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send take order: {str(e)}")

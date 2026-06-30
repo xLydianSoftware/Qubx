@@ -339,6 +339,84 @@ async def test_request_snapshot_failed_leg_left_none() -> None:
     assert len(snap.balances) == 1
 
 
+@pytest.mark.asyncio
+async def test_request_snapshot_includes_trigger_orders() -> None:
+    # Binance keeps untriggered stop/conditional orders on a SEPARATE surface
+    # (fetch_open_orders(params={'trigger': True}) -> algo endpoint, disjoint from the
+    # regular one). The snapshot must query BOTH and merge, else a live stop reads as
+    # missing and gets falsely reconciled away (orphaned live order).
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.markets = {}
+
+    async def _open_orders(*args, **kwargs):
+        if kwargs.get("params", {}).get("trigger"):
+            return [_ws_order(status="open", cid="qubx_stop", venue_id="STOP1")]
+        return [_ws_order(status="open", cid="qubx_reg", venue_id="REG1")]
+
+    exchange.fetch_open_orders = AsyncMock(side_effect=_open_orders)
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1.0}, "used": {"USDT": 0.0}})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    snap = sent[0].snapshot
+    assert {o.venue_order_id for o in snap.open_orders} == {"REG1", "STOP1"}
+
+
+@pytest.mark.asyncio
+async def test_request_snapshot_trigger_unsupported_uses_regular_only() -> None:
+    # A venue with no separate trigger surface raises NotSupported for the trigger leg;
+    # the regular orders are then the complete set (open_orders is regular-only, NOT None).
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.markets = {}
+
+    async def _open_orders(*args, **kwargs):
+        if kwargs.get("params", {}).get("trigger"):
+            raise ccxt.NotSupported("no trigger surface")
+        return [_ws_order(status="open", cid="qubx_reg", venue_id="REG1")]
+
+    exchange.fetch_open_orders = AsyncMock(side_effect=_open_orders)
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1.0}, "used": {"USDT": 0.0}})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    snap = sent[0].snapshot
+    assert [o.venue_order_id for o in snap.open_orders] == ["REG1"]
+
+
+@pytest.mark.asyncio
+async def test_request_snapshot_trigger_network_error_left_none() -> None:
+    # A TRANSIENT trigger-fetch failure must NOT yield a regular-only list (that would mark
+    # live stops missing). Conservative: omit open_orders this tick (None) so reconcile
+    # skips order diffing rather than orphaning unseen trigger orders.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.markets = {}
+
+    async def _open_orders(*args, **kwargs):
+        if kwargs.get("params", {}).get("trigger"):
+            raise ccxt.NetworkError("boom")
+        return [_ws_order(status="open", cid="qubx_reg", venue_id="REG1")]
+
+    exchange.fetch_open_orders = AsyncMock(side_effect=_open_orders)
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1.0}, "used": {"USDT": 0.0}})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    snap = sent[0].snapshot
+    assert snap.open_orders is None
+
+
 # --------------------------------------------------------------------------- #
 # (b2) request_hist_deals -> one DealEvent per recovered trade
 # --------------------------------------------------------------------------- #
@@ -439,6 +517,23 @@ async def test_request_order_status_not_found_emits_reject_with_both_ids() -> No
     assert ev.reason == "reconcile: order not present at venue"
     assert ev.client_order_id == "qubx_BTCUSDT_1"
     assert ev.venue_order_id == "VENUE123"
+
+
+@pytest.mark.asyncio
+async def test_request_order_status_stop_order_uses_trigger_surface() -> None:
+    # A STOP order is not on the regular fetch_order surface (Binance -2013 OrderNotFound);
+    # the status fetch must pass params={'trigger': True} (driven by order.type) so a live
+    # stop is resolved instead of being falsely rejected as not-present.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_order = AsyncMock(return_value=_ws_order(status="open"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_order_status(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_MARKET))
+    await _drive(conn)
+
+    exchange.fetch_order.assert_awaited_once_with("VENUE123", CCXT_SYMBOL, params={"trigger": True})
+    assert isinstance(sent[0], OrderAcceptedEvent)
 
 
 @pytest.mark.asyncio
