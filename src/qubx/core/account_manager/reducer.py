@@ -15,9 +15,8 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from qubx import area_logger
-from qubx.core.account_manager import reconcile
 from qubx.core.account_manager.state import AccountState
-from qubx.core.account_manager.state_machine import can_transition
+from qubx.core.account_manager.state_machine import can_transition, validate_transition
 from qubx.core.basics import (
     EXTERNAL_CID_PREFIX,
     Balance,
@@ -52,6 +51,38 @@ from qubx.core.events import (
 # Module logger bound to the "account_manager" area: every line here carries that tag.
 # INFO/WARNING show as usual; DEBUG only when QUBX_DEBUG_AREAS includes account_manager.
 logger = area_logger("account_manager")
+
+
+def fill_qty_epsilon(instrument: Instrument | None) -> float:
+    """
+    Float-dust tolerance for fill-quantity comparisons.
+
+    Venue quantities arrive via float subtraction (e.g. 0.6 - 0.4 -> 0.19999999999999998),
+    so exact compares against 0.0 read ~1e-16 dust as a genuine excess. Any real quantity
+    difference is at least one lot, so half a lot cleanly separates dust from real fills.
+    0.0 (exact compare) for an order without an instrument.
+    """
+    return instrument.lot_size * 0.5 if instrument is not None else 0.0
+
+
+def transition(
+    state: AccountState,
+    cid: str,
+    new_status: OrderStatus,
+    now: np.datetime64,
+    *,
+    update_time: np.datetime64 | None = None,
+) -> Order:
+    """
+    Validate-then-apply for an active order's status — the single legality chokepoint
+    (the reducer and the manager delegate here; see the import rule above).
+    """
+
+    if (order := state.get_active_order(cid)) is None:
+        raise KeyError(f"order {cid} not found in {state.exchange}")
+
+    validate_transition(cid, order.status, new_status)
+    return state.transition_order(cid, new_status, now, update_time=update_time)
 
 
 @dataclass
@@ -191,9 +222,7 @@ def _handle_accepted(state: AccountState, event: OrderAcceptedEvent, now: np.dat
     if not can_transition(order.status, OrderStatus.ACCEPTED):
         return ApplyResult()
 
-    order = reconcile.transition(
-        state, order.client_order_id, OrderStatus.ACCEPTED, now, update_time=event.last_update_time
-    )
+    order = transition(state, order.client_order_id, OrderStatus.ACCEPTED, now, update_time=event.last_update_time)
 
     return ApplyResult(order=order, order_change=OrderChange.ACCEPTED)
 
@@ -221,9 +250,7 @@ def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.dat
     if order is None or order.status.is_terminal or _is_superseded_oid_cancel(order, event):
         return ApplyResult()
 
-    order = reconcile.transition(
-        state, order.client_order_id, OrderStatus.CANCELED, now, update_time=event.last_update_time
-    )
+    order = transition(state, order.client_order_id, OrderStatus.CANCELED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.CANCELED)
 
 
@@ -233,9 +260,7 @@ def _handle_lost(state: AccountState, event: OrderLostEvent, now: np.datetime64)
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
-    order = reconcile.transition(
-        state, order.client_order_id, OrderStatus.LOST, now, update_time=event.last_update_time
-    )
+    order = transition(state, order.client_order_id, OrderStatus.LOST, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.LOST)
 
 
@@ -243,9 +268,7 @@ def _handle_expired(state: AccountState, event: OrderExpiredEvent, now: np.datet
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
-    order = reconcile.transition(
-        state, order.client_order_id, OrderStatus.EXPIRED, now, update_time=event.last_update_time
-    )
+    order = transition(state, order.client_order_id, OrderStatus.EXPIRED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.EXPIRED)
 
 
@@ -255,9 +278,7 @@ def _handle_rejected(state: AccountState, event: OrderRejectedEvent, now: np.dat
         return ApplyResult()
     order.rejected_reason = event.reason
     order.error_code = event.code
-    order = reconcile.transition(
-        state, order.client_order_id, OrderStatus.REJECTED, now, update_time=event.last_update_time
-    )
+    order = transition(state, order.client_order_id, OrderStatus.REJECTED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.REJECTED)
 
 
@@ -334,7 +355,7 @@ def _reconcile_fill_gap(state: AccountState, order: Order, event: OrderFilledEve
     if venue_filled is None or order.instrument is None:
         return None
     remainder = venue_filled - order.filled_quantity
-    if remainder <= reconcile.fill_qty_epsilon(order.instrument):
+    if remainder <= fill_qty_epsilon(order.instrument):
         return None
     price = event.venue_avg_price if event.venue_avg_price is not None else order.avg_fill_price
     if price is None:
@@ -369,9 +390,7 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
     if (gap := _reconcile_fill_gap(state, order, event, now)) is not None and order.instrument is not None:
         position = _book_deal(state, order.instrument, gap)
         deal = deal or gap
-    order = reconcile.transition(
-        state, order.client_order_id, OrderStatus.FILLED, now, update_time=event.last_update_time
-    )
+    order = transition(state, order.client_order_id, OrderStatus.FILLED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
 
 
@@ -405,7 +424,7 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
             )
         return ApplyResult(deal=deal, position=position)
     if can_transition(order.status, OrderStatus.PARTIALLY_FILLED):
-        order = reconcile.transition(
+        order = transition(
             state, order.client_order_id, OrderStatus.PARTIALLY_FILLED, now, update_time=event.last_update_time
         )
         return ApplyResult(order=order, order_change=OrderChange.PARTIALLY_FILLED, deal=deal, position=position)
@@ -455,7 +474,7 @@ def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datet
     order.last_update_time = event.last_update_time if event.last_update_time is not None else now
     if order.status == OrderStatus.PENDING_UPDATE:
         target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
-        order = reconcile.transition(state, order.client_order_id, target, now, update_time=event.last_update_time)
+        order = transition(state, order.client_order_id, target, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.UPDATED)
 
 
@@ -472,7 +491,7 @@ def _revert_from_pending(
     # is the safe default for the rare order with no captured status. The transition
     # itself clears the capture (the target is non-pending).
     target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
-    order = reconcile.transition(state, order.client_order_id, target, now, update_time=update_time)
+    order = transition(state, order.client_order_id, target, now, update_time=update_time)
     return ApplyResult(order=order, order_change=change)
 
 

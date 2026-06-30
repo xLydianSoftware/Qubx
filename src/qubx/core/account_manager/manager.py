@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from qubx import area_logger
-from qubx.core.account_manager import reconcile, reducer
+from qubx.core.account_manager import reducer
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
@@ -43,6 +43,10 @@ from qubx.utils.time import timedelta_to_crontab
 
 # Module logger bound to the "account_manager" area (see reducer.py for the contract).
 logger = area_logger("account_manager")
+
+
+def liveness_overdue(unready_since: np.datetime64, now: np.datetime64, threshold: np.timedelta64) -> bool:
+    return (now - unready_since) >= threshold  # type: ignore
 
 
 class AccountManager(IAccountViewer):
@@ -173,7 +177,7 @@ class AccountManager(IAccountViewer):
         self._reconcilers[exchange].on_order_sent(state, order, self._time.time())
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
-        reconcile.transition(self._states[exchange], cid, new_status, self._time.time())
+        reducer.transition(self._states[exchange], cid, new_status, self._time.time())
 
     def remove_order(self, exchange: str, cid: str) -> None:
         self._states[exchange].remove_order(cid)
@@ -575,7 +579,7 @@ class AccountManager(IAccountViewer):
                 self._liveness_unready_since.pop(exchange, None)
                 continue
             since = self._liveness_unready_since.setdefault(exchange, now)
-            if reconcile.liveness_overdue(since, now, self._liveness_threshold):
+            if liveness_overdue(since, now, self._liveness_threshold):
                 logger.warning(f"[{exchange}] WS unready past threshold; reconnecting")
                 try:
                     reconnected = connector.reconnect()
