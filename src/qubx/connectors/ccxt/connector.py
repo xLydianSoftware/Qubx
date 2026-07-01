@@ -84,6 +84,7 @@ from .utils import (
     ccxt_find_instrument,
     info_float,
     instrument_to_ccxt_symbol,
+    normalize_margin_mode,
     prepare_ccxt_order_payload,
 )
 
@@ -650,7 +651,7 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Leverage / margin
     # ------------------------------------------------------------------ #
-    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
             self._run_sync(self._em.exchange.set_leverage(leverage, symbol))
@@ -672,6 +673,39 @@ class CcxtConnector(ChannelEmitter):
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] Failed to set margin mode {mode} for {instrument.symbol}: {e}")
             return False
+
+    # Authoritative venue pull for the per-instrument settings
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        row = self._fetch_position_row(instrument)
+        return info_float(row, "leverage") if row is not None else None
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        row = self._fetch_position_row(instrument)
+        if row is None:
+            return float("inf")
+        notional = info_float(row.get("info") or {}, "maxNotionalValue")
+        return notional if notional is not None else float("inf")
+
+    def get_margin_mode(self, instrument: Instrument) -> str | None:
+        row = self._fetch_position_row(instrument)
+        return normalize_margin_mode(row.get("marginMode")) if row is not None else None
+
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        row = self._fetch_position_row(instrument)
+        if row is None:
+            return None
+        adl = info_float(row.get("info") or {}, "adlQuantile")
+        return int(adl) if adl is not None else None
+
+    def _fetch_position_row(self, instrument: Instrument) -> dict[str, Any] | None:
+        """Blocking single-symbol position pull; None on error or when no position is held."""
+        try:
+            symbol = instrument_to_ccxt_symbol(instrument)
+            rows = self._run_sync(self._em.exchange.fetch_positions([symbol]))
+            return rows[0] if rows else None
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[{self.exchange_name}] fetch position for {instrument.symbol}: {e}")
+            return None
 
     # ------------------------------------------------------------------ #
     # Read side — WS account-event subscription

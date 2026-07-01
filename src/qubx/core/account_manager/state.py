@@ -427,6 +427,16 @@ class AccountState:
             existing.set_external_maint_margin(snapshot.maint_margin)
         if snapshot._initial_margin_external:
             existing.set_external_initial_margin(snapshot.initial_margin)
+        # Venue-reported per-instrument settings: refresh only when the snapshot carries them,
+        # so a snapshot that omits a field keeps the last-known value (never clobbered to None).
+        if snapshot.leverage is not None:
+            existing.leverage = snapshot.leverage
+        if snapshot.margin_mode is not None:
+            existing.margin_mode = snapshot.margin_mode
+        if snapshot.max_notional is not None:
+            existing.max_notional = snapshot.max_notional
+        if snapshot.adl_level is not None:
+            existing.adl_level = snapshot.adl_level
         if not np.isnan(snapshot.last_update_price):
             existing.update_market_price(
                 snapshot.last_update_time, snapshot.last_update_price, snapshot.last_update_conversion_rate

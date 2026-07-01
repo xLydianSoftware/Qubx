@@ -36,7 +36,7 @@ from qubx.core.connector import IConnector
 from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.events import ChannelMessage
-from qubx.core.exceptions import QueueTimeout, StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.exceptions import QueueTimeout, ReadOnlyConnector, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import (
     BasicScheduler,
     set_parameters_to_object,
@@ -678,9 +678,6 @@ class StrategyContext(IStrategyContext):
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
         return self.account.get_fees_calculator(exchange)
 
-    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        return self.account.get_instrument_leverage(instrument)
-
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         return self.account.get_max_instrument_leverage(instrument)
 
@@ -692,6 +689,18 @@ class StrategyContext(IStrategyContext):
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
         return self.account.get_adl_level(instrument)
+
+    # per-instrument venue-setting writes (IAccountConfigurator): the configured leverage and
+    # margin mode reach the venue and honour read-only.
+    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        if self._read_only:
+            raise ReadOnlyConnector("account configuration is read-only — write rejected")
+        return self._account_manager.set_max_instrument_leverage(instrument, leverage)
+
+    def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
+        if self._read_only:
+            raise ReadOnlyConnector("account configuration is read-only — write rejected")
+        return self._account_manager.set_margin_mode(instrument, mode)
 
     # margin information
     def get_available_margin(self, exchange: str | None = None) -> float:

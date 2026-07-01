@@ -1,7 +1,7 @@
 import asyncio
 import re
 from collections import defaultdict
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 import ccxt.pro as cxp
 import numpy as np
@@ -72,6 +72,14 @@ def info_float(info: dict[str, Any], key: str) -> float | None:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def normalize_margin_mode(mode: str | None) -> Literal["cross", "isolated"] | None:
+    """Map a ccxt marginMode string to the framework's canonical values; None otherwise."""
+    if mode is None:
+        return None
+    m = mode.lower()
+    return m if m in ("cross", "isolated") else None
 
 
 def ccxt_status_to_order_status(raw: str | None, info: dict[str, Any] | None = None) -> OrderStatus:
@@ -264,6 +272,24 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
     # Use exchange-provided maintenance margin if available (more accurate than calculated)
     if info.get("maintenanceMargin") is not None:
         pos.set_external_maint_margin(float(info["maintenanceMargin"]))
+
+    # Venue-reported per-instrument settings (only overwrite when the venue reports them,
+    # so a later snapshot that omits a field preserves the last-known value):
+    #   leverage/marginMode ride the unified position dict; the notional cap and adl are
+    #   venue-specific and read off the raw info (Binance ``maxNotionalValue``/``adlQuantile``).
+    raw = info.get("info") or {}
+    lev = info_float(info, "leverage")
+    if lev is not None:
+        pos.leverage = lev
+    mode = normalize_margin_mode(info.get("marginMode"))
+    if mode is not None:
+        pos.margin_mode = mode
+    max_ntl = info_float(raw, "maxNotionalValue")
+    if max_ntl is not None:
+        pos.max_notional = max_ntl
+    adl = info_float(raw, "adlQuantile")
+    if adl is not None:
+        pos.adl_level = int(adl)
 
     return pos
 
