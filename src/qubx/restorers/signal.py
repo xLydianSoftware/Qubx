@@ -5,6 +5,7 @@ This module provides implementations of the ISignalRestorer interface
 for restoring signals from various sources.
 """
 
+import ast
 import os
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,6 +21,29 @@ from qubx.core.lookups import lookup
 from qubx.core.utils import recognize_time
 from qubx.restorers.interfaces import ISignalRestorer
 from qubx.restorers.utils import find_latest_run_folder
+
+
+def _parse_options_cell(value) -> dict:
+    """Parse a persisted ``options`` cell back into a dict.
+
+    ``CsvFileLogsWriter`` serialises the full signal/target options dict (e.g. ``{'group': 'X'}``)
+    into a single ``options`` column as its ``str()`` repr. Parsing it back on restore is what lets
+    the ``group`` tag (and any other options) survive a restart — without it, grouped strategies
+    (e.g. maker/taker pairs, which key on ``options['group']``) lose their group and cannot be
+    reconstructed. Non-dict / unparseable / NaN cells yield an empty dict.
+    """
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return {}
+    text = value.strip()
+    if not text:
+        return {}
+    try:
+        parsed = ast.literal_eval(text)
+    except (ValueError, SyntaxError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
 
 
 class CsvSignalRestorer(ISignalRestorer):
@@ -138,8 +162,10 @@ class CsvSignalRestorer(ISignalRestorer):
                 # Determine target position size
                 target_size = float(row["target_position"])
 
-                # Create options dictionary with additional data
-                options = {}
+                # Create options dictionary with additional data. The persisted 'options' column
+                # carries the full target options dict (e.g. {'group': 'STATARB'}); parse it back
+                # first so group tags round-trip — grouped strategies (maker/taker pairs) key on it.
+                options = _parse_options_cell(row.get("options"))
 
                 for key in ["comment", "meta"]:
                     if key in row and not pd.isna(row[key]):
@@ -200,8 +226,9 @@ class CsvSignalRestorer(ISignalRestorer):
                     logger.warning(f"Warning: No signal or side column found for {symbol}")
                     continue
 
-                # Create options dictionary with additional data
-                options = {}
+                # Create options dictionary with additional data. Parse the persisted 'options'
+                # column first so group tags (and any other options) round-trip across a restart.
+                options = _parse_options_cell(row.get("options"))
 
                 # for key in ["target_position", "comment", "size", "meta"]:
                 for key in ["comment", "size", "meta"]:
@@ -215,6 +242,10 @@ class CsvSignalRestorer(ISignalRestorer):
                         price = row[price_col]
                         break
 
+                # Prefer an explicit 'group' column; fall back to the group carried in options.
+                group_col = row.get("group", "")
+                group_val = group_col if pd.notna(group_col) and group_col else options.get("group", "")
+
                 signals.append(
                     Signal(
                         time=recognize_time(row["timestamp"]),
@@ -226,7 +257,7 @@ class CsvSignalRestorer(ISignalRestorer):
                         reference_price=row.get("reference_price", None)
                         if pd.notna(row.get("reference_price", None))
                         else None,
-                        group=row.get("group", "") if pd.notna(row.get("group", "")) else "",
+                        group=group_val,
                         comment=row.get("comment", "") if pd.notna(row.get("comment", "")) else "",
                         options=options,
                     )

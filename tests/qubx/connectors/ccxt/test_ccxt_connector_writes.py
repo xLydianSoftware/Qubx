@@ -602,7 +602,7 @@ def test_make_client_id_adds_prefix() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# (8) set_instrument_leverage / set_margin_mode call ccxt + return bool
+# (8) set_max_instrument_leverage / set_margin_mode call ccxt + return bool
 # --------------------------------------------------------------------------- #
 def test_set_leverage_calls_ccxt_returns_true() -> None:
     exchange = Mock()
@@ -610,7 +610,7 @@ def test_set_leverage_calls_ccxt_returns_true() -> None:
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
-    ok = conn.set_instrument_leverage(_instrument(), 5.0)
+    ok = conn.set_max_instrument_leverage(_instrument(), 5.0)
     assert ok is True
     exchange.set_leverage.assert_awaited_once_with(5.0, "BTC/USDT:USDT")
 
@@ -621,7 +621,7 @@ def test_set_leverage_returns_false_on_error() -> None:
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
-    assert conn.set_instrument_leverage(_instrument(), 5.0) is False
+    assert conn.set_max_instrument_leverage(_instrument(), 5.0) is False
 
 
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:
@@ -633,3 +633,66 @@ def test_set_margin_mode_calls_ccxt_returns_true() -> None:
     ok = conn.set_margin_mode(_instrument(), "isolated")
     assert ok is True
     exchange.set_margin_mode.assert_awaited_once_with("isolated", "BTC/USDT:USDT")
+
+
+# --------------------------------------------------------------------------- #
+# (9) per-instrument venue-setting reads (off the venue position row)
+# --------------------------------------------------------------------------- #
+def _position_row(**over) -> dict:
+    row = {
+        "symbol": "BTC/USDT:USDT",
+        "leverage": 10.0,
+        "marginMode": "isolated",
+        "info": {"adlQuantile": "2", "maxNotionalValue": "1000000"},
+    }
+    row.update(over)
+    return row
+
+
+def test_get_max_instrument_leverage_reads_position_row() -> None:
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_max_instrument_leverage(_instrument()) == 10.0
+    exchange.fetch_positions.assert_awaited_once_with(["BTC/USDT:USDT"])
+
+
+def test_get_max_instrument_notional_reads_position_row() -> None:
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_max_instrument_notional(_instrument()) == 1_000_000.0
+
+
+def test_get_margin_mode_reads_position_row() -> None:
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[_position_row(marginMode="cross")])
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_margin_mode(_instrument()) == "cross"
+
+
+def test_get_adl_level_reads_position_info() -> None:
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_adl_level(_instrument()) == 2
+
+
+def test_reads_none_inf_when_no_position() -> None:
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_max_instrument_leverage(_instrument()) is None
+    assert conn.get_max_instrument_notional(_instrument()) == float("inf")
+    assert conn.get_margin_mode(_instrument()) is None
+    assert conn.get_adl_level(_instrument()) is None

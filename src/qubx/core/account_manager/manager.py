@@ -38,7 +38,7 @@ from qubx.core.basics import (
 )
 from qubx.core.connector import IConnector
 from qubx.core.events import AccountMessage, AccountSnapshotEvent, BalanceUpdateEvent, OrderEvent
-from qubx.core.interfaces import IAccountViewer, IProcessingManager
+from qubx.core.interfaces import IAccountConfigurator, IAccountViewer, IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
 
 # Module logger bound to the "account_manager" area (see reducer.py for the contract).
@@ -49,7 +49,7 @@ def liveness_overdue(unready_since: np.datetime64, now: np.datetime64, threshold
     return (now - unready_since) >= threshold  # type: ignore
 
 
-class AccountManager(IAccountViewer):
+class AccountManager(IAccountViewer, IAccountConfigurator):
     account_id: str
 
     _pm: IProcessingManager | None
@@ -519,26 +519,34 @@ class AccountManager(IAccountViewer):
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
         return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
 
-    # Per-instrument exchange-side settings: the venue's configured leverage tier,
-    # hard caps and margin mode. Simulation does not model margin, so these return
-    # neutral values; the real settings live on the venue.
-    # TODO(account-mgmt): back these with venue-sourced leverage/margin/mode held in
-    # AccountState once the margin-aware live connectors are wired.
-    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        return None
-
+    # Per-instrument exchange-side settings
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        return None
+        return self.get_position(instrument).leverage
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
-        return float("inf")
+        notional = self.get_position(instrument).max_notional
+        return notional if notional is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
-        return None
+        return self.get_position(instrument).margin_mode
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
-        pos = self.get_position(instrument)
-        return pos.adl_level if pos is not None else None
+        return self.get_position(instrument).adl_level
+
+    # Per-instrument venue-setting writes
+    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        connector = self._connectors.get(instrument.exchange)
+        if connector is None:
+            logger.warning(f"[{instrument.exchange}] no connector; cannot set instrument leverage")
+            return False
+        return connector.set_max_instrument_leverage(instrument, leverage)
+
+    def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
+        connector = self._connectors.get(instrument.exchange)
+        if connector is None:
+            logger.warning(f"[{instrument.exchange}] no connector; cannot set margin mode")
+            return False
+        return connector.set_margin_mode(instrument, mode)
 
     # ---- periodic ticks (thin: reconcile.py decides, the manager acts) ----- #
 
