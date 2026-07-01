@@ -454,6 +454,41 @@ class TestCsvSignalRestorer:
         assert any(signal.price == 50000.0 for signal in btc_signals)
         assert eth_signals[0].price == 3000.0
 
+    def test_restore_targets_roundtrips_options_group(self, mock_lookup):
+        """Regression: the persisted ``options`` column (e.g. ``{'group': 'STATARB'}``) must
+        round-trip into ``TargetPosition.options`` on restore. Grouped strategies (maker/taker
+        pairs) key on ``options['group']``; dropping it made them un-restorable (the gatherer
+        raised on an ungrouped non-zero target)."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_folder = Path(temp_dir) / "run_20260701160000"
+            run_folder.mkdir()
+            ts = pd.Timestamp.now().strftime("%Y-%m-%d %H:%M:%S")
+            targets_df = pd.DataFrame(
+                {
+                    "timestamp": [ts, ts],
+                    "symbol": ["BTCUSDT", "ETHUSDT"],
+                    "exchange": ["BINANCE", "BINANCE"],
+                    "market_type": ["FUTURE", "SWAP"],
+                    "target_position": [0.5, -1.2],
+                    "entry_price": [np.nan, np.nan],
+                    "take_price": [np.nan, np.nan],
+                    "stop_price": [np.nan, np.nan],
+                    # As persisted by CsvFileLogsWriter: str() of the options dict.
+                    "options": ["{'group': 'STATARB'}", "{'group': 'STATARB'}"],
+                }
+            )
+            targets_df.to_csv(run_folder / "test_strategy_targets.csv", index=False)
+
+            restorer = CsvSignalRestorer(base_dir=temp_dir, targets_file_pattern="*_targets.csv")
+            targets = restorer.restore_targets()
+
+            assert len(targets) == 2
+            for inst, tlist in targets.items():
+                assert tlist, f"no targets restored for {inst.symbol}"
+                assert tlist[-1].options.get("group") == "STATARB", (
+                    f"group dropped on restore for {inst.symbol}: options={tlist[-1].options}"
+                )
+
     def test_with_real_data(self, real_data_dir):
         """Test the CsvSignalRestorer with real log data."""
         # Create the restorer
