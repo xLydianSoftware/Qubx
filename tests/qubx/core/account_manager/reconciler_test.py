@@ -156,6 +156,13 @@ def _passed_seconds(base, s: int):
     return base + np.timedelta64(s, "s")
 
 
+def _mark_in_session(st: AccountState) -> None:
+    # Simulate a prior applied snapshot so the reconcile under test is IN-SESSION — not the FIRST
+    # reconcile after start, which intentionally adopts venue positions WITHOUT requesting hist-deals
+    # (that is the restorer's job). Recovery machinery is exercised on in-session drift.
+    st.mark_snapshot_applied(_passed_seconds(T0, -20))
+
+
 # --------------------------------------------------------------------------- #
 # I. ResolveMissingOrder
 # --------------------------------------------------------------------------- #
@@ -395,10 +402,12 @@ def test_await_confirm_fetches_status_after_wait_window():
 # --------------------------------------------------------------------------- #
 
 
-def test_position_size_diff_applies_snapshot_and_spawns_confirm_task():
-    # local 0.003, venue snapshot 0.005 — we missed a buy deal. The snapshot size is
-    # authoritative: applied surgically (locally-accumulated r_pnl survives), and a
-    # ConfirmPositionBySnapshot task is spawned to recover the missed deal for the record.
+def test_first_snapshot_position_diff_does_not_request_hist_deals():
+    # On the FIRST reconciliation after start, adopting the venue position is the position
+    # RESTORER's job, not the reconciler's. A size diff still applies the snapshot (size/avg
+    # venue-authoritative, r_pnl preserved) and watermarks it, but must NOT spawn
+    # ConfirmPositionBySnapshot / request hist-deals — doing so on start would re-fetch trades the
+    # restorer already accounted for and double-count against the restored r_pnl.
     rec = _reconciler()
     st = _local()
     st.set_position(_inst(), _position(0.003, avg=59_000.0, r_pnl=5.0, ts=_passed_seconds(T0, -10)))
@@ -406,10 +415,32 @@ def test_position_size_diff_applies_snapshot_and_spawns_confirm_task():
     a = rec.on_snapshot(st, _origin(positions=[_position(0.005, avg=59_100.0, ts=T0)]), T0)
 
     pos = st.get_position(_inst())
-    assert pos.quantity == 0.005  # type: ignore # size applied from the venue snapshot
-    assert pos.r_pnl == 5.0  # type: ignore # surgical — local accounting preserved
-    assert rec.active_keys() == {"BTCUSDT"}  # a ConfirmPositionBySnapshot task owns the symbol
-    assert a == []  # we WAIT for the late WS deals first — nothing fetched yet
+    assert pos.quantity == 0.005  # type: ignore # venue size adopted
+    assert pos.r_pnl == 5.0  # type: ignore # restored/local accounting preserved
+    assert rec.active_keys() == set()  # NO ConfirmPositionBySnapshot on the first reconcile
+    assert a == []
+
+
+def test_in_session_position_size_diff_spawns_confirm_task():
+    # AFTER the first reconcile (in-session), a size diff means we missed a live deal: apply the
+    # snapshot surgically (r_pnl survives) and spawn ConfirmPositionBySnapshot to recover it.
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.003, avg=59_000.0, r_pnl=5.0, ts=_passed_seconds(T0, -10)))
+    # first snapshot (matches local) consumes the first-reconcile allowance without a hist request
+    rec.on_snapshot(
+        st,
+        _origin(positions=[_position(0.003, avg=59_000.0, ts=_passed_seconds(T0, -10))], as_of=_passed_seconds(T0, -5)),
+        _passed_seconds(T0, -5),
+    )
+
+    a = rec.on_snapshot(st, _origin(positions=[_position(0.005, avg=59_100.0, ts=T0)]), T0)
+
+    pos = st.get_position(_inst())
+    assert pos.quantity == 0.005  # type: ignore
+    assert pos.r_pnl == 5.0  # type: ignore
+    assert rec.active_keys() == {"BTCUSDT"}  # ConfirmPositionBySnapshot task owns the symbol
+    assert a == []
 
 
 def test_venue_figures_applied_from_snapshot():
@@ -481,6 +512,7 @@ def test_position_confirm_late_deal_arrives_drops_task_without_fetch():
     rec = _reconciler()
     st = _local()
     st.set_position(_inst(), _position(0.003, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
     rec.on_snapshot(st, _origin(positions=[_position(0.005, ts=T0)]), T0)
     assert rec.active_keys() == {"BTCUSDT"}
 
@@ -497,6 +529,7 @@ def test_position_confirm_no_deal_fetches_hist_deals_after_window():
     rec = _reconciler()
     st = _local()
     st.set_position(_inst(), _position(0.003, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
     rec.on_snapshot(st, _origin(positions=[_position(0.005, ts=T0)]), T0)
 
     assert rec.on_tick(st, _passed_seconds(T0, 1)) == []  # inside the wait window (2s)
@@ -526,6 +559,7 @@ def test_local_position_missing_flattens_and_spawns_confirm_task():
     rec = _reconciler()
     st = _local()
     st.set_position(_inst(), _position(0.005, avg=59_000.0, r_pnl=7.0, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
 
     a = rec.on_snapshot(st, _origin(positions=[]), T0)  # observed + empty -> absent at venue
 
@@ -576,6 +610,7 @@ def test_position_decrease_the_deals_arrived_with_small_latency():
     st = _local()  # no local orders — the missed close's order already filled+evicted at the venue
     # local LONG 0.005 @ 59_000; the venue closed 0.002 we missed -> snapshot shows 0.003
     st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
 
     # snapshot decrease -> size-only reconcile (+ watermark=T0 + confirm task), pnl NOT realized
     rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
@@ -610,6 +645,7 @@ def test_position_decrease_partial_deal_still_fetches_remainder():
     rec = _reconciler()
     st = _local()
     st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
     rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
     assert rec.active_keys() == {"BTCUSDT"}  # missed delta = 0.002
 
@@ -636,6 +672,7 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
     st = _local()  # no local orders — the missed close's order already filled+evicted at the venue
     # local LONG 0.005 @ 59_000; the venue closed 0.002 we missed -> snapshot shows 0.003
     st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
 
     # 1) snapshot decrease -> size-only reconcile (+ watermark + confirm task), pnl not yet realized
     rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
