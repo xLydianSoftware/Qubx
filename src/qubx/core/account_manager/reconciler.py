@@ -16,7 +16,7 @@ from typing import Any
 
 import numpy as np
 
-from qubx import logger
+from qubx import area_logger
 from qubx.core.account_manager.diffs import (
     BalanceMismatch,
     Differ,
@@ -39,6 +39,10 @@ from qubx.core.events import (
     OrderPartiallyFilledEvent,
 )
 from qubx.utils.time import to_timedelta
+
+# Area-tagged logger: important reconcile outcomes log at INFO (always visible); per-tick / per-task
+# noise logs at DEBUG and only surfaces with QUBX_DEBUG_AREAS=reconciler.
+_log = area_logger("reconciler")
 
 # Hist-deals fetch reaches slightly before the position watermark: the triggering trade can sit
 # at/just-before the snapshot's position update ts, and fetch_my_trades(since=...) would exclude
@@ -173,7 +177,7 @@ class ResolveMissingOrder(Task):
             return [RequestStatus(cid=self._cid, venue_id=self._venue_id, instrument=self._instrument)]
         # - budget exhausted → route LOST via the bus (never silent: a silent mutate is invisible
         #   and the later WS dup gets deduped, so the strategy would miss it)
-        logger.warning(
+        _log.warning(
             f"[{state.exchange}] reconcile give-up on order <g>{self._cid}</g> (vid=<blue>{self._venue_id}</blue>) "
             f"-> <r>LOST</r> after {self._retries} status fetches with no venue answer"
         )
@@ -261,7 +265,7 @@ class AwaitOrderConfirm(Task):
             return [RequestStatus(cid=self._cid, venue_id=self._venue_id, instrument=self._instrument)]
 
         # - budget exhausted → route LOST via the bus (same as ResolveMissingOrder give-up)
-        logger.warning(
+        _log.warning(
             f"[{state.exchange}] reconcile give-up on unconfirmed order <g>{self._cid}</g> "
             f"(vid=<blue>{self._venue_id}</blue>) -> <r>LOST</r> after {self._retries} status fetches"
         )
@@ -379,7 +383,7 @@ class Reconciler:
         actions: list[Action] = []
         if self._snapshot_due(state.exchange, now):
             self._last_snapshot[state.exchange] = now
-            logger.debug(f"[{state.exchange}] reconcile: snapshot due -> RequestSnapshot")
+            _log.debug(f"[{state.exchange}] reconcile: snapshot due -> RequestSnapshot")
             actions.append(RequestSnapshot(state.exchange))
         return actions + self._dispatch(Tick(), state, now)
 
@@ -399,7 +403,7 @@ class Reconciler:
         # - as_of ratchet: drop an out-of-order snapshot wholesale (at/before the last applied)
         last_as_of = state.get_last_snapshot_as_of()
         if last_as_of is not None and snap.as_of <= last_as_of:
-            logger.debug(f"[{state.exchange}] reconcile: stale snapshot as_of={snap.as_of} <= {last_as_of} — dropped")
+            _log.debug(f"[{state.exchange}] reconcile: stale snapshot as_of={snap.as_of} <= {last_as_of} — dropped")
             return []
         # - FIRST reconcile after start (no prior snapshot applied, last_as_of is None): adopt the
         #   venue positions but skip hist-deals recovery. Adopting startup state is the position
@@ -411,7 +415,7 @@ class Reconciler:
         changed = changed_positions if changed_positions is not None else []
         actions: list[Action] = []
         for difference in self._differ.diff(state, snap):
-            logger.debug(difference.describe())
+            _log.debug(difference.describe())
             # - each atom is applied in isolation: a handler that raises (e.g. a venue/state
             #   surprise) must not sink the rest of the snapshot reconcile (balances/figures/
             #   other positions). Log and move on; the next snapshot re-derives the diff.
@@ -443,7 +447,9 @@ class Reconciler:
 
                     # - local holds it, venue flat = missed the close
                     case LocalPositionMissing(position=local_pos):
-                        changed.append(self._flatten_missed_close(state, snap, now, local_pos.instrument, spawn_confirm))
+                        changed.append(
+                            self._flatten_missed_close(state, snap, now, local_pos.instrument, spawn_confirm)
+                        )
 
                     case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
                         # - push-wins: a WS push at/after the snapshot's as_of supersedes it (venue event
@@ -452,7 +458,7 @@ class Reconciler:
                         if push_as_of is None or push_as_of < snap.as_of:
                             state.apply_balance_snapshot(snap_bal, snap.as_of)
             except Exception:
-                logger.exception(f"[{state.exchange}] reconcile: diff atom failed, skipping -> {difference.describe()}")
+                _log.exception(f"[{state.exchange}] reconcile: diff atom failed, skipping -> {difference.describe()}")
 
         # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
         #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.
@@ -503,7 +509,7 @@ class Reconciler:
                 last_update_time=snap_order.last_update_time if snap_order.last_update_time is not None else as_of,
             )
         )
-        logger.info(
+        _log.info(
             f"[{state.exchange}] reconcile: '{origin.value}' order <y>{cid}</y> recovered from snapshot (status={order.status})"
         )
         return order
@@ -522,7 +528,7 @@ class Reconciler:
         # - flip: the missed deals crossed zero, so realize_only attributes the close leg against the
         #   already-flipped avg → recovered r_pnl is partial (size/avg stay venue-authoritative)
         if prior_qty != 0.0 and snap_pos.quantity != 0.0 and np.sign(prior_qty) != np.sign(snap_pos.quantity):
-            logger.warning(
+            _log.warning(
                 f"[{state.exchange}] reconcile: <y>{snap_pos.instrument}</y> flipped "
                 f"{prior_qty} -> {snap_pos.quantity}; recovered-deal r_pnl may be incomplete"
             )
@@ -536,14 +542,19 @@ class Reconciler:
                 )
             )
         else:
-            logger.debug(
+            _log.info(
                 f"[{state.exchange}] first reconcile: adopted venue position <y>{snap_pos.instrument}</y> "
                 f"size={snap_pos.quantity} without hist-deals (restorer owns startup state)"
             )
         return state.get_position(snap_pos.instrument)
 
     def _flatten_missed_close(
-        self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, instrument: Instrument, spawn_confirm: bool
+        self,
+        state: AccountState,
+        snap: AccountSnapshot,
+        now: np.datetime64,
+        instrument: Instrument,
+        spawn_confirm: bool,
     ) -> Position:
         # - flatten (keeps r_pnl/commissions/funding); missed delta is the whole prior size.
         #   no venue position ts (absent from snapshot) → as_of is the watermark / hist `since`.
@@ -592,7 +603,7 @@ class Reconciler:
         #   transitions but warn
         if snap.status != local.status:
             if not can_transition(local.status, snap.status):
-                logger.warning(
+                _log.warning(
                     f"[{state.exchange}] reconcile: forcing {local.client_order_id} "
                     f"{local.status} -> {snap.status} (snapshot authoritative)"
                 )
@@ -623,7 +634,7 @@ class Reconciler:
         if task.key in self._tasks:  # one task per key — duplicate ignored
             return
         self._tasks[task.key] = task
-        logger.debug(f"[{task.__class__.__name__}] reconcile spawn task <g>{task.key}</g>")
+        _log.debug(f"[{task.__class__.__name__}] reconcile spawn task <g>{task.key}</g>")
 
     def _dispatch(
         self, inp: Any, state: AccountState, now: np.datetime64, only: set[Hashable] | None = None
@@ -638,16 +649,18 @@ class Reconciler:
 
             acts = task.step(inp, state, now)
             if acts:
-                logger.debug(
+                _log.debug(
                     f"[{state.exchange}] reconcile step on task <g>{key}</g>(<y>{type(inp).__name__}</y>) ==> <r>{acts}</r>"
                 )
 
             out += acts
             if task.done():
-                # - "resolved" = finished with no action (e.g. all deals arrived / order event seen);
-                #   "completed" = dropped after a terminal action (fetch / LOST)
-                reason = "completed" if acts else "resolved"
-                logger.debug(f"[{state.exchange}] reconcile {type(task).__name__} <g>{key}</g> {reason} -> dropped")
+                # - "resolved" = finished with no action (all deals arrived / order event seen) -> DEBUG noise;
+                #   "completed" = dropped after a terminal action (hist-deals fetch / LOST) -> INFO (important)
+                if acts:
+                    _log.info(f"[{state.exchange}] reconcile {type(task).__name__} <g>{key}</g> completed -> dropped")
+                else:
+                    _log.debug(f"[{state.exchange}] reconcile {type(task).__name__} <g>{key}</g> resolved -> dropped")
                 del self._tasks[key]
         return out
 
