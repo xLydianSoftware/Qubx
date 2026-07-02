@@ -50,6 +50,7 @@ from qubx.core.basics import (
     OrderType,
     Position,
     dt_64,
+    resolve_reduce_only,
 )
 from qubx.core.connector import ChannelEmitter
 from qubx.core.events import (
@@ -231,7 +232,7 @@ class CcxtConnector(ChannelEmitter):
             raise InvalidOrderParameters(f"submit_order: quantity must be non-zero (got {request.quantity})")
 
         options = request.options or {}
-        reduce_only = bool(options.get("reduceOnly", options.get("reduce_only", False)))
+        reduce_only = bool(resolve_reduce_only(options))
 
         # Quote lookup is the connector's only READ dependency; payload build raises
         # framework-side rejections (no quote, below min-notional, missing price).

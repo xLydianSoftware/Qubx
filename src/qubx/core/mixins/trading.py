@@ -12,6 +12,7 @@ from qubx.core.basics import (
     OrderSide,
     OrderStatus,
     OrderType,
+    resolve_reduce_only,
 )
 from qubx.core.connector import IConnector
 from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
@@ -120,6 +121,9 @@ class TradingManager(ITradingManager):
         price = self._adjust_price(instrument, price, amount)
         base_cid = client_id or self._generate_order_client_id(instrument.symbol)
 
+        if resolve_reduce_only(options) is None and self._is_position_reducing(instrument, amount):
+            options["reduceOnly"] = True
+
         connector = self._get_connector(instrument.exchange)
         cid = connector.make_client_id(base_cid)
 
@@ -140,7 +144,7 @@ class TradingManager(ITradingManager):
             side=side,
             status=OrderStatus.SUBMITTED,
             time_in_force=time_in_force,
-            reduce_only=bool(options.get("reduce_only", options.get("reduceOnly", False))),
+            reduce_only=bool(resolve_reduce_only(options)),
             post_only=bool(options.get("post_only", False)),
             options=options,
         )

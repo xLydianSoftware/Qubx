@@ -739,6 +739,21 @@ def classify_origin(client_order_id: str, *, framework_prefix: str = FRAMEWORK_C
     return OrderOrigin.EXTERNAL
 
 
+def resolve_reduce_only(options: dict[str, Any]) -> bool | None:
+    """Resolve the reduceOnly flag from order options, accepting either spelling — camelCase
+    ``reduceOnly`` or snake_case ``reduce_only`` (``reduceOnly`` wins if both are present).
+
+    Returns ``None`` when the caller specified neither, so callers can distinguish 'unset' from
+    an explicit ``False`` (e.g. to auto-resolve reduceOnly from the current position). Single
+    source of truth for the alias so the Order field and the connector payload never disagree.
+    """
+    if "reduceOnly" in options:
+        return bool(options["reduceOnly"])
+    if "reduce_only" in options:
+        return bool(options["reduce_only"])
+    return None
+
+
 class OrderChange(StrEnum):
     """What happened to an order, paired with it on ApplyResult. Covers the cases
     order.status can't express on its own: UPDATED (status unchanged), CANCEL_REJECTED/
