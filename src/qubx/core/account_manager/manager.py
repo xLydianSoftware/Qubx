@@ -223,6 +223,15 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         if (state := self._states.get(instrument.exchange)) is not None:
             state.settle_position(instrument)
 
+    def is_synced(self) -> bool:
+        """True once every managed exchange has applied its initial account snapshot.
+
+        The startup readiness gate waits on this so on_start / on_fit / state-resolution see
+        real capital + venue positions instead of the pre-sync zero state (a venue snapshot
+        marks the state's last_as_of; None means no snapshot applied yet on that exchange).
+        """
+        return all(s.get_last_snapshot_as_of() is not None for s in self._states.values())
+
     def apply(self, event: AccountMessage) -> ApplyResult:
         if (state := self._state_for_event(event)) is None:
             return ApplyResult()

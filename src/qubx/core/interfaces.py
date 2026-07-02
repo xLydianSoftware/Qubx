@@ -33,7 +33,6 @@ from qubx.core.basics import (
     OrderChange,
     OrderOrigin,
     OrderRequest,
-    OrderTransition,
     Position,
     RestoredState,
     Signal,

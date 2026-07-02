@@ -23,6 +23,8 @@ from qubx.core.basics import (
     OrderType,
 )
 from qubx.core.events import (
+    AccountSnapshot,
+    AccountSnapshotEvent,
     BalanceUpdateEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
@@ -106,6 +108,24 @@ def test_apply_routes_by_order_id_across_exchanges():
     r = am.apply(OrderCanceledEvent(instrument=None, client_order_id="c1"))  # no instrument, 2 exchanges
     assert r.order is not None and r.order.status is OrderStatus.CANCELED
     assert _present(am.get_state("OKX").get_order("c1")).status is OrderStatus.CANCELED
+
+
+def test_is_synced_false_until_initial_snapshot_then_true():
+    # is_synced drives the startup readiness gate: it must be False until the first venue
+    # AccountSnapshot is applied (state watermarked), then True — so on_start/on_fit see real state.
+    am = _am()
+    assert am.is_synced() is False  # no snapshot applied yet
+    am.apply(AccountSnapshotEvent(instrument=None, snapshot=AccountSnapshot(exchange=EX, as_of=T1)))
+    assert am.is_synced() is True
+
+
+def test_is_synced_requires_every_managed_exchange():
+    # multi-exchange: not synced until ALL managed exchanges have applied their first snapshot.
+    am = _am("BINANCE.UM", "BINANCE.CM")
+    am.apply(AccountSnapshotEvent(instrument=None, snapshot=AccountSnapshot(exchange="BINANCE.UM", as_of=T1)))
+    assert am.is_synced() is False  # BINANCE.CM still un-synced
+    am.apply(AccountSnapshotEvent(instrument=None, snapshot=AccountSnapshot(exchange="BINANCE.CM", as_of=T1)))
+    assert am.is_synced() is True
 
 
 def test_apply_unroutable_returns_empty():

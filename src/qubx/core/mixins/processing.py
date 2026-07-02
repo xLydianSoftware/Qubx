@@ -101,6 +101,9 @@ def validate_account_callback_signatures(strategy: IStrategy) -> None:
 class ProcessingManager(IProcessingManager):
     MAX_NUMBER_OF_STRATEGY_FAILURES: int = 10
     DATA_READY_TIMEOUT: td_64 = td_64(60, "s")
+    # - after market data is ready, wait up to this long for the INITIAL account snapshot before
+    #   proceeding anyway (so a missing/failed snapshot never hangs the strategy forever).
+    ACCOUNT_SYNC_TIMEOUT: td_64 = td_64(15, "s")
 
     _context: IStrategyContext
     _strategy: IStrategy
@@ -138,6 +141,8 @@ class ProcessingManager(IProcessingManager):
     _data_ready_start_time: dt_64 | None = None
     _last_data_ready_log_time: dt_64 | None = None
     _all_instruments_ready_logged: bool = False
+    _account_sync_deadline: dt_64 | None = None  # - startup: bound the wait for the initial snapshot
+    _account_sync_timeout_logged: bool = False
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
     _pending_no_quote_signals: dict[Instrument, Signal] = {}  # signals waiting for quote to arrive
@@ -208,6 +213,8 @@ class ProcessingManager(IProcessingManager):
         self._data_ready_start_time = None
         self._last_data_ready_log_time = None
         self._all_instruments_ready_logged = False
+        self._account_sync_deadline = None
+        self._account_sync_timeout_logged = False
         self._emitted_signals = []
 
         # - special tracker for post-warmup initialization signals
@@ -842,6 +849,35 @@ class ProcessingManager(IProcessingManager):
                     self._last_data_ready_log_time = current_time
                 return False
 
+    def _is_ready(self) -> bool:
+        """Startup readiness gate: market data ready AND the initial account snapshot applied.
+
+        Gates on_start / on_fit / state-resolution / restore so those callbacks see REAL capital +
+        venue positions instead of the pre-sync zero state (which would produce 0-capital sizing and
+        transiently-flat restored positions). No account requirement in simulation (no venue snapshot).
+        Falls through after ACCOUNT_SYNC_TIMEOUT so a missing/failed snapshot never hangs the strategy
+        — mirrors the data-ready two-phase timeout; the reconciler heals state on the next snapshot.
+        """
+        if not self._is_data_ready():
+            return False
+        # - simulation & paper have a locally-seeded account (no venue snapshot to wait for)
+        if self._context.is_simulation or self._context.is_paper_trading or self._account_manager.is_synced():
+            return True
+        # - data ready but the initial venue snapshot hasn't applied yet: wait, bounded.
+        now = self._time_provider.time()
+        if self._account_sync_deadline is None:
+            self._account_sync_deadline = now + self.ACCOUNT_SYNC_TIMEOUT
+            return False
+        if now >= self._account_sync_deadline:
+            if not self._account_sync_timeout_logged:
+                logger.warning(
+                    "Initial account snapshot not applied within timeout — starting without it; "
+                    "capital/positions may be incomplete until the next reconcile"
+                )
+                self._account_sync_timeout_logged = True
+            return True
+        return False
+
     def __update_base_data(
         self, instrument: Instrument, event_type: str, data: Timestamped, is_historical: bool = False
     ) -> bool:
@@ -977,13 +1013,13 @@ class ProcessingManager(IProcessingManager):
         pass
 
     def _handle_start(self) -> None:
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
         self._strategy.on_start(self._context)
         self._context._strategy_state.is_on_start_called = True
 
     def _handle_state_resolution(self) -> None:
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
 
         _ctx = self._context
@@ -1011,7 +1047,7 @@ class ProcessingManager(IProcessingManager):
         Args:
             restored_state: The restored state containing signals and target positions
         """
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
 
         # Restore tracker state from signals
@@ -1036,7 +1072,7 @@ class ProcessingManager(IProcessingManager):
             self._position_gathering.restore_from_target_positions(self._context, latest_targets)
 
     def _handle_warmup_finished(self) -> None:
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
         # The flag reset lives in an outer finally so no raise (health monitor included)
         # can strand it True — a stranded flag silently disables the strategy forever.
@@ -1052,7 +1088,7 @@ class ProcessingManager(IProcessingManager):
         """
         When scheduled fit event is happened - we need to invoke strategy on_fit method
         """
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
         # The flag reset lives in an outer finally so no raise (finalize_ohlc or the health
         # monitor) can strand it True — a stranded flag silently disables the strategy
