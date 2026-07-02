@@ -4,7 +4,7 @@ from typing import List, Union
 import pandas as pd
 from pytest import approx
 
-from qubx.core.basics import OrderOrigin, Position, TransactionCostsCalculator, classify_origin
+from qubx.core.basics import OrderOrigin, Position, TransactionCostsCalculator, classify_origin, resolve_reduce_only
 from qubx.core.lookups import FileInstrumentsLookupWithCCXT, lookup
 from qubx.core.series import Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str
@@ -352,3 +352,22 @@ def test_update_position_with_conversion_rate():
     assert pnl == approx(2.0)  # returned realized in QUOTE units: 0.002 * (51_000 - 50_000)
     assert pos.r_pnl == approx(1.0)  # accumulated in FUNDED currency: 2.0 / conv
     assert pos.quantity == 0.0
+
+
+def test_resolve_reduce_only_both_spellings_and_precedence():
+    # Accepts either spelling.
+    assert resolve_reduce_only({"reduceOnly": True}) is True
+    assert resolve_reduce_only({"reduce_only": True}) is True
+    assert resolve_reduce_only({"reduceOnly": False}) is False
+    assert resolve_reduce_only({"reduce_only": False}) is False
+    # camelCase reduceOnly wins if both are present (single, consistent precedence).
+    assert resolve_reduce_only({"reduceOnly": True, "reduce_only": False}) is True
+    # Coerces truthy/falsy values to bool.
+    assert resolve_reduce_only({"reduceOnly": 1}) is True
+    assert resolve_reduce_only({"reduce_only": 0}) is False
+
+
+def test_resolve_reduce_only_unset_is_none():
+    # None distinguishes 'unset' from an explicit False (callers auto-resolve on None).
+    assert resolve_reduce_only({}) is None
+    assert resolve_reduce_only({"post_only": True}) is None

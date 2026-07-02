@@ -467,6 +467,62 @@ class TestTradingManagerTradeOrderShape:
         assert registered.price == 50_000.0
 
 
+class TestTradingManagerAutoReduceOnly:
+    """A position-reducing order auto-carries reduceOnly so the two min_notional gates agree:
+    _adjust_size exempts reducing orders locally, and the connector only exempts orders whose
+    request.options carry reduceOnly. Auto-setting it in trade() keeps them consistent."""
+
+    def _instr(self):
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr is not None
+        return instr
+
+    def _set_long(self, mock_account, qty=1.5):
+        pos = Mock(spec=Position)
+        pos.quantity = qty
+        mock_account.get_position.return_value = pos
+
+    def test_reducing_order_auto_sets_reduce_only(self, trading_manager, mock_connector, mock_account):
+        instr = self._instr()
+        self._set_long(mock_account, 1.5)  # long 1.5
+
+        trading_manager.trade(instr, -0.1, price=50_000.0)  # partial reduce, no explicit flag
+
+        order = mock_account.add_order.call_args.args[0]
+        request = mock_connector.submit_order.call_args.args[0]
+        assert order.reduce_only is True
+        # Propagates into the request options so the connector's min_notional check exempts it too.
+        assert request.options.get("reduceOnly") is True
+
+    def test_increasing_order_not_reduce_only(self, trading_manager, mock_connector, mock_account):
+        instr = self._instr()
+        self._set_long(mock_account, 1.5)
+
+        trading_manager.trade(instr, 0.1, price=50_000.0)  # add to the long
+
+        order = mock_account.add_order.call_args.args[0]
+        assert order.reduce_only is False
+
+    def test_flip_through_zero_not_reduce_only(self, trading_manager, mock_connector, mock_account):
+        instr = self._instr()
+        self._set_long(mock_account, 1.5)
+
+        # -2.0 on a +1.5 long crosses zero → opens fresh short exposure, so NOT reducing.
+        trading_manager.trade(instr, -2.0, price=50_000.0)
+
+        order = mock_account.add_order.call_args.args[0]
+        assert order.reduce_only is False
+
+    def test_explicit_reduce_only_false_is_respected(self, trading_manager, mock_connector, mock_account):
+        instr = self._instr()
+        self._set_long(mock_account, 1.5)
+
+        trading_manager.trade(instr, -0.1, price=50_000.0, reduceOnly=False)  # caller opts out
+
+        order = mock_account.add_order.call_args.args[0]
+        assert order.reduce_only is False
+
+
 class TestTradingManagerTradeSubmitFailure:
     """trade() registers the order before submitting, and cleans up on a synchronous raise."""
 
