@@ -1071,6 +1071,14 @@ class ProcessingManager(IProcessingManager):
             logger.info(f"<yellow>Restoring gatherer state from {len(latest_targets)} latest target positions</yellow>")
             self._position_gathering.restore_from_target_positions(self._context, latest_targets)
 
+            # - re-persist the restored targets through the current run's target logger (the
+            #   same channel used when the tracker emits targets on the normal path, see
+            #   __preprocess_and_log_target_positions). Without this, the restored targets are
+            #   only handed to the gatherer in-memory and this run's targets.csv stays empty,
+            #   so a subsequent `--restore` finds nothing to restore from and the chain breaks
+            #   after a single hop.
+            self._logging.save_targets(latest_targets)
+
     def _handle_warmup_finished(self) -> None:
         if not self._is_ready():
             return
