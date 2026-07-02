@@ -20,6 +20,7 @@ from tests.qubx.connectors.ccxt.data.ccxt_responses import (
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
+
 def test_ccxt_order_stamps_venue_last_update_time():
     # the order's last_update_time must carry the VENUE update ts (ccxt lastUpdateTimestamp,
     # else raw info.updateTime), so the reconciler's monotonic guard works in prod.
@@ -48,6 +49,26 @@ def test_ccxt_position_stamps_venue_last_update_time():
     assert ccxt_convert_position(p, "BINANCE.UM", BINANCE_MARKETS).last_update_time == expected
     # stamped even when the venue omits markPrice (the relaxed guard)
     assert ccxt_convert_position({**p, "markPrice": None}, "BINANCE.UM", BINANCE_MARKETS).last_update_time == expected
+
+
+def test_ccxt_position_populates_venue_settings():
+    from qubx.connectors.ccxt.utils import ccxt_convert_position
+    from tests.qubx.connectors.ccxt.test_utils import BINANCE_MARKETS, POSITIONS_BINANCE_UM
+
+    p = POSITIONS_BINANCE_UM[0]  # fixture carries leverage=2.0
+    assert ccxt_convert_position(p, "BINANCE.UM", BINANCE_MARKETS).leverage == 2.0
+
+    # venue-reported margin mode, adl quantile and notional cap flow onto the Position; the
+    # cap and adl ride the raw ``info`` (Binance maxNotionalValue / adlQuantile).
+    raw = {
+        **p,
+        "marginMode": "isolated",
+        "info": {**(p.get("info") or {}), "adlQuantile": "3", "maxNotionalValue": "1000000"},
+    }
+    pos = ccxt_convert_position(raw, "BINANCE.UM", BINANCE_MARKETS)
+    assert pos.margin_mode == "isolated"
+    assert pos.adl_level == 3
+    assert pos.max_notional == 1_000_000.0
 
 
 class TestStrats:

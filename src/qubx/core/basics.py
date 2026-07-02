@@ -5,7 +5,7 @@ from enum import StrEnum
 from functools import cache
 from queue import Empty, Queue
 from threading import Event
-from typing import Any, TypeAlias
+from typing import Any, Literal, TypeAlias
 
 import numpy as np
 import pandas as pd
@@ -921,6 +921,13 @@ class Position:
     # Lower values = more likely to be auto-deleveraged.
     adl_level: int | None = None
 
+    # Per-instrument venue settings reported by the exchange (None if not reported).
+    # ``leverage`` is the configured/initial leverage tier (distinct from the observed
+    # notional/equity ratio); ``max_notional`` is the venue's notional cap at that leverage.
+    leverage: float | None = None
+    margin_mode: Literal["cross", "isolated"] | None = None
+    max_notional: float | None = None
+
     # funding payment tracking
     cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
     funding_payments: list[FundingPayment]  # history of funding payments
@@ -973,6 +980,9 @@ class Position:
         self.maint_margin = 0.0
         self._maint_margin_external = False
         self.adl_level = None
+        self.leverage = None
+        self.margin_mode = None
+        self.max_notional = None
         self.cumulative_funding = 0.0
         self.funding_payments = []
         self.last_funding_time = np.datetime64("NaT")  # type: ignore
@@ -1014,6 +1024,10 @@ class Position:
         self._initial_margin_external = pos._initial_margin_external
         self.maint_margin = pos.maint_margin
         self._maint_margin_external = pos._maint_margin_external
+        self.adl_level = pos.adl_level
+        self.leverage = pos.leverage
+        self.margin_mode = pos.margin_mode
+        self.max_notional = pos.max_notional
         self.cumulative_funding = pos.cumulative_funding
         self.funding_payments = pos.funding_payments.copy() if hasattr(pos, "funding_payments") else []
         self.last_funding_time = pos.last_funding_time if hasattr(pos, "last_funding_time") else np.datetime64("NaT")

@@ -401,6 +401,12 @@ class Reconciler:
         if last_as_of is not None and snap.as_of <= last_as_of:
             logger.debug(f"[{state.exchange}] reconcile: stale snapshot as_of={snap.as_of} <= {last_as_of} — dropped")
             return []
+        # - FIRST reconcile after start (no prior snapshot applied, last_as_of is None): adopt the
+        #   venue positions but skip hist-deals recovery. Adopting startup state is the position
+        #   RESTORER's job; recovering trades on start would double-count against restored r_pnl.
+        #   Restorers seed positions/balances, never the snapshot watermark, so last_as_of stays
+        #   None across a restart. In-session snapshots (last_as_of set) recover missed deals.
+        spawn_confirm = last_as_of is not None
         state.mark_snapshot_applied(snap.as_of)
         changed = changed_positions if changed_positions is not None else []
         actions: list[Action] = []
@@ -428,7 +434,7 @@ class Reconciler:
 
                     # - size diff = missed deals
                     case PositionSizeMismatch(origin=snap_pos) | OriginalPositionMissing(position=snap_pos):
-                        changed.append(self._reconcile_missed_position(state, snap, now, snap_pos))
+                        changed.append(self._reconcile_missed_position(state, snap, now, snap_pos, spawn_confirm))
 
                     # - avg/margin only = figure refresh, no missed deals
                     case PositionFieldMismatch(origin=snap_pos):
@@ -437,7 +443,7 @@ class Reconciler:
 
                     # - local holds it, venue flat = missed the close
                     case LocalPositionMissing(position=local_pos):
-                        changed.append(self._flatten_missed_close(state, snap, now, local_pos.instrument))
+                        changed.append(self._flatten_missed_close(state, snap, now, local_pos.instrument, spawn_confirm))
 
                     case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
                         # - push-wins: a WS push at/after the snapshot's as_of supersedes it (venue event
@@ -503,11 +509,13 @@ class Reconciler:
         return order
 
     def _reconcile_missed_position(
-        self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, snap_pos: Position
+        self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, snap_pos: Position, spawn_confirm: bool
     ) -> Position:
         # - apply the snapshot size, watermark it (reducer won't re-book deals it already covers),
         #   then confirm-task the missed delta (snapshot - prior, captured before the apply).
-        #   Returns the reconciled live position (for on_position_change).
+        #   Returns the reconciled live position (for on_position_change). On the first reconcile
+        #   after start (spawn_confirm=False) the confirm task / hist-deals request is skipped —
+        #   the restorer owns startup state; only in-session drift recovers missed deals.
         prior = state.get_position(snap_pos.instrument)
         prior_qty = prior.quantity if prior is not None else 0.0
         delta = snap_pos.quantity - prior_qty
@@ -521,28 +529,36 @@ class Reconciler:
         state.reconcile_position_from_snapshot(snap_pos)
         since = snap_pos.last_update_time if snap_pos.last_update_time is not None else snap.as_of
         state.mark_position_reconcile(snap_pos.instrument, since)
-        self._spawn(
-            ConfirmPositionBySnapshot(
-                snap_pos.instrument, since, now, wait=self._position_confirm_wait, expected_delta=delta
+        if spawn_confirm:
+            self._spawn(
+                ConfirmPositionBySnapshot(
+                    snap_pos.instrument, since, now, wait=self._position_confirm_wait, expected_delta=delta
+                )
             )
-        )
+        else:
+            logger.debug(
+                f"[{state.exchange}] first reconcile: adopted venue position <y>{snap_pos.instrument}</y> "
+                f"size={snap_pos.quantity} without hist-deals (restorer owns startup state)"
+            )
         return state.get_position(snap_pos.instrument)
 
     def _flatten_missed_close(
-        self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, instrument: Instrument
+        self, state: AccountState, snap: AccountSnapshot, now: np.datetime64, instrument: Instrument, spawn_confirm: bool
     ) -> Position:
         # - flatten (keeps r_pnl/commissions/funding); missed delta is the whole prior size.
         #   no venue position ts (absent from snapshot) → as_of is the watermark / hist `since`.
-        #   Returns the now-flat live position (for on_position_change).
+        #   Returns the now-flat live position (for on_position_change). First reconcile after start
+        #   (spawn_confirm=False) adopts the venue-flat state without a hist-deals request.
         prior = state.get_position(instrument)
         delta = -(prior.quantity if prior is not None else 0.0)
         state.settle_position(instrument)
         state.mark_position_reconcile(instrument, snap.as_of)
-        self._spawn(
-            ConfirmPositionBySnapshot(
-                instrument, snap.as_of, now, wait=self._position_confirm_wait, expected_delta=delta
+        if spawn_confirm:
+            self._spawn(
+                ConfirmPositionBySnapshot(
+                    instrument, snap.as_of, now, wait=self._position_confirm_wait, expected_delta=delta
+                )
             )
-        )
         return state.get_position(instrument)
 
     def _reconcile_order(self, state: AccountState, snap_order: Order) -> Action | None:

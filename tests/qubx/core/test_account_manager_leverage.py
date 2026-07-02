@@ -192,3 +192,58 @@ def test_total_margins_aggregate_across_positions():
     assert am.get_total_maint_margin() == 400.0
     # available margin = total capital - total initial margin
     assert am.get_available_margin("binance") == 2_000.0 - 800.0
+
+
+# ---- per-instrument venue settings: read side (backed by Position) ---------- #
+
+
+def test_venue_settings_read_off_position():
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument("BTCUSDT")
+    pos = _marked_position(inst, 1.0, 50_000.0, 50_000.0)
+    pos.leverage = 10.0
+    pos.margin_mode = "isolated"
+    pos.max_notional = 1_000_000.0
+    pos.adl_level = 2
+    state.set_position(inst, pos)
+
+    assert am.get_max_instrument_leverage(inst) == 10.0
+    assert am.get_max_instrument_notional(inst) == 1_000_000.0
+    assert am.get_margin_mode(inst) == "isolated"
+    assert am.get_adl_level(inst) == 2
+
+
+def test_venue_settings_neutral_when_not_reported():
+    # An instrument the venue never reported reads as None / inf (get_position materializes flat).
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    assert am.get_max_instrument_leverage(inst) is None
+    assert am.get_max_instrument_notional(inst) == float("inf")
+    assert am.get_margin_mode(inst) is None
+    assert am.get_adl_level(inst) is None
+
+
+# ---- per-instrument venue settings: write side ------------------------------ #
+
+
+def test_set_max_instrument_leverage_routes_to_connector():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am._connectors["binance"].set_max_instrument_leverage.return_value = True
+    assert am.set_max_instrument_leverage(inst, 7.0) is True
+    am._connectors["binance"].set_max_instrument_leverage.assert_called_once_with(inst, 7.0)
+
+
+def test_set_margin_mode_routes_to_connector():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am._connectors["binance"].set_margin_mode.return_value = True
+    assert am.set_margin_mode(inst, "cross") is True
+    am._connectors["binance"].set_margin_mode.assert_called_once_with(inst, "cross")
+
+
+def test_set_leverage_unmanaged_exchange_returns_false():
+    am = _am(exchanges=("binance",))
+    inst = _instrument("BTCUSDT", exchange="bybit")  # no connector for bybit
+    assert am.set_max_instrument_leverage(inst, 7.0) is False
