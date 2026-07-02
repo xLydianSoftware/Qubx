@@ -183,6 +183,7 @@ class AccountManagerConfig(StrictBaseModel):
 
     reconcile_tick_interval_ms: int = 2_000
     snapshot_interval_ms: int = 30_000
+    full_snapshot_interval_ms: int = 300_000
     snapshot_grace_ms: int = 5_000
 
     missing_order_wait_ms: int = 5_000

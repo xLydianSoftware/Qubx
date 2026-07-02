@@ -61,8 +61,11 @@ class RequestStatus:
 
 @dataclass(frozen=True)
 class RequestSnapshot:
-    # - pull a fresh account snapshot for this exchange
+    # - pull a fresh account snapshot for this exchange. full=True -> orders + algo/trigger +
+    #   positions + balance (startup discovery + periodic sweep). full=False -> positions + balance
+    #   only (steady state): cheap, stays off the shared REST throttle so it can't delay order sends.
     exchange: str
+    full: bool = True
 
 
 @dataclass(frozen=True)
@@ -340,6 +343,7 @@ class ConfirmPositionBySnapshot(Task):
 class Reconciler:
     _differ: Differ
     _snapshot_interval: np.timedelta64  # - reconciler owns the due-timer
+    _full_snapshot_interval: np.timedelta64  # - how often a due snapshot is FULL (else light)
     _missing_wait: np.timedelta64  # - knobs handed to ResolveMissingOrder tasks
     _missing_max_retries: int
     _position_confirm_wait: np.timedelta64  # - ConfirmPositionBySnapshot window
@@ -347,12 +351,14 @@ class Reconciler:
     _order_confirm_max_retries: int
     _tasks: dict[Hashable, Task]  # - opaque key -> task, one per key
     _last_snapshot: dict[str, np.datetime64]  # - per-exchange last snapshot time
+    _last_full_snapshot: dict[str, np.datetime64]  # - per-exchange last FULL snapshot request time
 
     def __init__(
         self,
         differ: Differ,
         *,
         snapshot_interval: str | np.timedelta64 = "30s",
+        full_snapshot_interval: str | np.timedelta64 = "5m",
         missing_wait: str | np.timedelta64 = "2s",
         missing_max_retries: int = 3,
         position_confirm_wait: str | np.timedelta64 = "2s",
@@ -361,6 +367,7 @@ class Reconciler:
     ):
         self._differ = differ
         self._snapshot_interval = _td(snapshot_interval)
+        self._full_snapshot_interval = _td(full_snapshot_interval)
         self._missing_wait = _td(missing_wait)
         self._missing_max_retries = missing_max_retries
         self._position_confirm_wait = _td(position_confirm_wait)
@@ -368,6 +375,7 @@ class Reconciler:
         self._order_confirm_max_retries = order_confirm_max_retries
         self._tasks = {}
         self._last_snapshot = {}
+        self._last_full_snapshot = {}
 
     def active_keys(self) -> set[Hashable]:
         return set(self._tasks)
@@ -383,8 +391,11 @@ class Reconciler:
         actions: list[Action] = []
         if self._snapshot_due(state.exchange, now):
             self._last_snapshot[state.exchange] = now
-            _log.debug(f"[{state.exchange}] reconcile: snapshot due -> RequestSnapshot")
-            actions.append(RequestSnapshot(state.exchange))
+            full = self._full_snapshot_due(state.exchange, now)
+            if full:
+                self._last_full_snapshot[state.exchange] = now
+            _log.debug(f"[{state.exchange}] reconcile: snapshot due -> RequestSnapshot(full={full})")
+            actions.append(RequestSnapshot(state.exchange, full=full))
         return actions + self._dispatch(Tick(), state, now)
 
     def on_snapshot(
@@ -667,6 +678,13 @@ class Reconciler:
     def _snapshot_due(self, exchange: str, now: np.datetime64) -> bool:
         last = self._last_snapshot.get(exchange)
         return last is None or ((now - last) >= self._snapshot_interval)  # type: ignore
+
+    def _full_snapshot_due(self, exchange: str, now: np.datetime64) -> bool:
+        # - first request ever (no local order state yet -> must discover all/algo orders) or the
+        #   periodic full sweep is due. Driven by request time, not arrival, so a light snapshot
+        #   landing never resets the sweep timer.
+        last = self._last_full_snapshot.get(exchange)
+        return last is None or ((now - last) >= self._full_snapshot_interval)  # type: ignore
 
     @staticmethod
     def _keys_of(event: object) -> set:

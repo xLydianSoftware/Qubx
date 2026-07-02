@@ -1272,29 +1272,38 @@ class CcxtConnector(ChannelEmitter):
             open_orders.append(order)
         return open_orders
 
-    def request_snapshot(self) -> None:
-        self._spawn(self._snapshot_async())
+    def request_snapshot(self, full: bool = True) -> None:
+        self._spawn(self._snapshot_async(full))
 
-    async def _snapshot_async(self) -> None:
-        """Fetch open orders + positions + balances concurrently and emit a snapshot.
+    async def _snapshot_async(self, full: bool = True) -> None:
+        """Fetch account state concurrently and emit a snapshot.
 
-        Network/exchange errors are logged, not raised — AM retries on its next
-        snapshot tick. ``return_exceptions=True`` keeps one failing fetch from
-        sinking the others; a failed leg is simply omitted (left None) from the
-        snapshot so reconcile won't wipe state it didn't actually observe.
+        full=True  -> open orders + algo/trigger orders + positions + balances (startup discovery +
+        periodic sweep). full=False -> positions + balances ONLY (steady state): the open-orders /
+        algo legs carry high REST weight and, sharing ccxt's throttle with order placement, delay
+        order sends by seconds — so steady snapshots skip them (open_orders=None -> reconcile leaves
+        order state untouched; orders are tracked via the WS stream + the periodic full sweep).
+
+        Network/exchange errors are logged, not raised — AM retries on its next snapshot tick.
+        ``return_exceptions=True`` keeps one failing fetch from sinking the others; a failed (or
+        skipped) leg is left None so reconcile won't wipe state it didn't actually observe.
         """
         ex = self._em.exchange
         as_of: dt_64 = self._time.time()
-        results = await asyncio.gather(
-            ex.fetch_open_orders(),
-            self._fetch_trigger_open_orders(),
-            ex.fetch_positions(),
-            ex.fetch_balance(),
-            return_exceptions=True,
-        )
-        raw_orders, raw_trigger_orders, raw_positions, raw_balance = results
-
-        open_orders = self._merge_open_orders(raw_orders, raw_trigger_orders)
+        if full:
+            raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
+                ex.fetch_open_orders(),
+                self._fetch_trigger_open_orders(),
+                ex.fetch_positions(),
+                ex.fetch_balance(),
+                return_exceptions=True,
+            )
+            open_orders = self._merge_open_orders(raw_orders, raw_trigger_orders)
+        else:
+            raw_positions, raw_balance = await asyncio.gather(
+                ex.fetch_positions(), ex.fetch_balance(), return_exceptions=True
+            )
+            open_orders = None  # - not observed this tick -> reconcile skips order diffing
 
         positions: list[Position] | None = None
         if isinstance(raw_positions, BaseException):

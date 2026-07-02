@@ -251,7 +251,7 @@ def test_execute_dispatches_reconciler_actions():
     )
 
     conn.request_order_status.assert_called_once_with(order)
-    conn.request_snapshot.assert_called_once_with()
+    conn.request_snapshot.assert_called_once_with(full=True)
     conn.request_hist_deals.assert_called_once_with(BTC, T0)
     am._pm.process_event.assert_called_once_with(routed)
 

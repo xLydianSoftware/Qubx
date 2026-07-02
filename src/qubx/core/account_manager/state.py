@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from qubx import logger
-from qubx.core.basics import Balance, Deal, Instrument, Order, OrderStatus, OrderTransition, Position
+from qubx.core.basics import Balance, Deal, Instrument, Order, OrderStatus, Position
 
 # Bounded per-exchange funding-bucket dedup (insertion order ≈ funding-event time order):
 # old buckets evict once the cap is hit so the set can't grow unbounded over long-running

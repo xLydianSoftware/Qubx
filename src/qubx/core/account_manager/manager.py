@@ -32,7 +32,6 @@ from qubx.core.basics import (
     Order,
     OrderOrigin,
     OrderStatus,
-    OrderTransition,
     Position,
     TransactionCostsCalculator,
 )
@@ -143,6 +142,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             ex: Reconciler(
                 Differ(grace=self._snapshot_grace),
                 snapshot_interval=self._snapshot_interval,
+                full_snapshot_interval=np.timedelta64(self._cfg.full_snapshot_interval_ms, "ms"),
                 missing_wait=np.timedelta64(self._cfg.missing_order_wait_ms, "ms"),
                 missing_max_retries=self._cfg.missing_order_retries,
                 position_confirm_wait=np.timedelta64(self._cfg.position_confirm_wait_ms, "ms"),
@@ -278,9 +278,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                         if order is not None and connector is not None:
                             connector.request_order_status(order)
 
-                    case RequestSnapshot():
+                    case RequestSnapshot(full=full):
                         if connector is not None:
-                            connector.request_snapshot()
+                            connector.request_snapshot(full=full)
 
                     case RouteEvent(event=routed):
                         # - HACK, do NOT copy: process_event is SYNCHRONOUS, and _execute runs

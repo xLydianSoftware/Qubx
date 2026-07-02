@@ -5,6 +5,7 @@ from dataclasses import dataclass
 class AccountManagerConfig:
     reconcile_tick_interval_ms: int = 2_000  # - single reconcile heartbeat cadence
     snapshot_interval_ms: int = 30_000  # - snapshot due-timer (Reconciler requests one when due)
+    full_snapshot_interval_ms: int = 300_000  # - how often a due snapshot is FULL (orders+algo); else light
     snapshot_grace_ms: int = 5_000  # - grace before an order missing from a snapshot counts as drift
 
     missing_order_wait_ms: int = 5_000  # - ResolveMissingOrder: wait before fetching status

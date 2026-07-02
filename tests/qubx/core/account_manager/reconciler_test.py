@@ -19,6 +19,7 @@ from qubx.core.account_manager.reconciler import (
     HIST_DEALS_LOOKBACK,
     Reconciler,
     RequestHistDeals,
+    RequestSnapshot,
     RequestStatus,
     RouteEvent,
 )
@@ -706,3 +707,27 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
     assert st.get_position(_inst()).quantity == 0.003  # type: ignore
     assert st.get_position(_inst()).r_pnl == 1.0  # type: ignore # not double-realized
     D_OFF()
+
+
+# --------------------------------------------------------------------------- #
+# Full vs light snapshot cadence — steady-state snapshots are light (positions+balance
+# only) to stay off the order throttle; a periodic full sweep + the first-ever request
+# stay full so unknown/algo orders are still discovered.
+# --------------------------------------------------------------------------- #
+
+
+def test_first_snapshot_is_full_then_light_then_full_after_sweep():
+    rec = Reconciler(Differ(grace="5s"), snapshot_interval="30s", full_snapshot_interval="5m")
+    st = _local()
+    ex = st.exchange
+
+    # first request after start must be FULL — no local order state yet, so we can't gate the
+    # all-orders + algo discovery fetch (matches the initial-discovery contract)
+    assert RequestSnapshot(ex, full=True) in rec.on_tick(st, T0)
+
+    # a due request inside the full-sweep window is LIGHT (positions + balance only)
+    assert RequestSnapshot(ex, full=False) in rec.on_tick(st, _passed_seconds(T0, 30))
+    assert RequestSnapshot(ex, full=False) in rec.on_tick(st, _passed_seconds(T0, 60))
+
+    # once the full-sweep interval elapses, the next due request is FULL again (WS-drop backstop)
+    assert RequestSnapshot(ex, full=True) in rec.on_tick(st, _passed_seconds(T0, 300))
