@@ -1021,11 +1021,15 @@ class CcxtConnector(ChannelEmitter):
             return
         last = len(deals) - 1
         for i, deal in enumerate(deals):
+            # amt = THIS trade's qty; order_filled = the ORDER's cumulative filled/total sampled now
+            # (order-level, NOT a per-trade running sum) — so a re-handed earlier trade shows the
+            # order's current progress, not its own point in history.
             self._dbg.debug(
-                "emit fill {} amt={} cum={} tid={}",
+                "emit fill {} amt={} order_filled={}/{} tid={}",
                 instrument.symbol,
                 deal.amount,
                 order.filled_quantity,
+                order.quantity,
                 deal.trade_id,
             )
             # On a full fill the LAST deal closes the order (OrderFilledEvent →
