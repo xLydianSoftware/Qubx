@@ -171,6 +171,7 @@ def _orders_as_records():
                     "status": order.status,
                     "time": str(order.submitted_at),
                     "id": order_id,
+                    "order_ref": order.client_order_id or order.venue_order_id or order_id,
                 }})
     except Exception:
         pass  # Context not ready yet

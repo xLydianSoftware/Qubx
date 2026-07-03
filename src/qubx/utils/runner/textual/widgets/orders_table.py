@@ -19,7 +19,9 @@ class OrdersTable(DataTable):
 
     def setup_columns(self):
         """Initialize table columns and store column keys."""
-        self._col_keys = list(self.add_columns("Exchange", "Symbol", "Side", "Type", "Qty", "Price", "Status", "Time"))
+        self._col_keys = list(
+            self.add_columns("Exchange", "Symbol", "Side", "Type", "Qty", "Price", "Status", "Time", "Order ID")
+        )
 
     def update_orders(self, rows: list[dict]) -> None:
         """
@@ -78,6 +80,7 @@ class OrdersTable(DataTable):
                 self.update_cell(row_key, self._col_keys[5], price_str)
                 self.update_cell(row_key, self._col_keys[6], r.get("status", ""))
                 self.update_cell(row_key, self._col_keys[7], time_str)
+                self.update_cell(row_key, self._col_keys[8], r.get("order_ref", ""))
             except Exception as e:
                 logger.warning(f"Failed to update order row {order_id}: {e}")
 
@@ -99,6 +102,7 @@ class OrdersTable(DataTable):
                     price_str,
                     r.get("status", ""),
                     time_str,
+                    r.get("order_ref", ""),
                     key=order_id,  # Use order ID as DataTable row key
                 )
                 self._row_keys[order_id] = row_key
@@ -233,6 +237,7 @@ def sanitize_orders_data(orders: list[dict]) -> list[dict]:
                     "filled": _sanitize_numeric(order.get("filled"), 0.0),
                     "status": order.get("status", "UNKNOWN"),
                     "time": order.get("time", ""),
+                    "order_ref": order.get("order_ref") or order.get("id", ""),
                 }
             )
         except Exception as e:

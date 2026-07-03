@@ -1,5 +1,7 @@
 """Account summary bar widget showing per-exchange capital and leverage."""
 
+from datetime import datetime, timezone
+
 from textual.app import ComposeResult
 from textual.containers import Horizontal
 from textual.widget import Widget
@@ -20,6 +22,15 @@ class AccountSummary(Widget):
     def compose(self) -> ComposeResult:
         with Horizontal(id="account-summary-bar"):
             yield Static("Waiting for data...", id="account-summary-content")
+            # - self-ticking wall clock, pushed to the right corner (content takes 1fr)
+            yield Static("", id="account-summary-clock")
+
+    def on_mount(self) -> None:
+        self.set_interval(1.0, self._update_clock)
+        self._update_clock()
+
+    def _update_clock(self) -> None:
+        self.query_one("#account-summary-clock", Static).update(datetime.now(timezone.utc).strftime("%H:%M:%S UTC"))
 
     def update_summary(self, summary: list[dict]) -> None:
         """Update the summary bar with per-exchange data.
