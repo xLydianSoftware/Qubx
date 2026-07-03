@@ -81,6 +81,7 @@ class TestNullInstrumentService:
         assert isinstance(diff, InstrumentServiceDiff)
         assert diff.blacklisted_added == []
         assert diff.blacklisted_removed == []
+        assert diff.entries_changed is False
 
     def test_is_blacklisted_always_false(self):
         assert NullInstrumentService().is_blacklisted(BTC_SWAP) is False
@@ -157,7 +158,30 @@ class TestHttpInstrumentService:
         diff = svc.refresh([BTC_SWAP, ETH_SPOT])
         assert diff.blacklisted_added == []
         assert diff.blacklisted_removed == []
+        assert diff.entries_changed is False  # cache preserved -> no change
         assert svc.is_blacklisted(BTC_SWAP) is True
+
+    def test_refresh_reports_entries_changed_for_off_universe_edit(self):
+        # An entry for an instrument NOT in the known universe produces no universe diff,
+        # but entries_changed must still flip so the manager can re-fit on add AND remove.
+        client = MagicMock()
+        svc = HttpInstrumentService(base_url="http://svc", exchanges=["BINANCE.UM"], client=client)
+        universe = [ETH_SPOT]  # does not contain BTC
+        client.get.return_value = _resp(
+            {"entries": [{"exchange": "BINANCE.UM", "market_type": None, "asset": "BTC", "symbol": None}]}
+        )
+        d_add = svc.refresh(universe)
+        assert d_add.blacklisted_added == [] and d_add.blacklisted_removed == []
+        assert d_add.entries_changed is True
+        # remove the off-universe entry: still no universe diff, but entries changed
+        client.get.return_value = _resp({"entries": []})
+        d_remove = svc.refresh(universe)
+        assert d_remove.blacklisted_added == [] and d_remove.blacklisted_removed == []
+        assert d_remove.entries_changed is True
+        # a repeat refresh with identical entries is not a change
+        client.get.return_value = _resp({"entries": []})
+        d_same = svc.refresh(universe)
+        assert d_same.entries_changed is False
 
 
 class TestFactory:

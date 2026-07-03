@@ -113,7 +113,13 @@ class CcxtDataProvider(IDataProvider):
         markets = getattr(self._exchange_manager.exchange, "markets", None)
         if not markets:  # None or empty => not loaded / can't tell => fail-open
             return True
-        return instrument_to_ccxt_symbol(instrument) in markets
+        market = markets.get(instrument_to_ccxt_symbol(instrument))
+        if market is None:
+            return False
+        # A present-but-inactive market (e.g. Binance SETTLING / active=False during a
+        # delisting) is not tradeable -> treat as not listed so the gone-settle path can
+        # flatten held positions. Missing/None active fails open (treated as listed).
+        return market.get("active") is not False
 
     def subscribe(
         self,

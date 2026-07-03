@@ -964,6 +964,14 @@ class IUniverseManager:
         """
         ...
 
+    def settle_position(self, instrument: Instrument) -> None:
+        """Force-settle a held position in place: cancel resting orders and flatten the
+        position to zero via the account WITHOUT trading, regardless of whether the market is
+        still listed. Operator override for an untradeable/stuck position (e.g. a delisted
+        market with no live quote) that the normal close-via-trade path can never flatten.
+        """
+        ...
+
     @property
     def instruments(self) -> list[Instrument]:
         """

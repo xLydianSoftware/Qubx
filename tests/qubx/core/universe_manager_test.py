@@ -27,6 +27,11 @@ def mock_dependencies(mocker: MockerFixture):
 
     instrument_service = NullInstrumentService()
 
+    # - account.positions is a dict in production (IAccountProcessor); default it so the
+    #   gone-holdings sweep can iterate it. Tests that need holdings override this.
+    account = mocker.Mock()
+    account.positions = {}
+
     return {
         "context": mocker.Mock(),
         "strategy": mocker.Mock(),
@@ -36,7 +41,7 @@ def mock_dependencies(mocker: MockerFixture):
         "subscription_manager": mocker.Mock(),
         "trading_manager": mocker.Mock(),
         "time_provider": time_provider,
-        "account": mocker.Mock(),
+        "account": account,
         "position_gathering": mocker.Mock(),
         "delisting_detector": delisting_detector,
         "instrument_service": instrument_service,
@@ -430,4 +435,45 @@ def test_add_instruments_excludes_gone_and_settles(universe_manager, mock_depend
     assert live in universe_manager.instruments
     assert gone not in universe_manager.instruments
     mock_dependencies["account"].settle_position.assert_called_once_with(gone)
+    mock_dependencies["position_gathering"].alter_positions.assert_not_called()
+
+
+def test_set_universe_settles_gone_held_position_out_of_universe(universe_manager, mock_dependencies, mocker):
+    """A held position whose market is gone must be settled even when the instrument is NOT
+    in the new universe (e.g. blacklisted/dropped/orphaned). The candidate-only _drop_gone
+    never sees it, so a dedicated held-position sweep is required."""
+    live = mocker.Mock(spec=Instrument, symbol="BTCUSDT")
+    live.exchange = "BINANCE.UM"
+    live.delist_date = None
+    live.min_size = 0.001
+    gone = _gone_instr(mocker)  # TONUSDT, delisted (is_instrument_listed -> False)
+
+    mock_dependencies["market_data_manager"].is_instrument_listed.side_effect = lambda i: i is not gone
+    held = mocker.Mock()
+    held.quantity = 2358.0
+    mock_dependencies["account"].positions = {live: mocker.Mock(quantity=1.0), gone: held}
+
+    # gone is held but excluded from the new universe (as if blacklisted)
+    universe_manager.set_universe([live])
+
+    mock_dependencies["trading_manager"].cancel_orders.assert_any_call(gone)
+    mock_dependencies["account"].settle_position.assert_called_once_with(gone)
+
+
+def test_settle_position_force_flattens_without_trading_even_if_listed(
+    universe_manager, mock_dependencies, mocker
+):
+    """Operator override: settle_position cancels resting orders and flattens the position via
+    the account (no trade), regardless of whether the market is still listed -- for an
+    untradeable/stuck position where no fillable market exists."""
+    instr = mocker.Mock(spec=Instrument, symbol="TONUSDT")
+    instr.min_size = 0.001
+    # still listed, yet we want to force-settle anyway (operator override)
+    mock_dependencies["market_data_manager"].is_instrument_listed.return_value = True
+    mock_dependencies["account"].positions = {instr: mocker.Mock(quantity=2358.0)}
+
+    universe_manager.settle_position(instr)
+
+    mock_dependencies["trading_manager"].cancel_orders.assert_called_once_with(instr)
+    mock_dependencies["account"].settle_position.assert_called_once_with(instr)
     mock_dependencies["position_gathering"].alter_positions.assert_not_called()

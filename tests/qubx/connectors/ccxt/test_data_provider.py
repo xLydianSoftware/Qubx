@@ -387,3 +387,22 @@ class TestIsInstrumentListed:
     def test_fail_open_when_markets_none(self, data_provider, btc_instrument):
         data_provider._exchange_manager.exchange.markets = None
         assert data_provider.is_instrument_listed(btc_instrument) is True
+
+    def test_not_listed_when_market_inactive(self, data_provider, btc_instrument):
+        """A present-but-inactive market (e.g. Binance SETTLING / active=False during a
+        delisting) is not tradeable -> treat as not listed so the gone-settle path can
+        flatten held positions without trying to trade out of a dead market."""
+        from qubx.connectors.ccxt.utils import instrument_to_ccxt_symbol
+
+        sym = instrument_to_ccxt_symbol(btc_instrument)
+        data_provider._exchange_manager.exchange.markets = {sym: {"id": "x", "active": False}}
+        assert data_provider.is_instrument_listed(btc_instrument) is False
+
+    def test_listed_when_market_active_unset(self, data_provider, btc_instrument):
+        """Missing/None active flag fails open (treated as listed) -- only an explicit
+        active=False marks the market untradeable."""
+        from qubx.connectors.ccxt.utils import instrument_to_ccxt_symbol
+
+        sym = instrument_to_ccxt_symbol(btc_instrument)
+        data_provider._exchange_manager.exchange.markets = {sym: {"id": "x", "active": None}}
+        assert data_provider.is_instrument_listed(btc_instrument) is True
