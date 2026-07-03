@@ -4,10 +4,8 @@ Liquidation data type handler for CCXT data provider.
 Handles subscription and warmup for liquidation event data.
 """
 
-from typing import Set
-
 from qubx import logger
-from qubx.core.basics import CtrlChannel, Instrument, dt_64
+from qubx.core.basics import CtrlChannel, Instrument
 
 from ..exceptions import CcxtLiquidationParsingError
 from ..subscription_config import SubscriptionConfiguration
@@ -28,7 +26,7 @@ class LiquidationDataHandler(BaseDataTypeHandler):
         return "liquidation"
 
     def prepare_subscription(
-        self, name: str, sub_type: str, channel: CtrlChannel, instruments: Set[Instrument], **params
+        self, name: str, sub_type: str, channel: CtrlChannel, instruments: set[Instrument], **params
     ) -> SubscriptionConfiguration:
         """
         Prepare liquidation subscription configuration.
@@ -80,7 +78,7 @@ class LiquidationDataHandler(BaseDataTypeHandler):
             requires_market_type_batching=True,
         )
 
-    async def warmup(self, instruments: Set[Instrument], channel: CtrlChannel, **params) -> None:
+    async def warmup(self, instruments: set[Instrument], channel: CtrlChannel, **params) -> None:
         """
         Liquidation warmup is not supported by CCXT as these are real-time events.
 

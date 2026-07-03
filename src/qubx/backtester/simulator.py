@@ -1,4 +1,4 @@
-from typing import Literal, cast
+from typing import Literal
 
 import pandas as pd
 from joblib import delayed
@@ -15,13 +15,13 @@ from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import handle_start_stop, to_timestamp, to_utc_naive
 
 from .runner import SimulationRunner
-from .transfers import SimulationTransferManager
 from .utils import (
     ExchangeName_t,
     SimulationDataConfig,
     SimulationSetup,
     StrategiesDecls_t,
     SymbolOrInstrument_t,
+    collect_transfers_log,
     find_instruments_and_exchanges,
     recognize_simulation_configuration,
     recognize_simulation_data_config,
@@ -315,17 +315,12 @@ def _run_setup(
         if enable_inmemory_emitter and emitter is not None:
             emitter_data = emitter.get_dataframe()
 
-        # - get transfers log
-        transfers_log = None
-        if hasattr(runner.ctx, "_transfer_manager") and isinstance(
-            getattr(runner.ctx, "_transfer_manager"), SimulationTransferManager
-        ):
-            try:
-                transfer_manager = cast(SimulationTransferManager, getattr(runner.ctx, "_transfer_manager"))
-                transfers_log = transfer_manager.get_transfers_dataframe()
-            except Exception as e:
-                logger.error(f"Failed to get transfers log: {e}")
-                transfers_log = None
+        # - get transfers log: runner.py wires a SimulationTransferManager by default, so a
+        #   backtest that executes inter-exchange transfers has a log to collect. The manager
+        #   exposes get_transfers() (no get_transfers_dataframe()); collect_transfers_log
+        #   builds the frame from it, returning an empty frame when no transfers ran.
+        transfer_manager = getattr(runner.ctx, "_transfer_manager", None)
+        transfers_log = collect_transfers_log(transfer_manager)
 
         return TradingSessionResult(
             setup_id,

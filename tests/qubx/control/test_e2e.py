@@ -95,7 +95,7 @@ def _make_mock_account(instruments: list[Instrument]):
     account.get_balances.return_value = [bal]
     account.get_orders.return_value = {}
     account.get_total_capital.return_value = 10000.0
-    account.get_capital.return_value = 10000.0
+    account.get_available_margin.return_value = 10000.0
     account.get_net_leverage.return_value = 0.0
     account.get_gross_leverage.return_value = 0.0
     account.get_base_currency.return_value = "USDT"
@@ -128,9 +128,9 @@ def e2e_server():
 
     ctx = StrategyContext(
         strategy=TestStrategy,
-        brokers=[broker],
+        connectors={"BINANCE.UM": broker},
         data_providers=[dp],
-        account=account,
+        account_manager=account,
         scheduler=scheduler,
         time_provider=tp,
         instruments=instruments,

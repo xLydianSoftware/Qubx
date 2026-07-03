@@ -16,9 +16,10 @@ from qubx.core.basics import (
     TriggerEvent,
     dt_64,
 )
+from qubx.core.events import ChannelMessage
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import BasicScheduler
-from qubx.core.interfaces import IStrategy, IStrategyContext, PositionsTracker
+from qubx.core.interfaces import IStrategy, IStrategyContext, ITransferManager, PositionsTracker
 from qubx.core.lookups import lookup
 from qubx.core.utils import time_delta_to_str
 from qubx.data.storage import IStorage
@@ -99,6 +100,9 @@ class SimulationSetup:
     enable_funding: bool = False
 
     def __post_init__(self) -> None:
+        # Normalize once at the config boundary: AccountState stores base_currency upper-cased,
+        # so a lowercase value here would seed capital under a key total_capital never reads.
+        self.base_currency = self.base_currency.upper()
         # Normalize capital to a per-exchange dict: split evenly when a single float is given
         if isinstance(self.capital, (int, float)):
             n = len(self.exchanges)
@@ -144,7 +148,13 @@ class SimulatedCtrlChannel(CtrlChannel):
         self._callback = callback
 
     def send(self, data):
-        # - when data is sent, invoke callback
+        # - dispatch synchronously: typed connector events go to process_event,
+        #   legacy market-data tuples go to process_data. Mirrors the live dispatch rule in
+        #   StrategyContext.__process_incoming_data_loop, deliberately WITHOUT its
+        #   health-monitor labels / error notifier / stop-on-True handling: this is the
+        #   backtest hot path and must stay a bare callback invocation.
+        if isinstance(data, ChannelMessage):
+            return self._callback.process_event(data)
         return self._callback.process_data(*data)
 
     def receive(self, timeout: int | None = None) -> Any:
@@ -628,3 +638,26 @@ def recognize_simulation_data_config(
         trading_sessions_time=_trading_session,
         default_trading_sessions_time=_default_session,
     )
+
+
+def collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataFrame | None:
+    """Build the transfers-log DataFrame from a transfer manager.
+
+    ``ITransferManager.get_transfers() -> dict[tid, record]`` (default no-op; the
+    SimulationTransferManager overrides it). We reproduce the legacy frame shape: one row
+    per transfer, ``timestamp`` as the index, the remaining record fields as columns. No
+    transfers (incl. the no-op default) -> empty frame with the legacy schema; no manager
+    at all -> None.
+    """
+    if transfer_manager is None:
+        return None
+    try:
+        records = list(transfer_manager.get_transfers().values())
+        if not records:
+            return pd.DataFrame(
+                columns=["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]
+            )
+        return pd.DataFrame(records).set_index("timestamp")
+    except Exception as e:
+        logger.error(f"Failed to get transfers log: {e}")
+        return None

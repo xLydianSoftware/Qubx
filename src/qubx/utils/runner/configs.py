@@ -60,17 +60,13 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class ConnectorConfig(StrictBaseModel):
-    connector: str
-    params: dict = Field(default_factory=dict)
-
-
 class ExchangeConfig(StrictBaseModel):
     connector: str
+    # Optional market-data source, resolved independently of the connector (e.g. an xdata data
+    # service feeding a venue connector). Defaults to ``connector`` when unset.
+    data_provider: str | None = None
     universe: list[str]
     params: dict = Field(default_factory=dict)
-    broker: ConnectorConfig | None = None
-    account: ConnectorConfig | None = None
     base_currency: str | None = None
 
 
@@ -181,6 +177,30 @@ class RateLimitingConfig(StrictBaseModel):
     metrics_interval: str = "60s"  # Interval for emitting rate limit metrics (None to disable)
 
 
+class AccountManagerConfig(StrictBaseModel):
+    """Tuning knobs for the central AccountManager. Mirrors
+    ``qubx.core.account_manager.AccountManagerConfig`` 1:1 (fields and defaults)."""
+
+    reconcile_tick_interval_ms: int = 2_000
+    snapshot_interval_ms: int = 30_000
+    full_snapshot_interval_ms: int = 300_000
+    snapshot_grace_ms: int = 5_000
+
+    missing_order_wait_ms: int = 5_000
+    missing_order_retries: int = 5
+
+    order_confirm_wait_ms: int = 5_000
+    order_confirm_retries: int = 5
+
+    position_confirm_wait_ms: int = 2_000
+
+    liveness_check_interval_ms: int = 5_000
+    liveness_check_threshold_ms: int = 30_000
+
+    terminal_order_retention_ms: int = 30_000
+    terminal_order_history_size: int = 10_000
+
+
 class LiveConfig(StrictBaseModel):
     read_only: bool = False
     base_currency: str | None = None
@@ -196,6 +216,7 @@ class LiveConfig(StrictBaseModel):
     prefetch: PrefetchConfig = Field(default_factory=PrefetchConfig)
     state: StatePersistenceConfig | None = None
     rate_limiting: RateLimitingConfig | None = None
+    account_manager: AccountManagerConfig = Field(default_factory=AccountManagerConfig)
 
 
 class SimulationConfig(StrictBaseModel):
@@ -468,10 +489,15 @@ def validate_strategy_config(path: Path | str, check_imports: bool = True) -> Va
                 result.valid = False
                 result.errors.append(f"Exchange '{exchange_name}' has no symbols in universe")
 
-            if exchange_config.connector.lower() not in ["ccxt", "tardis", "xlighter"]:
-                result.warnings.append(
-                    f"Exchange '{exchange_name}' uses unknown connector: {exchange_config.connector}"
-                )
+            # Validate the connector + optional data_provider names against installed plugins.
+            from qubx.connectors.registry import ConnectorRegistry
+
+            for _role, _name in (
+                ("connector", exchange_config.connector),
+                ("data_provider", exchange_config.data_provider),
+            ):
+                if _name and not ConnectorRegistry.is_registered(_name):
+                    result.warnings.append(f"Exchange '{exchange_name}' uses unknown {_role}: {_name}")
 
     # Validate simulation configuration if present
     if config.simulation:

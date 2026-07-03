@@ -388,7 +388,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                     "aggressive": bool(deal.aggressive),
                     "fee_amount": float(deal.fee_amount) if deal.fee_amount is not None else None,
                     "fee_currency": deal.fee_currency if deal.fee_currency is not None else None,
-                    "deal_id": deal.id,
+                    "deal_id": deal.trade_id,
                     "order_id": deal.order_id,
                     **merged_tags,
                 }

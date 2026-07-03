@@ -15,6 +15,9 @@ releases/
 # Reports directory
 reports/
 
+# Generated backtest / simulation result artifacts
+results/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
@@ -187,3 +190,6 @@ accounts/
 **/_version.py
 .mcp.json
 .vscode/skena-mcp.js
+
+# Local-only migration reference docs (deleted at end of account-mgmt-redesign)
+docs/superpowers/

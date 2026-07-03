@@ -13,6 +13,7 @@ from qubx.core.basics import (
     Deal,
     InitializingSignal,
     Instrument,
+    OrderStatus,
     Signal,
     TargetPosition,
 )
@@ -38,6 +39,7 @@ class SgnCtrl:
     signal: Signal
     target: TargetPosition
     status: State = State.NEW
+    # client ids of the protective orders (the venue id may not be known yet under fire-and-forget)
     take_order_id: str | None = None
     stop_order_id: str | None = None
     take_executed_price: float | None = None
@@ -385,7 +387,7 @@ class BrokerSideRiskController(RiskController):
                 f"[<y>{self._name}</y>(<g>{ctrl.signal.instrument}</g>)] :: <m>Canceling stop order</m> <red>{ctrl.stop_order_id}</red>"
             )
             try:
-                ctx.cancel_order(order_id=ctrl.stop_order_id)
+                ctx.cancel_order(client_order_id=ctrl.stop_order_id)
             except OrderNotFound:
                 # - order was already cancelled (expected during universe changes)
                 logger.debug(
@@ -404,7 +406,7 @@ class BrokerSideRiskController(RiskController):
                 f"[<y>{self._name}(<g>{ctrl.signal.instrument}</g>)</y>] :: <m>Canceling take order</m> <r>{ctrl.take_order_id}</r>"
             )
             try:
-                ctx.cancel_order(order_id=ctrl.take_order_id)
+                ctx.cancel_order(client_order_id=ctrl.take_order_id)
             except OrderNotFound:
                 # - order was already cancelled (expected during universe changes)
                 logger.debug(
@@ -416,6 +418,16 @@ class BrokerSideRiskController(RiskController):
                     f"[<y>{self._name}(<g>{ctrl.signal.instrument}</g>)</y>] :: <m>Canceling take order</m> <r>{ctrl.take_order_id}</r> failed: {str(e)}"
                 )
             ctrl.take_order_id = None
+
+    def _is_deal_for(self, ctx: IStrategyContext, deal: Deal, cid: str | None) -> bool:
+        """deal.order_id is the VENUE id while take/stop ids are stored as cids: resolve the
+        tracked order through the account viewer and compare venue ids (same mechanism as
+        SimplePositionGatherer). A fill implies the venue acked the order, so its
+        venue_order_id is populated by now."""
+        if cid is None:
+            return False
+        order = ctx.find_order_by_client_id(cid)
+        return order is not None and order.venue_order_id == deal.order_id
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal):
         pos = ctx.positions[instrument].quantity
@@ -457,11 +469,18 @@ class BrokerSideRiskController(RiskController):
                         logger.debug(
                             f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: sending <g>take limit</g> order at {_waiting.target.take}"
                         )
-                        order = ctx.trade(instrument, -pos, _waiting.target.take)
-                        _waiting.take_order_id = order.id
+                        # - reduce_only: a protective leg must never FLIP the position; if it
+                        #   fires stale (position already flat) the venue rejects it instead of
+                        #   opening a reverse position.
+                        order = ctx.trade(instrument, -pos, _waiting.target.take, reduce_only=True)
+                        _waiting.take_order_id = order.client_order_id
 
-                        # - if order was executed immediately we don't need to send stop order
-                        if order.status == "CLOSED":
+                        # - if order was executed immediately we don't need to send stop order.
+                        # Only a synchronous channel (the simulator) reports FILLED at return
+                        # time; in live the fire-and-forget return is SUBMITTED and an immediate
+                        # fill arrives as an execution report, matched against take_order_id
+                        # below (which then cancels the stop).
+                        if order.status == OrderStatus.FILLED:
                             _waiting.status = State.RISK_TRIGGERED
                             logger.debug(
                                 f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: <g>TAKE PROFIT</g> was exected immediately at {_waiting.target.take}"
@@ -486,8 +505,9 @@ class BrokerSideRiskController(RiskController):
                             stop_type="market",
                             fill_at_signal_price=True,
                             avoid_stop_order_price_validation=True,
+                            reduce_only=True,  # - protective: never flip the position on a stale trigger
                         )
-                        _waiting.stop_order_id = order.id
+                        _waiting.stop_order_id = order.client_order_id
                     except Exception as e:
                         logger.error(
                             f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send stop order: {str(e)}"
@@ -495,8 +515,12 @@ class BrokerSideRiskController(RiskController):
 
         # - check tracked signal
         if (_tracking := self._trackings.get(instrument)) is not None:
-            if _tracking.status == State.OPEN and abs(pos) <= instrument.min_size:
-                if deal.order_id == _tracking.take_order_id:
+            # - position is flat only when strictly below min_size: a position of EXACTLY
+            #   min_size is a real (smallest tradeable) position, not a close. Using <= here
+            #   misread a min-size entry as flat and tore down the just-sent stop+take. A
+            #   genuine close lands at pos == 0, which < min_size still catches.
+            if _tracking.status == State.OPEN and abs(pos) < instrument.min_size:
+                if self._is_deal_for(ctx, deal, _tracking.take_order_id):
                     _tracking.status = State.RISK_TRIGGERED
                     _tracking.take_executed_price = deal.price
                     logger.debug(
@@ -505,11 +529,11 @@ class BrokerSideRiskController(RiskController):
                     # - cancel stop if need
                     self.__cncl_stop(ctx, _tracking)
 
-                elif deal.order_id == _tracking.stop_order_id:
+                elif self._is_deal_for(ctx, deal, _tracking.stop_order_id):
                     _tracking.status = State.RISK_TRIGGERED
                     _tracking.stop_executed_price = deal.price
                     logger.debug(
-                        f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: triggered <magenta>STOP LOSS</magenta> (<red>{_tracking.take_order_id}</red>) at {_tracking.stop_executed_price}"
+                        f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: triggered <magenta>STOP LOSS</magenta> (<red>{_tracking.stop_order_id}</red>) at {_tracking.stop_executed_price}"
                     )
                     # - cancel take if need
                     self.__cncl_take(ctx, _tracking)
@@ -573,8 +597,9 @@ class BrokerSideRiskController(RiskController):
                 stop_type="market",
                 fill_at_signal_price=True,
                 avoid_stop_order_price_validation=True,
+                reduce_only=True,  # - protective: never flip the position on a stale trigger
             )
-            _tracked.stop_order_id = order.id
+            _tracked.stop_order_id = order.client_order_id
         except Exception as e:
             logger.error(f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send stop order: {str(e)}")
 
@@ -604,9 +629,8 @@ class BrokerSideRiskController(RiskController):
             logger.debug(
                 f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: sending updated <g>take</g> order at {new_take_level}"
             )
-            # - for simulation purposes we assume that stop order will be executed at stop price
-            order = ctx.trade(instrument, -pos, new_take_level)
-            _tracked.take_order_id = order.id
+            order = ctx.trade(instrument, -pos, new_take_level, reduce_only=True)  # - protective: never flip
+            _tracked.take_order_id = order.client_order_id
         except Exception as e:
             logger.error(f"[<y>{self._name}</y>(<g>{instrument}</g>)] :: couldn't send take order: {str(e)}")
 
@@ -1174,10 +1198,10 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
         Example:
             ```python
             tracker = SwingsStopLevels(
-                timeframe="1h", 
-                iaf=0.02, 
-                maxaf=0.2, 
-                sizer=FixedLeverageSizer(1.0), 
+                timeframe="1h",
+                iaf=0.02,
+                maxaf=0.2,
+                sizer=FixedLeverageSizer(1.0),
                 risk_controlling_side="client",
                 activation_atr_threshold=1.0,  # Activate after 1 ATR move from entry
                 atr_timeframe="1h",
@@ -1221,18 +1245,18 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
         # If no threshold is set, always active
         if self.activation_atr_threshold is None:
             return True
-        
+
         # Check if already activated for this instrument
         if self._activation_status.get(instrument, False):
             return True
-        
+
         # Get position and entry price
         pos = ctx.get_position(instrument)
         if not pos.is_open():
             return False
-        
+
         entry_price = pos.position_avg_price
-        
+
         # Calculate ATR
         volatility = atr(
             ctx.ohlc(instrument, self.atr_timeframe, 2 * self.atr_period),
@@ -1240,16 +1264,16 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
             smoother=self.atr_smoother,
             percentage=False,
         )
-        
+
         if len(volatility) < 2 or volatility[1] is None or not np.isfinite(volatility[1]):
             return False
-        
+
         last_atr = volatility[1]
         required_distance = self.activation_atr_threshold * last_atr
-        
+
         # Check if price has moved enough from entry
         price_move = abs(current_market_price - entry_price)
-        
+
         if price_move >= required_distance:
             self._activation_status[instrument] = True
             logger.debug(
@@ -1257,7 +1281,7 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
                 f"<cyan>Activated</cyan> - price moved {price_move:.4f} (>= {required_distance:.4f} = {self.activation_atr_threshold} * ATR {last_atr:.4f})"
             )
             return True
-        
+
         return False
 
     def get_trailing_stop_level(
@@ -1292,7 +1316,7 @@ class SwingsStopLevels(AbstractTrailingRiskPositionTracker):
         # Reset activation status when opening a new position
         if signal.signal != 0:
             self._activation_status[signal.instrument] = False
-        
+
         # - if signal has predefined stop, just leave it as is
         if signal.stop is not None:
             signal.stop = signal.instrument.round_price_down(signal.stop)

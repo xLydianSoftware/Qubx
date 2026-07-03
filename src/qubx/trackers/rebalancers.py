@@ -1,7 +1,5 @@
 from dataclasses import dataclass
 
-import numpy as np
-
 from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition
 from qubx.core.interfaces import IStrategyContext, PositionsTracker
@@ -42,9 +40,7 @@ class PortfolioRebalancerTracker(PositionsTracker):
             for instr in instr_to_close:
                 p = ctx.positions.get(instr)
                 if p is not None and p.quantity != 0:
-                    released_capital_after_close += p.get_amount_released_funds_after_closing(
-                        to_remain=ctx.get_reserved(p.instrument)
-                    )
+                    released_capital_after_close += p.get_amount_released_funds_after_closing()
                     closed_symbols.append(instr)
         return released_capital_after_close, closed_symbols
 
@@ -57,7 +53,7 @@ class PortfolioRebalancerTracker(PositionsTracker):
         if instr_to_close is not None:
             released_capital, closed_positions = self.calculate_released_capital(ctx, instr_to_close)
 
-        cap_to_invest = ctx.get_capital() + released_capital
+        cap_to_invest = ctx.get_available_margin() + released_capital
         if self.capital_invested > 0:
             cap_to_invest = min(self.capital_invested, cap_to_invest)
 
@@ -83,12 +79,9 @@ class PortfolioRebalancerTracker(PositionsTracker):
 
             # - ones which decreases exposure
             if _ta < _pa:
-                reserved = ctx.get_reserved(pos.instrument)
-                # - when we have some reserved amount we should check target position size
-                t.target_position_size = self._correct_target_position(pos.quantity, t.target_position_size, reserved)
                 _close_first.append(t)
                 logger.debug(
-                    f"({self.__class__.__name__}) Decreasing exposure for {t.instrument} from {pos.quantity} -> {t.target_position_size} (reserved: {reserved})"
+                    f"({self.__class__.__name__}) Decreasing exposure for {t.instrument} from {pos.quantity} -> {t.target_position_size}"
                 )
 
             # - ones which increases exposure
@@ -99,29 +92,3 @@ class PortfolioRebalancerTracker(PositionsTracker):
                 )
 
         return _close_first + _then_open
-
-    def _correct_target_position(self, start_position: float, new_position: float, reserved: float) -> float:
-        """
-        Calcluate target position size considering reserved quantity.
-        """
-        d = np.sign(start_position)
-        qty_to_close = start_position
-
-        if reserved != 0 and start_position != 0 and np.sign(reserved) == d:
-            qty_to_close = max(start_position - reserved, 0) if d > 0 else min(start_position - reserved, 0)
-
-        # - what's max value allowed to close taking in account reserved quantity
-        max_to_close = -d * qty_to_close
-        pos_change = new_position - start_position
-        direction = np.sign(pos_change)
-        prev_direction = np.sign(start_position)
-
-        # - how many shares are closed/open
-        qty_closing = min(abs(start_position), abs(pos_change)) * direction if prev_direction != direction else 0
-        # qty_opening = pos_change if prev_direction == direction else pos_change - qty_closing
-        # print(qty_closing, qty_opening, max_to_close)
-
-        if abs(qty_closing) > abs(max_to_close):
-            return reserved
-
-        return new_position

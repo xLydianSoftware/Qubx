@@ -14,7 +14,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
+from qubx.connectors.plugin import BuildContext
 from qubx.core.basics import CtrlChannel, Instrument, LiveTimeProvider, MarketType
+from qubx.utils.misc import BackgroundEventLoop
 from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
@@ -75,15 +77,15 @@ def _make_channel() -> MagicMock:
 
 def _make_provider(channel: MagicMock) -> CcxtDataProvider:
     """Create a CcxtDataProvider for HYPERLIQUID.F (no credentials needed for public data)."""
-    return CcxtDataProvider(
+    ctx = BuildContext(
         exchange_name="HYPERLIQUID.F",
         time_provider=LiveTimeProvider(),
         channel=channel,
+        credentials=AccountConfigurationManager(),
         health_monitor=_make_health_monitor(),
-        account_manager=AccountConfigurationManager(),
-        max_ws_retries=3,
-        warmup_timeout=30,
+        loop=BackgroundEventLoop().loop,
     )
+    return CcxtDataProvider(ctx, max_ws_retries=3, warmup_timeout=30)
 
 
 # ------------------------------------------------------------------
@@ -187,8 +189,10 @@ class TestHyperliquidFundingRateAdapter:
     def _cleanup_adapter(self, provider: CcxtDataProvider) -> None:
         ex = self._ccxt_ex(provider)
         if hasattr(ex, "_funding_rate_adapter") and ex._funding_rate_adapter:
+
             async def _stop():
                 await ex._funding_rate_adapter.stop()
+
             try:
                 asyncio.run_coroutine_threadsafe(_stop(), self._async_loop(provider)).result(timeout=10)
                 ex._funding_rate_adapter = None

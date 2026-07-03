@@ -1,7 +1,7 @@
 """{{ strategy_class }} - Generated empty strategy template."""
 
 from qubx import logger
-from qubx.core.basics import DataType, Signal, TriggerEvent
+from qubx.core.basics import DataType, Order, OrderChange, Signal, TriggerEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, IStrategyInitializer
 
 
@@ -81,9 +81,13 @@ class {{ strategy_class }}(IStrategy):
         # Use sparingly as it can impact performance
         pass
     
-    def on_order_update(self, ctx: IStrategyContext, order) -> None:
-        """Handle order status updates (optional)."""
-        logger.info(f"Order update: {order.instrument.symbol} {order.status}")
+    def on_order(self, ctx: IStrategyContext, order: Order, change: OrderChange) -> None:
+        """Handle order lifecycle changes (optional).
+
+        Also available: on_execution(ctx, instrument, deal) for fills and
+        on_position_change(ctx, position) for position updates.
+        """
+        logger.info(f"Order {change}: {order.instrument.symbol} {order.status}")
     
     def on_error(self, ctx: IStrategyContext, error) -> None:
         """Handle strategy errors (optional)."""

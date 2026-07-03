@@ -31,7 +31,15 @@ Header {
 
 #account-summary-content {
     height: auto;
+    width: 1fr;
     color: $foreground;
+}
+
+#account-summary-clock {
+    height: auto;
+    width: auto;
+    color: $text-muted;
+    text-align: right;
 }
 
 Footer {

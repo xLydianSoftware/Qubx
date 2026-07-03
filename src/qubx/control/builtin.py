@@ -1,22 +1,17 @@
 """Built-in control actions available on every bot."""
 
-from __future__ import annotations
-
 from collections import defaultdict
-from typing import TYPE_CHECKING, Callable
+from typing import Callable
 
 import pandas as pd
 
 from qubx.core.basics import Instrument, MarketType, Signal
+from qubx.core.interfaces import IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.utils.time import to_timedelta, to_timestamp
 
 from .decorator import collect_state, collect_state_schema
 from .types import ActionDef, ActionParam, ActionResult
-
-if TYPE_CHECKING:
-    from qubx.core.interfaces import IStrategyContext
-
 
 # --- Helpers ---
 
@@ -86,7 +81,9 @@ def _add_instruments(ctx: IStrategyContext, symbols: list[str], exchange: str | 
     )
 
 
-def _remove_instruments(ctx: IStrategyContext, symbols: list[str], exchange: str | None = None, if_has_position: str = "close", **kwargs) -> ActionResult:
+def _remove_instruments(
+    ctx: IStrategyContext, symbols: list[str], exchange: str | None = None, if_has_position: str = "close", **kwargs
+) -> ActionResult:
     instruments = []
     errors = []
     for s in symbols:
@@ -145,7 +142,9 @@ def _refresh_instrument_service(ctx: IStrategyContext, **kwargs) -> ActionResult
 # --- Instrument discovery actions ---
 
 
-def _get_available_instruments(ctx: IStrategyContext, exchange: str, quote: str | None = None, market_type: str = "SWAP", **kwargs) -> ActionResult:
+def _get_available_instruments(
+    ctx: IStrategyContext, exchange: str, quote: str | None = None, market_type: str = "SWAP", **kwargs
+) -> ActionResult:
     if quote is None:
         quote = _default_quote(ctx)
     mt = MarketType(market_type) if market_type else None
@@ -166,7 +165,9 @@ def _get_available_instruments(ctx: IStrategyContext, exchange: str, quote: str 
     )
 
 
-def _get_instrument_details(ctx: IStrategyContext, symbols: list[str], exchange: str | None = None, **kwargs) -> ActionResult:
+def _get_instrument_details(
+    ctx: IStrategyContext, symbols: list[str], exchange: str | None = None, **kwargs
+) -> ActionResult:
     details = {}
     errors = []
     for s in symbols:
@@ -215,12 +216,20 @@ def _get_top_instruments(
     elif sort_by == "funding":
         return _rank_by_funding(ctx, exchange, market_type, quote, count, start, stop)
     else:
-        return ActionResult(status="error", error=f"Unknown sort_by: {sort_by}. Use 'turnover', 'market_cap', or 'funding'.")
+        return ActionResult(
+            status="error", error=f"Unknown sort_by: {sort_by}. Use 'turnover', 'market_cap', or 'funding'."
+        )
 
 
 def _rank_by_turnover(
-    ctx: IStrategyContext, exchange: str, market_type: str, quote: str,
-    count: int, timeframe: str, start: pd.Timestamp, stop: pd.Timestamp,
+    ctx: IStrategyContext,
+    exchange: str,
+    market_type: str,
+    quote: str,
+    count: int,
+    timeframe: str,
+    start: pd.Timestamp,
+    stop: pd.Timestamp,
 ) -> ActionResult:
     try:
         reader = ctx.get_aux_reader(exchange, market_type)
@@ -234,7 +243,9 @@ def _rank_by_turnover(
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "turnover"})
 
         symbols = [i.symbol for i in instruments]
-        candles = reader.read(symbols, f"ohlc({timeframe})", start=str(start), stop=str(stop), skip_rate_limited=True).to_pd(True)
+        candles = reader.read(
+            symbols, f"ohlc({timeframe})", start=str(start), stop=str(stop), skip_rate_limited=True
+        ).to_pd(True)
 
         if candles is None or candles.empty:
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "turnover"})
@@ -250,13 +261,21 @@ def _rank_by_turnover(
 
 
 def _rank_by_market_cap(
-    ctx: IStrategyContext, exchange: str, market_type: str, quote: str,
-    count: int, start: pd.Timestamp, stop: pd.Timestamp,
+    ctx: IStrategyContext,
+    exchange: str,
+    market_type: str,
+    quote: str,
+    count: int,
+    start: pd.Timestamp,
+    stop: pd.Timestamp,
 ) -> ActionResult:
     try:
         reader = ctx.get_aux_reader("COINGECKO", "FUNDAMENTAL")
     except Exception as e:
-        return ActionResult(status="error", error=f"CoinGecko aux reader not available: {e}. Configure aux data with COINGECKO:FUNDAMENTAL.")
+        return ActionResult(
+            status="error",
+            error=f"CoinGecko aux reader not available: {e}. Configure aux data with COINGECKO:FUNDAMENTAL.",
+        )
 
     try:
         coins = reader.get_data_id()
@@ -279,8 +298,13 @@ def _rank_by_market_cap(
 
 
 def _rank_by_funding(
-    ctx: IStrategyContext, exchange: str, market_type: str, quote: str,
-    count: int, start: pd.Timestamp, stop: pd.Timestamp,
+    ctx: IStrategyContext,
+    exchange: str,
+    market_type: str,
+    quote: str,
+    count: int,
+    start: pd.Timestamp,
+    stop: pd.Timestamp,
 ) -> ActionResult:
     try:
         reader = ctx.get_aux_reader(exchange, market_type)
@@ -294,7 +318,9 @@ def _rank_by_funding(
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "funding"})
 
         symbols = [i.symbol for i in instruments]
-        fp = reader.read(symbols, "funding_payment", start=str(start), stop=str(stop), skip_rate_limited=True).to_pd(True)
+        fp = reader.read(symbols, "funding_payment", start=str(start), stop=str(stop), skip_rate_limited=True).to_pd(
+            True
+        )
 
         if fp is None or fp.empty:
             return ActionResult(status="ok", data={"instruments": [], "count": 0, "sort_by": "funding"})
@@ -324,6 +350,7 @@ def _get_positions(ctx: IStrategyContext, **kwargs) -> ActionResult:
             "unrealized_pnl": _rm(pos.unrealized_pnl()),
             "realized_pnl": _rm(pos.r_pnl),
             "market_value": _rm(pos.market_value_funds),
+            "last_updated_time": str(pos.last_update_time),
         }
     return ActionResult(status="ok", data={"positions": positions})
 
@@ -332,11 +359,18 @@ def _get_balances(ctx: IStrategyContext, **kwargs) -> ActionResult:
     balances = {}
     for bal in ctx.get_balances():
         key = f"{bal.exchange}:{bal.currency}"
-        balances[key] = {"total": _rm(bal.total), "free": _rm(bal.free), "locked": _rm(bal.locked)}
+        balances[key] = {
+            "total": _rm(bal.total),
+            "free": _rm(bal.free),
+            "locked": _rm(bal.locked),
+            "last_updated_time": str(bal.last_update_time),
+        }
     return ActionResult(status="ok", data={"balances": balances})
 
 
-def _get_orders(ctx: IStrategyContext, symbol: str | None = None, exchange: str | None = None, **kwargs) -> ActionResult:
+def _get_orders(
+    ctx: IStrategyContext, symbol: str | None = None, exchange: str | None = None, **kwargs
+) -> ActionResult:
     orders_data = []
     if symbol:
         instr = _resolve(ctx, symbol, exchange)
@@ -348,14 +382,15 @@ def _get_orders(ctx: IStrategyContext, symbol: str | None = None, exchange: str 
     for order_id, order in orders.items():
         orders_data.append(
             {
-                "id": order.id,
+                "id": order.venue_order_id or order.client_order_id,
                 "instrument": str(order.instrument),
                 "type": order.type,
                 "side": order.side,
                 "quantity": order.quantity,
                 "price": order.price,
                 "status": order.status,
-                "client_id": order.client_id,
+                "client_id": order.client_order_id,
+                "last_updated_time": str(order.last_update_time),
             }
         )
     return ActionResult(status="ok", data={"orders": orders_data})
@@ -382,7 +417,9 @@ def _get_quote(ctx: IStrategyContext, symbol: str, exchange: str | None = None, 
     )
 
 
-def _get_ohlc(ctx: IStrategyContext, symbol: str, timeframe: str = "1h", length: int = 20, exchange: str | None = None, **kwargs) -> ActionResult:
+def _get_ohlc(
+    ctx: IStrategyContext, symbol: str, timeframe: str = "1h", length: int = 20, exchange: str | None = None, **kwargs
+) -> ActionResult:
     instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
@@ -423,7 +460,7 @@ def _get_state(ctx: IStrategyContext, **kwargs) -> ActionResult:
         for order in orders.values():
             orders_by_symbol[order.instrument.symbol].append(
                 {
-                    "id": order.id,
+                    "id": order.venue_order_id or order.client_order_id,
                     "type": order.type,
                     "side": order.side,
                     "quantity": order.quantity,
@@ -460,7 +497,7 @@ def _get_state(ctx: IStrategyContext, **kwargs) -> ActionResult:
             "base_currency": account.get_base_currency(exchange),
             "capital": {
                 "total": _rm(account.get_total_capital(exchange)),
-                "available": _rm(account.get_capital(exchange)),
+                "available": _rm(account.get_available_margin(exchange)),
             },
             "net_leverage": _rl(account.get_net_leverage(exchange)),
             "gross_leverage": _rl(account.get_gross_leverage(exchange)),
@@ -548,7 +585,15 @@ def _get_state_schema(ctx: IStrategyContext, **kwargs) -> ActionResult:
 # --- Trading actions ---
 
 
-def _trade(ctx: IStrategyContext, symbol: str, amount: float, price: float | None = None, time_in_force: str = "gtc", exchange: str | None = None, **kwargs) -> ActionResult:
+def _trade(
+    ctx: IStrategyContext,
+    symbol: str,
+    amount: float,
+    price: float | None = None,
+    time_in_force: str = "gtc",
+    exchange: str | None = None,
+    **kwargs,
+) -> ActionResult:
     instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
@@ -557,13 +602,19 @@ def _trade(ctx: IStrategyContext, symbol: str, amount: float, price: float | Non
         order = ctx.trade(instr, amount, price=price, time_in_force=time_in_force)
         return ActionResult(
             status="ok",
-            data={"order_id": order.id if order else None, "instrument": str(instr), "amount": amount},
+            data={
+                "order_id": (order.venue_order_id or order.client_order_id) if order else None,
+                "instrument": str(instr),
+                "amount": amount,
+            },
         )
     except Exception as e:
         return ActionResult(status="error", error=str(e))
 
 
-def _set_target_position(ctx: IStrategyContext, symbol: str, target: float, price: float | None = None, exchange: str | None = None, **kwargs) -> ActionResult:
+def _set_target_position(
+    ctx: IStrategyContext, symbol: str, target: float, price: float | None = None, exchange: str | None = None, **kwargs
+) -> ActionResult:
     instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
@@ -578,7 +629,14 @@ def _set_target_position(ctx: IStrategyContext, symbol: str, target: float, pric
         return ActionResult(status="error", error=str(e))
 
 
-def _set_target_leverage(ctx: IStrategyContext, symbol: str, leverage: float, price: float | None = None, exchange: str | None = None, **kwargs) -> ActionResult:
+def _set_target_leverage(
+    ctx: IStrategyContext,
+    symbol: str,
+    leverage: float,
+    price: float | None = None,
+    exchange: str | None = None,
+    **kwargs,
+) -> ActionResult:
     instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
@@ -614,7 +672,9 @@ def _close_positions(ctx: IStrategyContext, **kwargs) -> ActionResult:
         return ActionResult(status="error", error=str(e))
 
 
-def _cancel_orders(ctx: IStrategyContext, symbol: str | None = None, exchange: str | None = None, **kwargs) -> ActionResult:
+def _cancel_orders(
+    ctx: IStrategyContext, symbol: str | None = None, exchange: str | None = None, **kwargs
+) -> ActionResult:
     try:
         if symbol:
             instr = _resolve(ctx, symbol, exchange)
@@ -629,7 +689,15 @@ def _cancel_orders(ctx: IStrategyContext, symbol: str | None = None, exchange: s
         return ActionResult(status="error", error=str(e))
 
 
-def _emit_signal(ctx: IStrategyContext, symbol: str, signal_value: float, price: float | None = None, group: str = "", exchange: str | None = None, **kwargs) -> ActionResult:
+def _emit_signal(
+    ctx: IStrategyContext,
+    symbol: str,
+    signal_value: float,
+    price: float | None = None,
+    group: str = "",
+    exchange: str | None = None,
+    **kwargs,
+) -> ActionResult:
     instr = _resolve(ctx, symbol, exchange)
     if instr is None:
         return ActionResult(status="error", error=f"Unknown symbol: {symbol}")
@@ -656,7 +724,13 @@ def _trigger_fit(ctx: IStrategyContext, **kwargs) -> ActionResult:
 # --- Action registry ---
 
 _MARKET_TYPE_DOC = "Market type: SPOT, SWAP (perpetual futures), FUTURE (dated futures), OPTION, MARGIN"
-_EXCHANGE_PARAM = ActionParam(name="exchange", type="string", description="Exchange for symbol resolution (required when bot trades on multiple exchanges)", required=False, default=None)
+_EXCHANGE_PARAM = ActionParam(
+    name="exchange",
+    type="string",
+    description="Exchange for symbol resolution (required when bot trades on multiple exchanges)",
+    required=False,
+    default=None,
+)
 
 BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
     # Universe
@@ -670,8 +744,16 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             description="Add instruments to the trading universe. Symbols can include exchange prefix (e.g., BINANCE.UM:BTCUSDT) or use the exchange parameter.",
             category="universe",
             params=[
-                ActionParam(name="symbols", type="array", description="List of symbol strings to add", items_type="string"),
-                ActionParam(name="exchange", type="string", description="Exchange for symbol resolution (optional if symbols include exchange prefix)", required=False, default=None),
+                ActionParam(
+                    name="symbols", type="array", description="List of symbol strings to add", items_type="string"
+                ),
+                ActionParam(
+                    name="exchange",
+                    type="string",
+                    description="Exchange for symbol resolution (optional if symbols include exchange prefix)",
+                    required=False,
+                    default=None,
+                ),
             ],
         ),
         _add_instruments,
@@ -683,9 +765,23 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             category="universe",
             dangerous=True,
             params=[
-                ActionParam(name="symbols", type="array", description="List of symbol strings to remove", items_type="string"),
-                ActionParam(name="exchange", type="string", description="Exchange for symbol resolution (optional if symbols include exchange prefix)", required=False, default=None),
-                ActionParam(name="if_has_position", type="string", description="Policy if instrument has position: close, wait_for_close, wait_for_change", required=False, default="close"),
+                ActionParam(
+                    name="symbols", type="array", description="List of symbol strings to remove", items_type="string"
+                ),
+                ActionParam(
+                    name="exchange",
+                    type="string",
+                    description="Exchange for symbol resolution (optional if symbols include exchange prefix)",
+                    required=False,
+                    default=None,
+                ),
+                ActionParam(
+                    name="if_has_position",
+                    type="string",
+                    description="Policy if instrument has position: close, wait_for_close, wait_for_change",
+                    required=False,
+                    default="close",
+                ),
             ],
         ),
         _remove_instruments,
@@ -710,9 +806,26 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             category="universe",
             dangerous=True,
             params=[
-                ActionParam(name="symbols", type="array", description="List of symbol strings for the new universe", items_type="string"),
-                ActionParam(name="exchange", type="string", description="Exchange for symbol resolution (optional if symbols include exchange prefix)", required=False, default=None),
-                ActionParam(name="if_has_position", type="string", description="Policy for removed instruments with positions: close, wait_for_close, wait_for_change", required=False, default="close"),
+                ActionParam(
+                    name="symbols",
+                    type="array",
+                    description="List of symbol strings for the new universe",
+                    items_type="string",
+                ),
+                ActionParam(
+                    name="exchange",
+                    type="string",
+                    description="Exchange for symbol resolution (optional if symbols include exchange prefix)",
+                    required=False,
+                    default=None,
+                ),
+                ActionParam(
+                    name="if_has_position",
+                    type="string",
+                    description="Policy for removed instruments with positions: close, wait_for_close, wait_for_change",
+                    required=False,
+                    default="close",
+                ),
             ],
         ),
         _set_universe,
@@ -734,9 +847,19 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             category="discovery",
             read_only=True,
             params=[
-                ActionParam(name="exchange", type="string", description="Exchange name (e.g., BINANCE.UM, KRAKEN, BYBIT)"),
-                ActionParam(name="quote", type="string", description="Quote currency filter (defaults to bot's base currency)", required=False, default=None),
-                ActionParam(name="market_type", type="string", description=_MARKET_TYPE_DOC, required=False, default="SWAP"),
+                ActionParam(
+                    name="exchange", type="string", description="Exchange name (e.g., BINANCE.UM, KRAKEN, BYBIT)"
+                ),
+                ActionParam(
+                    name="quote",
+                    type="string",
+                    description="Quote currency filter (defaults to bot's base currency)",
+                    required=False,
+                    default=None,
+                ),
+                ActionParam(
+                    name="market_type", type="string", description=_MARKET_TYPE_DOC, required=False, default="SWAP"
+                ),
             ],
         ),
         _get_available_instruments,
@@ -748,8 +871,19 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             category="discovery",
             read_only=True,
             params=[
-                ActionParam(name="symbols", type="array", description="List of symbol strings to get details for", items_type="string"),
-                ActionParam(name="exchange", type="string", description="Exchange for symbol resolution (optional if symbols include exchange prefix)", required=False, default=None),
+                ActionParam(
+                    name="symbols",
+                    type="array",
+                    description="List of symbol strings to get details for",
+                    items_type="string",
+                ),
+                ActionParam(
+                    name="exchange",
+                    type="string",
+                    description="Exchange for symbol resolution (optional if symbols include exchange prefix)",
+                    required=False,
+                    default=None,
+                ),
             ],
         ),
         _get_instrument_details,
@@ -762,19 +896,56 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             read_only=True,
             params=[
                 ActionParam(name="exchange", type="string", description="Exchange name (e.g., BINANCE.UM)"),
-                ActionParam(name="count", type="integer", description="Number of top instruments to return", required=False, default=20),
-                ActionParam(name="sort_by", type="string", description="Ranking metric: turnover, market_cap, or funding", required=False, default="turnover"),
-                ActionParam(name="period", type="string", description="Lookback period (e.g., 3d, 7d, 1h)", required=False, default="3d"),
-                ActionParam(name="timeframe", type="string", description="Candle timeframe for turnover (e.g., 1d, 1h)", required=False, default="1d"),
-                ActionParam(name="quote", type="string", description="Quote currency filter (defaults to bot's base currency)", required=False, default=None),
-                ActionParam(name="market_type", type="string", description=_MARKET_TYPE_DOC, required=False, default="SWAP"),
+                ActionParam(
+                    name="count",
+                    type="integer",
+                    description="Number of top instruments to return",
+                    required=False,
+                    default=20,
+                ),
+                ActionParam(
+                    name="sort_by",
+                    type="string",
+                    description="Ranking metric: turnover, market_cap, or funding",
+                    required=False,
+                    default="turnover",
+                ),
+                ActionParam(
+                    name="period",
+                    type="string",
+                    description="Lookback period (e.g., 3d, 7d, 1h)",
+                    required=False,
+                    default="3d",
+                ),
+                ActionParam(
+                    name="timeframe",
+                    type="string",
+                    description="Candle timeframe for turnover (e.g., 1d, 1h)",
+                    required=False,
+                    default="1d",
+                ),
+                ActionParam(
+                    name="quote",
+                    type="string",
+                    description="Quote currency filter (defaults to bot's base currency)",
+                    required=False,
+                    default=None,
+                ),
+                ActionParam(
+                    name="market_type", type="string", description=_MARKET_TYPE_DOC, required=False, default="SWAP"
+                ),
             ],
         ),
         _get_top_instruments,
     ),
     # Diagnostics
     "get_positions": (
-        ActionDef(name="get_positions", description="Get all current positions with PnL", category="diagnostics", read_only=True),
+        ActionDef(
+            name="get_positions",
+            description="Get all current positions with PnL",
+            category="diagnostics",
+            read_only=True,
+        ),
         _get_positions,
     ),
     "get_balances": (
@@ -800,7 +971,10 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             description="Get latest quote for an instrument",
             category="diagnostics",
             read_only=True,
-            params=[ActionParam(name="symbol", type="string", description="Trading instrument symbol"), _EXCHANGE_PARAM],
+            params=[
+                ActionParam(name="symbol", type="string", description="Trading instrument symbol"),
+                _EXCHANGE_PARAM,
+            ],
         ),
         _get_quote,
     ),
@@ -820,23 +994,48 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
         _get_ohlc,
     ),
     "get_state": (
-        ActionDef(name="get_state", description="Get full bot state: per-exchange capital, leverage, positions, orders, balances, and custom strategy state", category="diagnostics", read_only=True),
+        ActionDef(
+            name="get_state",
+            description="Get full bot state: per-exchange capital, leverage, positions, orders, balances, and custom strategy state",
+            category="diagnostics",
+            read_only=True,
+        ),
         _get_state,
     ),
     "get_health": (
-        ActionDef(name="get_health", description="Get health metrics: connectivity, queue size, data latencies", category="diagnostics", read_only=True),
+        ActionDef(
+            name="get_health",
+            description="Get health metrics: connectivity, queue size, data latencies",
+            category="diagnostics",
+            read_only=True,
+        ),
         _get_health,
     ),
     "get_state_schema": (
-        ActionDef(name="get_state_schema", description="Get descriptions of custom state fields returned by get_state", category="diagnostics", read_only=True),
+        ActionDef(
+            name="get_state_schema",
+            description="Get descriptions of custom state fields returned by get_state",
+            category="diagnostics",
+            read_only=True,
+        ),
         _get_state_schema,
     ),
     "get_total_capital": (
-        ActionDef(name="get_total_capital", description="Get total capital across all exchanges", category="diagnostics", read_only=True),
+        ActionDef(
+            name="get_total_capital",
+            description="Get total capital across all exchanges",
+            category="diagnostics",
+            read_only=True,
+        ),
         _get_total_capital,
     ),
     "get_leverages": (
-        ActionDef(name="get_leverages", description="Get per-instrument and portfolio leverage", category="diagnostics", read_only=True),
+        ActionDef(
+            name="get_leverages",
+            description="Get per-instrument and portfolio leverage",
+            category="diagnostics",
+            read_only=True,
+        ),
         _get_leverages,
     ),
     "get_subscriptions": (
@@ -845,7 +1044,9 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             description="Get active data subscriptions",
             category="diagnostics",
             read_only=True,
-            params=[ActionParam(name="symbol", type="string", description="Filter by symbol", required=False, default=None)],
+            params=[
+                ActionParam(name="symbol", type="string", description="Filter by symbol", required=False, default=None)
+            ],
         ),
         _get_subscriptions,
     ),
@@ -860,7 +1061,9 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
                 ActionParam(name="symbol", type="string", description="Trading instrument symbol"),
                 ActionParam(name="amount", type="number", description="Order amount (positive=buy, negative=sell)"),
                 ActionParam(name="price", type="number", description="Limit price", required=False, default=None),
-                ActionParam(name="time_in_force", type="string", description="Time in force", required=False, default="gtc"),
+                ActionParam(
+                    name="time_in_force", type="string", description="Time in force", required=False, default="gtc"
+                ),
                 _EXCHANGE_PARAM,
             ],
         ),
@@ -902,7 +1105,10 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             description="Close position for an instrument",
             category="trading",
             dangerous=True,
-            params=[ActionParam(name="symbol", type="string", description="Trading instrument symbol"), _EXCHANGE_PARAM],
+            params=[
+                ActionParam(name="symbol", type="string", description="Trading instrument symbol"),
+                _EXCHANGE_PARAM,
+            ],
         ),
         _close_position,
     ),

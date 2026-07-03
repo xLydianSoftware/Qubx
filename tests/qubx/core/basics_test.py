@@ -4,7 +4,7 @@ from typing import List, Union
 import pandas as pd
 from pytest import approx
 
-from qubx.core.basics import Position, TransactionCostsCalculator
+from qubx.core.basics import OrderOrigin, Position, TransactionCostsCalculator, classify_origin, resolve_reduce_only
 from qubx.core.lookups import FileInstrumentsLookupWithCCXT, lookup
 from qubx.core.series import Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str
@@ -196,6 +196,22 @@ class TestBasics:
         assert 355 * 5 == pos2.get_amount_released_funds_after_closing()
 
 
+def test_classify_origin_default_prefix():
+    assert classify_origin("qubx_BTCUSDT_1") is OrderOrigin.RECOVERED
+    assert classify_origin("manual-123") is OrderOrigin.EXTERNAL
+    assert classify_origin("ext:VENUE-1") is OrderOrigin.EXTERNAL
+    # No-weakening regression: a bare "qubx" lead without the underscore must stay
+    # EXTERNAL on default venues — only a connector whose venue mangles the prefix
+    # (OKX strips "_") opts into a shorter framework_prefix explicitly.
+    assert classify_origin("qubxfoo") is OrderOrigin.EXTERNAL
+
+
+def test_classify_origin_custom_prefix():
+    # The OKX-sanitized form of a framework cid ("qubx_BTCUSDT_1" with "_" stripped).
+    assert classify_origin("qubxBTCUSDT1", framework_prefix="qubx") is OrderOrigin.RECOVERED
+    assert classify_origin("manual-123", framework_prefix="qubx") is OrderOrigin.EXTERNAL
+
+
 def test_position_flatten_zeroes_quantity_but_keeps_realized(mocker):
     from qubx.core.basics import Instrument, Position
 
@@ -218,3 +234,140 @@ def test_position_flatten_zeroes_quantity_but_keeps_realized(mocker):
     assert pos.r_pnl == 42.0  # realized preserved
     assert pos.position_avg_price == 100.0  # entry preserved
     assert pos.is_open() is False
+
+
+def test_position_mark_tick_does_not_clobber_last_update_time():
+    # last_update_time must track the venue SIZE/state update (deal / snapshot reconcile),
+    # NOT every mark-price tick — otherwise quotes ratchet it to local time and the
+    # reconciler's monotonic position guard breaks.
+    import numpy as np
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst)
+
+    t_size = np.datetime64("2026-05-28T00:00:00", "ns")  # a size/state update (e.g. snapshot/deal)
+    pos.update_market_price(t_size, 50_000.0, 1.0)
+    assert pos.last_update_time == t_size
+
+    t_tick = np.datetime64("2026-05-28T00:05:00", "ns")  # a later mark-only quote tick
+    pos.update_market_price_by_tick(Quote(t_tick, 50_010.0, 50_011.0, 0, 0), 1.0)
+    assert pos.last_update_price != 50_000.0  # mark IS updated...
+    assert pos.last_update_time == t_size  # ...but last_update_time is NOT clobbered
+
+
+def test_position_deal_stamps_last_update_time_as_datetime64():
+    # a deal (venue size change) must stamp last_update_time as a dt_64 venue timestamp,
+    # NOT a raw int-ns: it has to be monotonic-comparable with snapshot stamps (which are
+    # dt_64) and serialize consistently (control protocol does str() -> ISO, not a raw
+    # nanosecond integer like "1782478555172000000").
+    import numpy as np
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst)
+
+    t_deal = np.datetime64("2026-06-26T12:55:55.172", "ns")
+    pos.change_position_by(t_deal, 0.003, 59_251.6)
+
+    assert isinstance(pos.last_update_time, np.datetime64)  # dt_64, not int-ns
+    assert pos.last_update_time == t_deal
+
+
+def test_update_position_realize_only_books_pnl_keeps_size():
+    # realize_only=True realizes the closing pnl but leaves size/avg/last_update_time untouched
+    # (situation II: the deal is already in an authoritative snapshot size).
+    import numpy as np
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=0.003, pos_average_price=59_000.0)
+    pos.last_update_time = np.datetime64("2026-06-26T00:00:00", "ns")  # type: ignore
+
+    # close 0.002 @ 59_500 (target 0.001), realize-only
+    pnl, _ = pos.update_position(TIME("2026-06-26T01:00:00"), 0.001, 59_500.0, realize_only=True)
+
+    assert pnl == approx(1.0)  # 0.002 * (59_500 - 59_000)
+    assert pos.r_pnl == approx(1.0)
+    assert pos.quantity == 0.003  # size NOT moved
+    assert pos.position_avg_price == 59_000.0  # avg NOT touched
+    assert pos.last_update_time == np.datetime64("2026-06-26T00:00:00", "ns")  # not restamped
+
+
+def test_update_position_realize_only_opening_realizes_nothing():
+    # a same-side (opening) move under realize_only realizes nothing and never touches size.
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=0.003, pos_average_price=59_000.0)
+
+    pnl, _ = pos.update_position(TIME("2026-06-26T01:00:00"), 0.005, 59_500.0, realize_only=True)
+
+    assert pnl == 0.0
+    assert pos.r_pnl == 0.0
+    assert pos.quantity == 0.003
+
+
+def test_update_position_by_deal_realize_only():
+    # the deal-driven entry point: realize_only books r_pnl from the deal, size stays put.
+    from qubx.core.basics import Deal as CoreDeal
+
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=0.003, pos_average_price=59_000.0)
+
+    deal = CoreDeal(
+        trade_id="t1", order_id="v1", time=TIME("2026-06-26T01:00:00"), amount=-0.002, price=59_500.0, aggressive=True
+    )
+    pos.update_position_by_deal(deal, realize_only=True)
+
+    assert pos.r_pnl == approx(1.0)
+    assert pos.quantity == 0.003  # size untouched
+
+
+def test_update_position_realize_only_books_fee_to_commissions():
+    # realize_only still books the fee into commissions (a tracker; balance stays snapshot-owned)
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=0.003, pos_average_price=59_000.0)
+
+    pos.update_position(TIME("2026-06-26T01:00:00"), 0.001, 59_500.0, fee_amount=0.5, realize_only=True)
+
+    assert pos.r_pnl == approx(1.0)
+    assert pos.commissions == approx(0.5)
+    assert pos.quantity == 0.003
+
+
+def test_update_position_with_conversion_rate():
+    # the multi-currency seam (dormant at conv=1.0 in prod): r_pnl and avg_funds are scaled into
+    # the funded currency by conversion_rate; the returned deal_pnl stays in quote units.
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst)
+
+    pos.update_position(TIME(0), 0.002, 50_000.0, conversion_rate=2.0)  # open long 0.002
+    assert pos.position_avg_price == 50_000.0
+    assert pos.position_avg_price_funds == 25_000.0  # avg / conv
+
+    pnl, _ = pos.update_position(TIME(1), 0.0, 51_000.0, conversion_rate=2.0)  # close
+    assert pnl == approx(2.0)  # returned realized in QUOTE units: 0.002 * (51_000 - 50_000)
+    assert pos.r_pnl == approx(1.0)  # accumulated in FUNDED currency: 2.0 / conv
+    assert pos.quantity == 0.0
+
+
+def test_resolve_reduce_only_both_spellings_and_precedence():
+    # Accepts either spelling.
+    assert resolve_reduce_only({"reduceOnly": True}) is True
+    assert resolve_reduce_only({"reduce_only": True}) is True
+    assert resolve_reduce_only({"reduceOnly": False}) is False
+    assert resolve_reduce_only({"reduce_only": False}) is False
+    # camelCase reduceOnly wins if both are present (single, consistent precedence).
+    assert resolve_reduce_only({"reduceOnly": True, "reduce_only": False}) is True
+    # Coerces truthy/falsy values to bool.
+    assert resolve_reduce_only({"reduceOnly": 1}) is True
+    assert resolve_reduce_only({"reduce_only": 0}) is False
+
+
+def test_resolve_reduce_only_unset_is_none():
+    # None distinguishes 'unset' from an explicit False (callers auto-resolve on None).
+    assert resolve_reduce_only({}) is None
+    assert resolve_reduce_only({"post_only": True}) is None

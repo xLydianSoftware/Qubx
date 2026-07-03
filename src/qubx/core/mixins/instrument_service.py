@@ -1,14 +1,7 @@
-from __future__ import annotations
-
-from typing import TYPE_CHECKING
-
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.instrument_service import IInstrumentService, NullInstrumentService
-from qubx.core.interfaces import IInstrumentServiceManager
-
-if TYPE_CHECKING:
-    from qubx.core.interfaces import IStrategyContext
+from qubx.core.interfaces import IInstrumentServiceManager, IStrategyContext
 
 
 class InstrumentServiceManager(IInstrumentServiceManager):
@@ -16,7 +9,7 @@ class InstrumentServiceManager(IInstrumentServiceManager):
     cycle, fit-time enforcement, and the framework-automatic startup refresh. Composed by StrategyContext
     the same way UniverseManager/ProcessingManager are."""
 
-    def __init__(self, context: "IStrategyContext", instrument_service: IInstrumentService):
+    def __init__(self, context: IStrategyContext, instrument_service: IInstrumentService):
         self._context = context
         self._service = instrument_service
         self._callbacks: list = []
@@ -33,10 +26,11 @@ class InstrumentServiceManager(IInstrumentServiceManager):
     def get_blacklisted_instruments(self) -> list[Instrument]:
         return self._service.matching_instruments(self._context.instruments)
 
-    def run_cycle(self, _ctx: "IStrategyContext | None" = None) -> dict:
+    def run_cycle(self, _ctx: IStrategyContext | None = None) -> dict:
         """Refresh the blacklist, fire change callbacks, then force-close ALL held
         blacklisted instruments (full set, not just the change delta). Shared by the
-        control action and the startup one-shot. Runs on the strategy thread."""
+        control action and the startup one-shot. Runs on the strategy thread (`_ctx` is the
+        scheduler-passed context, unused; the bound `self._context` is the context)."""
         diff = self._service.refresh(self._context.instruments)
         # Fire on ANY blacklist edit (entries_changed), not just universe-scoped add/remove:
         # un-blacklisting an instrument that was already evicted from the universe produces

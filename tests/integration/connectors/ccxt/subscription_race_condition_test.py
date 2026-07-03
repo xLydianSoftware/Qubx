@@ -1,14 +1,16 @@
 import time
 from threading import Thread
-from typing import Dict, List
 
 import pytest
 
 from qubx import QubxLogConfig, logger
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
+from qubx.connectors.ccxt.factory import clear_exchange_manager_cache
+from qubx.connectors.plugin import BuildContext
 from qubx.core.basics import CtrlChannel, DataType, Instrument, LiveTimeProvider, MarketType
 from qubx.health import DummyHealthMonitor
+from qubx.utils.misc import BackgroundEventLoop
+from qubx.utils.runner.accounts import AccountConfigurationManager
 
 
 @pytest.mark.integration
@@ -23,7 +25,6 @@ class TestCcxtSubscriptionRaceConditions:
         # Create test instruments with all required parameters
         self.btc_instrument = Instrument(
             symbol="BTCUSDT",
-
             market_type=MarketType.SWAP,
             exchange="BINANCE.UM",
             base="BTC",
@@ -36,7 +37,6 @@ class TestCcxtSubscriptionRaceConditions:
         )
         self.eth_instrument = Instrument(
             symbol="ETHUSDT",
-
             market_type=MarketType.SWAP,
             exchange="BINANCE.UM",
             base="ETH",
@@ -50,27 +50,23 @@ class TestCcxtSubscriptionRaceConditions:
 
         self.all_instruments = [self.btc_instrument, self.eth_instrument]
 
-        # Create control channel and provider using the factory
+        # Create control channel and provider
         self.channel = CtrlChannel("test_channel")
         self.time_provider = LiveTimeProvider()
 
-        # Use the proper factory function to create exchange with event loop
-        exchange_manager = get_ccxt_exchange_manager(
-            exchange="binanceusdm",
-            use_testnet=True,  # Use testnet for safer testing
-        )
-
-        self.provider = CcxtDataProvider(
-            exchange_manager=exchange_manager,
+        # Mainnet public data — no credentials needed; the provider creates its own ExchangeManager
+        ctx = BuildContext(
+            exchange_name="BINANCE.UM",
             time_provider=self.time_provider,
             channel=self.channel,
-            max_ws_retries=3,
-            warmup_timeout=30,
+            credentials=AccountConfigurationManager(),
             health_monitor=DummyHealthMonitor(),
+            loop=BackgroundEventLoop().loop,
         )
+        self.provider = CcxtDataProvider(ctx, max_ws_retries=3, warmup_timeout=30)
 
         # Track received data
-        self.received_data: Dict[str, List] = {"ohlc": [], "trade": [], "orderbook": [], "quote": []}
+        self.received_data: dict[str, list] = {"ohlc": [], "trade": [], "orderbook": [], "quote": []}
 
         # Start data collection thread
         self.data_thread = Thread(target=self._collect_data, daemon=True)
@@ -81,7 +77,11 @@ class TestCcxtSubscriptionRaceConditions:
         # Cleanup
         self.channel.stop()
         if hasattr(self, "provider"):
-            self.provider.close()
+            try:
+                self.provider.close()
+            except Exception:
+                pass
+        clear_exchange_manager_cache()
 
     def _collect_data(self):
         """Collect data from the channel."""
@@ -142,7 +142,7 @@ class TestCcxtSubscriptionRaceConditions:
 
         # Verify we received some OHLC data
         logger.info(f"Received {len(self.received_data['ohlc'])} OHLC updates")
-        # Note: In testnet, we might not get data, so just check the subscription worked
+        # Note: data flow is best-effort here; the assertions above already validated subscription state
 
     def test_same_instruments_resubscription(self):
         """Test resubscribing to the same instruments (name collision scenario)."""
@@ -214,17 +214,3 @@ class TestCcxtSubscriptionRaceConditions:
                     )
 
         logger.info("Subscription state consistency test completed")
-
-
-if __name__ == "__main__":
-    # Run a specific test for quick validation
-    test_instance = TestCcxtSubscriptionRaceConditions()
-    test_instance.setup()
-    try:
-        test_instance.test_rapid_subscription_changes()
-        logger.info("Quick test passed!")
-    finally:
-        # Cleanup would be handled by fixture, but we're running standalone
-        test_instance.channel.stop()
-        if hasattr(test_instance, "provider"):
-            test_instance.provider.close()

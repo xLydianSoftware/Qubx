@@ -29,7 +29,8 @@ def test_read_helpers_delegate_to_service():
 def test_run_cycle_fires_callbacks_before_force_close():
     order = []
     btc = MagicMock()
-    pos = MagicMock(); pos.quantity = 1.0
+    pos = MagicMock()
+    pos.quantity = 1.0
     svc = MagicMock()
     svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[btc], blacklisted_removed=[])
     m, ctx = _mgr(svc, instruments=[btc], positions={btc: pos}, callbacks=[lambda c, a, r: order.append("callback")])
@@ -60,7 +61,12 @@ def test_run_cycle_empty_diff_is_noop():
     summary = m.run_cycle()
     assert calls == []
     ctx.remove_instruments.assert_not_called()
-    assert summary == {"blacklisted_added": 0, "blacklisted_removed": 0, "force_closed": 0, "force_closed_instruments": []}
+    assert summary == {
+        "blacklisted_added": 0,
+        "blacklisted_removed": 0,
+        "force_closed": 0,
+        "force_closed_instruments": [],
+    }
 
 
 def test_run_cycle_fires_callbacks_on_entries_change_with_empty_universe_diff():
@@ -127,7 +133,8 @@ def test_set_callbacks_preserves_order():
 
 def test_enforce_at_fit_refreshes_and_force_closes_without_callbacks():
     ondo = MagicMock()
-    pos = MagicMock(); pos.quantity = -891.4
+    pos = MagicMock()
+    pos.quantity = -891.4
     svc = MagicMock()
     svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[], blacklisted_removed=[])
     svc.is_blacklisted.side_effect = lambda i: i is ondo
@@ -150,8 +157,10 @@ def test_run_cycle_force_closes_all_held_blacklisted_not_just_delta():
     # WLFI regression: an already-blacklisted holding (absent from the change delta)
     # must still be force-closed.
     ondo, wlfi, btc = MagicMock(), MagicMock(), MagicMock()
-    pos = MagicMock(); pos.quantity = -34767.0
-    btc_pos = MagicMock(); btc_pos.quantity = 1.0
+    pos = MagicMock()
+    pos.quantity = -34767.0
+    btc_pos = MagicMock()
+    btc_pos.quantity = 1.0
     svc = MagicMock()
     # Only ONDO is newly-added this cycle; WLFI was blacklisted earlier.
     svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[ondo], blacklisted_removed=[])

@@ -7,7 +7,7 @@ schedules, warmup periods, and position mismatch resolution.
 
 import uuid
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Callable, Dict, Optional
+from typing import TYPE_CHECKING, Any, Callable
 
 from qubx.core.basics import Instrument, td_64
 from qubx.core.interfaces import IStrategyInitializer, ITransferManager, StartTimeFinderProtocol, StateResolverProtocol
@@ -27,39 +27,39 @@ class BasicStrategyInitializer(IStrategyInitializer):
     """
 
     # Default values for all fields
-    base_subscription: Optional[str] = None
-    base_live_subscription: Optional[str] = None
-    fit_schedule: Optional[str] = None
-    event_schedule: Optional[str] = None
-    warmup_period: Optional[str] = None
-    start_time_finder: Optional[StartTimeFinderProtocol] = None
-    mismatch_resolver: Optional[StateResolverProtocol] = None
-    auto_subscribe: Optional[bool] = None
-    simulation: Optional[bool] = None
-    subscription_warmup: Optional[dict[Any, str]] = None
-    data_cache_config: Dict[str, Any] = field(
+    base_subscription: str | None = None
+    base_live_subscription: str | None = None
+    fit_schedule: str | None = None
+    event_schedule: str | None = None
+    warmup_period: str | None = None
+    start_time_finder: StartTimeFinderProtocol | None = None
+    mismatch_resolver: StateResolverProtocol | None = None
+    auto_subscribe: bool | None = None
+    simulation: bool | None = None
+    subscription_warmup: dict[Any, str] | None = None
+    data_cache_config: dict[str, Any] = field(
         default_factory=lambda: {"enabled": True, "prefetch_period": "1w", "cache_size_mb": 1000}
     )
 
     # Stale data detection configuration
     stale_data_detection_enabled: bool = False
-    stale_data_detection_period: Optional[str] = None
-    stale_data_check_interval: Optional[str] = None
+    stale_data_detection_period: str | None = None
+    stale_data_check_interval: str | None = None
 
     # Number of days ahead to check for delisting
     delisting_check_days: int = 1
 
     # Transfer manager for fund transfers
-    _transfer_manager: Optional[ITransferManager] = None
+    _transfer_manager: ITransferManager | None = None
 
     # Additional configuration that might be needed
-    config: Dict[str, Any] = field(default_factory=dict)
+    config: dict[str, Any] = field(default_factory=dict)
 
     _pending_global_subscriptions: set[str] = field(default_factory=set)
     _pending_instrument_subscriptions: dict[str, set[Instrument]] = field(default_factory=dict)
     _custom_schedules: dict[str, tuple[str, Callable[["IStrategyContext"], None]]] = field(default_factory=dict)
-    _instrument_service_callbacks: list[Callable[["IStrategyContext", list[Instrument], list[Instrument]], None]] = field(
-        default_factory=list
+    _instrument_service_callbacks: list[Callable[["IStrategyContext", list[Instrument], list[Instrument]], None]] = (
+        field(default_factory=list)
     )
 
     def set_base_subscription(self, subscription_type: str) -> None:
@@ -161,7 +161,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
             "cache_size_mb": cache_size_mb,
         }
 
-    def get_data_cache_config(self) -> Dict[str, Any]:
+    def get_data_cache_config(self) -> dict[str, Any]:
         """
         Get CachedPrefetchReader configuration.
 

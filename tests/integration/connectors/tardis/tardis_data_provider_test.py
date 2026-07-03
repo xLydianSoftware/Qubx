@@ -1,3 +1,5 @@
+import os
+import socket
 import time
 from threading import Event
 
@@ -6,10 +8,25 @@ import pandas as pd
 import pytest
 
 from qubx import QubxLogConfig, logger
+from qubx.connectors.plugin import BuildContext
 from qubx.connectors.tardis.data import TardisDataProvider
 from qubx.core.basics import CtrlChannel, DataType, LiveTimeProvider
 from qubx.core.lookups import lookup
 from qubx.core.series import Bar, Quote
+from qubx.health import DummyHealthMonitor
+from qubx.utils.misc import BackgroundEventLoop
+from qubx.utils.runner.accounts import AccountConfigurationManager
+
+TARDIS_HOST = os.environ.get("TARDIS_HOST", "quantlab")
+TARDIS_PORT = int(os.environ.get("TARDIS_PORT", "8011"))
+
+
+def _tardis_reachable(host: str, port: int, timeout: float = 2.0) -> bool:
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
 
 
 @pytest.mark.integration
@@ -19,6 +36,12 @@ class TestTardisDataProvider:
     @pytest.fixture(autouse=True)
     def setup(self):
         """Set up the test environment."""
+        if not _tardis_reachable(TARDIS_HOST, TARDIS_PORT):
+            pytest.skip(
+                f"Tardis Machine host {TARDIS_HOST}:{TARDIS_PORT} is unreachable "
+                "(set TARDIS_HOST/TARDIS_PORT to point at a reachable instance)"
+            )
+
         QubxLogConfig.set_log_level("DEBUG")
 
         # Set up a time provider and control channel
@@ -32,13 +55,19 @@ class TestTardisDataProvider:
         assert instrument is not None, "Could not find instrument BITFINEX.F:BTCUSDT"
         self.instrument = instrument
 
-        # Set up the data provider
-        self.data_provider = TardisDataProvider(
-            host="quantlab",
-            port=8011,  # WebSocket port - HTTP port will be 8010
-            exchange="bitfinex-derivatives",
+        # Set up the data provider (exchange_name BITFINEX.F maps to tardis 'bitfinex-derivatives')
+        ctx = BuildContext(
+            exchange_name="BITFINEX.F",
             time_provider=self.time_provider,
             channel=self.channel,
+            credentials=AccountConfigurationManager(),
+            health_monitor=DummyHealthMonitor(),
+            loop=BackgroundEventLoop().loop,
+        )
+        self.data_provider = TardisDataProvider(
+            ctx,
+            host=TARDIS_HOST,
+            port=TARDIS_PORT,  # WebSocket port - HTTP port will be port - 1
         )
 
         yield

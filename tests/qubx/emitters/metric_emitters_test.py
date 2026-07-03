@@ -372,7 +372,7 @@ class TestCompositeMetricEmitter:
         instrument = MagicMock()
         deals = [
             Deal(
-                id="d1",
+                trade_id="d1",
                 order_id="o1",
                 time=time,
                 amount=1.0,
@@ -394,7 +394,7 @@ class TestCompositeMetricEmitter:
         instrument = MagicMock()
         deals = [
             Deal(
-                id="d1",
+                trade_id="d1",
                 order_id="o1",
                 time=time,
                 amount=1.0,

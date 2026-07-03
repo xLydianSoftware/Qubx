@@ -1,9 +1,16 @@
-from dataclasses import dataclass
+from unittest.mock import MagicMock
 
-import pytest
+import httpx
 
 from qubx.core.basics import Instrument, MarketType
-from qubx.core.instrument_service import BlacklistEntry
+from qubx.core.instrument_service import (
+    BlacklistEntry,
+    HttpInstrumentService,
+    IInstrumentService,
+    InstrumentServiceDiff,
+    NullInstrumentService,
+    create_instrument_service,
+)
 
 
 def _instr(symbol: str, market_type: MarketType, exchange: str, base: str, quote: str) -> Instrument:
@@ -61,13 +68,6 @@ class TestBlacklistMatches:
         assert e.matches(ETH_SPOT) is False
 
 
-from qubx.core.instrument_service import (
-    IInstrumentService,
-    InstrumentServiceDiff,
-    NullInstrumentService,
-)
-
-
 class TestNullInstrumentService:
     def test_is_iinstrument_service(self):
         svc = NullInstrumentService()
@@ -88,11 +88,6 @@ class TestNullInstrumentService:
 
     def test_matching_instruments_empty(self):
         assert NullInstrumentService().matching_instruments([BTC_SWAP, ETH_SPOT]) == []
-
-
-from unittest.mock import MagicMock
-
-from qubx.core.instrument_service import HttpInstrumentService
 
 
 def _resp(payload: dict) -> MagicMock:
@@ -151,8 +146,6 @@ class TestHttpInstrumentService:
         assert d2.blacklisted_removed == [BTC_SWAP]
 
     def test_network_error_keeps_previous_cache(self):
-        import httpx
-
         client = MagicMock()
         client.get.return_value = _resp(
             {"entries": [{"exchange": "BINANCE.UM", "market_type": None, "asset": "BTC", "symbol": None}]}
@@ -189,9 +182,6 @@ class TestHttpInstrumentService:
         client.get.return_value = _resp({"entries": []})
         d_same = svc.refresh(universe)
         assert d_same.entries_changed is False
-
-
-from qubx.core.instrument_service import create_instrument_service
 
 
 class TestFactory:

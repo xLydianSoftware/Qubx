@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from typing import Any
 
 import numpy as np
@@ -5,18 +6,20 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from qubx import QubxLogConfig, logger
+from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import SimulatedDataIterator
-from qubx.core.account import CompositeAccountProcessor
-from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
+from qubx.backtester.transfers import SimulationTransferManager
+from qubx.core.account_manager import AccountManagerConfig, SimulatedAccountManager
+from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
+from qubx.core.events import FundingPaymentEvent
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
     CtrlChannel,
     IDataProvider,
-    IHealthMonitor,
     IMetricEmitter,
     IStrategy,
     IStrategyContext,
@@ -30,16 +33,13 @@ from qubx.core.utils import time_delta_to_str
 from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.guards import TimeGuardedStorage
 from qubx.data.storage import IStorage
-from qubx.health import DummyHealthMonitor
 from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.pandaz.utils import _frame_to_str
 from qubx.utils.runner.configs import PrefetchConfig
 from qubx.utils.time import now_ns, to_timedelta
 
-from .account import SimulatedAccountProcessor
-from .broker import SimulatedBroker
 from .data import SimulatedDataProvider
-from .simulated_exchange import get_simulated_exchange
+from .simulated_exchange import emulate_quote_from_data
 from .utils import (
     SetupTypes,
     SignalsProxy,
@@ -69,12 +69,14 @@ class SimulationRunner:
     logs_writer: InMemoryLogsWriter
     notifier: IStrategyNotifier | None
 
-    account: CompositeAccountProcessor
+    account_manager: SimulatedAccountManager
     channel: CtrlChannel
     time_provider: SimulatedTimeProvider
     scheduler: SimulatedScheduler
     strategy_params: dict[str, Any]
     strategy_class: str
+
+    _connectors: dict[str, SimulatedConnector]
 
     # adjusted times
     _stop: pd.Timestamp | None = None
@@ -203,9 +205,7 @@ class SimulationRunner:
     def _process_generated_signals(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
         t = np.datetime64(int(data.time), "ns")
-        _account = self.account.get_account_processor(instrument.exchange)
         _data_provider = self._get_data_provider(instrument.exchange)
-        assert isinstance(_account, SimulatedAccountProcessor)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
         if not is_hist:
@@ -217,20 +217,21 @@ class SimulationRunner:
                 cc.send((instrument, "event", {"order": sigs[0][1]}, False))
                 sigs.pop(0)
 
-            if q := _account._exchange.emulate_quote_from_data(instrument, t, data):
+            if q := emulate_quote_from_data(instrument, t, data):
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        cc.send((instrument, data_type, data, is_hist))
+        # match resting orders against this tick before the strategy sees it, via the connector
+        if not is_hist:
+            self._connectors[instrument.exchange].process_market_data(instrument, data)
+        self._send_market_data(instrument, data_type, data, is_hist)
 
         return cc.control.is_set()
 
     def _process_strategy(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> bool:
         cc = self.channel
         t = np.datetime64(int(data.time), "ns")
-        _account = self.account.get_account_processor(instrument.exchange)
         _data_provider = self._get_data_provider(instrument.exchange)
-        assert isinstance(_account, SimulatedAccountProcessor)
         assert isinstance(_data_provider, SimulatedDataProvider)
 
         if not is_hist:
@@ -239,13 +240,28 @@ class SimulationRunner:
                 self.time_provider.set_time(_next_exp_time)
                 self.scheduler.check_and_run_tasks()
 
-            if q := _account._exchange.emulate_quote_from_data(instrument, t, data):
+            if q := emulate_quote_from_data(instrument, t, data):
                 _data_provider._last_quotes[instrument] = q
 
         self.time_provider.set_time(t)
-        cc.send((instrument, data_type, data, is_hist))
+        # match resting orders against this tick before the strategy sees it, via the connector
+        if not is_hist:
+            self._connectors[instrument.exchange].process_market_data(instrument, data)
+        self._send_market_data(instrument, data_type, data, is_hist)
 
         return cc.control.is_set()
+
+    def _send_market_data(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> None:
+        # Market data rides (instrument, d_type, data, is_historical) tuples through process_data.
+        # A live (non-warmup) funding payment is dual-emitted, mirroring the live CCXT funding
+        # handler: first as a FundingPaymentEvent on the typed channel (the AccountManager books it
+        # into balances/position PnL), then as a tuple so the strategy still reacts in
+        # on_market_data. The event goes first so the account is fully booked before the strategy
+        # sees the tick. Warmup funding is never booked (matches main) — it rides the cache-only
+        # tuple path alone.
+        if not is_hist and DataType.from_str(data_type)[0] == DataType.FUNDING_PAYMENT:
+            self.channel.send(FundingPaymentEvent(instrument=instrument, payment=data))
+        self.channel.send((instrument, data_type, data, is_hist))
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:
@@ -291,6 +307,7 @@ class SimulationRunner:
 
                     if not self._process_event(instrument, data_type, event, is_hist, _run, stop):
                         break
+
                     dt = np.datetime64(int(event.time), "ns")
                     # - update progress bar and status writer every 1% of simulation time
                     if dt - prev_dt > update_delta:
@@ -303,7 +320,15 @@ class SimulationRunner:
 
         logger.info(f"{self.__class__.__name__} ::: Simulation finished at {stop} :::")
 
-    def _process_event(self, instrument, data_type, event, is_hist, _run, stop_time):
+    def _process_event(
+        self,
+        instrument: Instrument,
+        data_type: str,
+        event: Any,
+        is_hist: bool,
+        fn_processor: Callable[[Instrument, str, Any, bool], bool],
+        stop_time,
+    ):
         """Process a single simulation event with proper time advancement and scheduler checks."""
         # During warmup, clamp future timestamps to current time
         if self.warmup_mode and hasattr(event, "time"):
@@ -311,33 +336,28 @@ class SimulationRunner:
             if event.time > current_real_time:
                 event.time = current_real_time
 
-        if not _run(instrument, data_type, event, is_hist):
-            return False
-
-        return True
+        return fn_processor(instrument, data_type, event, is_hist)
 
     def _handle_no_data_scenario(self, stop_time):
         """Handle scenario when no data is available but scheduler might have events."""
-        # Check if we have pending scheduled events
-        if hasattr(self.scheduler, "_next_nearest_time"):
-            next_scheduled_time = self.scheduler._next_nearest_time
-            current_time = self.time_provider.time()
+        next_scheduled_time = self.scheduler.next_expected_event_time()
+        current_time = self.time_provider.time()
 
-            # Convert to int64 for numerical comparisons (avoid type issues)
-            next_time_ns = next_scheduled_time.astype("int64")
-            current_time_ns = current_time.astype("int64")
-            stop_time_ns = stop_time.value  # Already int64
+        # Convert to int64 for numerical comparisons (avoid type issues)
+        next_time_ns = next_scheduled_time.astype("int64")
+        current_time_ns = current_time.astype("int64")
+        stop_time_ns = stop_time.value  # Already int64
 
-            # Check if we've reached the stop time
-            if current_time_ns >= stop_time_ns:
-                return False  # Stop simulation
+        # Check if we've reached the stop time
+        if current_time_ns >= stop_time_ns:
+            return False  # Stop simulation
 
-            # If there's a scheduled event before stop time, advance to it
-            if next_time_ns < np.iinfo(np.int64).max and next_time_ns < stop_time_ns:
-                # Use the original datetime64 object for set_time (not the int64 conversion)
-                self.time_provider.set_time(next_scheduled_time)
-                self.scheduler.check_and_run_tasks()
-                return True  # Continue simulation
+        # If there's a scheduled event before stop time, advance to it
+        if next_time_ns < np.iinfo(np.int64).max and next_time_ns < stop_time_ns:
+            # Use the original datetime64 object for set_time (not the int64 conversion)
+            self.time_provider.set_time(next_scheduled_time)
+            self.scheduler.check_and_run_tasks()
+            return True  # Continue simulation
 
         return False  # No scheduled events, stop simulation
 
@@ -369,14 +389,13 @@ class SimulationRunner:
         # - main databus communication channel
         #   for simulation it just calls registered callback fn instead of processing it for speedup
         self.channel = SimulatedCtrlChannel("databus", sentinel=(None, None, None, None))
-        health_monitor = DummyHealthMonitor()
 
         # - simulate exchange's time based on market data
         self.time_provider = SimulatedTimeProvider(np.datetime64(self.start, "ns"))
 
-        # - simulated account
-        self.account = self._construct_account_processor(
-            self.setup.exchanges, self.setup.commissions, self.time_provider, self.channel, health_monitor
+        # - simulated connectors (per exchange) wrapping the OME + central account manager
+        self.account_manager = self._construct_account_manager(
+            self.setup.exchanges, self.setup.commissions, self.time_provider, self.channel
         )
 
         # - scheduler for simulated events
@@ -414,29 +433,6 @@ class SimulationRunner:
             default_trading_session=self.data_config.default_trading_sessions_time,
         )
 
-        # - create time guarded aux data storage, optionally wrapped with in-memory cache.
-        # - stack (outer → inner): TimeGuardedStorage → CachedStorage → inner storage
-        # - TimeGuardedStorage clamps stop to current sim time (look-ahead guard).
-        # - CachedStorage uses prefetch_period = full sim duration so that the FIRST read
-        #   for any (dtype, symbols) fetches the entire backtest range in ONE DB query — same
-        #   behaviour as the old upfront prefetch but lazy-triggered per dtype actually used.
-        # - Subsequent reads (across all sim ticks) return from cache → zero DB queries.
-        # - NOTE: PrefetchConfig.aux_data_names / args are no longer needed — caching is
-        #   transparent and only warms dtypes the strategy actually accesses.
-        # _inner_aux = self.data_config.aux_storage or self.data_config.data_storage
-        # _pcfg = self.data_config.prefetch_config
-        # if _pcfg is not None and _pcfg.enabled:
-        #     # - use max(configured period, full sim duration) so any read grabs the full range
-        #     _sim_duration = self.stop - self.start
-        #     _effective_prefetch = max(_sim_duration, pd.Timedelta(_pcfg.prefetch_period))
-        #     _cache_size_mb = _pcfg.cache_size_mb
-        #     _inner_aux = CachedStorage(
-        #         _inner_aux,
-        #         prefetch_period=str(_effective_prefetch),
-        #         cache_factory=lambda: MemoryCache(_cache_size_mb),
-        #     )
-        # self._aux_storage = TimeGuardedStorage(_inner_aux, self.time_provider)
-
     def _wrap_storage(self, storage: IStorage, prefetch_cfg: PrefetchConfig) -> IStorage:
         # - wrap with CachedStorage only — no TimeGuardedStorage here.
         # - TimeGuard is applied by callers that need it (aux/strategy-facing access).
@@ -451,22 +447,16 @@ class SimulationRunner:
         return {k: self._wrap_storage(s, prefetch_cfg) for k, s in storages.items()}
 
     def _create_backtest_context(self):
-        # - create simulated brokers and data providers objects: exchange -> broker | provider
+        # - create data providers objects: exchange -> provider (driving the OME via its connector)
         self._data_providers = []
-        _brokers = []
         for exchange in self.setup.exchanges:
-            _exchange_account = self.account.get_account_processor(exchange)
-            assert isinstance(_exchange_account, SimulatedAccountProcessor)
-
-            _broker = SimulatedBroker(self.channel, _exchange_account, _exchange_account._exchange)
             _dprovider = SimulatedDataProvider(
                 exchange_id=exchange,
                 channel=self.channel,
                 time_provider=self.time_provider,
-                account=_exchange_account,
+                connector=self._connectors[exchange],
                 data_source=self._simulated_data_source,
             )
-            _brokers.append(_broker)
             self._data_providers.append(_dprovider)
 
         # - create mapping: exch -> IDataProvider
@@ -519,9 +509,9 @@ class SimulationRunner:
         # - create strategy context with setup
         self.ctx = StrategyContext(
             strategy=strat,
-            brokers=_brokers,
+            connectors=self._connectors,
             data_providers=self._data_providers,
-            account=self.account,
+            account_manager=self.account_manager,
             scheduler=self.scheduler,
             time_provider=self.time_provider,
             instruments=self.setup.instruments,
@@ -533,6 +523,15 @@ class SimulationRunner:
             notifier=self.notifier,
             initializer=self.initializer,
         )
+
+        # - auto-assign the simulation transfer manager unless the strategy set its own in
+        #   on_init; context.start() then picks it up from the initializer. Wired via the
+        #   context's initializer (the runner's own initializer may be None — the context
+        #   builds a default one).
+        if self.ctx.initializer.get_transfer_manager() is None:
+            self.ctx.initializer.set_transfer_manager(
+                SimulationTransferManager(self.account_manager, self.time_provider)
+            )
 
         # - attach emmiter
         if self.emitter is not None:
@@ -590,45 +589,55 @@ class SimulationRunner:
             _exchange_to_tcc[exchange] = lookup.find_fees(exchange.lower(), commissions.get(exchange))
         return _exchange_to_tcc
 
-    def _construct_account_processor(
+    def _construct_account_manager(
         self,
         exchanges: list[str],
         commissions: str | dict[str, str | None] | None,
         time_provider: ITimeProvider,
         channel: CtrlChannel,
-        health_monitor: IHealthMonitor,
-    ) -> CompositeAccountProcessor:
+    ) -> SimulatedAccountManager:
         _exchange_to_tcc = self._construct_tcc(exchanges, commissions)
         for tcc in _exchange_to_tcc.values():
             if tcc is None:
                 raise SimulationConfigError(
-                    f"Can't find transaction costs calculator for '{self.setup.exchanges}' for specification '{self.setup.commissions}' !"
+                    f"Can't find transaction costs calculator for '{self.setup.exchanges}' for specification "
+                    f"'{self.setup.commissions}' !"
                 )
 
-        _exchange_to_simulated_exchange = {}
-        for exchange in self.setup.exchanges:
-            # - create simulated exchange:
-            #   - we can use different emulations of real exchanges features in future here: for Binance, Bybit, InteractiveBrokers, etc.
-            #   - for now we use simple basic simulated exchange implementation
-            _exchange_to_simulated_exchange[exchange] = get_simulated_exchange(
-                exchange, time_provider, _exchange_to_tcc[exchange], self.setup.accurate_stop_orders_execution
-            )
-
-        _account_processors = {}
-        for exchange in self.setup.exchanges:
-            assert isinstance(self.setup.capital, dict)
-            _initial_capital = self.setup.capital[exchange]
-            _account_processors[exchange] = SimulatedAccountProcessor(
-                account_id=self.account_id,
-                exchange=_exchange_to_simulated_exchange[exchange],
+        # - per exchange a connector privately owns its OME-backed exchange (built from these
+        #   params). Different exchange emulations (Binance/Bybit/IB/...) can plug in here later.
+        self._connectors = {
+            exchange: SimulatedConnector(
                 channel=channel,
-                health_monitor=health_monitor,
-                base_currency=self.setup.base_currency,
                 exchange_name=exchange,
-                initial_capital=_initial_capital,
+                time_provider=time_provider,
+                tcc=_exchange_to_tcc[exchange],
+                accurate_stop_orders_execution=self.setup.accurate_stop_orders_execution,
+            )
+            for exchange in self.setup.exchanges
+        }
+
+        am = SimulatedAccountManager(
+            connectors=self._connectors,
+            base_currencies={exchange: self.setup.base_currency for exchange in self.setup.exchanges},
+            time=time_provider,
+            cfg=AccountManagerConfig(),
+            account_id=self.account_id,
+            tcc=_exchange_to_tcc,
+        )
+
+        # - seed initial capital per exchange into the account state
+        assert isinstance(self.setup.capital, dict)
+        for exchange, capital in self.setup.capital.items():
+            am.seed_balance(
+                exchange,
+                Balance(
+                    exchange=exchange,
+                    currency=self.setup.base_currency,
+                    total=capital,
+                    free=capital,
+                    locked=0.0,
+                ),
             )
 
-        return CompositeAccountProcessor(
-            time_provider=time_provider,
-            account_processors=_account_processors,
-        )
+        return am

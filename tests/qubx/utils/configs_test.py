@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from qubx.core.account_manager import AccountManagerConfig as CoreAMConfig
 from qubx.utils.runner.configs import (
     EmissionConfig,
     EmitterConfig,
@@ -30,6 +31,48 @@ def test_strategy_config_parsing():
     no_exchanges_yaml = CONFIGS_DIR / "no_exchanges.yaml"
     config = load_strategy_config_from_yaml(no_exchanges_yaml)
     assert config.live is None
+
+
+def test_account_manager_config_parsing(tmp_path: Path):
+    """An optional `account_manager` block in `live` overrides AM knobs; omitted fields keep defaults."""
+    config_yaml = tmp_path / "am.yaml"
+    config_yaml.write_text(
+        """
+strategy: sty.models.portfolio.pigone.TestPig1
+live:
+    exchanges:
+        BINANCE.UM:
+            connector: ccxt
+            universe: [BTCUSDT]
+    logging:
+        logger: CsvFileLogsWriter
+    account_manager:
+        reconcile_tick_interval_ms: 1000
+        liveness_check_threshold_ms: 60000
+        terminal_order_history_size: 500
+"""
+    )
+    config = load_strategy_config_from_yaml(config_yaml)
+    assert config.live is not None
+    am = config.live.account_manager
+    assert am.reconcile_tick_interval_ms == 1000
+    assert am.liveness_check_threshold_ms == 60000
+    assert am.terminal_order_history_size == 500
+    # omitted fields keep the AccountManagerConfig dataclass defaults
+    assert am.snapshot_interval_ms == 30000
+    assert am.snapshot_grace_ms == 5000
+    assert am.missing_order_wait_ms == 5000
+    assert am.missing_order_retries == 5
+    assert am.order_confirm_wait_ms == 5000
+    assert am.order_confirm_retries == 5
+    assert am.position_confirm_wait_ms == 2000
+    assert am.liveness_check_interval_ms == 5000
+    assert am.terminal_order_retention_ms == 30000
+
+    # no block at all -> full defaults, matching the core dataclass
+    config = load_strategy_config_from_yaml(CONFIGS_DIR / "basic.yaml")
+    assert config.live is not None
+    assert config.live.account_manager.model_dump() == CoreAMConfig().__dict__
 
 
 def test_metrics_notifiers_config_parsing():

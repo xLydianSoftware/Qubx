@@ -1,23 +1,22 @@
-import time
+import asyncio
+import concurrent.futures
+import inspect
 import traceback
 import uuid
 from collections import defaultdict
-from multiprocessing.pool import ThreadPool
 from types import FunctionType
-from typing import TYPE_CHECKING, Any, Callable
+from typing import Any, Callable
 
 from qubx import logger
-
-if TYPE_CHECKING:
-    from qubx.utils.throttler import InstrumentThrottler
+from qubx.core.account_manager import AccountManager
+from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.basics import (
     DataType,
     Deal,
-    FundingPayment,
     InitializingSignal,
     Instrument,
     MarketEvent,
-    Order,
+    OrderChange,
     RestoredState,
     Signal,
     TargetPosition,
@@ -26,12 +25,20 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.connector import IConnector, IMarketDataSink
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
-from qubx.core.exceptions import StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.events import (
+    AccountMessage,
+    ChannelMessage,
+    DealEvent,
+    OrderCancelRejectedEvent,
+    OrderEvent,
+    OrderUpdateRejectedEvent,
+)
+from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
 from qubx.core.interfaces import (
-    IAccountProcessor,
     IHealthMonitor,
     IMarketDataCache,
     IMarketManager,
@@ -47,13 +54,56 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.state.dummy import DummyStatePersistence
 from qubx.trackers.riskctrl import _InitializationStageTracker
+from qubx.utils.throttler import InstrumentThrottler
 from qubx.utils.time import interval_to_cron
+
+
+def validate_account_callback_signatures(strategy: IStrategy) -> None:
+    """One-time construction guard for the unified account callbacks.
+
+    A strategy overriding ``on_order`` / ``on_execution`` / ``on_position_change`` with a
+    stale arity would die in a TypeError on every dispatch, swallowed by ``_safe_call`` —
+    fail loudly here instead. Same for the removed pre-collapse callback names: they would
+    silently never fire.
+    """
+    if not isinstance(strategy, IStrategy):
+        return
+    for removed in ("on_order_update", "on_deals", "on_account_update"):
+        if callable(getattr(type(strategy), removed, None)):
+            raise TypeError(
+                f"{type(strategy).__name__} defines {removed}, which no longer exists: "
+                "on_order_update/on_deals/on_account_update were replaced by "
+                "on_order/on_execution/on_position_change — see docs/account-management/design.md"
+            )
+    for name in ("on_order", "on_execution", "on_position_change"):
+        impl = getattr(type(strategy), name)
+        base = getattr(IStrategy, name)
+        if impl is base:
+            continue
+        params = list(inspect.signature(impl).parameters.values())
+        if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+            continue
+        positional = [
+            p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        required = [p for p in positional if p.default is inspect.Parameter.empty]
+        n_expected = len(inspect.signature(base).parameters)  # incl. self
+        if len(required) > n_expected or len(positional) < n_expected:
+            expected = ", ".join(inspect.signature(base).parameters)
+            raise TypeError(
+                f"{type(strategy).__name__}.{name}{inspect.signature(impl)} has an incompatible signature: "
+                f"the framework calls it as {name}({expected}) — update the override to match"
+            )
 
 
 class ProcessingManager(IProcessingManager):
     MAX_NUMBER_OF_STRATEGY_FAILURES: int = 10
     DATA_READY_TIMEOUT: td_64 = td_64(60, "s")
+    # - after market data is ready, wait up to this long for the INITIAL account snapshot before
+    #   proceeding anyway (so a missing/failed snapshot never hangs the strategy forever).
+    ACCOUNT_SYNC_TIMEOUT: td_64 = td_64(15, "s")
 
     _context: IStrategyContext
     _strategy: IStrategy
@@ -61,7 +111,8 @@ class ProcessingManager(IProcessingManager):
     _market_data: IMarketManager
     _subscription_manager: ISubscriptionManager
     _time_provider: ITimeProvider
-    _account: IAccountProcessor
+    _account_manager: AccountManager
+    _connectors: dict[str, IConnector]
     _position_tracker: PositionsTracker
     _position_gathering: IPositionGathering
     _cache: IMarketDataCache
@@ -71,23 +122,27 @@ class ProcessingManager(IProcessingManager):
     _health_monitor: IHealthMonitor
     _stale_data_detector: StaleDataDetector
     _delisting_detector: DelistingDetector
-    _data_throttler: "InstrumentThrottler | None"
+    _data_throttler: InstrumentThrottler | None
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
 
     _trigger_on_time_event: bool = False
+    # Same-thread re-entrancy guards: on_fit/on_warmup_finished run inline on the processing
+    # thread and may pump events that re-enter the trigger tail before is_on_fit_called /
+    # is_on_warmup_finished_called flip (set only after the callback returns).
     _fit_is_running: bool = False
     _warmup_finished_is_running: bool = False
     _fails_counter: int = 0
     _is_simulation: bool
-    _pool: ThreadPool | None
     _trig_bar_freq_nsec: int | None = None
     _cur_sim_step: int | None = None
     _updated_instruments: set[Instrument] = set()
     _data_ready_start_time: dt_64 | None = None
     _last_data_ready_log_time: dt_64 | None = None
     _all_instruments_ready_logged: bool = False
+    _account_sync_deadline: dt_64 | None = None  # - startup: bound the wait for the initial snapshot
+    _account_sync_timeout_logged: bool = False
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
     _pending_no_quote_signals: dict[Instrument, Signal] = {}  # signals waiting for quote to arrive
@@ -107,7 +162,8 @@ class ProcessingManager(IProcessingManager):
         market_data: IMarketManager,
         subscription_manager: ISubscriptionManager,
         time_provider: ITimeProvider,
-        account: IAccountProcessor,
+        account_manager: AccountManager,
+        connectors: dict[str, IConnector],
         position_tracker: PositionsTracker,
         position_gathering: IPositionGathering,
         universe_manager: IUniverseManager,
@@ -116,15 +172,17 @@ class ProcessingManager(IProcessingManager):
         health_monitor: IHealthMonitor,
         delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
-        data_throttler: "InstrumentThrottler | None" = None,
+        data_throttler: InstrumentThrottler | None = None,
     ):
+        validate_account_callback_signatures(strategy)
         self._context = context
         self._strategy = strategy
         self._logging = logging
         self._market_data = market_data
         self._subscription_manager = subscription_manager
         self._time_provider = time_provider
-        self._account = account
+        self._account_manager = account_manager
+        self._connectors = connectors
         self._is_simulation = is_simulation
         self._position_gathering = position_gathering
         self._position_tracker = position_tracker
@@ -144,7 +202,6 @@ class ProcessingManager(IProcessingManager):
         )
         self._stale_data_detection_enabled = False
 
-        self._pool = ThreadPool(2) if not self._is_simulation else None
         self._handlers = {
             n.split("_handle_")[1]: f
             for n, f in self.__class__.__dict__.items()
@@ -156,6 +213,8 @@ class ProcessingManager(IProcessingManager):
         self._data_ready_start_time = None
         self._last_data_ready_log_time = None
         self._all_instruments_ready_logged = False
+        self._account_sync_deadline = None
+        self._account_sync_timeout_logged = False
         self._emitted_signals = []
 
         # - special tracker for post-warmup initialization signals
@@ -248,9 +307,9 @@ class ProcessingManager(IProcessingManager):
         delay event id, so the recurring fit schedule is untouched."""
         # short delay defers the fit onto the strategy thread via the scheduler/channel
         # (any non-zero delay works); a unique delay event id leaves the recurring fit untouched.
-        # _handle_fit lives on the ProcessingManager (self), not the context the scheduler
-        # passes into the callback, so bind it from self rather than the callback arg.
-        self.delay("1s", lambda _c: self._handle_fit(None, "fit", (None, self._time_provider.time())))
+        # Bind _handle_fit on the processing manager itself: the scheduler invokes the delayed
+        # method with the context, which (composition, not mixin inheritance) has no _handle_fit.
+        self.delay("1s", lambda _ctx: self._handle_fit(None, "fit", (None, self._time_provider.time())))
 
     def configure_stale_data_detection(
         self, enabled: bool, detection_period: str | None = None, check_interval: str | None = None
@@ -296,8 +355,6 @@ class ProcessingManager(IProcessingManager):
         self._scheduler.unschedule_event("state_snapshot")
 
         if interval is not None and not self._is_simulation:
-            from qubx.state.dummy import DummyStatePersistence
-
             if not isinstance(self._context.persistence, DummyStatePersistence):
                 cron_schedule = interval_to_cron(interval)
                 self._scheduler.schedule_event(cron_schedule, "state_snapshot")
@@ -323,9 +380,6 @@ class ProcessingManager(IProcessingManager):
 
     def _emit_rate_limit_metrics(self, ctx) -> None:
         """Emit rate limit metrics for all registered rate limiters."""
-        import asyncio
-        import concurrent.futures
-
         if ctx.emitter is None or ctx.event_loop is None:
             return
 
@@ -345,6 +399,7 @@ class ProcessingManager(IProcessingManager):
             ctx.emitter.emit(m["name"], m["value"], m["tags"])
 
     def process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
+        # Non-account events ride tuples through here; account events go to process_event.
         should_stop = self.__process_data(instrument, d_type, data, is_historical)
         if not is_historical:
             self._logging.notify(self._time_provider.time())
@@ -380,13 +435,17 @@ class ProcessingManager(IProcessingManager):
         else:
             event = self._process_custom_event(instrument, d_type, data)
 
-        if not self._context._strategy_state.is_on_start_called and not self._is_order_update(d_type):
+        return self._run_strategy_pipeline(event)
+
+    def _run_strategy_pipeline(self, event: Any) -> bool:
+        """Warmup/fit gating, strategy callback firing and signal processing — the
+        shared tail of the tuple data path (__process_data)."""
+        if not self._context._strategy_state.is_on_start_called:
             self._handle_start()
 
         if (
             not self._context._strategy_state.is_on_warmup_finished_called
             and not self._context._strategy_state.is_warmup_in_progress
-            and not self._is_order_update(d_type)
             and not self._warmup_finished_is_running
         ):
             if self._context.get_warmup_positions() or self._context.get_warmup_orders():
@@ -461,13 +520,6 @@ class ProcessingManager(IProcessingManager):
 
                 # - we reset failures counter when we successfully process on_event
                 self._fails_counter = 0
-
-            if isinstance(event, Order):
-                with self._health_monitor("stg.order_update"):
-                    signals.extend(self._as_list(self._strategy.on_order_update(self._context, event)))
-
-                # Notify position gatherer about order update
-                self._position_gathering.on_order_update(self._context, event)
 
             self._subscription_manager.commit()  # apply pending operations
 
@@ -604,12 +656,12 @@ class ProcessingManager(IProcessingManager):
 
         # - export signals if exporter is specified
         if self._exporter is not None and signals:
-            self._exporter.export_signals(self._time_provider.time(), signals, self._account)
+            self._exporter.export_signals(self._time_provider.time(), signals, self._account_manager)
 
         # - emit signals to metric emitters if available
         if self._context.emitter is not None and signals:
             self._context.emitter.emit_signals(
-                self._time_provider.time(), signals, self._account, _targets_from_trackers
+                self._time_provider.time(), signals, self._account_manager, _targets_from_trackers
             )
 
     def __invoke_on_fit(self) -> None:
@@ -631,7 +683,6 @@ class ProcessingManager(IProcessingManager):
                 )
                 logger.opt(colors=False).error(traceback.format_exc())
             finally:
-                self._fit_is_running = False
                 self._context._strategy_state.is_on_fit_called = True
 
     def __invoke_on_warmup_finished(self) -> None:
@@ -651,7 +702,6 @@ class ProcessingManager(IProcessingManager):
                 )
                 logger.opt(colors=False).error(traceback.format_exc())
             finally:
-                self._warmup_finished_is_running = False
                 self._context._strategy_state.is_on_warmup_finished_called = True
 
     def __preprocess_and_log_target_positions(self, target_positions: list[TargetPosition]) -> list[TargetPosition]:
@@ -675,19 +725,11 @@ class ProcessingManager(IProcessingManager):
 
             # - export target positions if exporter is available
             if self._exporter is not None:
-                self._exporter.export_target_positions(self._time_provider.time(), target_positions, self._account)
+                self._exporter.export_target_positions(
+                    self._time_provider.time(), target_positions, self._account_manager
+                )
 
         return filtered_target_positions
-
-    def _run_in_thread_pool(self, func: Callable, args=()):
-        # For simulation we don't need to call function in thread
-        if self._is_simulation:
-            func(*args)
-        else:
-            assert self._pool
-            self._pool.apply_async(func, args)
-            # - wait just a bit in case the function is very simple, to not skip next events
-            time.sleep(0.1)
 
     @staticmethod
     def _as_list(xs: list[Any] | Any | None) -> list[Any]:
@@ -807,6 +849,35 @@ class ProcessingManager(IProcessingManager):
                     self._last_data_ready_log_time = current_time
                 return False
 
+    def _is_ready(self) -> bool:
+        """Startup readiness gate: market data ready AND the initial account snapshot applied.
+
+        Gates on_start / on_fit / state-resolution / restore so those callbacks see REAL capital +
+        venue positions instead of the pre-sync zero state (which would produce 0-capital sizing and
+        transiently-flat restored positions). No account requirement in simulation (no venue snapshot).
+        Falls through after ACCOUNT_SYNC_TIMEOUT so a missing/failed snapshot never hangs the strategy
+        — mirrors the data-ready two-phase timeout; the reconciler heals state on the next snapshot.
+        """
+        if not self._is_data_ready():
+            return False
+        # - simulation & paper have a locally-seeded account (no venue snapshot to wait for)
+        if self._context.is_simulation or self._context.is_paper_trading or self._account_manager.is_synced():
+            return True
+        # - data ready but the initial venue snapshot hasn't applied yet: wait, bounded.
+        now = self._time_provider.time()
+        if self._account_sync_deadline is None:
+            self._account_sync_deadline = now + self.ACCOUNT_SYNC_TIMEOUT
+            return False
+        if now >= self._account_sync_deadline:
+            if not self._account_sync_timeout_logged:
+                logger.warning(
+                    "Initial account snapshot not applied within timeout — starting without it; "
+                    "capital/positions may be incomplete until the next reconcile"
+                )
+                self._account_sync_timeout_logged = True
+            return True
+        return False
+
     def __update_base_data(
         self, instrument: Instrument, event_type: str, data: Timestamped, is_historical: bool = False
     ) -> bool:
@@ -818,6 +889,10 @@ class ProcessingManager(IProcessingManager):
         """
         if not is_historical:
             self._health_monitor.on_data_arrival(instrument, event_type, dt_64(data.time, "ns"))
+            # - paper trading: drive the simulated connector's OME with this tick so resting
+            #   orders match BEFORE the strategy reacts. No-op in backtest (the runner feeds the
+            #   OME directly via the connector) and in live (which executes at the venue).
+            self._feed_simulated_connector(instrument, data)
 
         is_base_data, _update = self._is_base_data(data)
 
@@ -836,8 +911,8 @@ class ProcessingManager(IProcessingManager):
                     logger.info(f"Retrying pending signal for <g>{instrument}</g> - quote now available")
                     self._emitted_signals.append(pending_signal)
 
-                # - update position price
-                self._account.update_position_price(self._time_provider.time(), instrument, _update)
+            # - mark-to-market the position from any market-data type (quote/trade/orderbook/bar)
+            self._mark_to_market(instrument, _update)
 
             # - update tracker
             _targets_from_tracker = self._get_tracker_for(instrument).update(self._context, instrument, _update)
@@ -852,10 +927,18 @@ class ProcessingManager(IProcessingManager):
             # - update position gatherer with market data
             self._position_gathering.update(self._context, instrument, _update)
 
-            # - if it's not base data, we need to process it as market data
-            self._account.process_market_data(self._time_provider.time(), instrument, _update)
-
         return is_base_data and not self._trigger_on_time_event
+
+    def _mark_to_market(self, instrument: Instrument, data: Timestamped) -> None:
+        # AM marks positions off the quote mid. Quotes mark directly; other market
+        # data types reuse the latest cached quote (kept fresh by self._cache.update
+        # above), which is what the simulated exchange emulates from trades/bars.
+        if isinstance(data, Quote):
+            self._account_manager.on_market_quote(instrument, data)
+            return
+        quote = self._market_data.quote(instrument)
+        if quote is not None:
+            self._account_manager.on_market_quote(instrument, quote)
 
     ###########################################################################
     # - Handlers for different types of incoming data
@@ -903,6 +986,22 @@ class ProcessingManager(IProcessingManager):
             for data in event_data:
                 self.__update_base_data(instrument, event_type, data, is_historical=True)
 
+    def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, bar)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, bar, is_trigger=base_update)
+
+    def _handle_trade(self, instrument: Instrument, event_type: str, trade: Trade) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, trade)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, trade, is_trigger=base_update)
+
+    def _handle_orderbook(self, instrument: Instrument, event_type: str, orderbook: OrderBook) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, orderbook)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, orderbook, is_trigger=base_update)
+
+    def _handle_quote(self, instrument: Instrument, event_type: str, quote: Quote) -> MarketEvent:
+        base_update = self.__update_base_data(instrument, event_type, quote)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
+
     def _handle_event(self, instrument: Instrument, event_type: str, event_data: Any) -> TriggerEvent:
         return TriggerEvent(self._time_provider.time(), event_type, instrument, event_data)
 
@@ -914,13 +1013,13 @@ class ProcessingManager(IProcessingManager):
         pass
 
     def _handle_start(self) -> None:
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
         self._strategy.on_start(self._context)
         self._context._strategy_state.is_on_start_called = True
 
     def _handle_state_resolution(self) -> None:
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
 
         _ctx = self._context
@@ -948,7 +1047,7 @@ class ProcessingManager(IProcessingManager):
         Args:
             restored_state: The restored state containing signals and target positions
         """
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
 
         # Restore tracker state from signals
@@ -973,21 +1072,36 @@ class ProcessingManager(IProcessingManager):
             self._position_gathering.restore_from_target_positions(self._context, latest_targets)
 
     def _handle_warmup_finished(self) -> None:
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
+        # The flag reset lives in an outer finally so no raise (health monitor included)
+        # can strand it True — a stranded flag silently disables the strategy forever.
         self._warmup_finished_is_running = True
-        self._run_in_thread_pool(self.__invoke_on_warmup_finished)
+        try:
+            # Runs inline on the processing thread (single-mutator invariant): account events
+            # queue in the channel until the callback returns.
+            self.__invoke_on_warmup_finished()
+        finally:
+            self._warmup_finished_is_running = False
 
     def _handle_fit(self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]) -> None:
         """
         When scheduled fit event is happened - we need to invoke strategy on_fit method
         """
-        if not self._is_data_ready():
+        if not self._is_ready():
             return
+        # The flag reset lives in an outer finally so no raise (finalize_ohlc or the health
+        # monitor) can strand it True — a stranded flag silently disables the strategy
+        # forever; on a raise is_on_fit_called stays False, so the next tick retries the fit.
         self._fit_is_running = True
-        current_time = data[1]
-        self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
-        self._run_in_thread_pool(self.__invoke_on_fit)
+        try:
+            current_time = data[1]
+            self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
+            # Runs inline on the processing thread (single-mutator invariant): a long fit
+            # blocks event processing until it returns.
+            self.__invoke_on_fit()
+        finally:
+            self._fit_is_running = False
 
     def _handle_delisting_check(
         self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]
@@ -1066,7 +1180,7 @@ class ProcessingManager(IProcessingManager):
             for order in orders.values():
                 orders_by_symbol[order.instrument.symbol].append(
                     {
-                        "id": order.id,
+                        "id": order.venue_order_id or order.client_order_id,
                         "type": order.type,
                         "side": order.side,
                         "quantity": order.quantity,
@@ -1107,7 +1221,7 @@ class ProcessingManager(IProcessingManager):
             exchanges_snapshot[exchange] = {
                 "capital": {
                     "total": account.get_total_capital(exchange),
-                    "available": account.get_capital(exchange),
+                    "available": account.get_available_margin(exchange),
                 },
                 "balances": balances_snapshot,
                 "net_leverage": account.get_net_leverage(exchange),
@@ -1127,106 +1241,210 @@ class ProcessingManager(IProcessingManager):
         except Exception as e:
             logger.warning(f"Failed to save state snapshot: {e}")
 
-    def _handle_ohlc(self, instrument: Instrument, event_type: str, bar: Bar) -> MarketEvent:
-        base_update = self.__update_base_data(instrument, event_type, bar)
-        return MarketEvent(self._time_provider.time(), event_type, instrument, bar, is_trigger=base_update)
-
-    def _handle_trade(self, instrument: Instrument, event_type: str, trade: Trade) -> MarketEvent:
-        base_update = self.__update_base_data(instrument, event_type, trade)
-        return MarketEvent(self._time_provider.time(), event_type, instrument, trade, is_trigger=base_update)
-
-    def _handle_orderbook(self, instrument: Instrument, event_type: str, orderbook: OrderBook) -> MarketEvent:
-        base_update = self.__update_base_data(instrument, event_type, orderbook)
-        return MarketEvent(self._time_provider.time(), event_type, instrument, orderbook, is_trigger=base_update)
-
-    def _handle_quote(self, instrument: Instrument, event_type: str, quote: Quote) -> MarketEvent:
-        base_update = self.__update_base_data(instrument, event_type, quote)
-        return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
-
-    def _handle_funding_payment(
-        self, instrument: Instrument, event_type: str, funding_payment: FundingPayment
-    ) -> MarketEvent:
-        # Apply funding payment to position
-        self._account.process_funding_payment(instrument, funding_payment)
-
-        # Continue with existing event processing
-        base_update = self.__update_base_data(instrument, event_type, funding_payment)
-        return MarketEvent(self._time_provider.time(), event_type, instrument, funding_payment, is_trigger=base_update)
-
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
         self._position_gathering.on_error(self._context, error)
 
-    def _handle_order(self, instrument: Instrument, event_type: str, order: Order) -> Order:
-        with self._health_monitor("ctx.handle_order"):
-            self._account.process_order(order)
-            return order
+    # ----------------------------------------------------------------------
+    # - Typed-event dispatch (order/account lifecycle)
+    # ----------------------------------------------------------------------
 
-    def _handle_deals(self, instrument: Instrument | None, event_type: str, deals: list[Deal]) -> TriggerEvent | None:
-        with self._health_monitor("ctx.handle_deals"):
-            if instrument is None:
-                logger.debug(
-                    f"[<y>{self.__class__.__name__}</y>] :: Execution report for unknown instrument <r>{instrument}</r>"
+    def process_event(self, event: ChannelMessage) -> None:
+        # Account-management events ride the typed channel and are applied to AccountState here.
+        # Everything else — market data, scheduled triggers, custom/feature streams, errors —
+        # rides (instrument, d_type, data, is_historical) tuples through process_data.
+        # FundingPaymentEvent is an AccountMessage (it books into balances), so it dispatches
+        # here like any other account event.
+        if isinstance(event, AccountMessage):
+            self._dispatch_account(event)
+            return
+        logger.warning(f"unknown event type: {type(event)}")
+
+    def _feed_simulated_connector(self, instrument: Instrument, payload: Any) -> None:
+        # Paper only. is_paper_trading is also True in the backtester (it too uses a
+        # SimulatedConnector), but there the SimulationRunner already feeds the OME via the
+        # connector per tick — so gate on `not _is_simulation` as well to avoid double-feeding
+        # the OME in backtests. Live (not paper) executes at the venue and has no local OME.
+        if self._is_simulation or not self._context.is_paper_trading:
+            return
+        connector = self._connectors.get(instrument.exchange)
+        if connector is None:
+            return
+        if not isinstance(connector, IMarketDataSink):
+            logger.warning(
+                f"paper connector for {instrument.exchange} is not an IMarketDataSink "
+                f"({type(connector).__name__}); skipping market-data feed"
+            )
+            return
+        connector.process_market_data(instrument, payload)
+
+    def _dispatch_account(self, event: AccountMessage) -> None:
+        try:
+            result = self._account_manager.apply(event)
+        except InvalidOrderTransition as e:
+            logger.warning(f"invalid transition: {e}; skipping")
+            return
+        except Exception:
+            logger.exception(f"AM.apply raised on {type(event).__name__}")
+            self._emit_error_metric("account_manager_apply_errors", event=type(event).__name__)
+            return
+        self._safe_fire_account_callback(event, result)
+
+    def _emit_error_metric(self, name: str, value: float = 1.0, **tags: str) -> None:
+        """Best-effort operational-counter emission; no-op when no emitter is configured."""
+        emitter = self._context.emitter
+        if emitter is not None:
+            try:
+                emitter.emit(name, value, tags)
+            except Exception:
+                logger.exception("metric emitter raised while recording error metric")
+
+    def _safe_call(self, fn: Callable, *args) -> None:
+        try:
+            fn(self._context, *args)
+        except Exception:
+            logger.exception(f"strategy callback {getattr(fn, '__name__', fn)} raised")
+            self._emit_error_metric("strategy_callback_errors", callback=getattr(fn, "__name__", "unknown"))
+
+    def _safe_call_gatherer(self, fn: Callable, *args) -> None:
+        # Same ApplyResult-driven dispatch as the strategy callbacks, but onto the position
+        # gatherer (on_order / on_position_change). Default no-ops on IPositionGathering, so
+        # gatherers that don't override pay nothing; error-isolated like the strategy fires.
+        try:
+            fn(self._context, *args)
+        except Exception:
+            logger.exception(f"position gatherer callback {getattr(fn, '__name__', fn)} raised")
+            self._emit_error_metric(
+                "strategy_callback_errors", callback=f"gatherer.{getattr(fn, '__name__', 'unknown')}"
+            )
+
+    def _safe_fire_account_callback(self, event: AccountMessage, result: ApplyResult) -> None:
+        # Purely ApplyResult-driven dispatch onto the three strategy callbacks: each set
+        # field fires its callback, an empty result means the AM suppressed the event
+        # (late/duplicate/stale/terminal/unknown/deduped funding — already logged) and
+        # nothing fires. A size-equal venue position push carries the LOCAL position in
+        # result.position (the reducer never writes size off a push; drift triggers a
+        # snapshot correction, firing nothing strategy-side). BalanceUpdateEvent
+        # deliberately fires NO callback: balances are read via ctx.
+        if isinstance(event, OrderEvent):
+            # Cancel/update rejections are dangerous-but-recoverable (order still alive at the
+            # venue): surface loudly here so they aren't lost if the strategy ignores them.
+            if result.order_change is OrderChange.CANCEL_REJECTED and isinstance(event, OrderCancelRejectedEvent):
+                logger.warning(
+                    f"[{event.client_order_id}] cancel rejected by venue: {event.reason}; "
+                    f"order is STILL ALIVE at the venue"
                 )
-                return None
+            elif result.order_change is OrderChange.UPDATE_REJECTED and isinstance(event, OrderUpdateRejectedEvent):
+                logger.warning(
+                    f"[{event.client_order_id}] update rejected by venue: {event.reason}; "
+                    f"order is STILL ALIVE with prior parameters"
+                )
+            if result.order is not None and result.order_change is not None:
+                self._safe_call(self._strategy.on_order, result.order, result.order_change)
+                self._safe_call_gatherer(self._position_gathering.on_order, result.order, result.order_change)
+            if result.deal is not None:
+                # A historical (RequestHistDeals) recovery deal is a reconciliation artifact, not a
+                # live execution — the position was already corrected by the snapshot. Record it in
+                # the ledger for the audit trail, but fire NOTHING strategy-facing: no on_execution,
+                # no tracker/gatherer reaction, and no realize-only on_position_change below.
+                if isinstance(event, DealEvent) and event.historical:
+                    self._record_recovered_deal(event.instrument, result.deal)
+                    return
+                if event.instrument is not None:
+                    self._safe_call(self._strategy.on_execution, event.instrument, result.deal)
+                # A newly applied deal also drives framework-internal downstream consumers
+                # (trackers, gatherers, logging, export) — independent of the strategy callback.
+                # Keyed off result.deal, NOT event.fill: a re-delivered fill the AM deduped
+                # must not reach save_deals/gatherers/trackers twice.
+                self._notify_downstream_fill(event.instrument, result.deal)
+        if result.position is not None:
+            self._safe_call(self._strategy.on_position_change, result.position)
+            self._safe_call_gatherer(self._position_gathering.on_position_change, result.position)
+        # Reconciler-path snapshot corrections — one on_position_change per reconciled position.
+        for position in result.positions:
+            self._safe_call(self._strategy.on_position_change, position)
+            self._safe_call_gatherer(self._position_gathering.on_position_change, position)
 
-            # - process deals only for subscribed instruments
-            self._account.process_deals(instrument, deals)
-            self._logging.save_deals(instrument, deals)
+    def _record_recovered_deal(self, instrument: Instrument | None, fill: Deal) -> None:
+        # Ledger-only sink for a historical recovery deal: persist it for the audit trail, but
+        # never touch trackers/gatherers/exporter (those drive live trading reactions). The
+        # internal position booking already happened in the reducer (realize-only).
+        if instrument is None:
+            return
+        try:
+            self._logging.save_deals(instrument, [fill])
+        except Exception:
+            logger.exception("deals writer raised (recovered deal)")
+            self._emit_error_metric("downstream_fill_errors", consumer="save_deals")
 
-            # - Process all deals first
-            for d in deals:
-                # - notify position gatherer and tracker
-                self._position_gathering.on_execution_report(self._context, instrument, d)
-                self._get_tracker_for(instrument).on_execution_report(self._context, instrument, d)
+    def _notify_downstream_fill(self, instrument: Instrument | None, fill: Deal) -> None:
+        if instrument is None:
+            logger.debug(f"[<y>{self.__class__.__name__}</y>] :: fill for unknown instrument; skipping downstream")
+            return
 
-                # logger.debug(
-                #     f"[<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: executed <r>{d.order_id}</r> | {d.amount} @ {d.price}"
-                # )
+        # Every consumer here is error-isolated: a persistent failure in one (e.g. an
+        # I/O-backed deals writer) must not suppress the rest or the position callbacks
+        # that the dispatcher fires after this method returns.
+        try:
+            self._logging.save_deals(instrument, [fill])
+        except Exception:
+            logger.exception("deals writer raised")
+            self._emit_error_metric("downstream_fill_errors", consumer="save_deals")
 
-            if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
-                # - export position changes if exporter is available
+        try:
+            self._position_gathering.on_execution_report(self._context, instrument, fill)
+        except Exception:
+            logger.exception("position gatherer raised")
+            self._emit_error_metric("downstream_fill_errors", consumer="gatherer")
+
+        try:
+            self._get_tracker_for(instrument).on_execution_report(self._context, instrument, fill)
+        except Exception:
+            logger.exception("position tracker raised")
+            self._emit_error_metric("downstream_fill_errors", consumer="tracker")
+
+        if self._exporter is not None and (q := self._market_data.quote(instrument)) is not None:
+            try:
                 _active = self._active_targets.get(instrument)
                 self._exporter.export_position_changes(
                     time=self._time_provider.time(),
                     instrument=instrument,
                     price=q.mid_price(),
-                    account=self._account,
+                    account=self._account_manager,
                     metadata=_active.options if _active else None,
                 )
+            except Exception:
+                logger.exception("exporter raised")
 
-            # - notify universe manager about position change
+        try:
             self._universe_manager.on_alter_position(instrument)
+        except Exception:
+            logger.exception("universe manager on_alter_position raised")
+            self._emit_error_metric("downstream_fill_errors", consumer="on_alter_position")
 
-            # - emit deals to metric emitters if available
-            if self._context.emitter is not None and deals:
+        if self._context.emitter is not None:
+            try:
                 self._context.emitter.emit_deals(
                     time=self._time_provider.time(),
                     instrument=instrument,
-                    deals=deals,
-                    account=self._account,
+                    deals=[fill],
+                    account=self._account_manager,
                 )
+            except Exception:
+                logger.exception("emitter raised")
 
-            # - notify strategy about deals
-            if deals and instrument is not None:
-                self._strategy.on_deals(self._context, instrument, deals)
-
-            # - process active targets: if we got 0 position after executions remove current position from active
-            if not self._context.get_position(instrument).is_open():
-                self._active_targets.pop(instrument, None)
-
-            return None
-
-    def _is_order_update(self, d_type: str) -> bool:
-        return d_type in ["order", "deals"]
+        # - process active targets: if position closed after the fill, drop the active target
+        pos = self._account_manager.get_position(instrument)
+        if pos is None or not pos.is_open():
+            self._active_targets.pop(instrument, None)
 
     def _log_state_mismatch(self) -> None:
         logger.info("<yellow>State comparison between warmup and current state:</yellow>")
 
         warmup_positions, warmup_orders = self._context.get_warmup_positions(), self._context.get_warmup_orders()
 
-        positions = self._account.get_positions()
-        orders = self._account.get_orders()
+        positions = self._account_manager.get_positions()
+        orders = self._account_manager.get_orders()
         instrument_to_orders = defaultdict(list)
         for o in orders.values():
             instrument_to_orders[o.instrument].append(o)

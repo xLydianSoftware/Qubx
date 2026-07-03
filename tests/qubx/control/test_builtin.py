@@ -1,6 +1,6 @@
 from unittest.mock import MagicMock
 
-from qubx.control.builtin import BUILTIN_ACTIONS
+from qubx.control.builtin import BUILTIN_ACTIONS, _refresh_instrument_service
 
 
 def _make_mock_ctx():
@@ -54,7 +54,7 @@ def _make_mock_ctx():
     account.get_orders.return_value = {}
     account.get_leverage.return_value = 0.34
     account.get_total_capital.return_value = 10000.0
-    account.get_capital.return_value = 9500.0
+    account.get_available_margin.return_value = 9500.0
     account.get_net_leverage.return_value = 0.15
     account.get_gross_leverage.return_value = 0.15
     account.get_base_currency.return_value = "USDT"
@@ -93,7 +93,9 @@ def _make_mock_ctx():
     ctx.health.get_data_latencies.return_value = {}
 
     # Mock query_instrument
-    ctx.query_instrument.side_effect = lambda s, exchange=None: instr1 if "BTC" in s else (instr2 if "ETH" in s else None)
+    ctx.query_instrument.side_effect = (
+        lambda s, exchange=None: instr1 if "BTC" in s else (instr2 if "ETH" in s else None)
+    )
 
     return ctx
 
@@ -240,10 +242,21 @@ class TestBuiltinRegistry:
 
     def test_read_only_actions_are_marked(self):
         read_only = {
-            "get_universe", "get_positions", "get_balances", "get_orders", "get_quote",
-            "get_ohlc", "get_state", "get_health", "get_state_schema", "get_total_capital",
-            "get_leverages", "get_subscriptions", "get_available_instruments",
-            "get_instrument_details", "get_top_instruments",
+            "get_universe",
+            "get_positions",
+            "get_balances",
+            "get_orders",
+            "get_quote",
+            "get_ohlc",
+            "get_state",
+            "get_health",
+            "get_state_schema",
+            "get_total_capital",
+            "get_leverages",
+            "get_subscriptions",
+            "get_available_instruments",
+            "get_instrument_details",
+            "get_top_instruments",
         }
         for name in read_only:
             action_def, _ = BUILTIN_ACTIONS[name]
@@ -261,9 +274,6 @@ class TestBuiltinRegistry:
 
     def test_expected_action_count(self):
         assert len(BUILTIN_ACTIONS) == 28
-
-
-from qubx.control.builtin import _refresh_instrument_service
 
 
 def test_refresh_instrument_service_registered_as_write_action():

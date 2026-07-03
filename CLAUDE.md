@@ -85,6 +85,8 @@ uv run qubx --help
 - Use new Python types: `list`, `dict`, `| None`, `tuple` instead of importing from typing
 - Only import `Any` type from typing if needed
 - Never use `from __future__ import annotations` — Python 3.12+ supports all modern type syntax natively
+- Comments must be terse and only state the non-obvious — no narration/professor prose
+- NEVER add section-divider banner comments (e.g. `# - Foo --------- #`); classes/functions already delimit code. Put a short `# -` comment on the class/function instead
 
 ## Core Architecture
 

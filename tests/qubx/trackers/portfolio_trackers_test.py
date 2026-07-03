@@ -2,12 +2,12 @@ import numpy as np
 from pytest import approx
 
 from qubx import logger
-from qubx.core.account import BasicAccountProcessor
 from qubx.core.basics import (
     Deal,
     Instrument,
     MarketType,
     Order,
+    OrderOrigin,
     Position,
     TargetPosition,
 )
@@ -15,10 +15,9 @@ from qubx.core.interfaces import IPositionGathering, IStrategyContext
 from qubx.core.series import Quote
 from qubx.core.utils import recognize_time
 from qubx.gathering.simplest import SimplePositionGatherer
-from qubx.health.dummy import DummyHealthMonitor
 from qubx.trackers.rebalancers import PortfolioRebalancerTracker
 from qubx.trackers.sizers import LongShortRatioPortfolioSizer
-from tests.qubx.core.utils_test import DummyTimeProvider
+from tests.qubx.core.utils_test import StubAccount
 
 N = lambda x, r=1e-4: approx(x, rel=r, nan_ok=True)
 
@@ -112,7 +111,7 @@ class DebugStratageyCtx(IStrategyContext):
         self._d_qts = {i: None for i in self._instruments}  # type: ignore
         self._positions = {i: Position(i) for i in self.instruments}
         self.capital = capital
-        self.acc = BasicAccountProcessor("test", DummyTimeProvider(), "USDT", DummyHealthMonitor(), "TEST")
+        self.acc = StubAccount(base_currency="USDT", exchange="TEST")
         self.acc.update_balance("USDT", capital, 0)
         self.acc.attach_positions(*self.positions.values())
 
@@ -127,7 +126,7 @@ class DebugStratageyCtx(IStrategyContext):
     def quote(self, instrument: Instrument) -> Quote | None:
         return self._d_qts.get(instrument)
 
-    def get_capital(self) -> float:
+    def get_available_margin(self) -> float:
         return self.capital
 
     def get_total_capital(self) -> float:
@@ -135,9 +134,6 @@ class DebugStratageyCtx(IStrategyContext):
 
     def time(self) -> np.datetime64:
         return np.datetime64(self._c_time, "ns")
-
-    def get_reserved(self, instrument: Instrument) -> float:
-        return 0.0
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         """Return the minimum trade size for an instrument."""
@@ -167,22 +163,25 @@ class DebugStratageyCtx(IStrategyContext):
         print(" >>> ", side, instrument, amount)
 
         order = Order(
-            id=f"test_{self._o_id}",
+            client_order_id="test1",
+            venue_order_id=f"test_{self._o_id}",
+            origin=OrderOrigin.FRAMEWORK,
             type="MARKET",
             instrument=instrument,
-            time=np.datetime64(0, "ns"),
+            submitted_at=np.datetime64(0, "ns"),
             quantity=amount,
             price=price if price is not None else 0,
             side=side,
             status="CLOSED",
             time_in_force="gtc",
-            client_id="test1",
         )
 
         self._o_id += 1
         q = self.quote(instrument)
         assert q is not None
-        d = Deal(str(self.time()), order.id, self.time(), amount, q.mid_price(), True)
+        d = Deal(
+            str(self.time()), order.venue_order_id or order.client_order_id, self.time(), amount, q.mid_price(), True
+        )
         self.acc.process_deals(instrument, [d])
         return order
 
@@ -263,7 +262,7 @@ class TestPortfolioRelatedStuff:
         )
 
         # - 'trade'
-        c_positions = g.alter_positions(
+        g.alter_positions(
             ctx,
             prt.process_signals(
                 ctx,
@@ -369,7 +368,7 @@ class TestPortfolioRelatedStuff:
         )
 
         # - 'trade'
-        c_positions = g.alter_positions(
+        g.alter_positions(
             ctx,
             prt.process_signals(
                 ctx,

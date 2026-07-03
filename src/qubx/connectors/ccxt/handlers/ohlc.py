@@ -5,7 +5,6 @@ Handles subscription and warmup for OHLC (candlestick) data.
 """
 
 import asyncio
-from typing import Set
 
 from ccxt import BadSymbol
 
@@ -37,7 +36,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         name: str,
         sub_type: str,
         channel: CtrlChannel,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         timeframe: str = "1m",
         **params,
     ) -> SubscriptionConfiguration:
@@ -78,7 +77,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
             raise NotSupported(f"No bulk or single OHLCV watching supported for {self._exchange_id}")
 
     async def warmup(
-        self, instruments: Set[Instrument], channel: CtrlChannel, warmup_period: str, timeframe: str = "1m", **params
+        self, instruments: set[Instrument], channel: CtrlChannel, warmup_period: str, timeframe: str = "1m", **params
     ) -> None:
         """
         Fetch historical OHLC data for warmup during backtesting.
@@ -109,7 +108,9 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 ohlcv_map: dict[int, list] = {}
                 while len(ohlcv_map) < nbarsback:
                     batch = await self._exchange_manager.exchange.fetch_ohlcv(
-                        ccxt_symbol, exch_timeframe, since=start_since,
+                        ccxt_symbol,
+                        exch_timeframe,
+                        since=start_since,
                         limit=min(nbarsback - len(ohlcv_map), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER) + 1,
                     )
                     if not batch:
@@ -198,7 +199,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         name: str,
         sub_type: str,
         channel: CtrlChannel,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         timeframe: str = "1m",
         **params,
     ) -> SubscriptionConfiguration:
@@ -281,7 +282,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         name: str,
         sub_type: str,
         channel: CtrlChannel,
-        instruments: Set[Instrument],
+        instruments: set[Instrument],
         timeframe: str = "1m",
         **params,
     ) -> SubscriptionConfiguration:
@@ -376,7 +377,7 @@ class OhlcDataHandler(BaseDataTypeHandler):
         """
         bar = self._convert_ohlcv_to_bar(oh)
 
-        channel.send((instrument, sub_type, bar, False))  # not historical bar
+        channel.send((instrument, sub_type, bar, False))
 
         # Generate synthetic quotes if no orderbook/quote subscription exists
         if not (

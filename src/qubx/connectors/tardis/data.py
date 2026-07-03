@@ -3,15 +3,15 @@ import json
 import threading
 import urllib.parse
 from collections import defaultdict
-from typing import TYPE_CHECKING, Any, Dict, Tuple
+from typing import Any
 
 import aiohttp
 import pandas as pd
 
 from qubx import logger
-from qubx.connectors.registry import data_provider
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
-from qubx.core.interfaces import IDataProvider, IHealthMonitor
+from qubx.connectors.plugin import BuildContext
+from qubx.core.basics import DataType, Instrument
+from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, Quote, Trade
 from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop, synchronized
@@ -24,9 +24,6 @@ from .utils import (
     tardis_extract_timeframe,
 )
 
-if TYPE_CHECKING:
-    from qubx.utils.runner.accounts import AccountConfigurationManager
-
 TARDIS_EXCHANGE_MAPPERS = {
     "bitfinex.f": "bitfinex-derivatives",
     "binance.um": "binance-futures",
@@ -34,7 +31,6 @@ TARDIS_EXCHANGE_MAPPERS = {
 }
 
 
-@data_provider("tardis")
 class TardisDataProvider(IDataProvider):
     """
     Data provider implementation for Tardis market data service.
@@ -45,30 +41,26 @@ class TardisDataProvider(IDataProvider):
 
     def __init__(
         self,
-        exchange_name: str,
-        time_provider: ITimeProvider,
-        channel: CtrlChannel,
-        health_monitor: IHealthMonitor,
-        account_manager: "AccountConfigurationManager | None" = None,
-        loop: asyncio.AbstractEventLoop | None = None,
+        ctx: BuildContext,
+        *,
         host: str = "localhost",
         port: int = 8011,
-        **kwargs,
     ):
-        self.time_provider = time_provider
-        self.channel = channel
-        self._exchange_name = exchange_name
-        self._exchange_id = TARDIS_EXCHANGE_MAPPERS.get(exchange_name.lower(), exchange_name.lower())
+        self.time_provider = ctx.time_provider
+        self.channel = ctx.channel
+        self._exchange_name = ctx.exchange_name
+        self._exchange_id = TARDIS_EXCHANGE_MAPPERS.get(ctx.exchange_name.lower(), ctx.exchange_name.lower())
         self._host = host
         self._port = port
-        self._health_monitor = health_monitor or DummyHealthMonitor()
+        self._health_monitor = ctx.health_monitor or DummyHealthMonitor()
 
+        loop = ctx.loop
         self._own_loop = loop is None
 
         if self._own_loop:
             self._event_loop = asyncio.new_event_loop()
             self._thread = threading.Thread(
-                target=self._run_event_loop, daemon=True, name=f"tardis-{exchange_name.lower()}-loop"
+                target=self._run_event_loop, daemon=True, name=f"tardis-{ctx.exchange_name.lower()}-loop"
             )
             self._thread.start()
             self._loop = AsyncThreadLoop(self._event_loop)
@@ -87,7 +79,7 @@ class TardisDataProvider(IDataProvider):
         self._last_quotes: defaultdict[Instrument, Quote | None] = defaultdict(lambda: None)
 
         # Store subscription parameters
-        self._subscription_params: Dict[Tuple[str, Instrument], Dict[str, Any]] = {}
+        self._subscription_params: dict[tuple[str, Instrument], dict[str, Any]] = {}
 
         # Symbol to instrument mapping for quick lookups
         self._symbol_to_instrument: dict[str, Instrument] = {}
@@ -508,7 +500,7 @@ class TardisDataProvider(IDataProvider):
 
                     self.channel.send((instrument, ohlc_type, bar, False))
 
-    def _get_orderbook_params(self, instrument: Instrument) -> Dict[str, Any]:
+    def _get_orderbook_params(self, instrument: Instrument) -> dict[str, Any]:
         """
         Get orderbook parameters for a specific instrument.
         Returns default parameters if not found.
@@ -675,7 +667,6 @@ class TardisDataProvider(IDataProvider):
 
                 # Send orderbooks as historical data
                 if orderbooks:
-                    params = {"tick_size_pct": tick_size_pct, "depth": depth}
                     sub_type = f"{DataType.ORDERBOOK}({tick_size_pct}, {depth})"
                     self.channel.send((instrument, sub_type, orderbooks, True))
                     logger.info(f"{self.__prefix()} Loaded {len(orderbooks)} orderbooks for {symbol}")

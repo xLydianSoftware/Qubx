@@ -180,7 +180,7 @@ class CSVMetricEmitter(BaseMetricEmitter):
                     f.write(
                         f"{deal_time},{instrument.symbol},{instrument.exchange},"
                         f"{deal.amount},{deal.price},{deal.aggressive},"
-                        f"{fee_amount},{fee_currency},{deal.id},{deal.order_id}\n"
+                        f"{fee_amount},{fee_currency},{deal.trade_id},{deal.order_id}\n"
                     )
 
         except Exception as e:

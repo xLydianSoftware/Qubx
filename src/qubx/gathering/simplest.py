@@ -9,6 +9,7 @@ class SimplePositionGatherer(IPositionGathering):
     Default implementation of positions gathering by single orders through strategy context
     """
 
+    # client_order_id of the working priced entry order (the venue id may not be known yet)
     entry_order_id: str | None = None
 
     def _cncl_order(self, ctx: IStrategyContext, instrument: Instrument) -> None:
@@ -17,7 +18,7 @@ class SimplePositionGatherer(IPositionGathering):
                 f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: Cancelling previous entry order <red>{self.entry_order_id}</red>"
             )
             try:
-                ctx.cancel_order(order_id=self.entry_order_id)
+                ctx.cancel_order(client_order_id=self.entry_order_id)
             except OrderNotFound:
                 logger.debug(f"Entry order {self.entry_order_id} already cancelled")
             except Exception as e:
@@ -75,7 +76,7 @@ class SimplePositionGatherer(IPositionGathering):
                 return current_position
 
             if _is_stop_or_limit:
-                self.entry_order_id = r.id
+                self.entry_order_id = r.client_order_id
                 logger.debug(
                     f"  [<y>{self.__class__.__name__}</y>(<g>{instrument}</g>)] :: Position may be adjusted from {current_position} to {new_size} at {at_price} : {r}"
                 )
@@ -92,7 +93,13 @@ class SimplePositionGatherer(IPositionGathering):
         return current_position
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal):
-        if deal.order_id == self.entry_order_id:
+        # deal.order_id is the VENUE id while entry_order_id is a cid: resolve the tracked order
+        # through the account viewer and compare its venue id. A fill implies the venue acked the
+        # order, so by now its venue_order_id is populated even under fire-and-forget submission.
+        if self.entry_order_id is None:
+            return
+        order = ctx.find_order_by_client_id(self.entry_order_id)
+        if order is not None and order.venue_order_id == deal.order_id:
             self.entry_order_id = None
 
 
@@ -109,7 +116,7 @@ class AsyncTakerGatherer(IPositionGathering):
                 )
             return current_position
 
-        ctx.trade_async(instrument, to_trade)
+        ctx.trade(instrument, to_trade)
         return current_position
 
 

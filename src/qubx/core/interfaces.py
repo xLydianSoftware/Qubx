@@ -13,7 +13,6 @@ This module includes:
 """
 
 import datetime
-import inspect
 import traceback
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
@@ -23,15 +22,16 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
-    AssetBalance,
+    Balance,
     CtrlChannel,
     Deal,
-    FundingPayment,
     Instrument,
     ITimeProvider,
     MarketEvent,
     MarketType,
     Order,
+    OrderChange,
+    OrderOrigin,
     OrderRequest,
     Position,
     RestoredState,
@@ -44,6 +44,7 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.errors import BaseErrorEvent
+from qubx.core.events import ChannelMessage
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.data.storage import IReader, IStorage
@@ -196,14 +197,6 @@ class IAccountViewer:
     ########################################################
     # Capital information
     ########################################################
-    def get_capital(self, exchange: str | None = None) -> float:
-        """Get the available free capital in the account.
-
-        Returns:
-            float: The amount of free capital available for trading
-        """
-        ...
-
     def get_total_capital(self, exchange: str | None = None) -> float:
         """Get the total capital in the account including positions value.
 
@@ -215,15 +208,15 @@ class IAccountViewer:
     ########################################################
     # Balance and position information
     ########################################################
-    def get_balances(self, exchange: str | None = None) -> list[AssetBalance]:
+    def get_balances(self, exchange: str | None = None) -> list[Balance]:
         """Get all currency balances.
 
         Returns:
-            list[AssetBalance]: List of AssetBalance objects (each knows its exchange and currency)
+            list[Balance]: List of Balance objects (each knows its exchange and currency)
         """
         ...
 
-    def get_balance(self, currency: str, exchange: str | None = None) -> AssetBalance:
+    def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
         """Get a specific currency balance.
 
         Args:
@@ -231,7 +224,8 @@ class IAccountViewer:
             exchange: The exchange to get the balance for
 
         Returns:
-            AssetBalance: The AssetBalance object
+            Balance: The Balance object. A currency the account never held reads as a
+                zero Balance — never None.
         """
         ...
 
@@ -274,12 +268,18 @@ class IAccountViewer:
         """
         return self.get_positions()
 
-    def get_orders(self, instrument: Instrument | None = None, exchange: str | None = None) -> dict[str, Order]:
-        """Get active orders, optionally filtered by instrument and/or exchange.
+    def get_orders(
+        self,
+        instrument: Instrument | None = None,
+        exchange: str | None = None,
+        origin: OrderOrigin | None = None,
+    ) -> dict[str, Order]:
+        """Get active orders, optionally filtered by instrument, exchange and/or origin.
 
         Args:
             instrument: Optional instrument to filter orders by
             exchange: Optional exchange to filter orders by
+            origin: Optional order origin (strategy/external/...) to filter orders by
 
         Returns:
             dict[str, Order]: Dictionary mapping order IDs to Order objects
@@ -326,7 +326,7 @@ class IAccountViewer:
             instrument: The instrument to check
 
         Returns:
-            float: Current leverage ratio for the instrument
+            float: Current leverage ratio for the instrument (signed: negative for shorts)
         """
         ...
 
@@ -342,7 +342,7 @@ class IAccountViewer:
         """Get the net leverage across all positions.
 
         Returns:
-            float: Net leverage ratio
+            float: Net leverage ratio (signed: negative for a net-short book)
         """
         ...
 
@@ -358,54 +358,36 @@ class IAccountViewer:
     # Per-instrument exchange-side settings
     #
     # ``get_leverage`` (above) returns the *observed* leverage = notional/equity.
-    # The methods below expose the venue's per-(account, instrument) settings:
-    # the configured leverage tier, the venue's hard caps, and margin mode.
-    # Connectors that don't expose these return None (or float('inf') for the
-    # notional cap when the venue has none).
+    # The methods below expose the venue's per-(account, instrument) settings the
+    # strategy configures and the caps the venue derives from them.
     ########################################################
-    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        """Current per-instrument leverage setting on the exchange.
-
-        Distinct from ``get_leverage`` which returns observed leverage
-        (notional / equity).  This is the venue's configuration that
-        determines initial-margin requirement and max position notional.
-
-        Returns:
-            float | None: Current leverage setting, or None if unknown / not
-            populated yet by the venue snapshot.
-        """
-        ...
-
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        """Venue's hard cap on the per-instrument leverage setting.
+        """The leverage currently configured for this instrument on the exchange.
+
+        This is the venue's "initial leverage". Exchange enforces it as per-symbol
+        cap — it won't let a position exceed it — and it drives the initial-margin
+        requirement and the max position notional.
 
         Returns:
-            float | None: Maximum leverage allowed by the venue for this
-            instrument, or None if unknown.
+            float | None: Configured leverage, or None if unknown / not populated
+            yet by the venue snapshot.
         """
         ...
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
-        """Venue's hard cap on a single position's notional at the CURRENT
-        ``instrument_leverage`` setting.
+        """Venue's hard cap on a single position's notional at the CURRENT configured
+        leverage (``get_max_instrument_leverage``).
 
-        On tiered venues (Binance, Bybit) this CHANGES when you change leverage
-        — higher leverage typically means lower notional cap.
-
-        Note: the effective max position is
-        ``min(get_max_instrument_notional(instrument), equity * instrument_leverage)``.
-        Strategies compute this themselves; the framework only exposes the
-        venue's tier cap.
+        On tiered venues (Binance) this CHANGES with leverage — higher leverage means
+        a lower notional cap.
 
         Returns:
-            float: Notional cap; ``float('inf')`` when the venue has no
-            per-asset cap independent of equity (e.g. HPL).
+            float: Notional cap; ``float('inf')`` when the venue reports no per-asset
+            cap or it isn't populated yet by the venue snapshot.
         """
         ...
 
-    def get_margin_mode(
-        self, instrument: Instrument
-    ) -> Literal["cross", "isolated"] | None:
+    def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
         """Per-instrument margin mode currently configured on the exchange.
 
         Returns:
@@ -442,17 +424,33 @@ class IAccountViewer:
         ...
 
     def get_available_margin(self, exchange: str | None = None) -> float:
-        """Get available margin for new positions.
+        """Get the available balance: capital free for opening new positions.
 
-        Available margin is ``total_capital - total_initial_margin``. For accurate
-        results, the connector must populate ``Position.initial_margin`` either
-        via ``set_external_initial_margin(...)`` from venue data (e.g. HPL
+        In live this is the venue-reported figure when the venue provides one
+        (e.g. Binance ``availableBalance``); otherwise it derives as
+        ``total_capital - total_initial_margin``. For an accurate derivation,
+        the connector must populate ``Position.initial_margin`` either via
+        ``set_external_initial_margin(...)`` from venue data (e.g. HPL
         ``marginUsed``) or via ``instrument.initial_margin`` in the metadata.
         Connectors that populate neither will see this method return the full
         capital.
 
         Returns:
-            float: Available margin
+            float: Available balance
+        """
+        ...
+
+    def get_withdrawable_balance(self, exchange: str | None = None) -> float:
+        """Get the balance that could be withdrawn/transferred out of the account.
+
+        In live this is the venue-reported figure when the venue provides one
+        (e.g. Binance ``maxWithdrawAmount``); otherwise it falls back to
+        ``get_available_margin`` (withdrawable <= available conceptually;
+        equality is the documented simplification used in simulation and on
+        venues that report no withdrawable figure).
+
+        Returns:
+            float: Withdrawable balance
         """
         ...
 
@@ -484,333 +482,31 @@ class IAccountViewer:
         """
         return self.get_position(instrument).adl_level
 
-    def get_reserved(self, instrument: Instrument) -> float:
-        """[Deprecated] Get reserved margin for a specific instrument.
 
-        Args:
-            instrument: The instrument to check
+class IAccountConfigurator:
+    """Write side of the per-instrument venue settings (the read side is IAccountViewer).
 
-        Returns:
-            float: Reserved margin for the instrument
-        """
-        return 0.0
-
-
-class IExchangeExtensions:
-    """
-    Base class for exchange-specific API extensions.
-
-    Provides automatic method discovery using Python's reflection capabilities.
-    All public methods (not starting with '_') are automatically discoverable
-    with their signatures and docstrings.
+    Kept separate from IAccountViewer so the read surface stays side-effect free. Only the
+    settings the venue actually lets you change are here — the configured leverage and the
+    margin mode.
     """
 
-    def list_methods(self) -> dict[str, str]:
-        """
-        List all available extension methods with brief descriptions.
+    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        """Set the configured leverage for this instrument on the exchange.
+        The venue enforces it as per-symbol cap.
 
         Returns:
-            dict[str, str]: Dictionary mapping method names to their first-line descriptions
-        """
-        methods = {}
-        for name, method in inspect.getmembers(self, predicate=inspect.ismethod):
-            # Skip private methods and the reflection methods themselves
-            if name.startswith("_") or name in ["list_methods", "call_method", "get_method_signature", "help"]:
-                continue
-
-            # Get first line of docstring as description
-            doc = inspect.getdoc(method)
-            description = doc.split("\n")[0] if doc else "No description"
-            methods[name] = description
-
-        return methods
-
-    def call_method(self, method_name: str, *args, **kwargs) -> Any:
-        """
-        Dynamically call an extension method by name.
-
-        Args:
-            method_name: Name of the method to call
-            *args: Positional arguments to pass to the method
-            **kwargs: Keyword arguments to pass to the method
-
-        Returns:
-            Any: The result of the method call
-
-        Raises:
-            AttributeError: If the method doesn't exist
-            TypeError: If invalid arguments are provided
-        """
-        if not hasattr(self, method_name):
-            available = ", ".join(self.list_methods().keys())
-            raise AttributeError(
-                f"Extension method '{method_name}' not found. Available methods: {available if available else 'none'}"
-            )
-
-        method = getattr(self, method_name)
-        if not callable(method) or method_name.startswith("_"):
-            raise AttributeError(f"'{method_name}' is not a callable extension method")
-
-        return method(*args, **kwargs)
-
-    def get_method_signature(self, method_name: str) -> dict[str, Any]:
-        """
-        Get detailed information about a method's signature and documentation.
-
-        Args:
-            method_name: Name of the method to inspect
-
-        Returns:
-            dict: Dictionary containing:
-                - 'signature': String representation of the method signature
-                - 'description': Full docstring of the method
-                - 'parameters': List of parameter names and their annotations
-                - 'return_type': Return type annotation (if available)
-
-        Raises:
-            AttributeError: If the method doesn't exist
-        """
-        if not hasattr(self, method_name):
-            raise AttributeError(f"Extension method '{method_name}' not found")
-
-        method = getattr(self, method_name)
-        sig = inspect.signature(method)
-        doc = inspect.getdoc(method)
-
-        # Extract parameter information
-        params = []
-        for param_name, param in sig.parameters.items():
-            if param_name == "self":
-                continue
-
-            param_info = {
-                "name": param_name,
-                "annotation": str(param.annotation) if param.annotation != param.empty else None,
-                "default": str(param.default) if param.default != param.empty else None,
-            }
-
-            params.append(param_info)
-
-        return {
-            "signature": str(sig),
-            "description": doc if doc else "No documentation available",
-            "parameters": params,
-            "return_type": str(sig.return_annotation) if sig.return_annotation != sig.empty else None,
-        }
-
-    def help(self, method_name: str | None = None) -> str:
-        """
-        Get formatted help text for extension methods.
-
-        Args:
-            method_name: Optional name of specific method to get help for.
-                        If None, lists all available methods.
-
-        Returns:
-            str: Formatted help text
-        """
-        if method_name is None:
-            # List all methods
-            methods = self.list_methods()
-            if not methods:
-                return "No extension methods available"
-
-            lines = ["Available extension methods:"]
-            for name, desc in sorted(methods.items()):
-                lines.append(f"  {name}: {desc}")
-            return "\n".join(lines)
-        else:
-            # Detailed help for specific method
-            try:
-                info = self.get_method_signature(method_name)
-                lines = [f"Method: {method_name}{info['signature']}", "", info["description"]]
-                return "\n".join(lines)
-            except AttributeError as e:
-                return str(e)
-
-
-class EmptyExchangeExtensions(IExchangeExtensions):
-    """
-    Default empty implementation of exchange extensions.
-
-    Used for exchanges that don't have specific extension methods.
-    Ensures all brokers always have an extensions property without needing hasattr checks.
-    """
-
-    def __init__(self, exchange_name: str):
-        """
-        Initialize empty extensions.
-
-        Args:
-            exchange_name: Name of the exchange (for error messages)
-        """
-        self.exchange_name = exchange_name
-
-    def list_methods(self) -> dict[str, str]:
-        """Return empty dictionary - no methods available."""
-        return {}
-
-    def call_method(self, method_name: str, *args, **kwargs) -> Any:
-        """
-        Raise NotImplementedError for any method call.
-
-        Raises:
-            NotImplementedError: Always, with message about the exchange not having extensions
-        """
-        raise NotImplementedError(f"Exchange '{self.exchange_name}' does not have extension methods")
-
-
-class IBroker:
-    """Broker provider interface for managing trading operations.
-
-    Handles account operations, order placement, and position tracking.
-    """
-
-    channel: CtrlChannel
-
-    @property
-    def extensions(self) -> IExchangeExtensions:
-        """
-        Access exchange-specific API extensions.
-
-        Returns EmptyExchangeExtensions by default. Specific broker implementations
-        can override this property to provide their own extensions.
-
-        Returns:
-            IExchangeExtensions: Exchange-specific extensions (always present, never None)
-        """
-        return EmptyExchangeExtensions(self.exchange())
-
-    @property
-    def is_simulated_trading(self) -> bool:
-        """
-        Check if the broker is in simulation mode.
+            bool: True if the venue accepted the change, False otherwise.
         """
         ...
 
-    def send_order(self, request: OrderRequest) -> Order | None:
-        """Submit order synchronously and wait for result.
-
-        The broker MAY enrich request with exchange-specific metadata
-        (e.g., lighter_client_order_index) and MAY mutate request.client_id
-        for exchange-specific needs.
-
-        Args:
-            request: Order request to submit
+    def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
+        """Set the per-instrument margin mode ("cross" / "isolated") on the exchange.
 
         Returns:
-            Order: The created order object
-
-        Raises:
-            Various exceptions based on order creation errors
+            bool: True if the venue accepted the change, False otherwise.
         """
-        raise NotImplementedError("send_order is not implemented")
-
-    def send_order_async(self, request: OrderRequest) -> str | None:
-        """Submit order asynchronously.
-
-        The broker MAY enrich request.options with exchange-specific metadata
-        (e.g., lighter_client_order_index) before submitting. The broker MUST NOT
-        mutate request.client_id.
-
-        Order confirmation arrives via channel with status "NEW" or "OPEN".
-        request.client_id is used for matching incoming orders.
-
-        Args:
-            request: Order request to submit. The broker can add exchange-specific
-                    metadata to request.options but must preserve client_id.
-
-        Returns:
-            str | None: The client order ID used for tracking. Order updates arrive
-                        asynchronously via the channel. Returns None if client_id
-                        was not provided in the request.
-        """
-        raise NotImplementedError("send_order_async is not implemented")
-
-    def cancel_order(self, order_id: str | None = None, client_order_id: str | None = None) -> bool:
-        """Cancel an existing order synchronously.
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id (preferred when known)
-        - client_order_id: Client-generated id (useful for pending orders)
-
-        Returns:
-            bool: True if cancellation was successful, False otherwise.
-        """
-        raise NotImplementedError("cancel_order is not implemented")
-
-    def cancel_order_async(self, order_id: str | None = None, client_order_id: str | None = None) -> None:
-        """Cancel an existing order asynchronously (non blocking).
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-        """
-        raise NotImplementedError("cancel_order_async is not implemented")
-
-    def cancel_orders(self, instrument: Instrument) -> None:
-        """Cancel all orders for an instrument.
-
-        Args:
-            instrument: The instrument to cancel orders for.
-        """
-        raise NotImplementedError("cancel_orders is not implemented")
-
-    def update_order(
-        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
-    ) -> Order:
-        """Update an existing order with new price and amount.
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-
-        Args:
-            price: New price for the order.
-            amount: New amount for the order.
-
-        Returns:
-            Order: The updated Order object if successful
-
-        Raises:
-            NotImplementedError: If the method is not implemented
-            OrderNotFound: If the order is not found
-            BadRequest: If the request is invalid (e.g., not a limit order)
-            InvalidOrderParameters: If the order cannot be updated
-        """
-        raise NotImplementedError("update_order is not implemented")
-
-    def update_order_async(
-        self, price: float, amount: float, order_id: str | None = None, client_order_id: str | None = None
-    ) -> str | None:
-        """Update an existing order asynchronously (non-blocking).
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-
-        Returns:
-            str | None: The client order ID if update was submitted, None otherwise.
-        """
-        raise NotImplementedError("update_order_async is not implemented")
-
-    def make_client_id(self, client_id: str) -> str:
-        """
-        Generate a valid client_id for the broker if the provided client_id is not valid.
-
-        Args:
-            client_id: The client_id to make valid
-
-        Returns:
-            str: The valid client_id
-        """
-        return client_id
-
-    def exchange(self) -> str:
-        """
-        Return the name of the exchange this broker is connected to.
-        """
-        raise NotImplementedError("exchange() is not implemented")
+        ...
 
 
 class IDataProvider:
@@ -1136,30 +832,6 @@ class ITradingManager:
         """
         ...
 
-    def trade_async(
-        self,
-        instrument: Instrument,
-        amount: float,
-        price: float | None = None,
-        time_in_force="gtc",
-        client_id: str | None = None,
-        **options,
-    ) -> str | None:
-        """Place a trade order asynchronously.
-
-        Args:
-            instrument: The instrument to trade
-            amount: Amount to trade (positive for buy, negative for sell)
-            price: Optional limit price
-            time_in_force: Time in force for the order
-            client_id: Client ID for the order
-            **options: Additional order options
-
-        Returns:
-            str | None: The client order ID used for tracking, or None if not available.
-        """
-        ...
-
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         """Submit multiple orders to the exchange."""
         ...
@@ -1218,17 +890,6 @@ class ITradingManager:
         """
         ...
 
-    def cancel_order_async(
-        self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
-    ) -> None:
-        """Cancel a specific order asynchronously (non blocking).
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-        """
-        ...
-
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument.
 
@@ -1244,24 +905,8 @@ class ITradingManager:
         order_id: str | None = None,
         client_order_id: str | None = None,
         exchange: str | None = None,
-    ) -> Order:
+    ) -> None:
         """Update an existing limit order with new price and amount.
-
-        Exactly one identifier must be provided:
-        - order_id: Exchange/server order id
-        - client_order_id: Client-generated id
-        """
-        ...
-
-    def update_order_async(
-        self,
-        price: float,
-        amount: float,
-        order_id: str | None = None,
-        client_order_id: str | None = None,
-        exchange: str | None = None,
-    ) -> str | None:
-        """Update an existing limit order asynchronously (non-blocking).
 
         Exactly one identifier must be provided:
         - order_id: Exchange/server order id
@@ -1516,178 +1161,6 @@ class ISubscriptionManager:
         ...
 
 
-class IAccountProcessor(IAccountViewer):
-    time_provider: ITimeProvider
-
-    def start(self):
-        """
-        Start the account processor.
-        """
-        ...
-
-    def stop(self):
-        """
-        Stop the account processor.
-        """
-        ...
-
-    def set_subscription_manager(self, manager: ISubscriptionManager) -> None:
-        """Set the subscription manager for the account processor.
-
-        Args:
-            manager: ISubscriptionManager instance to set
-        """
-        ...
-
-    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
-        """Change the per-instrument leverage setting on the exchange.
-
-        Conceptually an account configuration change, not a trade — lives on
-        the account processor, not the broker (no order routing involved).
-
-        Args:
-            instrument: The instrument to configure.
-            leverage: New leverage as a float (HPL accepts 1.5, etc.).  Must
-                be ``<= get_max_instrument_leverage(instrument)``.
-
-        Returns:
-            bool: True if the setting was accepted by the exchange.
-
-        Raises:
-            NotImplementedError: when the connector does not support changing
-                leverage at runtime.  Capability flag tells callers whether
-                to bother calling.
-        """
-        ...
-
-    def set_margin_mode(
-        self, instrument: Instrument, mode: Literal["cross", "isolated"]
-    ) -> bool:
-        """Change the per-instrument margin mode on the exchange.
-
-        Args:
-            instrument: The instrument to configure.
-            mode: ``"cross"`` (account-wide collateral) or ``"isolated"``
-                (margin scoped to this position).
-
-        Returns:
-            bool: True if the setting was accepted by the exchange.
-
-        Raises:
-            NotImplementedError: when the connector does not support changing
-                margin mode at runtime.
-        """
-        ...
-
-    def update_balance(self, currency: str, total: float, locked: float, exchange: str | None = None):
-        """Update balance for a specific currency.
-
-        Args:
-            currency: Currency code
-            total: Total amount of currency
-            locked: Amount of locked currency
-        """
-        ...
-
-    def update_position_price(self, time: dt_64, instrument: Instrument, update: float | Timestamped) -> None:
-        """Update position price for an instrument.
-
-        Args:
-            time: Timestamp of the update
-            instrument: Instrument being updated
-            price: New price
-        """
-        ...
-
-    def process_market_data(self, time: dt_64, instrument: Instrument, update: Timestamped) -> None:
-        """Process market data for an instrument.
-
-        Args:
-            time: Timestamp of the update
-            instrument: Instrument the data is for
-            update: The data to process
-        """
-        ...
-
-    def process_deals(self, instrument: Instrument, deals: list[Deal]) -> None:
-        """Process executed deals for an instrument.
-
-        Args:
-            instrument: Instrument the deals belong to
-            deals: List of deals to process
-        """
-        ...
-
-    def process_funding_payment(self, instrument: Instrument, funding_payment: FundingPayment) -> None:
-        """Process funding payment for an instrument.
-
-        Args:
-            instrument: Instrument the funding payment applies to
-            funding_payment: Funding payment event to process
-        """
-        ...
-
-    def process_order(self, order: Order, *args) -> None:
-        """Process order updates.
-
-        Args:
-            order: Order to process
-            *args: Additional arguments that may be needed by specific implementations
-        """
-        ...
-
-    def process_order_request(self, request: OrderRequest) -> None:
-        """Process an order request (async submission).
-
-        Tracks pending order requests until exchange confirms with Order update.
-        The broker enriches the request with exchange-specific metadata before
-        this method is called.
-
-        Args:
-            request: Order request with client_id for tracking and optional
-                    exchange-specific metadata in request.options
-        """
-        ...
-
-    def attach_positions(self, *position: Position) -> "IAccountProcessor":
-        """Attach positions to the account.
-
-        Args:
-            *position: Position objects to attach
-
-        Returns:
-            I"IAccountProcessor": Self for chaining
-        """
-        ...
-
-    def settle_position(self, instrument: Instrument) -> None:
-        """Flatten a held position in place (no trade) for a delisted/removed
-        market the exchange has already cash-settled. Realized PnL is kept."""
-        ...
-
-    def add_active_orders(self, orders: dict[str, Order]) -> None:
-        """Add active orders to the account.
-
-        Warning only use in the beginning for state restoration because it does not update locked balances.
-
-        Updates:
-            - 2025-03-20: It is used now to track internally active orders, so that we can cancel the rest.
-
-        Args:
-            orders: Dictionary mapping order IDs to Order objects
-        """
-        ...
-
-    def remove_order(self, order_id: str, exchange: str | None = None) -> None:
-        """
-        Remove an order from the account.
-
-        Args:
-            order_id: ID of the order to remove
-        """
-        ...
-
-
 class ITransferManager:
     """Manages transfer operations between exchanges."""
 
@@ -1719,10 +1192,14 @@ class ITransferManager:
         ...
 
     def get_transfers(self) -> dict[str, dict[str, Any]]:
+        """Recorded transfers keyed by transaction id, for reporting (e.g. the backtest
+        transfers log).
+
+        Default no-op (empty — no log kept): a live manager performs transfers at the venue
+        and need not maintain one; SimulationTransferManager overrides it. Returns an empty
+        dict rather than None so callers invoke it directly instead of probing for it.
         """
-        Get all transfers.
-        """
-        ...
+        return {}
 
 
 class IProcessingManager:
@@ -1739,6 +1216,17 @@ class IProcessingManager:
 
         Returns:
             bool: True if processing should be halted
+        """
+        ...
+
+    def process_event(self, event: ChannelMessage) -> None:
+        """
+        Process a typed channel event (account-management messages). Market data and other
+        non-account data ride (instrument, d_type, data, is_historical) tuples through
+        process_data instead.
+
+        Args:
+            event: The typed ChannelMessage to process (an AccountMessage subclass)
         """
         ...
 
@@ -1893,12 +1381,13 @@ class IStrategyContext(
     ISubscriptionManager,
     IProcessingManager,
     IAccountViewer,
+    IAccountConfigurator,
     IWarmupStateSaver,
     ITransferManager,
 ):
     strategy: "IStrategy"
     initializer: "IStrategyInitializer"
-    account: IAccountProcessor
+    account: IAccountViewer
     emitter: "IMetricEmitter"
     health: "IHealthReader"
     notifier: "IStrategyNotifier"
@@ -2000,15 +1489,20 @@ class IPositionGathering:
 
     def on_execution_report(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal): ...
 
-    def on_order_update(self, ctx: IStrategyContext, order: Order) -> None:
+    def on_order(self, ctx: IStrategyContext, order: Order, change: OrderChange) -> None:
+        """Order-lifecycle change for an order, fired to every gatherer right after the
+        strategy's ``on_order`` (same ``ApplyResult``, error-isolated). ``order`` is in its
+        post-change state; ``change`` is ACCEPTED / PARTIALLY_FILLED / FILLED / CANCELED /
+        EXPIRED / REJECTED / UPDATED / CANCEL_REJECTED / UPDATE_REJECTED. On CANCEL_REJECTED /
+        UPDATE_REJECTED the order is STILL ALIVE at the venue. Default no-op.
         """
-        Called when an order status is updated.
+        ...
 
-        Args:
-            ctx: Strategy context object
-            order: The order with updated status
+    def on_position_change(self, ctx: IStrategyContext, position: Position) -> None:
+        """A position changed (fill, funding, venue push, or snapshot reconcile), fired to
+        every gatherer right after the strategy's ``on_position_change``. Default no-op.
         """
-        pass
+        ...
 
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """
@@ -2864,12 +2358,19 @@ class IStrategy(metaclass=Mixable):
     def on_warmup_finished(self, ctx: IStrategyContext):
         """
         This method is called when the warmup period is finished.
+
+        Runs on the strategy's event-processing thread: account and market events queue up
+        and are applied only after it returns, so context access here is safe but long work
+        blocks event processing.
         """
         pass
 
     def on_fit(self, ctx: IStrategyContext):
         """
         Called when it's time to fit the model.
+
+        Runs on the strategy's event-processing thread: a long fit blocks event processing
+        until it returns (queued events are applied afterwards).
         """
         return None
 
@@ -2906,25 +2407,39 @@ class IStrategy(metaclass=Mixable):
         """
         return None
 
-    def on_order_update(self, ctx: IStrategyContext, order: Order) -> list[Signal] | Signal | None:
-        """
-        Called when an order update is received.
+    def on_order(self, ctx: IStrategyContext, order: Order, change: OrderChange) -> None:
+        """Called once per applied order-lifecycle change — the single order callback.
 
-        Args:
-            ctx: Strategy context.
-            order: The order update.
-        """
-        return None
+        ``order`` is the affected order in its post-change state; ``change`` says what just
+        happened: ACCEPTED / PARTIALLY_FILLED / FILLED / CANCELED / EXPIRED / REJECTED /
+        UPDATED (price/quantity amended, status unchanged) / CANCEL_REJECTED /
+        UPDATE_REJECTED. Suppressed events (late, duplicate, already-terminal) never reach
+        here. For REJECTED inspect ``order.rejected_reason`` / ``order.error_code``. On
+        CANCEL_REJECTED / UPDATE_REJECTED the order is STILL ALIVE at the venue with its
+        prior status and parameters reverted; the venue's reject reason is warning-logged
+        by the framework, not stored on the order.
 
-    def on_deals(self, ctx: IStrategyContext, instrument: Instrument, deals: list[Deal]) -> None:
+        Fill details are not delivered here — implement :meth:`on_execution` for deals.
         """
-        Called when deals are received.
+        ...
 
-        Args:
-            ctx: Strategy context.
-            deals: The deals.
+    def on_execution(self, ctx: IStrategyContext, instrument: Instrument, deal: Deal) -> None:
+        """Called once per newly applied fill, deduplicated: a venue re-delivering the same
+        trade (reconnect replay, split order/execution streams) fires this exactly once.
+        Position and balances are already updated when this runs.
         """
-        return None
+        ...
+
+    def on_position_change(self, ctx: IStrategyContext, position: Position) -> None:
+        """Called whenever a position changed: every fill (so expect a high fire rate —
+        keep this cheap), funding payments, venue position pushes, and each position
+        corrected by a snapshot reconcile.
+
+        There is deliberately no balance callback — read balances via
+        ``ctx.get_balances()`` / ``ctx.get_balance()``; balance pushes are applied to
+        account state silently.
+        """
+        ...
 
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """

@@ -1,13 +1,11 @@
-import asyncio
 from collections import defaultdict
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format, instrument_to_ccxt_symbol
-from qubx.connectors.registry import data_provider
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider
-from qubx.core.interfaces import IDataProvider, IHealthMonitor
+from qubx.connectors.plugin import BuildContext
+from qubx.core.basics import DataType, Instrument, ITimeProvider
+from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, Quote
 from qubx.utils.misc import AsyncThreadLoop
 from qubx.utils.time import to_timedelta, to_timestamp
@@ -21,25 +19,17 @@ from .subscription_manager import SubscriptionManager
 from .subscription_orchestrator import SubscriptionOrchestrator
 from .warmup_service import WarmupService
 
-if TYPE_CHECKING:
-    from qubx.utils.runner.accounts import AccountConfigurationManager
 
-
-@data_provider("ccxt")
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
     _exchange_manager: ExchangeManager
-    _last_quotes: dict[Instrument, Optional[Quote]]
+    _last_quotes: dict[Instrument, Quote | None]
     _warmup_timeout: int
 
     def __init__(
         self,
-        exchange_name: str,
-        time_provider: ITimeProvider,
-        channel: CtrlChannel,
-        health_monitor: IHealthMonitor,
-        account_manager: "AccountConfigurationManager",
-        loop: asyncio.AbstractEventLoop | None = None,
+        ctx: BuildContext,
+        *,
         max_ws_retries: int = 10,
         warmup_timeout: int = 120,
         orderbook_limit: int | None = None,
@@ -47,28 +37,26 @@ class CcxtDataProvider(IDataProvider):
     ):
         from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
 
-        rate_limiter = kwargs.pop("rate_limiter", None)
-
-        settings = account_manager.get_exchange_settings(exchange_name)
+        settings = ctx.credentials.get_exchange_settings(ctx.exchange_name)
         self._exchange_manager = get_ccxt_exchange_manager(
-            exchange=exchange_name,
+            exchange=ctx.exchange_name,
             use_testnet=settings.testnet,
-            health_monitor=health_monitor,
-            time_provider=time_provider,
-            loop=loop,
+            health_monitor=ctx.health_monitor,
+            time_provider=ctx.time_provider,
+            loop=ctx.loop,
             **kwargs,
         )
         self.orderbook_limit = orderbook_limit
 
         # Attach rate limiter to exchange manager (overrides CCXT's built-in throttle)
-        if rate_limiter is not None:
-            self._exchange_manager.attach_rate_limiter(rate_limiter)
+        if ctx.rate_limiter is not None:
+            self._exchange_manager.attach_rate_limiter(ctx.rate_limiter)
 
-        self.time_provider = time_provider
-        self.channel = channel
+        self.time_provider = ctx.time_provider
+        self.channel = ctx.channel
         self.max_ws_retries = max_ws_retries
         self._warmup_timeout = warmup_timeout
-        self._health_monitor = health_monitor
+        self._health_monitor = ctx.health_monitor
         self._exchange_id = str(self._exchange_manager.exchange.name)
 
         self._subscription_manager = SubscriptionManager()
@@ -91,7 +79,7 @@ class CcxtDataProvider(IDataProvider):
         )
         self._warmup_service = WarmupService(
             handler_factory=self._data_type_handler_factory,
-            channel=channel,
+            channel=ctx.channel,
             exchange_id=self._exchange_id,
             exchange_manager=self._exchange_manager,
             warmup_timeout=warmup_timeout,
@@ -136,7 +124,7 @@ class CcxtDataProvider(IDataProvider):
     def subscribe(
         self,
         subscription_type: str,
-        instruments: List[Instrument],
+        instruments: list[Instrument],
         reset: bool = False,
     ) -> None:
         if not instruments:
@@ -194,7 +182,7 @@ class CcxtDataProvider(IDataProvider):
             # important to update subscription manager
             self.subscribe(subscription_type, list(remaining_instruments), reset=True)
 
-    def get_subscriptions(self, instrument: Instrument | None = None) -> List[str]:
+    def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
         return self._subscription_manager.get_subscriptions(instrument)
 
@@ -210,14 +198,14 @@ class CcxtDataProvider(IDataProvider):
         """Check if instrument has pending subscription (delegated to subscription manager)."""
         return self._subscription_manager.has_pending_subscription(instrument, subscription_type)
 
-    def warmup(self, warmups: Dict[Tuple[str, Instrument], str]) -> None:
+    def warmup(self, warmups: dict[tuple[str, Instrument], str]) -> None:
         """Execute warmup (delegated to warmup service)."""
         self._warmup_service.execute_warmup(warmups)
 
     def get_quote(self, instrument: Instrument) -> Quote | None:
         return self._last_quotes.get(instrument, None)
 
-    def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> List[Bar]:
+    def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
         """Get historical OHLC data (delegated to OhlcDataHandler)."""
         # Get OHLC handler from factory
         ohlc_handler = self._data_type_handler_factory.get_handler("ohlc")
@@ -342,7 +330,7 @@ class CcxtDataProvider(IDataProvider):
             )
 
     @property
-    def subscribed_instruments(self) -> Set[Instrument]:
+    def subscribed_instruments(self) -> set[Instrument]:
         """Get all subscribed instruments (delegated to subscription manager)."""
         return set(self._subscription_manager.get_all_subscribed_instruments())
 

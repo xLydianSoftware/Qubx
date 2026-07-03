@@ -9,7 +9,8 @@ import pytest
 import yaml
 
 from qubx import QubxLogConfig, logger
-from qubx.core.basics import AssetBalance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
+from qubx.core.account_manager import AccountManager
+from qubx.core.basics import Balance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
 from qubx.core.context import IStrategyContext, StrategyContext
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
 from qubx.core.lookups import lookup
@@ -19,7 +20,18 @@ from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.utils.misc import class_import
 from qubx.utils.runner.accounts import AccountConfigurationManager
-from qubx.utils.runner.runner import run_strategy_yaml
+from qubx.utils.runner.runner import _inject_restored_state, run_strategy_yaml
+
+
+def _wait_until(condition, timeout: float = 10.0, poll: float = 0.05) -> bool:
+    """Poll an outcome predicate — queue size is not a completion signal (the last
+    message may still be inside process_data after the queue empties)."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        time.sleep(poll)
+    return condition()
 
 
 class TestRunStrategyYaml:
@@ -193,7 +205,154 @@ class TestRunStrategyYaml:
         return mock
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_paper_context_wires_simulated_connector_and_account_manager(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """Network-free wiring assertion: paper=True builds SimulatedConnectors + a central
+        SimulatedAccountManager seeded with the configured initial capital, exposed through
+        ctx.account."""
+        from qubx.backtester.connector import SimulatedConnector
+        from qubx.core.account_manager import SimulatedAccountManager
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        # - no warmup: focus the test on construction-time wiring (warmup is exercised elsewhere)
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+        # - non-default AM knob to assert config threading into the constructed AM
+        config.live.account_manager.missing_order_retries = 7
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions=None, testnet=False
+        )
+
+        with (
+            patch(
+                "qubx.utils.runner.runner.class_import",
+                side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+            ),
+            patch("qubx.utils.runner.runner._create_tcc", return_value=lookup.find_fees("BINANCE.UM", None)),
+        ):
+            ctx = create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="paper_wiring_test",
+            )
+
+        assert isinstance(ctx, StrategyContext)
+
+        # - connectors are per-exchange SimulatedConnectors
+        assert set(ctx._connectors.keys()) == {"BINANCE.UM"}
+        assert isinstance(ctx._connectors["BINANCE.UM"], SimulatedConnector)
+        assert ctx.is_paper_trading
+
+        # - central account manager is the simulation variant, seeded with configured capital
+        assert isinstance(ctx._account_manager, SimulatedAccountManager)
+        assert ctx.account is ctx._account_manager
+        balance = ctx.account.get_balance("USDT", exchange="BINANCE.UM")
+        assert balance is not None
+        assert balance.total == 100_000.0
+        assert balance.free == 100_000.0
+
+        # - the AM holds no strategy reference: every callback routes through the PM
+        assert not hasattr(ctx._account_manager, "_strategy")
+
+        # - the live.account_manager block is threaded into the AM's config
+        assert ctx._account_manager._cfg.missing_order_retries == 7
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_paper_context_canonicalizes_binance_pm(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """R13 regression: a BINANCE.PM (portfolio margin) config is canonicalized to
+        BINANCE.UM at the runner boundary, so the connector dict and AM states are keyed
+        by the exchange the instruments carry — ctx.trade() and on_market_quote route
+        instead of KeyError-ing / silently skipping."""
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+        # Faithful to live: the PM data provider self-reports the venue name (the
+        # data-side EXCHANGE_MAPPINGS fallback bridges quote lookups by BINANCE.UM).
+        mock_data_provider.exchange.return_value = "BINANCE.PM"
+
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+        config.live.exchanges = {"BINANCE.PM": config.live.exchanges["BINANCE.UM"]}
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions=None, testnet=False
+        )
+
+        with patch(
+            "qubx.utils.runner.runner.class_import",
+            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+        ):
+            ctx = create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="pm_canonical_test",
+            )
+
+        assert isinstance(ctx, StrategyContext)
+
+        # - every framework-facing key is canonical; the venue name survives only in
+        #   the settings lookups (initial capital / base currency / commissions)
+        assert set(ctx._connectors.keys()) == {"BINANCE.UM"}
+        assert ctx._connectors["BINANCE.UM"].exchange_name == "BINANCE.UM"
+        assert {i.exchange for i in ctx._initial_instruments} == {"BINANCE.UM"}
+        acc_manager.get_exchange_settings.assert_any_call("BINANCE.PM")
+
+        # - paper capital seeded into the canonical AM state
+        balance = ctx.account.get_balance("USDT", exchange="BINANCE.UM")
+        assert balance is not None
+        assert balance.total == 100_000.0
+
+        # - ctx.trade() routes: AM.add_order keys by instrument.exchange (KeyError pre-fix)
+        btc = self._find_instrument("BINANCE.UM", "BTCUSDT")
+        quote = Quote(time=np.datetime64("now"), bid=100_000.0, ask=100_001.0, bid_size=1.0, ask_size=1.0)
+        ctx._connectors["BINANCE.UM"].process_market_data(btc, quote)
+        order = ctx.trade(btc, 0.01)
+        assert order.client_order_id
+
+        # - on_market_quote routes: position marking keys by instrument.exchange
+        #   (silently skipped pre-fix; seed_position returned False)
+        assert ctx.account.seed_position(Position(btc, quantity=1.0, pos_average_price=90_000.0))
+        ctx.account.on_market_quote(btc, quote)
+        assert ctx.account.get_position(btc).last_update_price == quote.mid_price()
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
     @patch("qubx.utils.runner.runner._restore_state")
     def test_run_strategy_yaml_with_restored_positions(
@@ -226,7 +385,7 @@ class TestRunStrategyYaml:
         # Create restored state
         restored_state = RestoredState(
             time=np.datetime64("now"),
-            balances=[AssetBalance(exchange="BINANCE.UM", currency="USDT", free=100000.0, locked=0.0, total=100000.0)],
+            balances=[Balance(exchange="BINANCE.UM", currency="USDT", free=100000.0, locked=0.0, total=100000.0)],
             instrument_to_target_positions={},
             instrument_to_signal_positions={},
             positions={btc_instrument: btc_position, eth_instrument: eth_position},
@@ -244,9 +403,7 @@ class TestRunStrategyYaml:
                 initializer.set_state_resolver(StateResolver.SYNC_STATE)
 
             def on_start(self, ctx: IStrategyContext) -> None:
-                instr = btc_instrument
-                # logger.info(f"on_start ::: <cyan>Buying {instr.symbol} qty 1</cyan>")
-                # ctx.emit_signal(instr.signal(ctx, 1.0))
+                pass
 
         # Run the function under test
         with patch(
@@ -267,19 +424,23 @@ class TestRunStrategyYaml:
         mock_create_data_provider.assert_called()
         mock_restore_state.assert_called_once()
 
-        # Stream live bars
+        # Stream live bars and wait on the asserted outcome (both restored positions
+        # closed by SYNC_STATE, executions logged), not on queue size
         QubxLogConfig.set_log_level("INFO")
+        assert isinstance(ctx, StrategyContext)
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
         mock_data_provider.stream_bars(max_bars=10)
-        while channel._queue.qsize() > 0:
-            time.sleep(0.1)
+        assert _wait_until(
+            lambda: len(logs_writer.get_executions()) > 0
+            and ctx.get_position(btc_instrument).quantity == 0.0
+            and ctx.get_position(eth_instrument).quantity == 0.0
+        )
 
         if ctx.is_running():
             ctx.stop()
 
         # Check executions
-        assert isinstance(ctx, StrategyContext)
-        logs_writer = ctx._logging.logs_writer
-        assert isinstance(logs_writer, InMemoryLogsWriter)
         executions = logs_writer.get_executions()
         assert len(executions) > 0
 
@@ -293,7 +454,7 @@ class TestRunStrategyYaml:
         assert pos.instrument == eth_instrument
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
-    @patch("qubx.utils.runner.runner._create_data_provider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")
     def test_run_strategy_yaml_with_warmup(
         self,
@@ -339,19 +500,19 @@ class TestRunStrategyYaml:
 
         mock_create_data_provider.assert_called()
 
-        # Stream live bars
+        # Stream live bars and wait on the asserted outcome (the on_start signal
+        # executed), not on queue size
         QubxLogConfig.set_log_level("DEBUG")
+        assert isinstance(ctx, StrategyContext)
+        logs_writer = ctx._logging.logs_writer
+        assert isinstance(logs_writer, InMemoryLogsWriter)
         mock_data_provider.stream_bars(max_bars=10)
-        while channel._queue.qsize() > 0:
-            time.sleep(0.1)
+        assert _wait_until(lambda: len(logs_writer.get_executions()) >= 1)
 
         if ctx.is_running():
             ctx.stop()
 
         # Check executions
-        assert isinstance(ctx, StrategyContext)
-        logs_writer = ctx._logging.logs_writer
-        assert isinstance(logs_writer, InMemoryLogsWriter)
         executions = logs_writer.get_executions()
         # - init signal
         assert len(executions) == 1
@@ -360,3 +521,38 @@ class TestRunStrategyYaml:
         pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
         assert pos.quantity == 1
         assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
+
+
+def test_inject_restored_state_preserves_accounting_fields():
+    # Regression guard: _inject_restored_state seeds the whole persisted Position, so the
+    # accounting fields (r_pnl, commissions, cumulative_funding) survive a restart — not
+    # just quantity. This lost dedicated coverage when merge_restored_accounting was removed.
+    inst = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert inst is not None
+    pos = Position(inst, quantity=2.0, pos_average_price=50_000.0)
+    pos.r_pnl = 123.0
+    pos.commissions = 4.5
+    pos.cumulative_funding = -7.0
+
+    am = AccountManager(
+        connectors={inst.exchange: MagicMock()},
+        base_currencies={inst.exchange: "USDT"},
+        time=LiveTimeProvider(),
+    )
+
+    restored = RestoredState(
+        time=np.datetime64("now"),
+        balances=[Balance(exchange=inst.exchange, currency="USDT", free=1000.0, locked=0.0, total=1000.0)],
+        instrument_to_target_positions={},
+        instrument_to_signal_positions={},
+        positions={inst: pos},
+    )
+    _inject_restored_state(am, restored)
+
+    restored_pos = am.get_position(inst)
+    assert restored_pos.quantity == 2.0
+    assert restored_pos.r_pnl == 123.0
+    assert restored_pos.commissions == 4.5
+    assert restored_pos.cumulative_funding == -7.0
+    balances = am.get_balances(inst.exchange)
+    assert any(b.currency == "USDT" and b.total == 1000.0 for b in balances)
