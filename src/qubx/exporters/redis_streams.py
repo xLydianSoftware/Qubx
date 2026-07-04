@@ -5,15 +5,23 @@ This module provides an implementation of ITradeDataExport that exports trading 
 """
 
 from concurrent.futures import ThreadPoolExecutor
+from time import sleep
 from typing import Any, Dict, List, Optional, cast
 
 import redis
+from redis.exceptions import ConnectionError as RedisConnectionError
+from redis.exceptions import TimeoutError as RedisTimeoutError
 from redis.typing import EncodableT, FieldT
 
 from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, ITradeDataExport
 from qubx.exporters.formatters import DefaultFormatter, IExportFormatter
+
+# Simple retry policy for transient Redis errors (connection drops, timeouts).
+# Non-retryable errors (e.g. encoding bugs) are logged and dropped immediately.
+_REDIS_RETRY_ATTEMPTS = 3
+_REDIS_RETRY_BACKOFF_SECONDS = 0.5
 
 
 class RedisStreamsExporter(ITradeDataExport):
@@ -136,11 +144,17 @@ class RedisStreamsExporter(ITradeDataExport):
             # Submit the task to the executor
             self._executor.submit(self._add_to_redis_stream_impl, stream, redis_data, self._max_stream_length)
         except Exception as e:
-            logger.exception(f"[RedisStreamsExporter] Failed to queue Redis stream operation")
+            logger.exception(
+                f"[RedisStreamsExporter] Failed to queue Redis stream operation for '{stream}', data={data}: {e}"
+            )
 
     def _add_to_redis_stream_impl(self, stream: str, redis_data: Dict[FieldT, EncodableT], max_length: int) -> bool:
         """
         Implementation that actually adds data to Redis stream (called from worker thread).
+
+        Retries transient connection/timeout errors up to ``_REDIS_RETRY_ATTEMPTS`` times with
+        a short linear backoff. Non-retryable errors (encoding, programming bugs) are logged
+        and dropped on the first failure.
 
         Args:
             stream: The name of the Redis stream
@@ -150,13 +164,36 @@ class RedisStreamsExporter(ITradeDataExport):
         Returns:
             bool: True if the operation was successful, False otherwise
         """
-        try:
-            # Add to Redis stream
-            self._redis.xadd(stream, redis_data, maxlen=max_length, approximate=True)
-            return True
-        except Exception:
-            logger.exception(f"[RedisStreamsExporter] Failed to add to Redis stream {stream}")
-            return False
+        for attempt in range(1, _REDIS_RETRY_ATTEMPTS + 1):
+            try:
+                self._redis.xadd(stream, redis_data, maxlen=max_length, approximate=True)
+                if attempt > 1:
+                    logger.info(
+                        f"[RedisStreamsExporter] xadd to '{stream}' succeeded on attempt "
+                        f"{attempt}/{_REDIS_RETRY_ATTEMPTS}"
+                    )
+                return True
+            except (RedisConnectionError, RedisTimeoutError) as e:
+                if attempt < _REDIS_RETRY_ATTEMPTS:
+                    delay = _REDIS_RETRY_BACKOFF_SECONDS * attempt
+                    logger.warning(
+                        f"[RedisStreamsExporter] Transient xadd error to '{stream}' "
+                        f"(attempt {attempt}/{_REDIS_RETRY_ATTEMPTS}), retrying in {delay:.1f}s: {e}"
+                    )
+                    sleep(delay)
+                else:
+                    logger.exception(
+                        f"[RedisStreamsExporter] Dropping message: xadd to '{stream}' failed after "
+                        f"{_REDIS_RETRY_ATTEMPTS} attempts, data={redis_data}: {e}"
+                    )
+                    return False
+            except Exception as e:
+                logger.exception(
+                    f"[RedisStreamsExporter] Non-retryable error on xadd to '{stream}', data={redis_data}: {e}"
+                )
+                return False
+
+        return False
 
     def export_signals(self, time: dt_64, signals: List[Signal], account: IAccountViewer) -> None:
         """
