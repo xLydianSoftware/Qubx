@@ -278,9 +278,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                         if order is not None and connector is not None:
                             connector.request_order_status(order)
 
-                    case RequestSnapshot(full=full):
+                    case RequestSnapshot(include_orders=include_orders):
                         if connector is not None:
-                            connector.request_snapshot(full=full)
+                            connector.request_snapshot(include_orders=include_orders)
 
                     case RouteEvent(event=routed):
                         # - HACK, do NOT copy: process_event is SYNCHRONOUS, and _execute runs

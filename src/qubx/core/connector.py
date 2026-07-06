@@ -53,7 +53,10 @@ class IConnector(Protocol):
 
     def request_order_status(self, order: Order) -> None: ...
 
-    def request_snapshot(self) -> None: ...
+    # - include_orders=True: open orders (regular + algo/trigger) + positions + balances
+    #   (startup discovery / periodic sweep); False: positions + balances only —
+    #   open_orders=None, reconcile skips order diffing
+    def request_snapshot(self, include_orders: bool = True) -> None: ...
 
     # Fetch trades for ``instrument`` since ``since`` (venue clock) and emit one DealEvent per
     # trade — recovers executions missed behind a position size diff (the Reconciler's

@@ -1276,17 +1276,18 @@ class CcxtConnector(ChannelEmitter):
             open_orders.append(order)
         return open_orders
 
-    def request_snapshot(self, full: bool = True) -> None:
-        self._spawn(self._snapshot_async(full))
+    def request_snapshot(self, include_orders: bool = True) -> None:
+        self._spawn(self._snapshot_async(include_orders))
 
-    async def _snapshot_async(self, full: bool = True) -> None:
+    async def _snapshot_async(self, include_orders: bool = True) -> None:
         """Fetch account state concurrently and emit a snapshot.
 
-        full=True  -> open orders + algo/trigger orders + positions + balances (startup discovery +
-        periodic sweep). full=False -> positions + balances ONLY (steady state): the open-orders /
-        algo legs carry high REST weight and, sharing ccxt's throttle with order placement, delay
-        order sends by seconds — so steady snapshots skip them (open_orders=None -> reconcile leaves
-        order state untouched; orders are tracked via the WS stream + the periodic full sweep).
+        include_orders=True  -> open orders + algo/trigger orders + positions + balances (startup
+        discovery + periodic sweep). include_orders=False -> positions + balances ONLY (steady
+        state): the open-orders / algo legs carry high REST weight and, sharing ccxt's throttle
+        with order placement, delay order sends by seconds — so steady snapshots skip them
+        (open_orders=None -> reconcile leaves order state untouched; orders are tracked via the WS
+        stream + the periodic full sweep).
 
         Network/exchange errors are logged, not raised — AM retries on its next snapshot tick.
         ``return_exceptions=True`` keeps one failing fetch from sinking the others; a failed (or
@@ -1294,7 +1295,7 @@ class CcxtConnector(ChannelEmitter):
         """
         ex = self._em.exchange
         as_of: dt_64 = self._time.time()
-        if full:
+        if include_orders:
             raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
                 ex.fetch_open_orders(),
                 self._fetch_trigger_open_orders(),
