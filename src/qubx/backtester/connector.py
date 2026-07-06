@@ -203,7 +203,8 @@ class SimulatedConnector(ChannelEmitter):
         # position-confirm task that would request these never fires).
         pass
 
-    def request_snapshot(self) -> None:
+    def request_snapshot(self, include_orders: bool = True) -> None:
+        # - include_orders kept for IConnector conformance; sim snapshots are cheap, always full
         open_orders = list(self._ome.get_open_orders().values())
         snapshot = AccountSnapshot(
             exchange=self.exchange_name,
