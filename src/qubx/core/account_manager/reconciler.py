@@ -61,11 +61,12 @@ class RequestStatus:
 
 @dataclass(frozen=True)
 class RequestSnapshot:
-    # - pull a fresh account snapshot for this exchange. full=True -> orders + algo/trigger +
-    #   positions + balance (startup discovery + periodic sweep). full=False -> positions + balance
-    #   only (steady state): cheap, stays off the shared REST throttle so it can't delay order sends.
+    # - pull a fresh account snapshot for this exchange. include_orders=True -> orders (regular +
+    #   algo/trigger) + positions + balance (startup discovery + periodic sweep).
+    #   include_orders=False -> positions + balance only (steady state): cheap, stays off the
+    #   shared REST throttle so it can't delay order sends.
     exchange: str
-    full: bool = True
+    include_orders: bool = True
 
 
 @dataclass(frozen=True)
@@ -391,11 +392,11 @@ class Reconciler:
         actions: list[Action] = []
         if self._snapshot_due(state.exchange, now):
             self._last_snapshot[state.exchange] = now
-            full = self._full_snapshot_due(state.exchange, now)
-            if full:
+            full_sweep = self._full_snapshot_due(state.exchange, now)
+            if full_sweep:
                 self._last_full_snapshot[state.exchange] = now
-            _log.debug(f"[{state.exchange}] reconcile: snapshot due -> RequestSnapshot(full={full})")
-            actions.append(RequestSnapshot(state.exchange, full=full))
+            _log.debug(f"[{state.exchange}] reconcile: snapshot due -> RequestSnapshot(include_orders={full_sweep})")
+            actions.append(RequestSnapshot(state.exchange, include_orders=full_sweep))
         return actions + self._dispatch(Tick(), state, now)
 
     def on_snapshot(

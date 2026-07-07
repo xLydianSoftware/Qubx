@@ -723,11 +723,11 @@ def test_first_snapshot_is_full_then_light_then_full_after_sweep():
 
     # first request after start must be FULL — no local order state yet, so we can't gate the
     # all-orders + algo discovery fetch (matches the initial-discovery contract)
-    assert RequestSnapshot(ex, full=True) in rec.on_tick(st, T0)
+    assert RequestSnapshot(ex, include_orders=True) in rec.on_tick(st, T0)
 
     # a due request inside the full-sweep window is LIGHT (positions + balance only)
-    assert RequestSnapshot(ex, full=False) in rec.on_tick(st, _passed_seconds(T0, 30))
-    assert RequestSnapshot(ex, full=False) in rec.on_tick(st, _passed_seconds(T0, 60))
+    assert RequestSnapshot(ex, include_orders=False) in rec.on_tick(st, _passed_seconds(T0, 30))
+    assert RequestSnapshot(ex, include_orders=False) in rec.on_tick(st, _passed_seconds(T0, 60))
 
     # once the full-sweep interval elapses, the next due request is FULL again (WS-drop backstop)
-    assert RequestSnapshot(ex, full=True) in rec.on_tick(st, _passed_seconds(T0, 300))
+    assert RequestSnapshot(ex, include_orders=True) in rec.on_tick(st, _passed_seconds(T0, 300))
