@@ -194,6 +194,8 @@ class AccountManagerConfig(StrictBaseModel):
 
     position_confirm_wait_ms: int = 2_000
 
+    funding_sweep_enabled: bool = True  # False disables the funding sweep (kill switch)
+
     liveness_check_interval_ms: int = 5_000
     liveness_check_threshold_ms: int = 30_000
 

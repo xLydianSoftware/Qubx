@@ -37,6 +37,7 @@ from qubx.core.events import (
     AccountSnapshotEvent,
     BalanceUpdateEvent,
     DealEvent,
+    FundingPaymentEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderExpiredEvent,
@@ -427,9 +428,7 @@ async def test_request_hist_deals_emits_deal_event_per_trade() -> None:
     since = np.datetime64("2026-05-28T00:00:00")
     exchange = Mock()
     exchange.has = {"editOrder": True}
-    exchange.fetch_my_trades = AsyncMock(
-        return_value=[_ws_trade("T1", 0.5, 100.0), _ws_trade("T2", 0.3, 101.0)]
-    )
+    exchange.fetch_my_trades = AsyncMock(return_value=[_ws_trade("T1", 0.5, 100.0), _ws_trade("T2", 0.3, 101.0)])
     conn, sent, _ = _make_connector(exchange=exchange)
 
     conn.request_hist_deals(_instrument(), since)
@@ -454,6 +453,137 @@ async def test_request_hist_deals_network_error_emits_nothing() -> None:
     conn, sent, _ = _make_connector(exchange=exchange)
 
     conn.request_hist_deals(_instrument(), np.datetime64("2026-05-28T00:00:00"))
+    await _drive(conn)
+
+    assert sent == []
+
+
+# --------------------------------------------------------------------------- #
+# (b3) request_funding_payments -> one FundingPaymentEvent per income record
+# --------------------------------------------------------------------------- #
+T_SETTLE_MS = 1_700_006_400_000  # exact hour boundary
+SINCE = np.datetime64("2023-11-14T22:00:00")
+
+
+def _funding_record(*, symbol: str = CCXT_SYMBOL, ts: int = T_SETTLE_MS, amount: float = -1.25) -> dict:
+    return {"info": {}, "symbol": symbol, "timestamp": ts, "id": "900", "amount": amount, "code": "USDT"}
+
+
+def _rate_row(*, symbol: str = CCXT_SYMBOL, ts: int = T_SETTLE_MS, rate: float = 0.0001) -> dict:
+    return {"symbol": symbol, "fundingRate": rate, "timestamp": ts}
+
+
+def _funding_exchange(*, records: list[dict], rates: list[dict] | Exception = ()) -> Mock:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_funding_history = AsyncMock(return_value=records)
+    if isinstance(rates, Exception):
+        exchange.fetch_funding_rate_history = AsyncMock(side_effect=rates)
+    else:
+        exchange.fetch_funding_rate_history = AsyncMock(return_value=list(rates))
+    return exchange
+
+
+@pytest.mark.asyncio
+async def test_request_funding_payments_maps_income_records() -> None:
+    ts2 = T_SETTLE_MS + 8 * 3_600_000  # next 8h boundary
+    exchange = _funding_exchange(
+        records=[_funding_record(amount=-1.25), _funding_record(ts=ts2, amount=0.5)],
+        rates=[_rate_row(rate=0.0001), _rate_row(ts=ts2, rate=-0.0002)],
+    )
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_funding_payments(SINCE)
+    await _drive(conn)
+
+    since_ms = int(SINCE.astype("datetime64[ms]").astype("int64"))
+    assert exchange.fetch_funding_history.call_args.kwargs["since"] == since_ms
+    assert [type(e) for e in sent] == [FundingPaymentEvent, FundingPaymentEvent]
+    ev = sent[0]
+    assert ev.instrument == _instrument()
+    assert ev.amount == -1.25  # venue-exact signed cash delta
+    assert ev.source == "rest"
+    assert ev.payment.time == T_SETTLE_MS * 1_000_000  # record time as ns epoch
+    assert ev.payment.funding_rate == 0.0001
+    assert sent[1].amount == 0.5
+    assert sent[1].payment.funding_rate == -0.0002
+
+
+@pytest.mark.asyncio
+async def test_request_funding_payments_rate_join_miss_books_nan() -> None:
+    # one settlement has a matching rate row, the other doesn't -> NaN rate, amount still books
+    ts2 = T_SETTLE_MS + 8 * 3_600_000
+    exchange = _funding_exchange(
+        records=[_funding_record(), _funding_record(ts=ts2, amount=0.5)],
+        rates=[_rate_row(rate=0.0003)],
+    )
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_funding_payments(SINCE)
+    await _drive(conn)
+
+    assert sent[0].payment.funding_rate == 0.0003
+    assert math.isnan(sent[1].payment.funding_rate)
+    assert sent[1].amount == 0.5
+
+
+@pytest.mark.asyncio
+async def test_request_funding_payments_rate_fetch_failure_books_nan() -> None:
+    exchange = _funding_exchange(records=[_funding_record()], rates=ccxt.NetworkError("boom"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_funding_payments(SINCE)
+    await _drive(conn)
+
+    assert len(sent) == 1
+    assert math.isnan(sent[0].payment.funding_rate)
+    assert sent[0].amount == -1.25
+
+
+@pytest.mark.asyncio
+async def test_request_funding_payments_skips_unknown_symbol() -> None:
+    exchange = _funding_exchange(
+        records=[_funding_record(symbol="XYZ/USDT:USDT", amount=9.0), _funding_record()],
+        rates=[_rate_row()],
+    )
+    exchange.market = Mock(side_effect=ccxt.BadSymbol("unknown"))  # symbol not in venue markets
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_funding_payments(SINCE)
+    await _drive(conn)
+
+    assert len(sent) == 1  # unknown symbol skipped, the rest still emits
+    assert sent[0].instrument == _instrument()
+    # the rate join is only attempted for resolvable symbols
+    exchange.fetch_funding_rate_history.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_request_funding_payments_full_page_warns_truncation() -> None:
+    records = [_funding_record(ts=T_SETTLE_MS + i) for i in range(1000)]
+    exchange = _funding_exchange(records=records, rates=[])
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    logged: list = []
+    sink_id = logger.add(lambda m: logged.append(m.record), level="WARNING")
+    try:
+        conn.request_funding_payments(SINCE)
+        await _drive(conn)
+    finally:
+        logger.remove(sink_id)
+
+    assert len(sent) == 1000
+    assert any("possible truncation" in r["message"] for r in logged)
+
+
+@pytest.mark.asyncio
+async def test_request_funding_payments_network_error_emits_nothing() -> None:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_funding_history = AsyncMock(side_effect=ccxt.NetworkError("boom"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_funding_payments(SINCE)
     await _drive(conn)
 
     assert sent == []

@@ -17,6 +17,7 @@ from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     Reconciler,
+    RequestFundingPayments,
     RequestHistDeals,
     RequestSnapshot,
     RequestStatus,
@@ -148,6 +149,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 position_confirm_wait=np.timedelta64(self._cfg.position_confirm_wait_ms, "ms"),
                 order_confirm_wait=np.timedelta64(self._cfg.order_confirm_wait_ms, "ms"),
                 order_confirm_max_retries=self._cfg.order_confirm_retries,
+                funding_sweep_enabled=self._cfg.funding_sweep_enabled,
             )
             for ex in connectors
         }
@@ -254,6 +256,10 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         result = reducer.apply(state, event, now)
         if isinstance(event, OrderEvent):
             self._execute(state, rec.on_event(state, event, now))
+        # FUNDING_FEE fast path: a settlement just hit the wallet — schedule a debounced
+        # funding sweep so any WS-missed FundingPaymentEvent is recovered promptly.
+        if isinstance(event, BalanceUpdateEvent) and event.reason == "FUNDING_FEE":
+            rec.on_funding_fee(state.exchange, now)
 
         return result
 
@@ -297,6 +303,14 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                                 f"<y>{instrument.symbol}</y> since {since} -> connector.request_hist_deals"
                             )
                             connector.request_hist_deals(instrument, since)
+
+                    case RequestFundingPayments(since=since):
+                        if connector is not None:
+                            logger.debug(
+                                f"[{state.exchange}] reconcile: RequestFundingPayments "
+                                f"since {since} -> connector.request_funding_payments"
+                            )
+                            connector.request_funding_payments(since)
 
                     case _:
                         logger.warning(f"[{state.exchange}] unknown reconcile action: {action!r}")
@@ -601,6 +615,8 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                     # Clear only on success; on failure keep the timestamp so the next
                     # tick retries instead of restarting the full threshold.
                     self._liveness_unready_since.pop(exchange, None)
+                    # the WS gap may have swallowed a settlement — funding sweep on the next tick
+                    self._reconcilers[exchange].mark_funding_sweep_due(exchange)
                 else:
                     logger.warning(f"[{exchange}] reconnect failed; will retry on next liveness tick")
 

@@ -18,6 +18,7 @@ from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     HIST_DEALS_LOOKBACK,
     Reconciler,
+    RequestFundingPayments,
     RequestHistDeals,
     RequestSnapshot,
     RequestStatus,
@@ -141,7 +142,8 @@ def _deal(
 
 
 def _reconciler() -> Reconciler:
-    # short windows so scenarios are a few ticks; differ grace 5s
+    # short windows so scenarios are a few ticks; differ grace 5s. Funding sweep off so the
+    # startup sweep doesn't leak into unrelated action assertions (own section below).
     return Reconciler(
         Differ(grace="5s"),
         snapshot_interval="30s",
@@ -150,6 +152,7 @@ def _reconciler() -> Reconciler:
         position_confirm_wait="2s",
         order_confirm_wait="2s",
         order_confirm_max_retries=2,
+        funding_sweep_enabled=False,
     )
 
 
@@ -731,3 +734,106 @@ def test_first_snapshot_is_full_then_light_then_full_after_sweep():
 
     # once the full-sweep interval elapses, the next due request is FULL again (WS-drop backstop)
     assert RequestSnapshot(ex, include_orders=True) in rec.on_tick(st, _passed_seconds(T0, 300))
+
+
+# --------------------------------------------------------------------------- #
+# Funding sweep — event-driven RequestFundingPayments (startup / FUNDING_FEE push /
+# reconnect; no cadence): armed deadline + startup floor, funding_sweep_enabled kill switch.
+# --------------------------------------------------------------------------- #
+
+
+def _funding_reconciler() -> Reconciler:
+    return Reconciler(Differ(grace="5s"))  # funding sweep enabled by default
+
+
+def _funding_actions(actions) -> list[RequestFundingPayments]:
+    return [a for a in actions if isinstance(a, RequestFundingPayments)]
+
+
+def test_funding_sweep_kill_switch_disables_everything():
+    # funding_sweep_enabled=False -> no startup sweep, pushes and reconnects are inert
+    st = _local()
+    rec = Reconciler(Differ(grace="5s"), funding_sweep_enabled=False)
+    rec.on_funding_fee(EXCHANGE, T0)
+    rec.mark_funding_sweep_due(EXCHANGE)
+    assert _funding_actions(rec.on_tick(st, T0)) == []
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 3600))) == []
+
+
+def test_funding_sweep_startup_floor_defaults_to_now():
+    # no restored last_funding_time anywhere -> floor = connect time (empty startup window)
+    st = _local()
+    rec = _funding_reconciler()
+    assert _funding_actions(rec.on_tick(st, T0)) == [RequestFundingPayments(EXCHANGE, since=T0)]
+    # startup sweep fires once; nothing further without a trigger — no periodic cadence
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 3600))) == []
+
+
+def test_funding_sweep_startup_floor_from_restored_positions():
+    # restored last_funding_time -> exclusive +1ns floor (that settlement is already inside
+    # restored cumulative_funding); positions without one are ignored
+    st = _local()
+    settled = np.datetime64("2026-05-27T16:00:00", "ns")
+    pos = _position(1.0)
+    pos.last_funding_time = settled  # type: ignore
+    st.set_position(pos.instrument, pos)
+    other = _position(2.0, instrument=_inst("ETHUSDT"))  # last_funding_time stays NaT
+    st.set_position(other.instrument, other)
+
+    rec = _funding_reconciler()
+    expected = settled + np.timedelta64(1, "ns")
+    assert _funding_actions(rec.on_tick(st, T0)) == [RequestFundingPayments(EXCHANGE, since=expected)]
+
+
+def test_funding_fee_burst_debounces_to_one_sweep():
+    st = _local()
+    rec = _funding_reconciler()
+    rec.on_tick(st, T0)  # consume the startup sweep
+
+    # Binance sends one push per asset at a boundary — the burst coalesces into one deadline
+    rec.on_funding_fee(EXCHANGE, _passed_seconds(T0, 10))
+    rec.on_funding_fee(EXCHANGE, _passed_seconds(T0, 11))
+
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 15))) == []  # debounce window open
+    # window floor-clamped: now-30m reaches before the floor -> since = floor
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 21))) == [RequestFundingPayments(EXCHANGE, since=T0)]
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 23))) == []  # disarmed
+
+
+def test_funding_sweep_window_is_lookback_bounded():
+    # far from startup the window is now - 30m (floor no longer clamps)
+    st = _local()
+    rec = _funding_reconciler()
+    rec.on_tick(st, T0)
+
+    t_push = T0 + np.timedelta64(2, "h")
+    rec.on_funding_fee(EXCHANGE, t_push)
+    t_due = t_push + np.timedelta64(11, "s")
+    expected = t_due - np.timedelta64(30, "m")
+    assert _funding_actions(rec.on_tick(st, t_due)) == [RequestFundingPayments(EXCHANGE, since=expected)]
+
+
+def test_funding_fee_rearms_after_disarm():
+    # a second settlement cycle arms again — the disarm actually clears the deadline
+    st = _local()
+    rec = _funding_reconciler()
+    rec.on_tick(st, T0)
+
+    rec.on_funding_fee(EXCHANGE, _passed_seconds(T0, 10))
+    assert len(_funding_actions(rec.on_tick(st, _passed_seconds(T0, 21)))) == 1
+
+    rec.on_funding_fee(EXCHANGE, _passed_seconds(T0, 30))
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 35))) == []  # new debounce window
+    assert len(_funding_actions(rec.on_tick(st, _passed_seconds(T0, 41)))) == 1
+
+
+def test_funding_sweep_reconnect_arms_immediate_sweep():
+    st = _local()
+    rec = _funding_reconciler()
+    rec.on_tick(st, T0)
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 30))) == []
+
+    rec.mark_funding_sweep_due(EXCHANGE)  # WS reconnect: due on the very next tick
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 32))) == [
+        RequestFundingPayments(EXCHANGE, since=T0)  # max(floor, now-30m) = floor
+    ]

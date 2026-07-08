@@ -262,3 +262,59 @@ def test_execute_request_status_for_unknown_order_is_noop():
     am = _am()
     am._execute(am.get_state(EX), [RequestStatus(cid="nope", venue_id=None, instrument=BTC)])
     am._connectors[EX].request_order_status.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Funding sweep — reconcile-tick dispatch + config kill switch + FUNDING_FEE fast path
+# --------------------------------------------------------------------------- #
+
+
+def test_reconcile_tick_dispatches_funding_sweep():
+    am = _am()
+    am._on_reconcile_tick(None)
+    # startup sweep, anchored at the AM clock (no restored last_funding_time)
+    am._connectors[EX].request_funding_payments.assert_called_once_with(T1)
+
+
+def test_funding_sweep_config_kill_switch():
+    from qubx.core.account_manager.config import AccountManagerConfig
+
+    am = AccountManager(
+        connectors={EX: MagicMock()},
+        base_currencies={EX: "USDT"},
+        time=_Time(),
+        cfg=AccountManagerConfig(funding_sweep_enabled=False),
+    )
+    am._on_reconcile_tick(None)
+    am._connectors[EX].request_funding_payments.assert_not_called()
+    am._connectors[EX].request_snapshot.assert_called_once()  # the rest of the tick is unaffected
+
+
+def test_funding_fee_push_arms_debounced_sweep():
+    am = _am()
+    am._on_reconcile_tick(None)  # consume the startup sweep
+    conn = am._connectors[EX]
+    conn.request_funding_payments.reset_mock()
+
+    push = Balance(exchange=EX, currency="USDT", free=np.nan, locked=np.nan, total=1.0)
+    am.apply(BalanceUpdateEvent(instrument=None, balance=push, as_of=T1, reason="FUNDING_FEE"))
+
+    state = am.get_state(EX)
+    rec = am._reconcilers[EX]
+    # past the 10s debounce the armed deadline fires the sweep
+    am._execute(state, rec.on_tick(state, T1 + np.timedelta64(20, "s")))
+    conn.request_funding_payments.assert_called_once()
+
+
+def test_ordinary_balance_push_does_not_arm_funding_sweep():
+    am = _am()
+    am._on_reconcile_tick(None)
+    conn = am._connectors[EX]
+    conn.request_funding_payments.reset_mock()
+
+    push = Balance(exchange=EX, currency="USDT", free=np.nan, locked=np.nan, total=1.0)
+    am.apply(BalanceUpdateEvent(instrument=None, balance=push, as_of=T1, reason="ORDER"))
+
+    state = am.get_state(EX)
+    am._execute(state, am._reconcilers[EX].on_tick(state, T1 + np.timedelta64(20, "s")))
+    conn.request_funding_payments.assert_not_called()

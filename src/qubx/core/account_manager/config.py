@@ -16,6 +16,10 @@ class AccountManagerConfig:
 
     position_confirm_wait_ms: int = 2_000  # - ConfirmPositionBySnapshot: coverage window before hist-deals
 
+    # - funding sweep (request_funding_payments on startup / FUNDING_FEE push / reconnect);
+    #   False disables it entirely — the rollback kill switch
+    funding_sweep_enabled: bool = True
+
     liveness_check_interval_ms: int = 5_000
     liveness_check_threshold_ms: int = 30_000
 
