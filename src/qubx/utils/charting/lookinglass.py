@@ -200,15 +200,19 @@ def install_plotly_helpers():
 
             return s
 
-        FigureWidget.hover = hover  # type: ignore
-        FigureWidget.rline = rline  # type: ignore
-        FigureWidget.rlinex = rlinex  # type: ignore
-        FigureWidget.rline_ = rline_  # type: ignore
-        FigureWidget.vline = vline  # type: ignore
-        FigureWidget.hline = hline  # type: ignore
-        FigureWidget.dliney = dliney  # type: ignore
-        FigureWidget.arrow = arrow  # type: ignore
-        FigureWidget.to_obsidian_json = to_obsidian_json  # type: ignore
+        # - attach to both figure classes: FigureWidget (back-compat) and plain Figure
+        # - (look() now returns a go.Figure — copyable, exports full-data HTML — so chained
+        # -  helpers like .hover()/.rline() must exist on Figure too)
+        for _cls in (FigureWidget, go.Figure):
+            _cls.hover = hover  # type: ignore
+            _cls.rline = rline  # type: ignore
+            _cls.rlinex = rlinex  # type: ignore
+            _cls.rline_ = rline_  # type: ignore
+            _cls.vline = vline  # type: ignore
+            _cls.hline = hline  # type: ignore
+            _cls.dliney = dliney  # type: ignore
+            _cls.arrow = arrow  # type: ignore
+            _cls.to_obsidian_json = to_obsidian_json  # type: ignore
 
     except:  # noqa: E722
         print(" >>> Cant attach helpers to plotly::FigureWidget - probably it isn't installed !")
@@ -1161,7 +1165,10 @@ class LookingGlassPlotly(AbstractLookingGlass):
             xaxis_rangeslider_visible=False, margin=dict(l=5, r=5, t=35, b=5), height=self.mph + self.sph * len(self.s)
         )
 
-        return go.FigureWidget(self.fig)
+        # - return a plain go.Figure (not FigureWidget): renders identically in-notebook, but
+        # - its Copy-Output exports full-data plotly HTML and the saved .ipynb carries the
+        # - plotly mimetype — so charts paste onto a Skena canvas and render offline.
+        return self.fig
 
     def __add_vline(self, xref, x):
         # Line Vertical
