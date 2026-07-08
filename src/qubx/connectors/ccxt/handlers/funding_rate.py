@@ -7,7 +7,6 @@ use the same WebSocket stream and always emit both data types when appropriate.
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, FundingPayment, FundingRate, Instrument, dt_64
-from qubx.core.events import FundingPaymentEvent
 
 from ..exceptions import CcxtSymbolNotRecognized
 from ..subscription_config import SubscriptionConfiguration
@@ -65,13 +64,10 @@ class FundingRateDataHandler(BaseDataTypeHandler):
 
                             channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
 
-                            # Emit payment if funding interval changed. Funding payment is an
-                            # account event (it books into balances via the AccountManager), so it
-                            # rides the typed channel as a FundingPaymentEvent — unlike market data,
-                            # which rides (instrument, d_type, data, is_historical) tuples.
+                            # Universe-scoped MARKET funding at each boundary.
                             if self._should_emit_payment(instrument, funding_rate, current_time):
                                 payment = self._create_funding_payment(instrument)
-                                channel.send(FundingPaymentEvent(instrument=instrument, payment=payment))
+                                channel.send((instrument, DataType.FUNDING_PAYMENT, payment, False))
 
                         except CcxtSymbolNotRecognized:
                             continue

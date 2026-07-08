@@ -580,21 +580,17 @@ def test_warmup_flag_resets_when_invoke_raises_and_next_tick_retries():
     assert pm._warmup_finished_is_running is False
 
 
-def test_funding_payment_tuple_reaches_on_market_data():
-    # Dual-emit restoration (backtester): the funding-payment TUPLE (the second of the runner's
-    # two sends) rides the tuple path with no registered handler -> _process_custom_event returns
-    # a MarketEvent that reaches the strategy's on_market_data. Booking is the typed event's job
-    # (process_event); this tuple path does NOT book — it only restores the strategy reaction.
+def _pm_for_tuple_path(strategy_name: str) -> ProcessingManager:
+    """make_pm plus everything the tuple path (__process_data -> handlers -> pipeline) touches."""
     pm = make_pm()
     pm._time_provider = MagicMock()
     pm._health_monitor = MagicMock()
     pm._subscription_manager = MagicMock()
     pm._cache = MagicMock()
-    pm._strategy_name = "FundingReact"
+    pm._strategy_name = strategy_name
     pm._emitted_signals = []
     pm._data_throttler = None
-    # the real handler registry is built from _handle_* methods on the class; there is no
-    # _handle_funding_payment, so a funding tuple correctly falls through to _process_custom_event.
+    # the real handler registry, built from _handle_* methods on the class
     pm._handlers = {
         n.split("_handle_")[1]: f for n, f in ProcessingManager.__dict__.items() if n.startswith("_handle_")
     }
@@ -610,6 +606,14 @@ def test_funding_payment_tuple_reaches_on_market_data():
     pm._context._strategy_state.is_on_warmup_finished_called = True
     pm._context._strategy_state.is_on_fit_called = True
     pm._strategy.on_market_data.return_value = None
+    return pm
+
+
+def test_funding_payment_tuple_reaches_on_market_data():
+    # A funding-payment TUPLE rides the tuple path through _handle_funding_payment and reaches
+    # the strategy's on_market_data as a MarketEvent. Without a wired booker (live mode) the
+    # tuple path does NOT book — the account connector's typed events own that.
+    pm = _pm_for_tuple_path("FundingReact")
 
     payment = FundingPayment(time=0, funding_rate=0.0001, funding_interval_hours=8)
     instrument = MagicMock()
@@ -622,8 +626,48 @@ def test_funding_payment_tuple_reaches_on_market_data():
     assert event.type == "funding_payment"
     assert event.data is payment
     assert event.instrument is instrument
-    # the tuple path must NOT book funding — booking is the typed FundingPaymentEvent's job
+    # no booker (live): the tuple path must NOT book funding
     pm._account_manager.apply.assert_not_called()
+
+
+def test_funding_tuple_books_via_booker_before_strategy_reacts():
+    # Sim/paper: the runner wires a funding booker; the funding_payment handler books its
+    # event through process_event (AM.apply + on_position_change) BEFORE the strategy sees
+    # the market tuple in on_market_data.
+    pm = _pm_for_tuple_path("FundingBook")
+    payment = FundingPayment(time=0, funding_rate=0.0001, funding_interval_hours=8)
+    instrument = MagicMock()
+    booked_event = FundingPaymentEvent(instrument=instrument, payment=payment, source="sim")
+    pm._funding_booker = MagicMock()
+    pm._funding_booker.on_market_funding.return_value = booked_event
+    position = MagicMock()
+    pm._account_manager.apply.return_value = ApplyResult(position=position)
+
+    calls: list[str] = []
+    pm._account_manager.apply.side_effect = lambda e: calls.append("book") or ApplyResult(position=position)
+    pm._strategy.on_market_data.side_effect = lambda *a: calls.append("react")
+
+    pm.process_data(instrument, DataType.FUNDING_PAYMENT, payment, is_historical=False)
+
+    pm._funding_booker.on_market_funding.assert_called_once_with(instrument, payment)
+    pm._account_manager.apply.assert_called_once_with(booked_event)
+    pm._strategy.on_position_change.assert_called_once()
+    assert pm._strategy.on_position_change.call_args.args[1] is position
+    assert calls == ["book", "react"]
+
+
+def test_funding_tuple_with_flat_position_does_not_book():
+    # Account-scoped emission by construction: the booker returns None when our position
+    # is not open, so nothing reaches the account state machine — the strategy still reacts.
+    pm = _pm_for_tuple_path("FundingFlat")
+    payment = FundingPayment(time=0, funding_rate=0.0001, funding_interval_hours=8)
+    pm._funding_booker = MagicMock()
+    pm._funding_booker.on_market_funding.return_value = None
+
+    pm.process_data(MagicMock(), DataType.FUNDING_PAYMENT, payment, is_historical=False)
+
+    pm._account_manager.apply.assert_not_called()
+    pm._strategy.on_market_data.assert_called_once()
 
 
 def test_on_fit_pumping_events_does_not_retrigger_fit():

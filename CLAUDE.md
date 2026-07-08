@@ -87,6 +87,7 @@ uv run qubx --help
 - Never use `from __future__ import annotations` — Python 3.12+ supports all modern type syntax natively
 - Comments must be terse and only state the non-obvious — no narration/professor prose
 - NEVER add section-divider banner comments (e.g. `# - Foo --------- #`); classes/functions already delimit code. Put a short `# -` comment on the class/function instead
+- Do not comment what a change fixes or where it came from — that belongs in commit messages
 
 ## Core Architecture
 

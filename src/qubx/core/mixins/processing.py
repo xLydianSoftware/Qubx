@@ -13,6 +13,7 @@ from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.basics import (
     DataType,
     Deal,
+    FundingPayment,
     InitializingSignal,
     Instrument,
     MarketEvent,
@@ -39,6 +40,7 @@ from qubx.core.events import (
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
 from qubx.core.interfaces import (
+    IFundingBooker,
     IHealthMonitor,
     IMarketDataCache,
     IMarketManager,
@@ -123,6 +125,8 @@ class ProcessingManager(IProcessingManager):
     _stale_data_detector: StaleDataDetector
     _delisting_detector: DelistingDetector
     _data_throttler: InstrumentThrottler | None
+    # set only when the account is simulated (backtest + paper); None in live
+    _funding_booker: IFundingBooker | None = None
 
     _handlers: dict[str, Callable[["ProcessingManager", Instrument, str, Any], TriggerEvent | None]]
     _strategy_name: str
@@ -173,6 +177,7 @@ class ProcessingManager(IProcessingManager):
         delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
         data_throttler: InstrumentThrottler | None = None,
+        funding_booker: IFundingBooker | None = None,
     ):
         validate_account_callback_signatures(strategy)
         self._context = context
@@ -192,6 +197,7 @@ class ProcessingManager(IProcessingManager):
         self._health_monitor = health_monitor
         self._delisting_detector = delisting_detector
         self._data_throttler = data_throttler
+        self._funding_booker = funding_booker
         self._cache = market_data.get_market_data_cache()
 
         # Initialize stale data detector with default disabled state
@@ -1001,6 +1007,16 @@ class ProcessingManager(IProcessingManager):
     def _handle_quote(self, instrument: Instrument, event_type: str, quote: Quote) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, quote)
         return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
+
+    def _handle_funding_payment(self, instrument: Instrument, event_type: str, payment: FundingPayment) -> MarketEvent:
+        # both sim seams (backtest SimulatedCtrlChannel and paper channel loop) funnel here:
+        # book the settlement into the simulated account BEFORE the strategy sees the tuple.
+        # Live has no booker — its account books via the connector's typed events.
+        if self._funding_booker is not None:
+            if (event := self._funding_booker.on_market_funding(instrument, payment)) is not None:
+                self.process_event(event)
+        self.__update_base_data(instrument, event_type, payment)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, payment)
 
     def _handle_event(self, instrument: Instrument, event_type: str, event_data: Any) -> TriggerEvent:
         return TriggerEvent(self._time_provider.time(), event_type, instrument, event_data)

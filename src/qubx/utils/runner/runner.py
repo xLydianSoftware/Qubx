@@ -12,6 +12,7 @@ from threading import Thread
 
 from qubx import QubxLogConfig, file_formatter, logger
 from qubx.backtester.connector import SimulatedConnector
+from qubx.backtester.funding import SimFundingBooker
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulator import simulate
@@ -669,6 +670,9 @@ def create_strategy_context(
         rate_limiting_config=_rate_limiting_config,
         event_loop=loop,
         read_only=config.live.read_only,
+        # paper books funding off market funding tuples (no venue account to do it);
+        # live books via the connector's typed events, so no booker
+        funding_booker=SimFundingBooker(_am) if paper else None,
     )
 
     # Set context for metric emitters to enable is_live tag and time access
