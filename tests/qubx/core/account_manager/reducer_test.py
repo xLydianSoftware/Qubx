@@ -420,6 +420,96 @@ def test_funding_not_covered_by_older_push_still_adjusts_balance():
     assert abs(_present(state.get_balance("USDT")).total - 995.0) < 1e-9  # 1000 - 5 funding paid
 
 
+def test_funding_amount_preferred_over_computed():
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(T0, 50_000.0, 1.0)
+    state.set_position(BTC, pos)
+    _seed_usdt(state, 1000.0)
+    # computed would be -5.0; venue-exact amount wins
+    payment = FundingPayment(time=int(T1.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
+    r = apply(state, FundingPaymentEvent(instrument=BTC, payment=payment, amount=-7.25, source="ws"), T1)
+    assert r.position is pos
+    assert abs(pos.cumulative_funding - (-7.25)) < 1e-9
+    assert abs(_present(state.get_balance("USDT")).total - 992.75) < 1e-9
+
+
+def test_funding_amount_books_without_mark_price():
+    # no update_market_price -> NaN mark: the computed path would skip, the amount path books
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    state.set_position(BTC, pos)
+    payment = FundingPayment(time=int(T0.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
+    r = apply(state, FundingPaymentEvent(instrument=BTC, payment=payment, amount=-3.0, source="rest"), T1)
+    assert r.position is pos
+    assert abs(pos.cumulative_funding - (-3.0)) < 1e-9
+    # the bucket was consumed: a re-delivered event is a no-op
+    r2 = apply(state, FundingPaymentEvent(instrument=BTC, payment=payment, amount=-3.0, source="rest"), T1)
+    assert r2.position is None
+    assert abs(pos.cumulative_funding - (-3.0)) < 1e-9
+
+
+def test_funding_amount_books_on_flat_position():
+    # a settlement on a since-closed position is account truth: books despite qty=0
+    state = _state()
+    pos = Position(BTC)
+    state.set_position(BTC, pos)
+    _seed_usdt(state, 1000.0)
+    payment = FundingPayment(time=int(T0.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
+    r = apply(state, FundingPaymentEvent(instrument=BTC, payment=payment, amount=-2.0, source="rest"), T1)
+    assert r.position is pos
+    assert abs(pos.cumulative_funding - (-2.0)) < 1e-9
+    assert abs(_present(state.get_balance("USDT")).total - 998.0) < 1e-9
+
+
+def test_funding_interval_disagreeing_duplicates_dedup_to_one():
+    # same settlement reported with different funding_interval_hours metadata books once
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(T0, 50_000.0, 1.0)
+    state.set_position(BTC, pos)
+    payment_8h = FundingPayment(time=int(T0.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
+    payment_4h = FundingPayment(time=int(T0.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=4)
+    apply(state, FundingPaymentEvent(instrument=BTC, payment=payment_8h, source="ws"), T1)
+    r = apply(state, FundingPaymentEvent(instrument=BTC, payment=payment_4h, source="provider"), T1)
+    assert r.position is None
+    assert abs(pos.cumulative_funding - (-5.0)) < 1e-9
+
+
+def test_funding_amount_covered_by_balance_push_skips_cash_leg():
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(T0, 50_000.0, 1.0)
+    state.set_position(BTC, pos)
+    _seed_usdt(state, 1000.0)
+    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(992.5), as_of=T1, reason="FUNDING_FEE"), T1)
+    # funding venue time T0 <= push as_of T1: the venue debit is already in the pushed total
+    payment = FundingPayment(time=int(T0.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
+    apply(state, FundingPaymentEvent(instrument=BTC, payment=payment, amount=-7.5, source="ws"), T1)
+    assert abs(pos.cumulative_funding - (-7.5)) < 1e-9  # funding still books on the position
+    assert _present(state.get_balance("USDT")).total == 992.5  # the push figure stands
+
+
+def test_funding_dedup_drop_logged_with_source():
+    from qubx import logger
+
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    pos.update_market_price(T0, 50_000.0, 1.0)
+    state.set_position(BTC, pos)
+    payment = FundingPayment(time=int(T0.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
+    apply(state, FundingPaymentEvent(instrument=BTC, payment=payment, source="ws"), T1)
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(m), level="DEBUG")
+    try:
+        apply(state, FundingPaymentEvent(instrument=BTC, payment=payment, source="rest"), T1)
+    finally:
+        logger.remove(sink_id)
+
+    assert any("dedup drop [rest]" in m and "BTCUSDT" in m for m in messages)
+
+
 # --------------------------------------------------------------------------- #
 # 4.3 — deal -> position / balance ledger
 # --------------------------------------------------------------------------- #

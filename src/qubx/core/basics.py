@@ -1212,7 +1212,9 @@ class Position:
             )  # type: ignore
         return 0.0
 
-    def apply_funding_payment(self, funding_payment: FundingPayment, mark_price: float) -> float:
+    def apply_funding_payment(
+        self, funding_payment: FundingPayment, mark_price: float, amount: float | None = None
+    ) -> float:
         """
         Apply a funding payment to this position.
 
@@ -1222,21 +1224,27 @@ class Position:
 
         Args:
             funding_payment: The funding payment event
-            mark_price: The mark price at the time of funding
+            mark_price: The mark price at the time of funding (unused when amount is given)
+            amount: Venue-reported signed cash delta — booked as-is, bypassing the mark
+                computation and the min_size gate (a venue settlement is account truth
+                even if the position has since been reduced/closed)
 
         Returns:
             The funding amount (negative if paying, positive if receiving)
         """
-        if abs(self.quantity) < self.instrument.min_size:
-            return 0.0
+        if amount is not None:
+            funding_amount = amount
+        else:
+            if abs(self.quantity) < self.instrument.min_size:
+                return 0.0
 
-        # Calculate funding amount
-        # Funding = Position Size * Mark Price * Funding Rate
-        funding_amount = self.quantity * self._qty_multiplier * mark_price * funding_payment.funding_rate
+            # Calculate funding amount
+            # Funding = Position Size * Mark Price * Funding Rate
+            funding_amount = self.quantity * self._qty_multiplier * mark_price * funding_payment.funding_rate
 
-        # For long positions with positive funding rate, amount is negative (paying)
-        # For short positions with positive funding rate, amount is positive (receiving)
-        funding_amount = -funding_amount
+            # For long positions with positive funding rate, amount is negative (paying)
+            # For short positions with positive funding rate, amount is positive (receiving)
+            funding_amount = -funding_amount
 
         # Update position state
         self.cumulative_funding += funding_amount
