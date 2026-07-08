@@ -50,13 +50,12 @@ _log = area_logger("reconciler")
 # re-fetched deals are deduped by trade_id and realize-only-guarded anyway.
 HIST_DEALS_LOOKBACK = np.timedelta64(2, "s")
 
-# FUNDING_FEE push fast path: Binance sends one balance push per asset at a settlement
-# boundary — wait out the burst, then sweep once.
-FUNDING_FEE_DEBOUNCE = np.timedelta64(10, "s")
-
 # Funding sweep window: reach back far enough from the trigger to cover the settlement that
 # caused it plus venue income-record write-lag; overlap dedups in the reducer buckets.
 FUNDING_SWEEP_LOOKBACK = np.timedelta64(30, "m")
+
+# Settlements land on hour boundaries on supported venues; the offset covers venue write-lag.
+FUNDING_SWEEP_OFFSET = np.timedelta64(10, "m")
 
 
 @dataclass(frozen=True)
@@ -371,7 +370,7 @@ class Reconciler:
     _tasks: dict[Hashable, Task]  # - opaque key -> task, one per key
     _last_snapshot: dict[str, np.datetime64]  # - per-exchange last snapshot time
     _last_full_snapshot: dict[str, np.datetime64]  # - per-exchange last FULL snapshot request time
-    _funding_due: dict[str, np.datetime64]  # - per-exchange armed sweep deadline (absent = not armed)
+    _funding_next: dict[str, np.datetime64]  # - per-exchange next sweep time (hour boundary + offset)
     _funding_floor: dict[str, np.datetime64]  # - per-exchange startup anchor; sweep windows never reach below it
 
     def __init__(
@@ -399,7 +398,7 @@ class Reconciler:
         self._tasks = {}
         self._last_snapshot = {}
         self._last_full_snapshot = {}
-        self._funding_due = {}
+        self._funding_next = {}
         self._funding_floor = {}
 
     def active_keys(self) -> set[Hashable]:
@@ -425,37 +424,28 @@ class Reconciler:
             actions.append(sweep)
         return actions + self._dispatch(Tick(), state, now)
 
-    def on_funding_fee(self, exchange: str, now: np.datetime64) -> None:
-        # - FUNDING_FEE balance-push fast path: sweep shortly after a settlement lands. The first
-        #   push arms the deadline; the rest of the per-asset burst coalesces into it.
-        if not self._funding_sweep_enabled or exchange in self._funding_due:
-            return
-        self._funding_due[exchange] = now + FUNDING_FEE_DEBOUNCE
-
-    def mark_funding_sweep_due(self, exchange: str) -> None:
-        # - reconnect hook: the WS gap may have swallowed a settlement — sweep on the next tick
-        if not self._funding_sweep_enabled:
-            return
-        self._funding_due[exchange] = np.datetime64(0, "ns")  # immediately due
-
     def _funding_sweep(self, state: AccountState, now: np.datetime64) -> RequestFundingPayments | None:
-        # - event-driven, no cadence: sweeps fire only when they can matter (startup, a FUNDING_FEE
-        #   push, a reconnect); the reducer bucket dedup absorbs window overlap and the floor alone
-        #   guards restored-state double-booking.
+        # - hourly-aligned sweep: books settlements ≤~10min after any boundary (Binance 8h
+        #   boundaries are hour-aligned; HPL settles hourly and additionally books instantly via
+        #   WS); WS gaps self-heal at the next sweep; the floor guards restored-state double-booking.
         if not self._funding_sweep_enabled:
             return None
         exchange = state.exchange
         if (floor := self._funding_floor.get(exchange)) is None:
             self._funding_floor[exchange] = floor = self._funding_anchor(state, now)
+            self._funding_next[exchange] = self._next_sweep_at(now)
             _log.debug(f"[{exchange}] reconcile: startup funding sweep -> RequestFundingPayments(since={floor})")
             return RequestFundingPayments(exchange, since=floor)
-        due = self._funding_due.get(exchange)
-        if due is None or now < due:
+        if now < self._funding_next[exchange]:
             return None
-        del self._funding_due[exchange]
+        self._funding_next[exchange] = self._next_sweep_at(now)
         since = max(floor, now - FUNDING_SWEEP_LOOKBACK)
         _log.debug(f"[{exchange}] reconcile: funding sweep due -> RequestFundingPayments(since={since})")
         return RequestFundingPayments(exchange, since=since)
+
+    @staticmethod
+    def _next_sweep_at(now: np.datetime64) -> np.datetime64:
+        return now.astype("datetime64[h]") + np.timedelta64(1, "h") + FUNDING_SWEEP_OFFSET
 
     @staticmethod
     def _funding_anchor(state: AccountState, now: np.datetime64) -> np.datetime64:

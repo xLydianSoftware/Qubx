@@ -469,28 +469,17 @@ def _funding_record(*, symbol: str = CCXT_SYMBOL, ts: int = T_SETTLE_MS, amount:
     return {"info": {}, "symbol": symbol, "timestamp": ts, "id": "900", "amount": amount, "code": "USDT"}
 
 
-def _rate_row(*, symbol: str = CCXT_SYMBOL, ts: int = T_SETTLE_MS, rate: float = 0.0001) -> dict:
-    return {"symbol": symbol, "fundingRate": rate, "timestamp": ts}
-
-
-def _funding_exchange(*, records: list[dict], rates: list[dict] | Exception = ()) -> Mock:
+def _funding_exchange(*, records: list[dict]) -> Mock:
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_funding_history = AsyncMock(return_value=records)
-    if isinstance(rates, Exception):
-        exchange.fetch_funding_rate_history = AsyncMock(side_effect=rates)
-    else:
-        exchange.fetch_funding_rate_history = AsyncMock(return_value=list(rates))
     return exchange
 
 
 @pytest.mark.asyncio
 async def test_request_funding_payments_maps_income_records() -> None:
     ts2 = T_SETTLE_MS + 8 * 3_600_000  # next 8h boundary
-    exchange = _funding_exchange(
-        records=[_funding_record(amount=-1.25), _funding_record(ts=ts2, amount=0.5)],
-        rates=[_rate_row(rate=0.0001), _rate_row(ts=ts2, rate=-0.0002)],
-    )
+    exchange = _funding_exchange(records=[_funding_record(amount=-1.25), _funding_record(ts=ts2, amount=0.5)])
     conn, sent, _ = _make_connector(exchange=exchange)
 
     conn.request_funding_payments(SINCE)
@@ -501,51 +490,15 @@ async def test_request_funding_payments_maps_income_records() -> None:
     assert [type(e) for e in sent] == [FundingPaymentEvent, FundingPaymentEvent]
     ev = sent[0]
     assert ev.instrument == _instrument()
-    assert ev.amount == -1.25  # venue-exact signed cash delta
-    assert ev.source == "rest"
+    assert ev.amount == -1.25  # venue-exact signed cash delta — the only figure that books
     assert ev.payment.time == T_SETTLE_MS * 1_000_000  # record time as ns epoch
-    assert ev.payment.funding_rate == 0.0001
+    assert math.isnan(ev.payment.funding_rate)  # informational only: income records carry no rate
     assert sent[1].amount == 0.5
-    assert sent[1].payment.funding_rate == -0.0002
-
-
-@pytest.mark.asyncio
-async def test_request_funding_payments_rate_join_miss_books_nan() -> None:
-    # one settlement has a matching rate row, the other doesn't -> NaN rate, amount still books
-    ts2 = T_SETTLE_MS + 8 * 3_600_000
-    exchange = _funding_exchange(
-        records=[_funding_record(), _funding_record(ts=ts2, amount=0.5)],
-        rates=[_rate_row(rate=0.0003)],
-    )
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.request_funding_payments(SINCE)
-    await _drive(conn)
-
-    assert sent[0].payment.funding_rate == 0.0003
-    assert math.isnan(sent[1].payment.funding_rate)
-    assert sent[1].amount == 0.5
-
-
-@pytest.mark.asyncio
-async def test_request_funding_payments_rate_fetch_failure_books_nan() -> None:
-    exchange = _funding_exchange(records=[_funding_record()], rates=ccxt.NetworkError("boom"))
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.request_funding_payments(SINCE)
-    await _drive(conn)
-
-    assert len(sent) == 1
-    assert math.isnan(sent[0].payment.funding_rate)
-    assert sent[0].amount == -1.25
 
 
 @pytest.mark.asyncio
 async def test_request_funding_payments_skips_unknown_symbol() -> None:
-    exchange = _funding_exchange(
-        records=[_funding_record(symbol="XYZ/USDT:USDT", amount=9.0), _funding_record()],
-        rates=[_rate_row()],
-    )
+    exchange = _funding_exchange(records=[_funding_record(symbol="XYZ/USDT:USDT", amount=9.0), _funding_record()])
     exchange.market = Mock(side_effect=ccxt.BadSymbol("unknown"))  # symbol not in venue markets
     conn, sent, _ = _make_connector(exchange=exchange)
 
@@ -554,14 +507,12 @@ async def test_request_funding_payments_skips_unknown_symbol() -> None:
 
     assert len(sent) == 1  # unknown symbol skipped, the rest still emits
     assert sent[0].instrument == _instrument()
-    # the rate join is only attempted for resolvable symbols
-    exchange.fetch_funding_rate_history.assert_awaited_once()
 
 
 @pytest.mark.asyncio
 async def test_request_funding_payments_full_page_warns_truncation() -> None:
     records = [_funding_record(ts=T_SETTLE_MS + i) for i in range(1000)]
-    exchange = _funding_exchange(records=records, rates=[])
+    exchange = _funding_exchange(records=records)
     conn, sent, _ = _make_connector(exchange=exchange)
 
     logged: list = []

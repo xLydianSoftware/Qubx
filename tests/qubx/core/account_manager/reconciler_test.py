@@ -737,8 +737,8 @@ def test_first_snapshot_is_full_then_light_then_full_after_sweep():
 
 
 # --------------------------------------------------------------------------- #
-# Funding sweep — event-driven RequestFundingPayments (startup / FUNDING_FEE push /
-# reconnect; no cadence): armed deadline + startup floor, funding_sweep_enabled kill switch.
+# Funding sweep — hourly-aligned RequestFundingPayments (startup, then every hour
+# boundary + 10min offset): floor anchor + next-due time, funding_sweep_enabled kill switch.
 # --------------------------------------------------------------------------- #
 
 
@@ -750,14 +750,16 @@ def _funding_actions(actions) -> list[RequestFundingPayments]:
     return [a for a in actions if isinstance(a, RequestFundingPayments)]
 
 
+def _at(hhmmss: str) -> np.datetime64:
+    return np.datetime64(f"2026-05-28T{hhmmss}", "ns")
+
+
 def test_funding_sweep_kill_switch_disables_everything():
-    # funding_sweep_enabled=False -> no startup sweep, pushes and reconnects are inert
+    # funding_sweep_enabled=False -> no startup sweep, no hourly schedule
     st = _local()
     rec = Reconciler(Differ(grace="5s"), funding_sweep_enabled=False)
-    rec.on_funding_fee(EXCHANGE, T0)
-    rec.mark_funding_sweep_due(EXCHANGE)
     assert _funding_actions(rec.on_tick(st, T0)) == []
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 3600))) == []
+    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 7200))) == []
 
 
 def test_funding_sweep_startup_floor_defaults_to_now():
@@ -765,8 +767,8 @@ def test_funding_sweep_startup_floor_defaults_to_now():
     st = _local()
     rec = _funding_reconciler()
     assert _funding_actions(rec.on_tick(st, T0)) == [RequestFundingPayments(EXCHANGE, since=T0)]
-    # startup sweep fires once; nothing further without a trigger — no periodic cadence
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 3600))) == []
+    # nothing further until the next hour boundary + offset
+    assert _funding_actions(rec.on_tick(st, _at("01:09:59"))) == []
 
 
 def test_funding_sweep_startup_floor_from_restored_positions():
@@ -785,55 +787,29 @@ def test_funding_sweep_startup_floor_from_restored_positions():
     assert _funding_actions(rec.on_tick(st, T0)) == [RequestFundingPayments(EXCHANGE, since=expected)]
 
 
-def test_funding_fee_burst_debounces_to_one_sweep():
+def test_funding_sweep_hourly_schedule():
+    # fires once per hour at boundary + 10min offset; window = max(floor, now - 30m)
     st = _local()
     rec = _funding_reconciler()
-    rec.on_tick(st, T0)  # consume the startup sweep
+    rec.on_tick(st, T0)  # startup (T0 = 00:00:30) -> next due 01:10:00
 
-    # Binance sends one push per asset at a boundary — the burst coalesces into one deadline
-    rec.on_funding_fee(EXCHANGE, _passed_seconds(T0, 10))
-    rec.on_funding_fee(EXCHANGE, _passed_seconds(T0, 11))
+    assert _funding_actions(rec.on_tick(st, _at("01:09:59"))) == []  # before boundary + offset
+    assert _funding_actions(rec.on_tick(st, _at("01:10:30"))) == [
+        RequestFundingPayments(EXCHANGE, since=_at("00:40:30"))  # now - 30m lookback
+    ]
+    assert _funding_actions(rec.on_tick(st, _at("01:30:00"))) == []  # rescheduled to 02:10
+    assert _funding_actions(rec.on_tick(st, _at("02:10:30"))) == [
+        RequestFundingPayments(EXCHANGE, since=_at("01:40:30"))  # second hour re-fires
+    ]
 
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 15))) == []  # debounce window open
-    # window floor-clamped: now-30m reaches before the floor -> since = floor
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 21))) == [RequestFundingPayments(EXCHANGE, since=T0)]
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 23))) == []  # disarmed
 
-
-def test_funding_sweep_window_is_lookback_bounded():
-    # far from startup the window is now - 30m (floor no longer clamps)
+def test_funding_sweep_window_floor_clamped():
+    # a sweep shortly after startup never reaches below the floor (restored-state guard)
     st = _local()
     rec = _funding_reconciler()
-    rec.on_tick(st, T0)
+    start = _at("00:59:00")
+    rec.on_tick(st, start)  # startup -> floor = 00:59:00, next due 01:10:00
 
-    t_push = T0 + np.timedelta64(2, "h")
-    rec.on_funding_fee(EXCHANGE, t_push)
-    t_due = t_push + np.timedelta64(11, "s")
-    expected = t_due - np.timedelta64(30, "m")
-    assert _funding_actions(rec.on_tick(st, t_due)) == [RequestFundingPayments(EXCHANGE, since=expected)]
-
-
-def test_funding_fee_rearms_after_disarm():
-    # a second settlement cycle arms again — the disarm actually clears the deadline
-    st = _local()
-    rec = _funding_reconciler()
-    rec.on_tick(st, T0)
-
-    rec.on_funding_fee(EXCHANGE, _passed_seconds(T0, 10))
-    assert len(_funding_actions(rec.on_tick(st, _passed_seconds(T0, 21)))) == 1
-
-    rec.on_funding_fee(EXCHANGE, _passed_seconds(T0, 30))
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 35))) == []  # new debounce window
-    assert len(_funding_actions(rec.on_tick(st, _passed_seconds(T0, 41)))) == 1
-
-
-def test_funding_sweep_reconnect_arms_immediate_sweep():
-    st = _local()
-    rec = _funding_reconciler()
-    rec.on_tick(st, T0)
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 30))) == []
-
-    rec.mark_funding_sweep_due(EXCHANGE)  # WS reconnect: due on the very next tick
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 32))) == [
-        RequestFundingPayments(EXCHANGE, since=T0)  # max(floor, now-30m) = floor
+    assert _funding_actions(rec.on_tick(st, _at("01:10:30"))) == [
+        RequestFundingPayments(EXCHANGE, since=start)  # 01:10:30 - 30m reaches before the floor
     ]

@@ -1226,11 +1226,10 @@ class CcxtConnector(ChannelEmitter):
 
         One account-wide ``fetch_funding_history`` call (FUNDING_FEE income records) —
         overlapping sweep windows are expected, the AM reducer's bucket dedup absorbs the
-        duplicates. The rate is a best-effort join from the involved symbols' funding-rate
-        history (miss → NaN; the venue-exact amount books either way). Errors are logged,
-        not raised — the next sweep re-covers the window. A single page (1000 records) is
-        orders of magnitude above any sweep window; hitting it is logged as possible
-        truncation.
+        duplicates. The venue-exact amount is what books; rate/interval are informational
+        (NaN / default). Errors are logged, not raised — the next sweep re-covers the
+        window. A single page (1000 records) is orders of magnitude above any sweep
+        window; hitting it is logged as possible truncation.
         """
         since_ms = int(since.astype("datetime64[ms]").astype("int64"))
         logger.debug(f"[{self.exchange_name}] funding sweep: fetch_funding_history since {since}")
@@ -1246,7 +1245,6 @@ class CcxtConnector(ChannelEmitter):
             logger.warning(
                 f"[{self.exchange_name}] funding history since {since} hit the 1000-record page; possible truncation"
             )
-        records: list[tuple[Instrument, str, int, float]] = []
         for raw in raw_records:
             symbol, ts_ms, amount = raw.get("symbol"), raw.get("timestamp"), raw.get("amount")
             if symbol is None or ts_ms is None or amount is None:
@@ -1257,33 +1255,12 @@ class CcxtConnector(ChannelEmitter):
             except CcxtSymbolNotRecognized:
                 logger.debug(f"[{self.exchange_name}] funding record for unknown symbol {symbol}, skipped")
                 continue
-            records.append((instrument, symbol, int(ts_ms), float(amount)))
-        if not records:
-            return
-        rates = await self._fetch_funding_rates({symbol for _, symbol, _, _ in records}, since_ms)
-        for instrument, symbol, ts_ms, amount in records:
             payment = FundingPayment(
-                time=ts_ms * 1_000_000,
-                funding_rate=rates.get((symbol, ts_ms // 3_600_000), math.nan),
+                time=int(ts_ms) * 1_000_000,
+                funding_rate=math.nan,  # informational only — income records carry no rate
                 funding_interval_hours=8,  # informational only — not derivable from income records
             )
-            self.send(FundingPaymentEvent(instrument=instrument, payment=payment, amount=amount, source="rest"))
-
-    async def _fetch_funding_rates(self, symbols: set[str], since_ms: int) -> dict[tuple[str, int], float]:
-        # best-effort rate join, one attempt per symbol; keyed by (symbol, settlement hour) —
-        # the same hour-bucket convention the AM funding dedup uses
-        rates: dict[tuple[str, int], float] = {}
-        for symbol in sorted(symbols):
-            try:
-                history = await self._em.exchange.fetch_funding_rate_history(symbol, since=since_ms)
-            except Exception as e:  # noqa: BLE001
-                logger.warning(f"[{self.exchange_name}] funding rate history for {symbol} failed: {e}; rate -> NaN")
-                continue
-            for row in history:
-                ts, rate = row.get("timestamp"), row.get("fundingRate")
-                if ts is not None and rate is not None:
-                    rates[(symbol, int(ts) // 3_600_000)] = float(rate)
-        return rates
+            self.send(FundingPaymentEvent(instrument=instrument, payment=payment, amount=float(amount)))
 
     def _emit_order_status_not_found(
         self, client_order_id: str | None, venue_order_id: str | None, instrument: Instrument

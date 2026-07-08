@@ -87,7 +87,6 @@ class TestSimFundingBooker:
         assert event.instrument is instr
         assert event.payment is payment
         assert event.amount is None  # sim has no venue cash truth -> computed booking
-        assert event.source == "sim"
 
     def test_flat_position_yields_nothing(self):
         # account-scoped by construction: no open position -> no account event

@@ -637,7 +637,7 @@ def test_funding_tuple_books_via_booker_before_strategy_reacts():
     pm = _pm_for_tuple_path("FundingBook")
     payment = FundingPayment(time=0, funding_rate=0.0001, funding_interval_hours=8)
     instrument = MagicMock()
-    booked_event = FundingPaymentEvent(instrument=instrument, payment=payment, source="sim")
+    booked_event = FundingPaymentEvent(instrument=instrument, payment=payment)
     pm._funding_booker = MagicMock()
     pm._funding_booker.on_market_funding.return_value = booked_event
     position = MagicMock()

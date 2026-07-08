@@ -21,4 +21,4 @@ class SimFundingBooker(IFundingBooker):
         pos = self._account.get_position(instrument)
         if pos is None or abs(pos.quantity) < instrument.min_size:
             return None
-        return FundingPaymentEvent(instrument=instrument, payment=payment, amount=None, source="sim")
+        return FundingPaymentEvent(instrument=instrument, payment=payment, amount=None)

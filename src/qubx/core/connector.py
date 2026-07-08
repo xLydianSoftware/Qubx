@@ -64,9 +64,9 @@ class IConnector(Protocol):
     def request_hist_deals(self, instrument: Instrument, since: dt_64) -> None: ...
 
     # Fetch the account's funding settlements since ``since`` (venue clock) and emit one
-    # FundingPaymentEvent per record (venue-exact amount, source="rest") — recovers settlements
-    # missed on the WS path (the Reconciler's funding sweep → RequestFundingPayments). Sweep
-    # windows overlap by design; the reducer's bucket dedup absorbs duplicates.
+    # FundingPaymentEvent per record (venue-exact amount) — recovers settlements missed on
+    # the WS path (the Reconciler's funding sweep → RequestFundingPayments). Sweep windows
+    # overlap by design; the reducer's bucket dedup absorbs duplicates.
     def request_funding_payments(self, since: dt_64) -> None: ...
 
     def is_ws_ready(self) -> bool: ...

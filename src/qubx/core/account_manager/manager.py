@@ -256,10 +256,6 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         result = reducer.apply(state, event, now)
         if isinstance(event, OrderEvent):
             self._execute(state, rec.on_event(state, event, now))
-        # FUNDING_FEE fast path: a settlement just hit the wallet — schedule a debounced
-        # funding sweep so any WS-missed FundingPaymentEvent is recovered promptly.
-        if isinstance(event, BalanceUpdateEvent) and event.reason == "FUNDING_FEE":
-            rec.on_funding_fee(state.exchange, now)
 
         return result
 
@@ -615,8 +611,6 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                     # Clear only on success; on failure keep the timestamp so the next
                     # tick retries instead of restarting the full threshold.
                     self._liveness_unready_since.pop(exchange, None)
-                    # the WS gap may have swallowed a settlement — funding sweep on the next tick
-                    self._reconcilers[exchange].mark_funding_sweep_due(exchange)
                 else:
                     logger.warning(f"[{exchange}] reconnect failed; will retry on next liveness tick")
 

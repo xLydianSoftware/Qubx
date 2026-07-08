@@ -161,12 +161,10 @@ class BalanceUpdateEvent(AccountMessage):
 @msg
 class FundingPaymentEvent(AccountMessage):
     """``amount`` is the venue-exact signed cash delta to the account (settle currency);
-    when set the reducer books it as-is instead of computing qty×mark×rate. ``source``
-    tags the emitter ("ws"/"rest"/"provider"/"sim") for dedup observability."""
+    when set the reducer books it as-is instead of computing qty×mark×rate."""
 
     payment: FundingPayment
     amount: float | None = None
-    source: str = ""
 
 
 @msg

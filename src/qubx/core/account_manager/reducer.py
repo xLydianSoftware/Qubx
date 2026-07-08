@@ -518,7 +518,7 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
     # so duplicates disagreeing on funding_interval_hours still collapse to one booking
     bucket = (instrument, int(payment.time) // 3_600_000_000_000)
     if state.is_funding_applied(bucket):
-        logger.debug("funding dedup drop [{}] {} bucket={}", event.source, instrument.symbol, bucket[1])
+        logger.debug("funding dedup drop {} bucket={}", instrument.symbol, bucket[1])
         return ApplyResult()
     pos = state.get_position(instrument)
     if pos is None:
