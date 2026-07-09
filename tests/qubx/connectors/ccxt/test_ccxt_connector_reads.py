@@ -537,10 +537,15 @@ async def test_funding_poll_network_error_emits_nothing() -> None:
 
 
 def test_funding_poll_hourly_alignment() -> None:
-    # next poll = next hour boundary + 10min (venues settle on hour boundaries; write-lag offset)
+    # next poll = nearest hh:10 strictly after now (10min past every hour)
+    # before this hour's slot -> THIS hour's slot, not the next one
     at = CcxtConnector._next_funding_poll_at(np.datetime64("2024-01-01T00:00:30", "ns"))
-    assert at == np.datetime64("2024-01-01T01:10:00")
-    # exactly at a poll instant -> the following boundary
+    assert at == np.datetime64("2024-01-01T00:10:00")
+    # past this hour's slot -> the next hour's
+    assert CcxtConnector._next_funding_poll_at(np.datetime64("2024-01-01T00:23:45", "ns")) == np.datetime64(
+        "2024-01-01T01:10:00"
+    )
+    # exactly at a poll instant -> the following slot
     assert CcxtConnector._next_funding_poll_at(np.datetime64("2024-01-01T01:10:00", "ns")) == np.datetime64(
         "2024-01-01T02:10:00"
     )

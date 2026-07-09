@@ -523,15 +523,7 @@ def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now
     if pos is None:
         return ApplyResult()
     state.mark_funding_applied(bucket)
-    amount = pos.apply_funding_payment(event.time, event.amount)  # updates cumulative_funding/pnl
-    # Skip the cash leg when a venue balance push already covers it (the venue debits
-    # the wallet and pushes the new total with reason FUNDING_FEE — booking the amount
-    # on top would double-count). cumulative_funding/pnl above always book.
-    # event.time is venue-clock — same domain as the push as_of.
-    covered = _covered_by_balance_push(state, instrument.settle, event.time)
-    if not covered and state.get_balance(instrument.settle) is not None:
-        # adjust only an existing settle balance (funding never creates one)
-        state.adjust_balance(instrument.settle, amount)
+    pos.apply_funding_payment(event.time, event.amount)
     return ApplyResult(position=pos)
 
 

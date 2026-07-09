@@ -655,4 +655,9 @@ class SimulatedAccountManager(AccountManager):
         if np.isnan(mark):
             return None  # no mark yet; market tuples don't redeliver — skip
         amount = -(pos.quantity * instrument.quantity_multiplier * mark * payment.funding_rate)
+        # the sim venue debits the wallet here (once per settlement — market tuples don't
+        # redeliver); live venues debit on-venue and we observe via pushes/snapshots.
+        # Only an existing settle balance is adjusted — funding never creates one.
+        if state.get_balance(instrument.settle) is not None:
+            state.adjust_balance(instrument.settle, amount)
         return FundingPaymentEvent(instrument=instrument, time=np.datetime64(int(payment.time), "ns"), amount=amount)

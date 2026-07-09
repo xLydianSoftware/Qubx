@@ -16,7 +16,7 @@ import pytest
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulator import simulate
 from qubx.core.account_manager import AccountManager, SimulatedAccountManager
-from qubx.core.basics import DataType, FundingPayment, Instrument, MarketType, Position
+from qubx.core.basics import Balance, DataType, FundingPayment, Instrument, MarketType, Position
 from qubx.core.events import FundingPaymentEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, TriggerEvent
 from qubx.core.lookups import lookup
@@ -165,6 +165,32 @@ class TestSimulatedAccountFunding:
     def test_missing_position_record_yields_nothing(self):
         instr = _btc()
         assert _sim_am(instr).process_market_funding(instr, _payment()) is None
+
+    def test_wallet_debited_once_per_settlement(self):
+        # the sim venue debits the wallet at emit time by exactly the settlement amount —
+        # once per settlement by construction: market tuples don't redeliver in sim, and
+        # process_market_funding runs once per tuple (reducer dedup guards only attribution)
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_balance(instr.exchange, Balance(exchange=instr.exchange, currency="USDT", free=1000.0, total=1000.0))
+        am.seed_position(_marked_position(instr, 0.5))
+
+        event = am.process_market_funding(instr, _payment())
+
+        assert event is not None
+        assert am.get_balance("USDT", exchange=instr.exchange).total == pytest.approx(1000.0 + event.amount)
+        assert event.amount == pytest.approx(-(0.5 * 50_000.0 * 0.0001))
+
+    def test_no_settle_balance_no_debit(self):
+        # funding never creates a wallet entry (a coin-margined settle currency may never be funded)
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_position(_marked_position(instr, 0.5))
+
+        event = am.process_market_funding(instr, _payment())
+
+        assert event is not None  # attribution still books downstream
+        assert am.get_state(instr.exchange).get_balance("USDT") is None  # no balance materialized
 
     def test_live_account_manager_never_books_market_funding(self):
         # live: the account's funding arrives via the connector's typed events only

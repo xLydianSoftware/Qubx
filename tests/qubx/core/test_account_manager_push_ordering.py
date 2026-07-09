@@ -173,7 +173,7 @@ def _run_funding_matrix(events: list[AccountMessage]) -> tuple[float, float, tup
 
 def test_same_funding_converges_under_both_event_orderings():
     # The venue debits the wallet and pushes 995; the FundingPaymentEvent books
-    # cumulative_funding/r_pnl either way, the cash leg exactly once.
+    # cumulative_funding/r_pnl only — the push alone owns the wallet, in either order.
     funding_first = _run_funding_matrix([_funding_event(), _push(995.0)])
     push_first = _run_funding_matrix([_push(995.0), _funding_event()])
     assert funding_first == push_first

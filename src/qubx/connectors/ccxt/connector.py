@@ -1226,13 +1226,16 @@ class CcxtConnector(ChannelEmitter):
     async def _funding_poll_loop(self) -> None:
         connect_time = self._time.time()
         while True:
-            now = self._time.time()
-            await asyncio.sleep(float((self._next_funding_poll_at(now) - now) / np.timedelta64(1, "s")))
+            target = self._next_funding_poll_at(self._time.time())
+            while (now := self._time.time()) < target:
+                await asyncio.sleep(min(float((target - now) / np.timedelta64(1, "s")), 60.0))
             await self._funding_payments_async(self._funding_since(connect_time, self._time.time()))
 
     @staticmethod
     def _next_funding_poll_at(now: dt_64) -> dt_64:
-        return now.astype("datetime64[h]") + np.timedelta64(1, "h") + np.timedelta64(10, "m")
+        # nearest hh:10 strictly after now (10min past every hour, incl. the current one)
+        slot = now.astype("datetime64[h]").astype("datetime64[ns]") + np.timedelta64(10, "m")
+        return slot if slot > now else slot + np.timedelta64(1, "h")
 
     @staticmethod
     def _funding_since(connect_time: dt_64, now: dt_64) -> dt_64:

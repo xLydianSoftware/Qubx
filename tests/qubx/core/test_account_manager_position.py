@@ -76,7 +76,7 @@ def _fill(trade_id="t1", amount=0.5, price=50_000.0):
 T_SETTLE = np.datetime64("2026-05-28T00:00:00")
 
 
-def test_funding_payment_books_amount_and_cash():
+def test_funding_payment_books_amount_not_cash():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
@@ -86,7 +86,9 @@ def test_funding_payment_books_amount_and_cash():
 
     am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE, amount=-5.0))
     assert abs(pos.cumulative_funding - (-5.0)) < 1e-9
-    assert abs(state.get_balance("USDT").total - 995.0) < 1e-9
+    # attribution only: the wallet is venue-synced live / debited by the sim AM in simulation
+    bal = state.get_balance("USDT")
+    assert bal.total == 1000.0 and bal.free == 1000.0
 
 
 def test_funding_payment_duplicate_skipped():
@@ -104,23 +106,6 @@ def test_funding_payment_duplicate_skipped():
     am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE, amount=-5.0))
     assert pos.cumulative_funding == funding_after_first
     assert state.get_balance("USDT").total == balance_after_first
-
-
-def test_funding_payment_moves_free_and_total_together():
-    # Regression for I4: funding affects free cash; bal.free must move by the
-    # same amount as bal.total (Balance invariant free == total - locked).
-    am = _am()
-    state = am._states["binance"]
-    inst = _instrument()
-    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    state.set_position(inst, pos)
-    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=900.0, locked=100.0))
-
-    am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE, amount=-5.0))
-    bal = state.get_balance("USDT")
-    assert abs(bal.total - 995.0) < 1e-9
-    assert abs(bal.free - 895.0) < 1e-9
-    assert bal.locked == 100.0
 
 
 def test_funding_payment_different_bucket_applies_again():

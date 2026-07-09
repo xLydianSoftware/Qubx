@@ -401,7 +401,8 @@ def test_funding_books_amount_to_position_and_balance():
     assert abs(pos.cumulative_funding - (-7.25)) < 1e-9
     assert abs(pos.r_pnl - (-7.25)) < 1e-9
     assert pos.last_funding_time == T1
-    assert abs(_present(state.get_balance("USDT")).total - 992.75) < 1e-9
+    # attribution only — never cash (live wallets are venue-synced; sim debits in the sim AM)
+    assert _present(state.get_balance("USDT")).total == 1000.0
 
 
 def test_funding_duplicate_delivery_dedups_to_one():
@@ -424,7 +425,7 @@ def test_funding_books_on_flat_position():
     r = apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-2.0), T1)
     assert r.position is pos
     assert abs(pos.cumulative_funding - (-2.0)) < 1e-9
-    assert abs(_present(state.get_balance("USDT")).total - 998.0) < 1e-9
+    assert _present(state.get_balance("USDT")).total == 1000.0  # attribution only, no cash
 
 
 def test_funding_without_position_record_skips():
@@ -440,26 +441,17 @@ def test_funding_without_position_record_skips():
     assert r2.position is not None
 
 
-def test_funding_covered_by_balance_push_skips_cash_leg():
+def test_funding_never_touches_balances_around_pushes():
+    # the wallet is owned by venue pushes/snapshots: a funding event books attribution only,
+    # never cash — whatever the last FUNDING_FEE push set stands, before or after booking
     state = _state()
     pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
     state.set_position(BTC, pos)
     _seed_usdt(state, 1000.0)
     apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(992.5), as_of=T1, reason="FUNDING_FEE"), T1)
-    # funding venue time T0 <= push as_of T1: the venue debit is already in the pushed total
     apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-7.5), T1)
     assert abs(pos.cumulative_funding - (-7.5)) < 1e-9  # funding still books on the position
-    assert _present(state.get_balance("USDT")).total == 992.5  # the push figure stands
-
-
-def test_funding_not_covered_by_older_push_still_adjusts_balance():
-    state = _state()
-    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
-    state.set_position(BTC, pos)
-    _seed_usdt(state, 1000.0)
-    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(1000.0), as_of=T0), T0)
-    apply(state, FundingPaymentEvent(instrument=BTC, time=T1, amount=-5.0), T1)
-    assert abs(_present(state.get_balance("USDT")).total - 995.0) < 1e-9  # 1000 - 5 funding paid
+    assert _present(state.get_balance("USDT")).total == 992.5  # the push figure stands untouched
 
 
 def test_funding_dedup_drop_logged():
