@@ -966,12 +966,12 @@ def _sync_account_snapshot_before_warmup(ctx: IStrategyContext, timeout: float =
             # pre-start only connectors produce events, so nothing else should flow here
             logger.debug(f"pre-warmup account sync: dropping non-account event {type(event)}")
 
-    if account.is_synced():
-        logger.info(
-            f"<yellow>Warmup capital seeded from account snapshots: {account.get_total_capital():,.2f}</yellow>"
+    if not account.is_synced():
+        raise WarmupValidationError(
+            f"Account snapshots not applied within {timeout:.0f}s — cannot seed warmup capital; "
+            "check venue connectivity and credentials"
         )
-    else:
-        logger.warning("Account snapshots not applied within timeout — warmup may run with incomplete capital")
+    logger.info(f"<yellow>Warmup capital seeded from account snapshots: {account.get_total_capital():,.2f}</yellow>")
 
 
 def _run_warmup(

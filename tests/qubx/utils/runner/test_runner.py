@@ -623,13 +623,13 @@ class TestSyncAccountSnapshotBeforeWarmup:
         connector.request_snapshot.assert_called_once_with(include_orders=False)
         assert ctx.account.applied == events
 
-    def test_timeout_proceeds_without_sync(self):
+    def test_timeout_raises(self):
+        # fail fast: warmup must not run against a state we couldn't seed
         channel = CtrlChannel("test-databus")
         connector = MagicMock()
         connector.channel = channel
         connector.request_snapshot.side_effect = lambda include_orders: None
         ctx = self._ctx({"BINANCE.UM": connector}, synced_after=1)
 
-        _sync_account_snapshot_before_warmup(ctx, timeout=1.5)
-
-        assert ctx.account.applied == []
+        with pytest.raises(WarmupValidationError, match="cannot seed warmup capital"):
+            _sync_account_snapshot_before_warmup(ctx, timeout=1.5)
