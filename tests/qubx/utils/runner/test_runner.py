@@ -12,6 +12,8 @@ from qubx import QubxLogConfig, logger
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import Balance, CtrlChannel, DataType, Instrument, LiveTimeProvider, Position, RestoredState
 from qubx.core.context import IStrategyContext, StrategyContext
+from qubx.core.events import AccountMessage
+from qubx.core.exceptions import WarmupValidationError
 from qubx.core.interfaces import IDataProvider, IStrategy, IStrategyInitializer
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
@@ -20,7 +22,13 @@ from qubx.loggers.inmemory import InMemoryLogsWriter
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.utils.misc import class_import
 from qubx.utils.runner.accounts import AccountConfigurationManager
-from qubx.utils.runner.runner import _inject_restored_state, run_strategy_yaml
+from qubx.utils.runner.runner import (
+    WarmupResult,
+    _inject_restored_state,
+    _sync_account_snapshot_before_warmup,
+    _validate_warmup_result,
+    run_strategy_yaml,
+)
 
 
 def _wait_until(condition, timeout: float = 10.0, poll: float = 0.05) -> bool:
@@ -556,3 +564,72 @@ def test_inject_restored_state_preserves_accounting_fields():
     assert restored_pos.cumulative_funding == -7.0
     balances = am.get_balances(inst.exchange)
     assert any(b.currency == "USDT" and b.total == 1000.0 for b in balances)
+
+
+class TestValidateWarmupResult:
+    def _result(self, initial: float, final: float) -> "WarmupResult":
+        day_ns = 86_400_000_000_000
+        return WarmupResult(
+            requested_start_ns=0,
+            requested_stop_ns=day_ns,
+            data_start_ns=0,
+            data_stop_ns=day_ns,
+            initial_capital=initial,
+            final_capital=final,
+        )
+
+    def test_unfunded_warmup_raises(self):
+        # warmup capital is seeded from venue snapshots pre-warmup; 0 means the account
+        # is genuinely unfunded (or unreachable) — fail fast with a clear error
+        with pytest.raises(WarmupValidationError, match="non-positive capital"):
+            _validate_warmup_result(self._result(initial=0.0, final=0.0))
+
+    def test_funded_warmup_bankruptcy_raises(self):
+        with pytest.raises(WarmupValidationError, match="non-positive capital"):
+            _validate_warmup_result(self._result(initial=10_000.0, final=0.0))
+
+
+class TestSyncAccountSnapshotBeforeWarmup:
+    def _ctx(self, connectors: dict, synced_after: int):
+        """Mock live ctx whose AM reports synced after N apply() calls."""
+        ctx = MagicMock()
+        ctx.is_paper_trading = False
+        ctx._connectors = connectors
+        account = MagicMock(spec=AccountManager)
+        applied = []
+        account.apply.side_effect = lambda e: applied.append(e)
+        account.is_synced.side_effect = lambda: len(applied) >= synced_after
+        account.get_total_capital.return_value = 12_345.0
+        account.applied = applied
+        ctx.account = account
+        return ctx
+
+    def test_paper_is_skipped(self):
+        ctx = MagicMock()
+        ctx.is_paper_trading = True
+        _sync_account_snapshot_before_warmup(ctx)
+        ctx.account.is_synced.assert_not_called()
+
+    def test_snapshots_pumped_into_account_manager(self):
+        channel = CtrlChannel("test-databus")
+        events = [MagicMock(spec=AccountMessage), MagicMock(spec=AccountMessage)]
+        connector = MagicMock()
+        connector.channel = channel
+        connector.request_snapshot.side_effect = lambda include_orders: [channel.send(e) for e in events]
+        ctx = self._ctx({"BINANCE.UM": connector}, synced_after=2)
+
+        _sync_account_snapshot_before_warmup(ctx, timeout=2.0)
+
+        connector.request_snapshot.assert_called_once_with(include_orders=False)
+        assert ctx.account.applied == events
+
+    def test_timeout_raises(self):
+        # fail fast: warmup must not run against a state we couldn't seed
+        channel = CtrlChannel("test-databus")
+        connector = MagicMock()
+        connector.channel = channel
+        connector.request_snapshot.side_effect = lambda include_orders: None
+        ctx = self._ctx({"BINANCE.UM": connector}, synced_after=1)
+
+        with pytest.raises(WarmupValidationError, match="cannot seed warmup capital"):
+            _sync_account_snapshot_before_warmup(ctx, timeout=1.5)

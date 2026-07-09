@@ -36,7 +36,8 @@ from qubx.core.basics import (
 )
 from qubx.core.connector import IConnector
 from qubx.core.context import StrategyContext
-from qubx.core.exceptions import WarmupValidationError
+from qubx.core.events import AccountMessage
+from qubx.core.exceptions import QueueTimeout, WarmupValidationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
@@ -928,6 +929,51 @@ def _validate_warmup_result(result: WarmupResult, min_coverage_ratio: float = 0.
         )
 
 
+def _sync_account_snapshot_before_warmup(ctx: IStrategyContext, timeout: float = 15.0) -> None:
+    """Seed the live account state before the warmup simulation runs.
+
+    Live connectors only connect at ctx.start() — after warmup — so without this the
+    warmup simulation is seeded with get_total_capital() == 0 and every capital-dependent
+    code path (sizing, rebalancing) runs against an unfunded account. Connector REST
+    snapshots don't need connect(): request one per exchange and drain the resulting
+    account events straight into the AccountManager until every exchange has applied one.
+    """
+    if ctx.is_paper_trading:
+        # paper capital is seeded at construction; no venue snapshot ever arrives
+        return
+    account = ctx.account
+    if not isinstance(account, AccountManager) or account.is_synced():
+        return
+
+    connectors = list(ctx._connectors.values())
+    if not connectors:
+        return
+    channel = connectors[0].channel
+
+    logger.info("<yellow>Requesting account snapshots to seed warmup capital...</yellow>")
+    for connector in connectors:
+        connector.request_snapshot(include_orders=False)
+
+    deadline = time.monotonic() + timeout
+    while not account.is_synced() and time.monotonic() < deadline:
+        try:
+            event = channel.receive(timeout=1)
+        except QueueTimeout:
+            continue
+        if isinstance(event, AccountMessage):
+            account.apply(event)
+        else:
+            # pre-start only connectors produce events, so nothing else should flow here
+            logger.debug(f"pre-warmup account sync: dropping non-account event {type(event)}")
+
+    if not account.is_synced():
+        raise WarmupValidationError(
+            f"Account snapshots not applied within {timeout:.0f}s — cannot seed warmup capital; "
+            "check venue connectivity and credentials"
+        )
+    logger.info(f"<yellow>Warmup capital seeded from account snapshots: {account.get_total_capital():,.2f}</yellow>")
+
+
 def _run_warmup(
     ctx: IStrategyContext,
     restored_state: RestoredState | None,
@@ -973,6 +1019,9 @@ def _run_warmup(
         return
 
     logger.info(f"<yellow>Warmup start time: {warmup_start_time}</yellow>")
+
+    # - seed real capital before the sim setup below reads ctx.account.get_total_capital()
+    _sync_account_snapshot_before_warmup(ctx)
 
     # - inject rate limiters into warmup storage configs (for CcxtStorage, LighterStorage, etc.)
     #   mirrors the aux_configs injection done in create_strategy_context.
