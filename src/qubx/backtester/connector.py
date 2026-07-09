@@ -203,11 +203,6 @@ class SimulatedConnector(ChannelEmitter):
         # position-confirm task that would request these never fires).
         pass
 
-    def request_funding_payments(self, since: dt_64) -> None:
-        # No-op: there is no venue funding history in simulation (funding booking is the
-        # sim booker's job); kept for IConnector conformance.
-        pass
-
     def request_snapshot(self, include_orders: bool = True) -> None:
         # - include_orders kept for IConnector conformance; sim snapshots are cheap, always full
         open_orders = list(self._ome.get_open_orders().values())

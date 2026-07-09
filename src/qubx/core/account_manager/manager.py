@@ -17,7 +17,6 @@ from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     Reconciler,
-    RequestFundingPayments,
     RequestHistDeals,
     RequestSnapshot,
     RequestStatus,
@@ -28,6 +27,7 @@ from qubx.core.account_manager.state import AccountState
 from qubx.core.basics import (
     ZERO_COSTS,
     Balance,
+    FundingPayment,
     Instrument,
     ITimeProvider,
     Order,
@@ -37,7 +37,13 @@ from qubx.core.basics import (
     TransactionCostsCalculator,
 )
 from qubx.core.connector import IConnector
-from qubx.core.events import AccountMessage, AccountSnapshotEvent, BalanceUpdateEvent, OrderEvent
+from qubx.core.events import (
+    AccountMessage,
+    AccountSnapshotEvent,
+    BalanceUpdateEvent,
+    FundingPaymentEvent,
+    OrderEvent,
+)
 from qubx.core.interfaces import IAccountConfigurator, IAccountViewer, IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
 
@@ -149,7 +155,6 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 position_confirm_wait=np.timedelta64(self._cfg.position_confirm_wait_ms, "ms"),
                 order_confirm_wait=np.timedelta64(self._cfg.order_confirm_wait_ms, "ms"),
                 order_confirm_max_retries=self._cfg.order_confirm_retries,
-                funding_sweep_enabled=self._cfg.funding_sweep_enabled,
             )
             for ex in connectors
         }
@@ -300,14 +305,6 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                             )
                             connector.request_hist_deals(instrument, since)
 
-                    case RequestFundingPayments(since=since):
-                        if connector is not None:
-                            logger.debug(
-                                f"[{state.exchange}] reconcile: RequestFundingPayments "
-                                f"since {since} -> connector.request_funding_payments"
-                            )
-                            connector.request_funding_payments(since)
-
                     case _:
                         logger.warning(f"[{state.exchange}] unknown reconcile action: {action!r}")
             except Exception:
@@ -355,6 +352,10 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         pos.update_market_price(
             self._time.time(), quote.mid_price(), state.conversion_rate(instrument), stamp_update_time=False
         )
+
+    def process_market_funding(self, instrument: Instrument, payment: FundingPayment) -> FundingPaymentEvent | None:
+        # live: the account's funding arrives via the connector's typed events, never from market data
+        return None
 
     def get_state(self, exchange: str) -> AccountState:
         return self._states[exchange]
@@ -616,7 +617,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
 
 class SimulatedAccountManager(AccountManager):
-    """Backtest variant — no asyncio, no WS, no periodic ticks."""
+    """Simulated-account variant (backtest + paper) — no asyncio, no WS, no periodic ticks."""
 
     def __init__(
         self,
@@ -641,3 +642,17 @@ class SimulatedAccountManager(AccountManager):
         # Backtest is synchronous: NEVER register periodic ticks (no PM scheduler drives
         # them in simulation). Overrides the base, which would otherwise store pm and schedule.
         pass
+
+    def process_market_funding(self, instrument: Instrument, payment: FundingPayment) -> FundingPaymentEvent | None:
+        # The framework is the venue: the settlement cash is computed here from the market
+        # funding tuple (−qty × multiplier × mark × rate) — the one non-connector
+        # FundingPaymentEvent producer. Emits only while our position is open (account-scoped).
+        state = self._states.get(instrument.exchange)
+        pos = state.get_position(instrument) if state is not None else None
+        if pos is None or abs(pos.quantity) < instrument.min_size:
+            return None
+        mark = pos.last_update_price
+        if np.isnan(mark):
+            return None  # no mark yet; market tuples don't redeliver — skip
+        amount = -(pos.quantity * instrument.quantity_multiplier * mark * payment.funding_rate)
+        return FundingPaymentEvent(instrument=instrument, time=np.datetime64(int(payment.time), "ns"), amount=amount)

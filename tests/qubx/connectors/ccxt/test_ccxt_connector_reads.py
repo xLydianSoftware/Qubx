@@ -459,7 +459,7 @@ async def test_request_hist_deals_network_error_emits_nothing() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# (b3) request_funding_payments -> one FundingPaymentEvent per income record
+# (b3) connector-internal funding poller -> one FundingPaymentEvent per income record
 # --------------------------------------------------------------------------- #
 T_SETTLE_MS = 1_700_006_400_000  # exact hour boundary
 SINCE = np.datetime64("2023-11-14T22:00:00")
@@ -477,13 +477,12 @@ def _funding_exchange(*, records: list[dict]) -> Mock:
 
 
 @pytest.mark.asyncio
-async def test_request_funding_payments_maps_income_records() -> None:
+async def test_funding_poll_maps_income_records() -> None:
     ts2 = T_SETTLE_MS + 8 * 3_600_000  # next 8h boundary
     exchange = _funding_exchange(records=[_funding_record(amount=-1.25), _funding_record(ts=ts2, amount=0.5)])
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_funding_payments(SINCE)
-    await _drive(conn)
+    await conn._funding_payments_async(SINCE)
 
     since_ms = int(SINCE.astype("datetime64[ms]").astype("int64"))
     assert exchange.fetch_funding_history.call_args.kwargs["since"] == since_ms
@@ -491,26 +490,25 @@ async def test_request_funding_payments_maps_income_records() -> None:
     ev = sent[0]
     assert ev.instrument == _instrument()
     assert ev.amount == -1.25  # venue-exact signed cash delta — the only figure that books
-    assert ev.payment.time == T_SETTLE_MS * 1_000_000  # record time as ns epoch
-    assert math.isnan(ev.payment.funding_rate)  # informational only: income records carry no rate
+    assert ev.time == np.datetime64(T_SETTLE_MS, "ms").astype("datetime64[ns]")  # record settle time
     assert sent[1].amount == 0.5
+    assert sent[1].time == np.datetime64(ts2, "ms").astype("datetime64[ns]")
 
 
 @pytest.mark.asyncio
-async def test_request_funding_payments_skips_unknown_symbol() -> None:
+async def test_funding_poll_skips_unknown_symbol() -> None:
     exchange = _funding_exchange(records=[_funding_record(symbol="XYZ/USDT:USDT", amount=9.0), _funding_record()])
     exchange.market = Mock(side_effect=ccxt.BadSymbol("unknown"))  # symbol not in venue markets
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_funding_payments(SINCE)
-    await _drive(conn)
+    await conn._funding_payments_async(SINCE)
 
     assert len(sent) == 1  # unknown symbol skipped, the rest still emits
     assert sent[0].instrument == _instrument()
 
 
 @pytest.mark.asyncio
-async def test_request_funding_payments_full_page_warns_truncation() -> None:
+async def test_funding_poll_full_page_warns_truncation() -> None:
     records = [_funding_record(ts=T_SETTLE_MS + i) for i in range(1000)]
     exchange = _funding_exchange(records=records)
     conn, sent, _ = _make_connector(exchange=exchange)
@@ -518,8 +516,7 @@ async def test_request_funding_payments_full_page_warns_truncation() -> None:
     logged: list = []
     sink_id = logger.add(lambda m: logged.append(m.record), level="WARNING")
     try:
-        conn.request_funding_payments(SINCE)
-        await _drive(conn)
+        await conn._funding_payments_async(SINCE)
     finally:
         logger.remove(sink_id)
 
@@ -528,16 +525,49 @@ async def test_request_funding_payments_full_page_warns_truncation() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_funding_payments_network_error_emits_nothing() -> None:
+async def test_funding_poll_network_error_emits_nothing() -> None:
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_funding_history = AsyncMock(side_effect=ccxt.NetworkError("boom"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn.request_funding_payments(SINCE)
-    await _drive(conn)
+    await conn._funding_payments_async(SINCE)
 
     assert sent == []
+
+
+def test_funding_poll_hourly_alignment() -> None:
+    # next poll = next hour boundary + 10min (venues settle on hour boundaries; write-lag offset)
+    at = CcxtConnector._next_funding_poll_at(np.datetime64("2024-01-01T00:00:30", "ns"))
+    assert at == np.datetime64("2024-01-01T01:10:00")
+    # exactly at a poll instant -> the following boundary
+    assert CcxtConnector._next_funding_poll_at(np.datetime64("2024-01-01T01:10:00", "ns")) == np.datetime64(
+        "2024-01-01T02:10:00"
+    )
+
+
+def test_funding_poll_window_clamps_and_self_heals() -> None:
+    connect = np.datetime64("2024-01-01T00:59:00", "ns")
+    # shortly after connect the window clamps at connect time (pre-run settlements are restored state)
+    assert CcxtConnector._funding_since(connect, np.datetime64("2024-01-01T01:10:00", "ns")) == connect
+    # steady state: 2h lookback — longer than one cycle, so the 02:00 settlement whose 02:10
+    # cycle failed transiently is still inside the 03:10 cycle's window
+    since = CcxtConnector._funding_since(connect, np.datetime64("2024-01-01T03:10:00", "ns"))
+    assert since == np.datetime64("2024-01-01T01:10:00")
+    assert since <= np.datetime64("2024-01-01T02:00:00")
+
+
+def test_disconnect_cancels_funding_poller() -> None:
+    conn, _sent, _ = _make_connector()
+    fut = Mock()
+    fut.done = Mock(return_value=False)
+    conn._funding_future = fut
+    conn._run_sync = Mock()  # type: ignore[method-assign]
+
+    conn.disconnect()
+
+    fut.cancel.assert_called_once()
+    assert conn._funding_future is None
 
 
 # --------------------------------------------------------------------------- #
@@ -704,12 +734,13 @@ def test_connect_triggers_initial_snapshot_and_subscription() -> None:
     with patch.object(type(conn), "_loop", new=loop):
         conn.connect()
 
-    # WS execution subscription started on the exchange loop.
-    assert len(submitted) == 1
+    # WS execution subscription + the funding poll loop started on the exchange loop.
+    assert len(submitted) == 2
     # Initial snapshot requested (fire-and-forget via the _spawn capture).
     assert len(conn._captured) == 1  # type: ignore[attr-defined]
     # Close the coroutines we never awaited (avoid "coroutine was never awaited").
-    submitted[0].close()
+    for coro in submitted:
+        coro.close()
     conn._captured[0].close()  # type: ignore[attr-defined]
 
 

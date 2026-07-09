@@ -50,13 +50,6 @@ _log = area_logger("reconciler")
 # re-fetched deals are deduped by trade_id and realize-only-guarded anyway.
 HIST_DEALS_LOOKBACK = np.timedelta64(2, "s")
 
-# Funding sweep window: reach back far enough from the trigger to cover the settlement that
-# caused it plus venue income-record write-lag; overlap dedups in the reducer buckets.
-FUNDING_SWEEP_LOOKBACK = np.timedelta64(30, "m")
-
-# Settlements land on hour boundaries on supported venues; the offset covers venue write-lag.
-FUNDING_SWEEP_OFFSET = np.timedelta64(10, "m")
-
 
 @dataclass(frozen=True)
 class RequestStatus:
@@ -84,22 +77,13 @@ class RequestHistDeals:
 
 
 @dataclass(frozen=True)
-class RequestFundingPayments:
-    # - fetch account funding settlements since `since` to recover any missed on the WS path
-    exchange: str
-    since: np.datetime64
-
-
-@dataclass(frozen=True)
 class RouteEvent:
     # - a synthesized event AM feeds to pm.process_event (reducer applies + strategy notified +
     #   later WS dup deduped). For decisions with no venue event of their own, e.g. give-up LOST.
     event: object
 
 
-Action = (
-    RequestStatus | RequestSnapshot | RequestHistDeals | RequestFundingPayments | RouteEvent | OrderPartiallyFilledEvent
-)
+Action = RequestStatus | RequestSnapshot | RequestHistDeals | RouteEvent | OrderPartiallyFilledEvent
 
 
 class Tick:
@@ -366,12 +350,9 @@ class Reconciler:
     _position_confirm_wait: np.timedelta64  # - ConfirmPositionBySnapshot window
     _order_confirm_wait: np.timedelta64  # - AwaitOrderConfirm window
     _order_confirm_max_retries: int
-    _funding_sweep_enabled: bool  # - False disables the funding sweep entirely (kill switch)
     _tasks: dict[Hashable, Task]  # - opaque key -> task, one per key
     _last_snapshot: dict[str, np.datetime64]  # - per-exchange last snapshot time
     _last_full_snapshot: dict[str, np.datetime64]  # - per-exchange last FULL snapshot request time
-    _funding_next: dict[str, np.datetime64]  # - per-exchange next sweep time (hour boundary + offset)
-    _funding_floor: dict[str, np.datetime64]  # - per-exchange startup anchor; sweep windows never reach below it
 
     def __init__(
         self,
@@ -384,7 +365,6 @@ class Reconciler:
         position_confirm_wait: str | np.timedelta64 = "2s",
         order_confirm_wait: str | np.timedelta64 = "5s",
         order_confirm_max_retries: int = 5,
-        funding_sweep_enabled: bool = True,
     ):
         self._differ = differ
         self._snapshot_interval = _td(snapshot_interval)
@@ -394,12 +374,9 @@ class Reconciler:
         self._position_confirm_wait = _td(position_confirm_wait)
         self._order_confirm_wait = _td(order_confirm_wait)
         self._order_confirm_max_retries = order_confirm_max_retries
-        self._funding_sweep_enabled = funding_sweep_enabled
         self._tasks = {}
         self._last_snapshot = {}
         self._last_full_snapshot = {}
-        self._funding_next = {}
-        self._funding_floor = {}
 
     def active_keys(self) -> set[Hashable]:
         return set(self._tasks)
@@ -420,47 +397,7 @@ class Reconciler:
                 self._last_full_snapshot[state.exchange] = now
             _log.debug(f"[{state.exchange}] reconcile: snapshot due -> RequestSnapshot(include_orders={full_sweep})")
             actions.append(RequestSnapshot(state.exchange, include_orders=full_sweep))
-        if (sweep := self._funding_sweep(state, now)) is not None:
-            actions.append(sweep)
         return actions + self._dispatch(Tick(), state, now)
-
-    def _funding_sweep(self, state: AccountState, now: np.datetime64) -> RequestFundingPayments | None:
-        # - hourly-aligned sweep: books settlements ≤~10min after any boundary (Binance 8h
-        #   boundaries are hour-aligned; HPL settles hourly and additionally books instantly via
-        #   WS); WS gaps self-heal at the next sweep; the floor guards restored-state double-booking.
-        if not self._funding_sweep_enabled:
-            return None
-        exchange = state.exchange
-        if (floor := self._funding_floor.get(exchange)) is None:
-            self._funding_floor[exchange] = floor = self._funding_anchor(state, now)
-            self._funding_next[exchange] = self._next_sweep_at(now)
-            _log.debug(f"[{exchange}] reconcile: startup funding sweep -> RequestFundingPayments(since={floor})")
-            return RequestFundingPayments(exchange, since=floor)
-        if now < self._funding_next[exchange]:
-            return None
-        self._funding_next[exchange] = self._next_sweep_at(now)
-        since = max(floor, now - FUNDING_SWEEP_LOOKBACK)
-        _log.debug(f"[{exchange}] reconcile: funding sweep due -> RequestFundingPayments(since={since})")
-        return RequestFundingPayments(exchange, since=since)
-
-    @staticmethod
-    def _next_sweep_at(now: np.datetime64) -> np.datetime64:
-        return now.astype("datetime64[h]") + np.timedelta64(1, "h") + FUNDING_SWEEP_OFFSET
-
-    @staticmethod
-    def _funding_anchor(state: AccountState, now: np.datetime64) -> np.datetime64:
-        # - startup watermark: +1ns past the newest restored settlement (EXCLUSIVE — it is already
-        #   inside restored cumulative_funding and the bucket table is empty after restart, so
-        #   re-fetching it would double-book); no restored anchor -> now (restart gap stays open
-        #   until last_funding_time persistence lands).
-        times = []
-        for pos in state.get_positions().values():
-            t = pos.last_funding_time
-            if isinstance(t, (int, np.integer)):  # in-session bookings stamp the raw ns epoch
-                t = np.datetime64(int(t), "ns")
-            if not np.isnat(t):
-                times.append(t)
-        return max(times) + np.timedelta64(1, "ns") if times else now
 
     def on_snapshot(
         self,

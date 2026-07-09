@@ -1,10 +1,10 @@
-"""Funding routing in simulation: market tuples + SimFundingBooker.
+"""Funding routing in simulation: market tuples + the AM's process_market_funding hook.
 
 Market funding rides (instrument, d_type, data, is_historical) tuples like any market data;
-the runner no longer dual-emits. Booking into the simulated account is SimFundingBooker's
-job (wired into the ProcessingManager's funding_payment handler), account-scoped by
-construction: events are produced only when our position is open. Warmup funding is never
-booked — it rides the cache-only hist tuple path.
+the runner no longer dual-emits. Booking into the simulated account is the
+SimulatedAccountManager's job (the ProcessingManager's funding_payment handler asks it),
+account-scoped by construction: events are produced only when our position is open.
+Warmup funding is never booked — it rides the cache-only hist tuple path.
 """
 
 from unittest.mock import MagicMock
@@ -13,10 +13,10 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from qubx.backtester.funding import SimFundingBooker
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulator import simulate
-from qubx.core.basics import DataType, FundingPayment, Position
+from qubx.core.account_manager import AccountManager, SimulatedAccountManager
+from qubx.core.basics import DataType, FundingPayment, Instrument, MarketType, Position
 from qubx.core.events import FundingPaymentEvent
 from qubx.core.interfaces import IStrategy, IStrategyContext, TriggerEvent
 from qubx.core.lookups import lookup
@@ -35,8 +35,8 @@ def _payment() -> FundingPayment:
 
 
 def test_live_funding_payment_rides_tuple_path_only():
-    # The runner emits funding as a plain market tuple — no typed event; booking is
-    # SimFundingBooker's job inside the processing manager's funding_payment handler.
+    # The runner emits funding as a plain market tuple — no typed event; booking is the
+    # simulated AM's job inside the processing manager's funding_payment handler.
     runner = _runner()
     instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
     payment = _payment()
@@ -73,37 +73,110 @@ def test_market_data_rides_tuple_path():
     assert sent == (instr, DataType.QUOTE, quote, False)
 
 
-class TestSimFundingBooker:
-    def test_open_position_yields_sim_event(self):
-        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
-        assert instr is not None
-        account = MagicMock()
-        account.get_position.return_value = Position(instrument=instr, quantity=0.5, pos_average_price=50_000.0)
-        payment = _payment()
+def _marked_position(instr, qty: float, mark: float = 50_000.0) -> Position:
+    pos = Position(instrument=instr, quantity=qty, pos_average_price=mark)
+    pos.update_market_price(np.datetime64(0, "ns"), mark, 1.0)
+    return pos
 
-        event = SimFundingBooker(account).on_market_funding(instr, payment)
+
+class _T:
+    def time(self):
+        return np.datetime64("2024-01-01T00:00:00", "ns")
+
+
+def _sim_am(instr) -> SimulatedAccountManager:
+    return SimulatedAccountManager(
+        connectors={instr.exchange: MagicMock()},
+        base_currencies={instr.exchange: "USDT"},
+        time=_T(),
+    )
+
+
+def _btc() -> Instrument:
+    instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert instr is not None
+    return instr
+
+
+class TestSimulatedAccountFunding:
+    """SimulatedAccountManager.process_market_funding — the one non-connector settlement producer."""
+
+    def test_open_position_yields_computed_settlement(self):
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_position(_marked_position(instr, 0.5))
+
+        event = am.process_market_funding(instr, _payment())
 
         assert isinstance(event, FundingPaymentEvent)
         assert event.instrument is instr
-        assert event.payment is payment
-        assert event.amount is None  # sim has no venue cash truth -> computed booking
+        assert event.time == np.datetime64(0, "ns")  # payment ns epoch -> event time
+        # long pays a positive rate: -qty * mark * rate
+        assert event.amount == pytest.approx(-(0.5 * 50_000.0 * 0.0001))
+
+    def test_short_position_receives_positive_rate(self):
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_position(_marked_position(instr, -0.5))
+
+        event = am.process_market_funding(instr, _payment())
+
+        assert event is not None
+        assert event.amount == pytest.approx(0.5 * 50_000.0 * 0.0001)
+
+    def test_qty_multiplier_respected(self):
+        instr = Instrument(
+            symbol="XBTUSD",
+            market_type=MarketType.SWAP,
+            exchange="TEST",
+            base="BTC",
+            quote="USD",
+            settle="USD",
+            exchange_symbol="XBTUSD",
+            tick_size=0.1,
+            lot_size=1.0,
+            min_size=1.0,
+            contract_size=10.0,  # 10 tokens per contract
+        )
+        am = _sim_am(instr)
+        am.seed_position(_marked_position(instr, 2.0, mark=100.0))
+
+        event = am.process_market_funding(instr, _payment())
+
+        assert event is not None
+        assert event.amount == pytest.approx(-(2.0 * 10.0 * 100.0 * 0.0001))
+
+    def test_no_mark_yet_yields_nothing(self):
+        # no quote seen yet -> the settlement cannot be valued; market tuples don't redeliver
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_position(Position(instrument=instr, quantity=0.5, pos_average_price=50_000.0))
+
+        assert am.process_market_funding(instr, _payment()) is None
 
     def test_flat_position_yields_nothing(self):
         # account-scoped by construction: no open position -> no account event
-        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
-        assert instr is not None
-        account = MagicMock()
-        account.get_position.return_value = Position(instrument=instr, quantity=instr.min_size / 2)
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_position(Position(instrument=instr, quantity=instr.min_size / 2))
 
-        assert SimFundingBooker(account).on_market_funding(instr, _payment()) is None
+        assert am.process_market_funding(instr, _payment()) is None
 
     def test_missing_position_record_yields_nothing(self):
-        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
-        assert instr is not None
-        account = MagicMock()
-        account.get_position.return_value = None
+        instr = _btc()
+        assert _sim_am(instr).process_market_funding(instr, _payment()) is None
 
-        assert SimFundingBooker(account).on_market_funding(instr, _payment()) is None
+    def test_live_account_manager_never_books_market_funding(self):
+        # live: the account's funding arrives via the connector's typed events only
+        instr = _btc()
+        am = AccountManager(
+            connectors={instr.exchange: MagicMock()},
+            base_currencies={instr.exchange: "USDT"},
+            time=_T(),
+        )
+        am.seed_position(_marked_position(instr, 0.5))
+
+        assert am.process_market_funding(instr, _payment()) is None
 
 
 class FundingHold(IStrategy):
@@ -140,7 +213,6 @@ class FundingHold(IStrategy):
     def on_stop(self, ctx: IStrategyContext) -> None:
         pos = ctx.positions[ctx.instruments[0]]
         self.final_cumulative_funding = pos.cumulative_funding
-        self.final_n_payments = len(pos.funding_payments)
 
 
 def test_backtest_books_funding_for_held_position():
@@ -182,7 +254,6 @@ def test_backtest_books_funding_for_held_position():
 
     booked = [o for o in strategy.observed if abs(o["qty"]) >= 0.001]
     assert len(booked) > 0
-    assert strategy.final_n_payments == len(booked)
 
     expected = sum(-o["qty"] * o["mark"] * o["rate"] for o in booked)
     assert strategy.final_cumulative_funding == pytest.approx(expected)

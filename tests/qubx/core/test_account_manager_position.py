@@ -6,7 +6,6 @@ from qubx.core.account_manager import AccountManager, reducer
 from qubx.core.basics import (
     Balance,
     Deal,
-    FundingPayment,
     Instrument,
     MarketType,
     Position,
@@ -74,26 +73,20 @@ def _fill(trade_id="t1", amount=0.5, price=50_000.0):
     )
 
 
-def test_funding_payment_applied_once_per_bucket():
+T_SETTLE = np.datetime64("2026-05-28T00:00:00")
+
+
+def test_funding_payment_books_amount_and_cash():
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
-    # open a long position and mark it so funding has a mark price
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     state.set_position(inst, pos)
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
-    payment = FundingPayment(
-        time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
-        funding_rate=0.0001,
-        funding_interval_hours=8,
-    )
-    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
-    # long pays positive funding: cumulative_funding negative
-    expected = -(1.0 * 50_000.0 * 0.0001)
-    assert abs(pos.cumulative_funding - expected) < 1e-9
-    assert abs(state.get_balance("USDT").total - (1000.0 + expected)) < 1e-9
+    am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE, amount=-5.0))
+    assert abs(pos.cumulative_funding - (-5.0)) < 1e-9
+    assert abs(state.get_balance("USDT").total - 995.0) < 1e-9
 
 
 def test_funding_payment_duplicate_skipped():
@@ -101,55 +94,16 @@ def test_funding_payment_duplicate_skipped():
     state = am._states["binance"]
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     state.set_position(inst, pos)
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
-    payment = FundingPayment(
-        time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
-        funding_rate=0.0001,
-        funding_interval_hours=8,
-    )
-    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
+    am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE, amount=-5.0))
     funding_after_first = pos.cumulative_funding
     balance_after_first = state.get_balance("USDT").total
-    # a second payment in the same bucket (same time/interval) is a no-op
-    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
+    # a second delivery of the same settlement (same settle hour) is a no-op
+    am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE, amount=-5.0))
     assert pos.cumulative_funding == funding_after_first
     assert state.get_balance("USDT").total == balance_after_first
-
-
-def test_funding_on_unmarked_position_skipped_without_consuming_bucket():
-    # Regression for I2: a freshly created position has last_update_price = NaN.
-    # Funding must NOT poison balance/cumulative_funding with NaN, and must NOT
-    # consume the dedup bucket — so a re-delivered event applies once a mark exists.
-    am = _am()
-    state = am._states["binance"]
-    inst = _instrument()
-    # position with no quote/deal -> last_update_price is NaN
-    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    assert np.isnan(pos.last_update_price)
-    state.set_position(inst, pos)
-    state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
-
-    payment = FundingPayment(
-        time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
-        funding_rate=0.0001,
-        funding_interval_hours=8,
-    )
-    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
-    # nothing applied: no NaN anywhere, bucket not consumed
-    assert not np.isnan(state.get_balance("USDT").total)
-    assert state.get_balance("USDT").total == 1000.0
-    assert not np.isnan(pos.cumulative_funding)
-    assert pos.cumulative_funding == 0.0
-
-    # now mark the position and re-deliver the SAME bucket -> it applies this time
-    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
-    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
-    expected = -(1.0 * 50_000.0 * 0.0001)
-    assert abs(pos.cumulative_funding - expected) < 1e-9
-    assert abs(state.get_balance("USDT").total - (1000.0 + expected)) < 1e-9
 
 
 def test_funding_payment_moves_free_and_total_together():
@@ -159,20 +113,13 @@ def test_funding_payment_moves_free_and_total_together():
     state = am._states["binance"]
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     state.set_position(inst, pos)
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=900.0, locked=100.0))
 
-    payment = FundingPayment(
-        time=np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64),
-        funding_rate=0.0001,
-        funding_interval_hours=8,
-    )
-    am.apply(FundingPaymentEvent(instrument=inst, payment=payment))
-    amount = -(1.0 * 50_000.0 * 0.0001)
+    am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE, amount=-5.0))
     bal = state.get_balance("USDT")
-    assert abs(bal.total - (1000.0 + amount)) < 1e-9
-    assert abs(bal.free - (900.0 + amount)) < 1e-9
+    assert abs(bal.total - 995.0) < 1e-9
+    assert abs(bal.free - 895.0) < 1e-9
     assert bal.locked == 100.0
 
 
@@ -181,17 +128,12 @@ def test_funding_payment_different_bucket_applies_again():
     state = am._states["binance"]
     inst = _instrument()
     pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(am._time.time(), 50_000.0, 1.0)
     state.set_position(inst, pos)
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=1000.0, free=1000.0))
 
-    base_ns = np.datetime64("2026-05-28T00:00:00").astype("datetime64[ns]").astype(np.int64)
-    p1 = FundingPayment(time=base_ns, funding_rate=0.0001, funding_interval_hours=8)
-    next_bucket_ns = base_ns + 8 * 3_600_000_000_000
-    p2 = FundingPayment(time=next_bucket_ns, funding_rate=0.0001, funding_interval_hours=8)
-    am.apply(FundingPaymentEvent(instrument=inst, payment=p1))
+    am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE, amount=-5.0))
     first = pos.cumulative_funding
-    am.apply(FundingPaymentEvent(instrument=inst, payment=p2))
+    am.apply(FundingPaymentEvent(instrument=inst, time=T_SETTLE + np.timedelta64(8, "h"), amount=-5.0))
     assert pos.cumulative_funding != first
 
 

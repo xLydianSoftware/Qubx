@@ -25,7 +25,6 @@ from qubx.core.basics import (
     Balance,
     CtrlChannel,
     Deal,
-    FundingPayment,
     Instrument,
     ITimeProvider,
     MarketEvent,
@@ -45,7 +44,7 @@ from qubx.core.basics import (
     td_64,
 )
 from qubx.core.errors import BaseErrorEvent
-from qubx.core.events import ChannelMessage, FundingPaymentEvent
+from qubx.core.events import ChannelMessage
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.data.storage import IReader, IStorage
@@ -1201,18 +1200,6 @@ class ITransferManager:
         dict rather than None so callers invoke it directly instead of probing for it.
         """
         return {}
-
-
-class IFundingBooker:
-    """Books market funding-payment tuples into a simulated account (in simulation the
-    framework is the venue — the one exception to connector-only FundingPaymentEvent
-    emission; see qubx.backtester.funding.SimFundingBooker). Live accounts book via
-    their connector's typed events, so no booker is wired there."""
-
-    def on_market_funding(self, instrument: Instrument, payment: FundingPayment) -> FundingPaymentEvent | None:
-        """Return the account event to book for this settlement, or None to skip
-        (position not open — emission is account-scoped by construction)."""
-        ...
 
 
 class IProcessingManager:

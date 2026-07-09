@@ -268,7 +268,7 @@ class TestSimplifiedFundingHandler:
         await config.subscriber_func()
 
         # Should emit both rate and payment as MARKET TUPLES (a data provider is
-        # universe-scoped; account booking is the connector's / SimFundingBooker's job)
+        # universe-scoped; account booking is the connector's / sim AM's job)
         funding_rates = [d for d in sent_data if isinstance(d, tuple) and d[1] == DataType.FUNDING_RATE]
         funding_payments = [d for d in sent_data if isinstance(d, tuple) and d[1] == DataType.FUNDING_PAYMENT]
 

@@ -18,7 +18,6 @@ from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     HIST_DEALS_LOOKBACK,
     Reconciler,
-    RequestFundingPayments,
     RequestHistDeals,
     RequestSnapshot,
     RequestStatus,
@@ -142,8 +141,7 @@ def _deal(
 
 
 def _reconciler() -> Reconciler:
-    # short windows so scenarios are a few ticks; differ grace 5s. Funding sweep off so the
-    # startup sweep doesn't leak into unrelated action assertions (own section below).
+    # short windows so scenarios are a few ticks; differ grace 5s
     return Reconciler(
         Differ(grace="5s"),
         snapshot_interval="30s",
@@ -152,7 +150,6 @@ def _reconciler() -> Reconciler:
         position_confirm_wait="2s",
         order_confirm_wait="2s",
         order_confirm_max_retries=2,
-        funding_sweep_enabled=False,
     )
 
 
@@ -734,82 +731,3 @@ def test_first_snapshot_is_full_then_light_then_full_after_sweep():
 
     # once the full-sweep interval elapses, the next due request is FULL again (WS-drop backstop)
     assert RequestSnapshot(ex, include_orders=True) in rec.on_tick(st, _passed_seconds(T0, 300))
-
-
-# --------------------------------------------------------------------------- #
-# Funding sweep — hourly-aligned RequestFundingPayments (startup, then every hour
-# boundary + 10min offset): floor anchor + next-due time, funding_sweep_enabled kill switch.
-# --------------------------------------------------------------------------- #
-
-
-def _funding_reconciler() -> Reconciler:
-    return Reconciler(Differ(grace="5s"))  # funding sweep enabled by default
-
-
-def _funding_actions(actions) -> list[RequestFundingPayments]:
-    return [a for a in actions if isinstance(a, RequestFundingPayments)]
-
-
-def _at(hhmmss: str) -> np.datetime64:
-    return np.datetime64(f"2026-05-28T{hhmmss}", "ns")
-
-
-def test_funding_sweep_kill_switch_disables_everything():
-    # funding_sweep_enabled=False -> no startup sweep, no hourly schedule
-    st = _local()
-    rec = Reconciler(Differ(grace="5s"), funding_sweep_enabled=False)
-    assert _funding_actions(rec.on_tick(st, T0)) == []
-    assert _funding_actions(rec.on_tick(st, _passed_seconds(T0, 7200))) == []
-
-
-def test_funding_sweep_startup_floor_defaults_to_now():
-    # no restored last_funding_time anywhere -> floor = connect time (empty startup window)
-    st = _local()
-    rec = _funding_reconciler()
-    assert _funding_actions(rec.on_tick(st, T0)) == [RequestFundingPayments(EXCHANGE, since=T0)]
-    # nothing further until the next hour boundary + offset
-    assert _funding_actions(rec.on_tick(st, _at("01:09:59"))) == []
-
-
-def test_funding_sweep_startup_floor_from_restored_positions():
-    # restored last_funding_time -> exclusive +1ns floor (that settlement is already inside
-    # restored cumulative_funding); positions without one are ignored
-    st = _local()
-    settled = np.datetime64("2026-05-27T16:00:00", "ns")
-    pos = _position(1.0)
-    pos.last_funding_time = settled  # type: ignore
-    st.set_position(pos.instrument, pos)
-    other = _position(2.0, instrument=_inst("ETHUSDT"))  # last_funding_time stays NaT
-    st.set_position(other.instrument, other)
-
-    rec = _funding_reconciler()
-    expected = settled + np.timedelta64(1, "ns")
-    assert _funding_actions(rec.on_tick(st, T0)) == [RequestFundingPayments(EXCHANGE, since=expected)]
-
-
-def test_funding_sweep_hourly_schedule():
-    # fires once per hour at boundary + 10min offset; window = max(floor, now - 30m)
-    st = _local()
-    rec = _funding_reconciler()
-    rec.on_tick(st, T0)  # startup (T0 = 00:00:30) -> next due 01:10:00
-
-    assert _funding_actions(rec.on_tick(st, _at("01:09:59"))) == []  # before boundary + offset
-    assert _funding_actions(rec.on_tick(st, _at("01:10:30"))) == [
-        RequestFundingPayments(EXCHANGE, since=_at("00:40:30"))  # now - 30m lookback
-    ]
-    assert _funding_actions(rec.on_tick(st, _at("01:30:00"))) == []  # rescheduled to 02:10
-    assert _funding_actions(rec.on_tick(st, _at("02:10:30"))) == [
-        RequestFundingPayments(EXCHANGE, since=_at("01:40:30"))  # second hour re-fires
-    ]
-
-
-def test_funding_sweep_window_floor_clamped():
-    # a sweep shortly after startup never reaches below the floor (restored-state guard)
-    st = _local()
-    rec = _funding_reconciler()
-    start = _at("00:59:00")
-    rec.on_tick(st, start)  # startup -> floor = 00:59:00, next due 01:10:00
-
-    assert _funding_actions(rec.on_tick(st, _at("01:10:30"))) == [
-        RequestFundingPayments(EXCHANGE, since=start)  # 01:10:30 - 30m reaches before the floor
-    ]

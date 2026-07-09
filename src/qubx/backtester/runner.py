@@ -7,7 +7,6 @@ from tqdm.auto import tqdm
 
 from qubx import QubxLogConfig, logger
 from qubx.backtester.connector import SimulatedConnector
-from qubx.backtester.funding import SimFundingBooker
 from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import SimulatedDataIterator
 from qubx.backtester.transfers import SimulationTransferManager
@@ -514,7 +513,6 @@ class SimulationRunner:
             strategy_state=self.strategy_state,
             notifier=self.notifier,
             initializer=self.initializer,
-            funding_booker=SimFundingBooker(self.account_manager),
         )
 
         # - auto-assign the simulation transfer manager unless the strategy set its own in

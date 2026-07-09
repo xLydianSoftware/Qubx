@@ -44,7 +44,6 @@ from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.instrument_service import IInstrumentService, create_instrument_service
 from qubx.core.interfaces import (
     IDataProvider,
-    IFundingBooker,
     IHealthMonitor,
     IInstrumentServiceManager,
     IMarketDataCache,
@@ -169,7 +168,6 @@ class StrategyContext(IStrategyContext):
         rate_limiting_config: Any | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
         read_only: bool = False,
-        funding_booker: IFundingBooker | None = None,
     ) -> None:
         self._read_only = read_only
         self._account_manager = account_manager
@@ -289,7 +287,6 @@ class StrategyContext(IStrategyContext):
             health_monitor=self._health_monitor,
             delisting_detector=self._delisting_detector,
             data_throttler=data_throttler,
-            funding_booker=funding_booker,
         )
 
         # Late-wire the processing manager into the account manager (the AM is built
