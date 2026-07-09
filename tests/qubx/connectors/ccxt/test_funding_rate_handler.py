@@ -12,7 +12,6 @@ import pytest
 
 from qubx.connectors.ccxt.handlers.funding_rate import FundingRateDataHandler
 from qubx.core.basics import CtrlChannel, DataType, FundingPayment, FundingRate, Instrument, MarketType
-from qubx.core.events import FundingPaymentEvent
 
 
 @pytest.fixture
@@ -249,7 +248,7 @@ class TestSimplifiedFundingHandler:
 
         # Should have funding rate but no payment yet (first rate doesn't trigger payment)
         assert len([d for d in sent_data if isinstance(d, tuple) and d[1] == DataType.FUNDING_RATE]) == 1
-        assert len([d for d in sent_data if isinstance(d, FundingPaymentEvent)]) == 0
+        assert len([d for d in sent_data if isinstance(d, tuple) and d[1] == DataType.FUNDING_PAYMENT]) == 0
 
         # Second call with advanced next_funding_time - should emit payment
         sent_data.clear()
@@ -268,20 +267,21 @@ class TestSimplifiedFundingHandler:
 
         await config.subscriber_func()
 
-        # Should emit both rate and payment (handler always emits both when appropriate)
+        # Should emit both rate and payment as MARKET TUPLES (a data provider is
+        # universe-scoped; account booking is the connector's / sim AM's job)
         funding_rates = [d for d in sent_data if isinstance(d, tuple) and d[1] == DataType.FUNDING_RATE]
-        funding_payments = [d for d in sent_data if isinstance(d, FundingPaymentEvent)]
+        funding_payments = [d for d in sent_data if isinstance(d, tuple) and d[1] == DataType.FUNDING_PAYMENT]
 
         assert len(funding_rates) == 1  # Always emits funding rate
         assert len(funding_payments) == 1  # Emits payment when interval changes
 
         # Verify payment data
-        payment_event = funding_payments[0]
-        assert payment_event.instrument.symbol == "BTCUSDT"
-        payment = payment_event.payment
+        instrument, _, payment, is_historical = funding_payments[0]
+        assert instrument.symbol == "BTCUSDT"
         assert isinstance(payment, FundingPayment)
         assert payment.funding_rate == 0.0001  # Previous rate
         assert payment.funding_interval_hours == 8
+        assert not is_historical
 
     @pytest.mark.asyncio
     async def test_unsubscriber_calls_exchange_cleanup(self, funding_handler, btc_instrument, rate_channel):

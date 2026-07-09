@@ -13,7 +13,6 @@ from qubx.backtester.transfers import SimulationTransferManager
 from qubx.core.account_manager import AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
-from qubx.core.events import FundingPaymentEvent
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
 from qubx.core.initializer import BasicStrategyInitializer
@@ -253,14 +252,6 @@ class SimulationRunner:
 
     def _send_market_data(self, instrument: Instrument, data_type: str, data: Any, is_hist: bool) -> None:
         # Market data rides (instrument, d_type, data, is_historical) tuples through process_data.
-        # A live (non-warmup) funding payment is dual-emitted, mirroring the live CCXT funding
-        # handler: first as a FundingPaymentEvent on the typed channel (the AccountManager books it
-        # into balances/position PnL), then as a tuple so the strategy still reacts in
-        # on_market_data. The event goes first so the account is fully booked before the strategy
-        # sees the tick. Warmup funding is never booked (matches main) — it rides the cache-only
-        # tuple path alone.
-        if not is_hist and DataType.from_str(data_type)[0] == DataType.FUNDING_PAYMENT:
-            self.channel.send(FundingPaymentEvent(instrument=instrument, payment=data))
         self.channel.send((instrument, data_type, data, is_hist))
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:

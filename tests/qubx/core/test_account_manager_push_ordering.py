@@ -17,7 +17,6 @@ from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     Balance,
     Deal,
-    FundingPayment,
     Instrument,
     MarketType,
     Order,
@@ -157,15 +156,13 @@ def test_deal_at_equal_venue_time_is_covered_by_push():
 
 
 def _funding_event() -> FundingPaymentEvent:
-    # long 1.0 marked at 50_000, rate 0.0001 -> pays 5 USDT
-    payment = FundingPayment(time=int(T_EVENT.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
-    return FundingPaymentEvent(instrument=INST, payment=payment)
+    # long 1.0 pays 5 USDT at T_EVENT
+    return FundingPaymentEvent(instrument=INST, time=T_EVENT, amount=-5.0)
 
 
 def _run_funding_matrix(events: list[AccountMessage]) -> tuple[float, float, tuple[float, float, float]]:
     am = _am()
     pos = Position(INST, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(T_OPEN, 50_000.0, 1.0)  # the mark funding is valued at
     am.seed_position(pos)
     for event in events:
         am.apply(event)
@@ -175,8 +172,8 @@ def _run_funding_matrix(events: list[AccountMessage]) -> tuple[float, float, tup
 
 
 def test_same_funding_converges_under_both_event_orderings():
-    # The venue debits the wallet and pushes 995; our computed FundingPaymentEvent books
-    # cumulative_funding/r_pnl either way, the cash leg exactly once.
+    # The venue debits the wallet and pushes 995; the FundingPaymentEvent books
+    # cumulative_funding/r_pnl only — the push alone owns the wallet, in either order.
     funding_first = _run_funding_matrix([_funding_event(), _push(995.0)])
     push_first = _run_funding_matrix([_push(995.0), _funding_event()])
     assert funding_first == push_first

@@ -510,35 +510,20 @@ def _handle_update_rejected(state: AccountState, event: OrderUpdateRejectedEvent
 
 
 def _handle_funding_payment(state: AccountState, event: FundingPaymentEvent, now: np.datetime64) -> ApplyResult:
-    payment = event.payment
     instrument = event.instrument
     if instrument is None:
         return ApplyResult()
-    interval_ns = payment.funding_interval_hours * 3_600_000_000_000
-    bucket = (instrument, int(payment.time) // interval_ns)
+    # settle-hour bucket: no venue settles sub-hourly and none back-dates, so duplicate
+    # deliveries of one settlement collapse to one booking
+    bucket = (instrument, int(event.time.astype("datetime64[ns]").astype("int64")) // 3_600_000_000_000)
     if state.is_funding_applied(bucket):
+        logger.debug("funding dedup drop {} bucket={}", instrument.symbol, bucket[1])
         return ApplyResult()
     pos = state.get_position(instrument)
     if pos is None:
         return ApplyResult()
-    # Funding cash is computed on the mark price; FundingPayment carries no
-    # amount. If the position has no mark yet (NaN), we cannot value the
-    # payment — skip WITHOUT consuming the bucket so a re-delivered event can
-    # apply once a mark exists (rather than poisoning balance/PnL with NaN).
-    mark = pos.last_update_price
-    if np.isnan(mark):
-        logger.warning(f"[{state.exchange}] funding for {instrument} skipped: no mark price yet")
-        return ApplyResult()
     state.mark_funding_applied(bucket)
-    amount = pos.apply_funding_payment(payment, mark)  # updates cumulative_funding/pnl
-    # Skip the cash leg when a venue balance push already covers it (the venue debits
-    # the wallet and pushes the new total with reason FUNDING_FEE — booking our computed
-    # amount on top would double-count). cumulative_funding/pnl above always book.
-    # payment.time is a venue-clock ns epoch — same domain as the push as_of.
-    covered = _covered_by_balance_push(state, instrument.settle, np.datetime64(int(payment.time), "ns"))
-    if not covered and state.get_balance(instrument.settle) is not None:
-        # adjust only an existing settle balance (funding never creates one)
-        state.adjust_balance(instrument.settle, amount)
+    pos.apply_funding_payment(event.time, event.amount)
     return ApplyResult(position=pos)
 
 

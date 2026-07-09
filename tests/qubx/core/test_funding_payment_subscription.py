@@ -164,7 +164,7 @@ class TestFundingPaymentSubscription:
     # ProcessingManager tests
     # -----------------------------------------------------------------------
 
-    def test_process_event_routes_funding_payment_to_account_path(self, mock_instrument, sample_funding_payment):
+    def test_process_event_routes_funding_payment_to_account_path(self, mock_instrument):
         """FundingPaymentEvent is an AccountMessage: process_event books it via AM and
         surfaces it to the strategy through on_position_change. Market data rides tuples
         through process_data, not process_event, so there is no market-data half here."""
@@ -172,7 +172,7 @@ class TestFundingPaymentSubscription:
         position = Mock()
         pm._account_manager.apply.return_value = ApplyResult(position=position)
 
-        event = FundingPaymentEvent(instrument=mock_instrument, payment=sample_funding_payment)
+        event = FundingPaymentEvent(instrument=mock_instrument, time=pd.Timestamp("2025-01-08").asm8, amount=-5.0)
         pm.process_event(event)
 
         # - AM books the payment and fires on_position_change; that is the only path

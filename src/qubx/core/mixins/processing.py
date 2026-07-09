@@ -13,6 +13,7 @@ from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.basics import (
     DataType,
     Deal,
+    FundingPayment,
     InitializingSignal,
     Instrument,
     MarketEvent,
@@ -1001,6 +1002,15 @@ class ProcessingManager(IProcessingManager):
     def _handle_quote(self, instrument: Instrument, event_type: str, quote: Quote) -> MarketEvent:
         base_update = self.__update_base_data(instrument, event_type, quote)
         return MarketEvent(self._time_provider.time(), event_type, instrument, quote, is_trigger=base_update)
+
+    def _handle_funding_payment(self, instrument: Instrument, event_type: str, payment: FundingPayment) -> MarketEvent:
+        # both sim seams (backtest SimulatedCtrlChannel and paper channel loop) funnel here:
+        # book the settlement into the simulated account BEFORE the strategy sees the tuple.
+        # SimulatedAccountManager computes the settlement; the live AM returns None.
+        if (event := self._account_manager.process_market_funding(instrument, payment)) is not None:
+            self.process_event(event)
+        self.__update_base_data(instrument, event_type, payment)
+        return MarketEvent(self._time_provider.time(), event_type, instrument, payment)
 
     def _handle_event(self, instrument: Instrument, event_type: str, event_data: Any) -> TriggerEvent:
         return TriggerEvent(self._time_provider.time(), event_type, instrument, event_data)

@@ -35,6 +35,7 @@ from typing import Any, Literal
 
 import ccxt
 import ccxt.pro
+import numpy as np
 from ccxt import AuthenticationError, ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
 
 from qubx import connector_logger, logger
@@ -58,6 +59,7 @@ from qubx.core.events import (
     AccountSnapshotEvent,
     BalanceUpdateEvent,
     DealEvent,
+    FundingPaymentEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
@@ -165,6 +167,7 @@ class CcxtConnector(ChannelEmitter):
         # round-trip, False on disconnect / before connect(). Polled by AM liveness.
         self._ws_ready = False
         self._executions_future: Any = None
+        self._funding_future: Any = None
 
         # Re-subscribe the account WS stream + resync against venue truth after the
         # ExchangeManager swaps in a fresh exchange (the running _subscribe_executions
@@ -1215,6 +1218,65 @@ class CcxtConnector(ChannelEmitter):
                 )
             )
 
+    def _start_funding_poller(self) -> None:
+        if self._funding_future is None or self._funding_future.done():
+            self._funding_future = self._loop.submit(self._funding_poll_loop())
+            self._funding_future.add_done_callback(self._log_spawn_error)
+
+    async def _funding_poll_loop(self) -> None:
+        connect_time = self._time.time()
+        while True:
+            target = self._next_funding_poll_at(self._time.time())
+            while (now := self._time.time()) < target:
+                await asyncio.sleep(min(float((target - now) / np.timedelta64(1, "s")), 60.0))
+            await self._funding_payments_async(self._funding_since(connect_time, self._time.time()))
+
+    @staticmethod
+    def _next_funding_poll_at(now: dt_64) -> dt_64:
+        # nearest hh:10 strictly after now (10min past every hour, incl. the current one)
+        slot = now.astype("datetime64[h]").astype("datetime64[ns]") + np.timedelta64(10, "m")
+        return slot if slot > now else slot + np.timedelta64(1, "h")
+
+    @staticmethod
+    def _funding_since(connect_time: dt_64, now: dt_64) -> dt_64:
+        return max(connect_time, now - np.timedelta64(2, "h"))
+
+    async def _funding_payments_async(self, since: dt_64) -> None:
+        """Fetch the account's funding settlements since ``since`` and emit one
+        FundingPaymentEvent per income record (one poller cycle).
+
+        One account-wide ``fetch_funding_history`` call (FUNDING_FEE income records) —
+        overlapping poll windows are expected, the AM reducer's bucket dedup absorbs the
+        duplicates. Errors are logged, not raised — the next cycle re-covers the window.
+        A single page (1000 records) is orders of magnitude above any poll window;
+        hitting it is logged as possible truncation.
+        """
+        since_ms = int(since.astype("datetime64[ms]").astype("int64"))
+        logger.debug(f"[{self.exchange_name}] funding sweep: fetch_funding_history since {since}")
+        try:
+            raw_records = await self._em.exchange.fetch_funding_history(since=since_ms)
+        except NetworkError as e:
+            logger.warning(f"[{self.exchange_name}] funding history fetch since {since} failed: {e}")
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.warning(f"[{self.exchange_name}] error fetching funding history since {since}: {e}")
+            return
+        if len(raw_records) >= 1000:
+            logger.warning(
+                f"[{self.exchange_name}] funding history since {since} hit the 1000-record page; possible truncation"
+            )
+        for raw in raw_records:
+            symbol, ts_ms, amount = raw.get("symbol"), raw.get("timestamp"), raw.get("amount")
+            if symbol is None or ts_ms is None or amount is None:
+                logger.debug(f"[{self.exchange_name}] funding record missing fields, skipped: {raw}")
+                continue
+            try:
+                instrument = self._instrument_for_symbol(symbol)
+            except CcxtSymbolNotRecognized:
+                logger.debug(f"[{self.exchange_name}] funding record for unknown symbol {symbol}, skipped")
+                continue
+            self.send(FundingPaymentEvent(instrument=instrument, time=recognize_time(int(ts_ms)), amount=float(amount)))
+
     def _emit_order_status_not_found(
         self, client_order_id: str | None, venue_order_id: str | None, instrument: Instrument
     ) -> None:
@@ -1384,6 +1446,7 @@ class CcxtConnector(ChannelEmitter):
         constructed).
         """
         self._start_executions_stream()
+        self._start_funding_poller()
         # Initial snapshot (design.md "connect / reconnect contract", case 1).
         self.request_snapshot()
 
@@ -1424,6 +1487,9 @@ class CcxtConnector(ChannelEmitter):
         if self._executions_future is not None and not self._executions_future.done():
             self._executions_future.cancel()
         self._executions_future = None
+        if self._funding_future is not None and not self._funding_future.done():
+            self._funding_future.cancel()
+        self._funding_future = None
         try:
             self._run_sync(self._em.exchange.close(), timeout=10)
         except Exception as e:  # noqa: BLE001

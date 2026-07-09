@@ -23,7 +23,6 @@ from qubx.core.basics import (
     Order,
     OrderOrigin,
     OrderRequest,
-    OrderTransition,
     Position,
     RestoredState,
     Signal,

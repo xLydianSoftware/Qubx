@@ -15,7 +15,6 @@ from qubx.core.account_manager.state import AccountState
 from qubx.core.basics import (
     Balance,
     Deal,
-    FundingPayment,
     Instrument,
     MarketType,
     Order,
@@ -392,32 +391,85 @@ def test_spot_deal_legs_covered_independently():
     assert _present(state.get_balance("ETH")).total == 0.1  # base leg uncovered -> still credited
 
 
-def test_funding_covered_by_balance_push_skips_cash_leg():
+def test_funding_books_amount_to_position_and_balance():
     state = _state()
     pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(T0, 50_000.0, 1.0)
     state.set_position(BTC, pos)
     _seed_usdt(state, 1000.0)
-    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(995.0), as_of=T1), T1)
-    # funding venue time T0 <= push as_of T1: the venue's FUNDING_FEE debit is in the total
-    payment = FundingPayment(time=int(T0.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
-    r = apply(state, FundingPaymentEvent(instrument=BTC, payment=payment), T1)
+    r = apply(state, FundingPaymentEvent(instrument=BTC, time=T1, amount=-7.25), T1)
     assert r.position is pos
-    expected = -(1.0 * 50_000.0 * 0.0001)
-    assert abs(pos.cumulative_funding - expected) < 1e-9  # funding still books on the position
-    assert _present(state.get_balance("USDT")).total == 995.0  # cash leg skipped
+    assert abs(pos.cumulative_funding - (-7.25)) < 1e-9
+    assert abs(pos.r_pnl - (-7.25)) < 1e-9
+    assert pos.last_funding_time == T1
+    # attribution only — never cash (live wallets are venue-synced; sim debits in the sim AM)
+    assert _present(state.get_balance("USDT")).total == 1000.0
 
 
-def test_funding_not_covered_by_older_push_still_adjusts_balance():
+def test_funding_duplicate_delivery_dedups_to_one():
+    # same settle time delivered twice (WS + REST sweep) books once
     state = _state()
     pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
-    pos.update_market_price(T0, 50_000.0, 1.0)
+    state.set_position(BTC, pos)
+    apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-3.0), T1)
+    r = apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-3.0), T1)
+    assert r.position is None
+    assert abs(pos.cumulative_funding - (-3.0)) < 1e-9
+
+
+def test_funding_books_on_flat_position():
+    # a settlement on a since-closed position is account truth: books despite qty=0
+    state = _state()
+    pos = Position(BTC)
     state.set_position(BTC, pos)
     _seed_usdt(state, 1000.0)
-    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(1000.0), as_of=T0), T0)
-    payment = FundingPayment(time=int(T1.astype(np.int64)), funding_rate=0.0001, funding_interval_hours=8)
-    apply(state, FundingPaymentEvent(instrument=BTC, payment=payment), T1)
-    assert abs(_present(state.get_balance("USDT")).total - 995.0) < 1e-9  # 1000 - 5 funding paid
+    r = apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-2.0), T1)
+    assert r.position is pos
+    assert abs(pos.cumulative_funding - (-2.0)) < 1e-9
+    assert _present(state.get_balance("USDT")).total == 1000.0  # attribution only, no cash
+
+
+def test_funding_without_position_record_skips():
+    # no position record at all -> nothing books, and the bucket is NOT consumed
+    state = _state()
+    _seed_usdt(state, 1000.0)
+    r = apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-2.0), T1)
+    assert r.is_empty()
+    assert _present(state.get_balance("USDT")).total == 1000.0
+    # once a record exists, a re-delivery books (the earlier skip didn't burn the bucket)
+    state.set_position(BTC, Position(BTC))
+    r2 = apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-2.0), T1)
+    assert r2.position is not None
+
+
+def test_funding_never_touches_balances_around_pushes():
+    # the wallet is owned by venue pushes/snapshots: a funding event books attribution only,
+    # never cash — whatever the last FUNDING_FEE push set stands, before or after booking
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    state.set_position(BTC, pos)
+    _seed_usdt(state, 1000.0)
+    apply(state, BalanceUpdateEvent(instrument=None, balance=_total_push(992.5), as_of=T1, reason="FUNDING_FEE"), T1)
+    apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-7.5), T1)
+    assert abs(pos.cumulative_funding - (-7.5)) < 1e-9  # funding still books on the position
+    assert _present(state.get_balance("USDT")).total == 992.5  # the push figure stands untouched
+
+
+def test_funding_dedup_drop_logged():
+    from qubx import logger
+
+    state = _state()
+    pos = Position(BTC, quantity=1.0, pos_average_price=50_000.0)
+    state.set_position(BTC, pos)
+    apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-5.0), T1)
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(m), level="DEBUG")
+    try:
+        apply(state, FundingPaymentEvent(instrument=BTC, time=T0, amount=-5.0), T1)
+    finally:
+        logger.remove(sink_id)
+
+    assert any("dedup drop" in m and "BTCUSDT" in m for m in messages)
 
 
 # --------------------------------------------------------------------------- #

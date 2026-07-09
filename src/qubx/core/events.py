@@ -7,7 +7,6 @@ from qubx.core.basics import (
     Balance,
     Bar,
     Deal,
-    FundingPayment,
     FundingRate,
     Instrument,
     Liquidation,
@@ -160,7 +159,12 @@ class BalanceUpdateEvent(AccountMessage):
 
 @msg
 class FundingPaymentEvent(AccountMessage):
-    payment: FundingPayment
+    """A settled account funding payment: ``amount`` is the signed settle-currency cash
+    delta (venue-reported live, booker-computed in sim) at ``time`` (venue clock).
+    Deduped downstream by settle hour."""
+
+    time: np.datetime64
+    amount: float
 
 
 @msg
