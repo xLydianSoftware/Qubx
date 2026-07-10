@@ -178,6 +178,21 @@ class TestPostgresPositionRestorer:
         assert btc_pos.quantity == 1.5
         assert btc_pos.position_avg_price == 90000.0
 
+    def test_uses_injected_run_id(self, mock_lookup):
+        conn, cursor = _make_mock_connection()
+        cursor.fetchall.return_value = [
+            ("BTCUSDT", "BINANCE.UM", "SWAP", 1.0, 100.0, 0.0, 101.0, 0.0, 0.0,
+             datetime(2026, 7, 10, tzinfo=timezone.utc)),
+        ]
+        restorer = PostgresPositionRestorer(
+            strategy_name="test_strategy", connection=conn, run_id="run-B"
+        )
+        result = restorer.restore_positions()
+        assert len(result) == 1
+        assert not cursor.fetchone.called  # injected → no latest-run lookup
+        params = cursor.execute.call_args[0][1]
+        assert "run-B" in params
+
 
 # --- Signal restorer tests ---
 
@@ -339,6 +354,18 @@ class TestPostgresBalanceRestorer:
         assert result[0].locked == 1000.0
         assert result[0].free == 9000.0
         assert result[0].exchange == "BINANCE.UM"
+
+    def test_uses_injected_run_id(self):
+        conn, cursor = _make_mock_connection()
+        cursor.fetchall.return_value = [("BINANCE.UM", "USDT", 1000.0, 0.0)]
+        restorer = PostgresBalanceRestorer(
+            strategy_name="test_strategy", connection=conn, run_id="run-B"
+        )
+        result = restorer.restore_balances()
+        assert len(result) == 1
+        assert not cursor.fetchone.called
+        params = cursor.execute.call_args[0][1]
+        assert "run-B" in params
 
 
 # --- State restorer tests ---

@@ -19,7 +19,7 @@ from qubx.core.basics import Instrument, Position
 from qubx.core.lookups import lookup
 from qubx.core.utils import recognize_time
 from qubx.restorers.interfaces import IPositionRestorer
-from qubx.restorers.utils import find_latest_run_folder
+from qubx.restorers.utils import find_latest_run_folder, latest_run_id
 
 
 class CsvPositionRestorer(IPositionRestorer):
@@ -264,10 +264,12 @@ class PostgresPositionRestorer(IPositionRestorer):
         strategy_name: str,
         connection: Connection,
         table_name: str = "qubx_logs_positions",
+        run_id: str | None = None,
     ):
         self.strategy_name = strategy_name
         self.connection = connection
         self.table_name = table_name
+        self.run_id = run_id
 
     def restore_positions(self) -> dict[Instrument, Position]:
         try:
@@ -275,21 +277,11 @@ class PostgresPositionRestorer(IPositionRestorer):
             lookup_range = now - timedelta(days=7)
 
             with self.connection.cursor() as cur:
-                # Find latest run_id
-                cur.execute(
-                    sql.SQL(
-                        "SELECT run_id FROM {table} WHERE strategy_name = %s AND timestamp >= %s "
-                        "ORDER BY timestamp DESC LIMIT 1"
-                    ).format(table=sql.Identifier(self.table_name)),
-                    (self.strategy_name, lookup_range),
-                )
-                row = cur.fetchone()
-                if not row:
+                latest_run = self.run_id or latest_run_id(cur, self.table_name, self.strategy_name, lookup_range)
+                if latest_run is None:
                     logger.warning("No position logs found in PostgreSQL for given filters.")
                     return {}
-
-                latest_run_id = row[0]
-                logger.info(f"Restoring positions from PostgreSQL for run_id: {latest_run_id}")
+                logger.info(f"Restoring positions from PostgreSQL for run_id: {latest_run}")
 
                 # Get latest position per instrument
                 cur.execute(
@@ -301,7 +293,7 @@ class PostgresPositionRestorer(IPositionRestorer):
                         "WHERE strategy_name = %s AND run_id = %s AND timestamp >= %s "
                         "ORDER BY symbol, exchange, market_type, timestamp DESC"
                     ).format(table=sql.Identifier(self.table_name)),
-                    (self.strategy_name, latest_run_id, lookup_range),
+                    (self.strategy_name, latest_run, lookup_range),
                 )
 
                 positions: dict[Instrument, Position] = {}
