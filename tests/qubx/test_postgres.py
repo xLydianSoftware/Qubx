@@ -469,6 +469,28 @@ class TestPostgresStateRestorer:
 
         conn.close.assert_called_once()
 
+    @patch("qubx.restorers.state.psycopg")
+    def test_flat_previous_run_restores_no_targets(self, mock_psycopg, mock_lookup):
+        """Canonical run (from positions) that logged no targets → targets empty,
+        never an older run's targets."""
+        conn, cursor = _make_mock_connection()
+        mock_psycopg.connect.return_value = conn
+
+        # Tables exist (positions, signals, balance, targets).
+        cursor.fetchone.return_value = ("run-latest",)  # canonical + any per-table lookups
+        # existing-tables probe + all data queries return empty; only run resolution matters here.
+        cursor.fetchall.return_value = [
+            ("qubx_logs_positions",), ("qubx_logs_signals",),
+            ("qubx_logs_balance",), ("qubx_logs_targets",),
+        ]
+        cursor.description = []
+
+        restorer = PostgresStateRestorer(strategy_name="test_strategy")
+        state = restorer.restore_state()
+
+        assert isinstance(state, RestoredState)
+        assert state.instrument_to_target_positions == {}
+
 
 # --- Logger tests ---
 
