@@ -25,6 +25,7 @@ from qubx.restorers.interfaces import (
 from qubx.restorers.position import PostgresPositionRestorer
 from qubx.restorers.signal import PostgresSignalRestorer
 from qubx.restorers.state import PostgresStateRestorer
+from qubx.restorers.utils import canonical_run_id, latest_run_id
 
 # --- Helpers ---
 
@@ -86,6 +87,38 @@ def _make_mock_connection():
     return conn, cursor
 
 
+# --- Run ID helper tests ---
+
+class TestRunIdHelpers:
+    def test_latest_run_id_returns_run(self):
+        _, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = ("run-123",)
+        assert latest_run_id(cursor, "qubx_logs_targets", "s", "2026-01-01") == "run-123"
+        assert cursor.execute.called
+
+    def test_latest_run_id_none_when_empty(self):
+        _, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = None
+        assert latest_run_id(cursor, "qubx_logs_targets", "s", "2026-01-01") is None
+
+    def test_canonical_run_id_returns_run(self):
+        _, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = ("run-abc",)
+        got = canonical_run_id(cursor, ["qubx_logs_positions", "qubx_logs_targets"], "s", "2026-01-01")
+        assert got == "run-abc"
+        assert cursor.execute.called
+
+    def test_canonical_run_id_none_when_no_tables(self):
+        _, cursor = _make_mock_connection()
+        assert canonical_run_id(cursor, [], "s", "2026-01-01") is None
+        assert not cursor.execute.called
+
+    def test_canonical_run_id_none_when_empty(self):
+        _, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = None
+        assert canonical_run_id(cursor, ["qubx_logs_targets"], "s", "2026-01-01") is None
+
+
 # --- Protocol tests ---
 
 class TestPostgresProtocolImplementations:
@@ -145,11 +178,42 @@ class TestPostgresPositionRestorer:
         assert btc_pos.quantity == 1.5
         assert btc_pos.position_avg_price == 90000.0
 
+    def test_uses_injected_run_id(self, mock_lookup):
+        conn, cursor = _make_mock_connection()
+        cursor.fetchall.return_value = [
+            ("BTCUSDT", "BINANCE.UM", "SWAP", 1.0, 100.0, 0.0, 101.0, 0.0, 0.0,
+             datetime(2026, 7, 10, tzinfo=timezone.utc)),
+        ]
+        restorer = PostgresPositionRestorer(
+            strategy_name="test_strategy", connection=conn, run_id="run-B"
+        )
+        result = restorer.restore_positions()
+        assert len(result) == 1
+        assert not cursor.fetchone.called  # injected → no latest-run lookup
+        params = cursor.execute.call_args[0][1]
+        assert "run-B" in params
+
 
 # --- Signal restorer tests ---
 
 class TestPostgresSignalRestorer:
     _strategy_name = "test_strategy"
+
+    def _target_columns_and_row(self):
+        col_names = [
+            "id", "run_id", "account_id", "strategy_name", "created_at",
+            "timestamp", "symbol", "exchange", "market_type",
+            "target_position", "entry_price", "stop_price", "take_price", "options", "rn",
+        ]
+        description = [MagicMock() for _ in col_names]
+        for desc, name in zip(description, col_names):
+            desc.name = name
+        row = (
+            1, "run-B", "acc", "test_strategy", "2026-07-10",
+            datetime(2026, 7, 10, tzinfo=timezone.utc), "BTCUSDT", "BINANCE.UM", "SWAP",
+            0.5, 100.0, None, None, None, 1,
+        )
+        return description, [row]
 
     def test_with_no_data(self):
         conn, cursor = _make_mock_connection()
@@ -177,6 +241,7 @@ class TestPostgresSignalRestorer:
         for desc, name in zip(cursor.description, col_names):
             desc.name = name
 
+        cursor.fetchone.return_value = ("run-123",)
         cursor.fetchall.return_value = [
             (1, "run-123", "acc", "test_strategy", ts,
              ts, "BTCUSDT", "BINANCE.UM", "SWAP",
@@ -206,6 +271,7 @@ class TestPostgresSignalRestorer:
         for desc, name in zip(cursor.description, col_names):
             desc.name = name
 
+        cursor.fetchone.return_value = ("run-123",)
         cursor.fetchall.return_value = [
             (1, "run-123", "acc", "test_strategy", ts,
              ts, "BTCUSDT", "BINANCE.UM", "SWAP",
@@ -220,6 +286,41 @@ class TestPostgresSignalRestorer:
         btc_targets = next(t for i, t in result.items() if i.symbol == "BTCUSDT")
         assert len(btc_targets) == 1
         assert btc_targets[0].target_position_size == 0.5
+
+    def test_targets_use_injected_run_id_without_fallback_query(self, mock_lookup):
+        conn, cursor = _make_mock_connection()
+        description, rows = self._target_columns_and_row()
+        cursor.description = description
+        cursor.fetchall.return_value = rows
+        restorer = PostgresSignalRestorer(
+            strategy_name="test_strategy", connection=conn, run_id="run-B"
+        )
+        result = restorer.restore_targets()
+        assert len(result) == 1  # BTC target restored
+        # Injected run_id → no separate latest-run lookup.
+        assert not cursor.fetchone.called
+        # The data query is filtered by the injected run_id.
+        params = cursor.execute.call_args[0][1]
+        assert "run-B" in params
+
+    def test_targets_fall_back_to_own_latest_run(self, mock_lookup):
+        conn, cursor = _make_mock_connection()
+        description, rows = self._target_columns_and_row()
+        cursor.description = description
+        cursor.fetchone.return_value = ("run-A",)  # latest_run_id fallback
+        cursor.fetchall.return_value = rows
+        restorer = PostgresSignalRestorer(strategy_name="test_strategy", connection=conn)
+        result = restorer.restore_targets()
+        assert len(result) == 1
+        assert cursor.fetchone.called  # resolved its own latest run
+        params = cursor.execute.call_args[0][1]
+        assert "run-A" in params
+
+    def test_targets_empty_when_no_run(self, mock_lookup):
+        conn, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = None  # no run in window
+        restorer = PostgresSignalRestorer(strategy_name="test_strategy", connection=conn)
+        assert restorer.restore_targets() == {}
 
 
 # --- Balance restorer tests ---
@@ -253,6 +354,18 @@ class TestPostgresBalanceRestorer:
         assert result[0].locked == 1000.0
         assert result[0].free == 9000.0
         assert result[0].exchange == "BINANCE.UM"
+
+    def test_uses_injected_run_id(self):
+        conn, cursor = _make_mock_connection()
+        cursor.fetchall.return_value = [("BINANCE.UM", "USDT", 1000.0, 0.0)]
+        restorer = PostgresBalanceRestorer(
+            strategy_name="test_strategy", connection=conn, run_id="run-B"
+        )
+        result = restorer.restore_balances()
+        assert len(result) == 1
+        assert not cursor.fetchone.called
+        params = cursor.execute.call_args[0][1]
+        assert "run-B" in params
 
 
 # --- State restorer tests ---
@@ -355,6 +468,34 @@ class TestPostgresStateRestorer:
         assert result.balances[0].free == 9500.0
 
         conn.close.assert_called_once()
+
+    @patch("qubx.restorers.state.psycopg")
+    @patch("qubx.restorers.state.PostgresBalanceRestorer")
+    @patch("qubx.restorers.state.PostgresSignalRestorer")
+    @patch("qubx.restorers.state.PostgresPositionRestorer")
+    def test_injects_canonical_run_into_all_sub_restorers(
+        self, mock_pos, mock_sig, mock_bal, mock_psycopg
+    ):
+        """Task 4 wiring: one canonical run_id is computed and injected into
+        every sub-restorer, so positions/signals/targets/balance share a run."""
+        conn, cursor = _make_mock_connection()
+        mock_psycopg.connect.return_value = conn
+        cursor.fetchall.return_value = [
+            ("qubx_logs_positions",), ("qubx_logs_signals",),
+            ("qubx_logs_balance",), ("qubx_logs_targets",),
+        ]
+        cursor.fetchone.return_value = ("run-latest",)  # canonical_run_id result
+        mock_pos.return_value.restore_positions.return_value = {}
+        mock_sig.return_value.restore_signals.return_value = {}
+        mock_sig.return_value.restore_targets.return_value = {}
+        mock_bal.return_value.restore_balances.return_value = []
+
+        restorer = PostgresStateRestorer(strategy_name="test_strategy")
+        restorer.restore_state()
+
+        assert mock_pos.call_args.kwargs["run_id"] == "run-latest"
+        assert mock_sig.call_args.kwargs["run_id"] == "run-latest"
+        assert mock_bal.call_args.kwargs["run_id"] == "run-latest"
 
 
 # --- Logger tests ---

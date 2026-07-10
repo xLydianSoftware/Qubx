@@ -41,6 +41,7 @@ from qubx.restorers.interfaces import (
 from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer
 from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer
 from qubx.restorers.state import CsvStateRestorer, MongoDBStateRestorer
+from qubx.restorers.utils import mongo_canonical_run_id, mongo_latest_run_id
 
 
 # Mock instruments for testing
@@ -936,3 +937,177 @@ class TestMongoDBStateRestorer:
             assert btc_position is not None
             assert btc_position.position_avg_price > 0
             assert btc_position.quantity > 0
+
+
+class TestMongoRunScoping:
+    """Run-scoping for the MongoDB restorers: restore only the previous run's state,
+    so a de-universed instrument's stale doc from an older run is never resurrected."""
+
+    _strategy_name = "test_strategy"
+
+    @staticmethod
+    def _pos_doc(run_id, symbol, ts, strategy="test_strategy"):
+        return {
+            "timestamp": ts, "symbol": symbol, "exchange": "BINANCE.UM", "market_type": "SWAP",
+            "quantity": 1, "realized_pnl_quoted": 0, "avg_position_price": 100.0,
+            "run_id": run_id, "strategy_name": strategy, "log_type": "positions",
+        }
+
+    @staticmethod
+    def _sig_doc(run_id, symbol, ts, strategy="test_strategy"):
+        return {
+            "timestamp": ts, "symbol": symbol, "exchange": "BINANCE.UM", "market_type": "SWAP",
+            "signal": 1, "reference_price": 90000, "run_id": run_id,
+            "strategy_name": strategy, "log_type": "signals",
+        }
+
+    @staticmethod
+    def _bal_doc(run_id, currency, ts, strategy="test_strategy"):
+        return {
+            "timestamp": ts, "exchange": "BINANCE.UM", "currency": currency,
+            "total": 1000.0, "locked": 0.0, "run_id": run_id,
+            "strategy_name": strategy, "log_type": "balance",
+        }
+
+    # ---- utils helpers ----
+
+    def test_mongo_latest_run_id_picks_most_recent(self):
+        client = mongomock.MongoClient()
+        col = client["default_logs_db"]["qubx_logs"]
+        now = datetime.now()
+        col.insert_one(self._pos_doc("run-old", "ETHUSDT", now - timedelta(hours=3)))
+        col.insert_one(self._pos_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        match = {"log_type": "positions", "strategy_name": self._strategy_name}
+        assert mongo_latest_run_id(col, match) == "run-new"
+
+    def test_mongo_latest_run_id_none_when_empty(self):
+        client = mongomock.MongoClient()
+        col = client["default_logs_db"]["qubx_logs"]
+        match = {"log_type": "positions", "strategy_name": self._strategy_name}
+        assert mongo_latest_run_id(col, match) is None
+
+    def test_mongo_canonical_run_id_across_collections(self):
+        client = mongomock.MongoClient()
+        db = client["default_logs_db"]
+        now = datetime.now()
+        db["qubx_logs_positions"].insert_one(self._pos_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        db["qubx_logs_targets"].insert_one(
+            {**self._pos_doc("run-old", "ETHUSDT", now - timedelta(hours=5)), "log_type": "targets"}
+        )
+        sources = [
+            (db["qubx_logs_positions"], {"log_type": "positions", "strategy_name": self._strategy_name}),
+            (db["qubx_logs_targets"], {"log_type": "targets", "strategy_name": self._strategy_name}),
+        ]
+        assert mongo_canonical_run_id(sources) == "run-new"
+
+    def test_mongo_canonical_run_id_none_when_no_sources(self):
+        assert mongo_canonical_run_id([]) is None
+
+    # ---- position restorer ----
+
+    def test_position_scopes_to_latest_run(self):
+        client = mongomock.MongoClient()
+        col = client["default_logs_db"]["qubx_logs"]
+        now = datetime.now()
+        col.insert_one(self._pos_doc("run-old", "ETHUSDT", now - timedelta(hours=3)))
+        col.insert_one(self._pos_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        restorer = MongoDBPositionRestorer(strategy_name=self._strategy_name, mongo_client=client)
+        result = restorer.restore_positions()
+        assert {i.symbol for i in result} == {"BTCUSDT"}
+
+    def test_position_uses_injected_run_id(self):
+        client = mongomock.MongoClient()
+        col = client["default_logs_db"]["qubx_logs"]
+        now = datetime.now()
+        col.insert_one(self._pos_doc("run-old", "ETHUSDT", now - timedelta(hours=3)))
+        col.insert_one(self._pos_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        restorer = MongoDBPositionRestorer(strategy_name=self._strategy_name, mongo_client=client, run_id="run-old")
+        result = restorer.restore_positions()
+        assert {i.symbol for i in result} == {"ETHUSDT"}
+
+    # ---- signal restorer (the core bug) ----
+
+    def test_signal_scopes_to_latest_run(self):
+        client = mongomock.MongoClient()
+        col = client["default_logs_db"]["qubx_logs"]
+        now = datetime.now()
+        col.insert_one(self._sig_doc("run-old", "ETHUSDT", now - timedelta(hours=3)))
+        col.insert_one(self._sig_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        restorer = MongoDBSignalRestorer(strategy_name=self._strategy_name, mongo_client=client)
+        result = restorer.restore_signals()
+        assert {i.symbol for i in result} == {"BTCUSDT"}
+
+    def test_signal_uses_injected_run_id(self):
+        client = mongomock.MongoClient()
+        col = client["default_logs_db"]["qubx_logs"]
+        now = datetime.now()
+        col.insert_one(self._sig_doc("run-old", "ETHUSDT", now - timedelta(hours=3)))
+        col.insert_one(self._sig_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        restorer = MongoDBSignalRestorer(strategy_name=self._strategy_name, mongo_client=client, run_id="run-old")
+        result = restorer.restore_signals()
+        assert {i.symbol for i in result} == {"ETHUSDT"}
+
+    def test_signal_empty_when_no_run(self):
+        client = mongomock.MongoClient()
+        restorer = MongoDBSignalRestorer(strategy_name=self._strategy_name, mongo_client=client)
+        assert restorer.restore_signals() == {}
+
+    # ---- balance restorer ----
+
+    def test_balance_scopes_to_latest_run(self):
+        client = mongomock.MongoClient()
+        col = client["default_logs_db"]["qubx_logs"]
+        now = datetime.now()
+        col.insert_one(self._bal_doc("run-old", "BTC", now - timedelta(hours=3)))
+        col.insert_one(self._bal_doc("run-new", "USDT", now - timedelta(hours=1)))
+        restorer = MongoDBBalanceRestorer(strategy_name=self._strategy_name, mongo_client=client)
+        result = restorer.restore_balances()
+        assert {b.currency for b in result} == {"USDT"}
+
+    def test_balance_uses_injected_run_id(self):
+        client = mongomock.MongoClient()
+        col = client["default_logs_db"]["qubx_logs"]
+        now = datetime.now()
+        col.insert_one(self._bal_doc("run-old", "BTC", now - timedelta(hours=3)))
+        col.insert_one(self._bal_doc("run-new", "USDT", now - timedelta(hours=1)))
+        restorer = MongoDBBalanceRestorer(strategy_name=self._strategy_name, mongo_client=client, run_id="run-old")
+        result = restorer.restore_balances()
+        assert {b.currency for b in result} == {"BTC"}
+
+    # ---- state restorer: one shared canonical run (Option B) ----
+
+    def test_state_flat_previous_run_restores_no_targets(self):
+        """Canonical run (from positions) that logged no targets restores no targets,
+        never an older run's — the flat-previous-run guarantee."""
+        client = mongomock.MongoClient()
+        db = client["default_logs_db"]
+        now = datetime.now()
+        db["qubx_logs_positions"].insert_one(self._pos_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        db["qubx_logs_balance"].insert_one(self._bal_doc("run-new", "USDT", now - timedelta(hours=1)))
+        db["qubx_logs_targets"].insert_one(
+            {
+                "timestamp": now - timedelta(hours=5), "symbol": "ETHUSDT", "exchange": "BINANCE.UM",
+                "market_type": "SWAP", "target_position": 1, "entry_price": 90000,
+                "run_id": "run-old", "strategy_name": self._strategy_name, "log_type": "targets",
+            }
+        )
+        with patch("qubx.restorers.state.MongoClient", return_value=client):
+            restorer = MongoDBStateRestorer(strategy_name=self._strategy_name)
+            state = restorer.restore_state()
+        assert {i.symbol for i in state.positions} == {"BTCUSDT"}
+        assert state.instrument_to_target_positions == {}
+
+    def test_state_injects_canonical_run_into_sub_restorers(self):
+        client = mongomock.MongoClient()
+        db = client["default_logs_db"]
+        now = datetime.now()
+        db["qubx_logs_positions"].insert_one(self._pos_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        db["qubx_logs_signals"].insert_one(self._sig_doc("run-new", "BTCUSDT", now - timedelta(hours=1)))
+        db["qubx_logs_balance"].insert_one(self._bal_doc("run-new", "USDT", now - timedelta(hours=1)))
+        with patch("qubx.restorers.state.MongoClient", return_value=client):
+            restorer = MongoDBStateRestorer(strategy_name=self._strategy_name)
+            restorer.restore_state()
+            assert restorer.position_restorer.run_id == "run-new"
+            assert restorer.signal_restorer.run_id == "run-new"
+            assert restorer.targets_restorer.run_id == "run-new"
+            assert restorer.balance_restorer.run_id == "run-new"

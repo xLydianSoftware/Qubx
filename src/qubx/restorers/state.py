@@ -6,6 +6,7 @@ from various sources.
 """
 
 import os
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -19,7 +20,7 @@ from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer, P
 from qubx.restorers.interfaces import IStateRestorer
 from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer, PostgresPositionRestorer
 from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer, PostgresSignalRestorer
-from qubx.restorers.utils import find_latest_run_folder
+from qubx.restorers.utils import canonical_run_id, find_latest_run_folder, mongo_canonical_run_id
 
 
 class CsvStateRestorer(IStateRestorer):
@@ -196,6 +197,27 @@ class MongoDBStateRestorer(IStateRestorer):
 
         logger.info(f"Restoring state from MongoDB {self.db_name}")
 
+        since = datetime.utcnow() - timedelta(days=7)
+        sources = [
+            (
+                restorer.collection,
+                {"log_type": suffix, "strategy_name": self.strategy_name, "timestamp": {"$gte": since}},
+            )
+            for suffix, restorer in (
+                ("positions", self.position_restorer),
+                ("signals", self.signal_restorer),
+                ("targets", self.targets_restorer),
+                ("balance", self.balance_restorer),
+            )
+            if f"{self.collection_name_prefix}_{suffix}" in mongo_collections
+        ]
+        run_id = mongo_canonical_run_id(sources)
+        logger.info(f"Restoring state from MongoDB for canonical run_id: {run_id}")
+        self.position_restorer.run_id = run_id
+        self.signal_restorer.run_id = run_id
+        self.targets_restorer.run_id = run_id
+        self.balance_restorer.run_id = run_id
+
         positions = self.position_restorer.restore_positions()
         signals = self.signal_restorer.restore_signals()
         targets = self.targets_restorer.restore_targets()
@@ -259,21 +281,34 @@ class PostgresStateRestorer(IStateRestorer):
 
             logger.info(f"Restoring state from PostgreSQL (prefix: {self.table_prefix})")
 
+            since = datetime.now(timezone.utc) - timedelta(days=7)
+            state_tables = [
+                f"{self.table_prefix}_{suffix}"
+                for suffix in ("positions", "signals", "targets", "balance")
+                if f"{self.table_prefix}_{suffix}" in existing_tables
+            ]
+            with conn.cursor() as cur:
+                run_id = canonical_run_id(cur, state_tables, self.strategy_name, since)
+            logger.info(f"Restoring state from PostgreSQL for canonical run_id: {run_id}")
+
             position_restorer = PostgresPositionRestorer(
                 strategy_name=self.strategy_name,
                 connection=conn,
                 table_name=f"{self.table_prefix}_positions",
+                run_id=run_id,
             )
             signal_restorer = PostgresSignalRestorer(
                 strategy_name=self.strategy_name,
                 connection=conn,
                 signals_table_name=f"{self.table_prefix}_signals",
                 targets_table_name=f"{self.table_prefix}_targets",
+                run_id=run_id,
             )
             balance_restorer = PostgresBalanceRestorer(
                 strategy_name=self.strategy_name,
                 connection=conn,
                 table_name=f"{self.table_prefix}_balance",
+                run_id=run_id,
             )
 
             positions = position_restorer.restore_positions()
