@@ -1060,7 +1060,11 @@ class ProcessingManager(IProcessingManager):
         if not self._is_ready():
             return
 
-        # Restore tracker state from signals
+        # Restore tracker state from signals.
+        # NB: unlike targets below, signals are NOT re-persisted on restart, so a run that
+        # hasn't re-emitted yet restores no signals (state restore is run-scoped). Harmless
+        # while restore_position_from_signals is a no-op; a tracker that implements it should
+        # mirror the save_targets chain-hop with save_signals here, NOT widen restore across runs.
         all_signals = []
         for instrument, signals in restored_state.instrument_to_signal_positions.items():
             all_signals.extend(signals)
