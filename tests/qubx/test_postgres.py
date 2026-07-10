@@ -25,6 +25,7 @@ from qubx.restorers.interfaces import (
 from qubx.restorers.position import PostgresPositionRestorer
 from qubx.restorers.signal import PostgresSignalRestorer
 from qubx.restorers.state import PostgresStateRestorer
+from qubx.restorers.utils import latest_run_id, canonical_run_id
 
 # --- Helpers ---
 
@@ -84,6 +85,38 @@ def _make_mock_connection():
     conn.cursor.return_value.__enter__ = MagicMock(return_value=cursor)
     conn.cursor.return_value.__exit__ = MagicMock(return_value=False)
     return conn, cursor
+
+
+# --- Run ID helper tests ---
+
+class TestRunIdHelpers:
+    def test_latest_run_id_returns_run(self):
+        _, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = ("run-123",)
+        assert latest_run_id(cursor, "qubx_logs_targets", "s", "2026-01-01") == "run-123"
+        assert cursor.execute.called
+
+    def test_latest_run_id_none_when_empty(self):
+        _, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = None
+        assert latest_run_id(cursor, "qubx_logs_targets", "s", "2026-01-01") is None
+
+    def test_canonical_run_id_returns_run(self):
+        _, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = ("run-abc",)
+        got = canonical_run_id(cursor, ["qubx_logs_positions", "qubx_logs_targets"], "s", "2026-01-01")
+        assert got == "run-abc"
+        assert cursor.execute.called
+
+    def test_canonical_run_id_none_when_no_tables(self):
+        _, cursor = _make_mock_connection()
+        assert canonical_run_id(cursor, [], "s", "2026-01-01") is None
+        assert not cursor.execute.called
+
+    def test_canonical_run_id_none_when_empty(self):
+        _, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = None
+        assert canonical_run_id(cursor, ["qubx_logs_targets"], "s", "2026-01-01") is None
 
 
 # --- Protocol tests ---
