@@ -7,7 +7,7 @@ for restoring signals from various sources.
 
 import ast
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -20,7 +20,7 @@ from qubx.core.basics import Instrument, Signal, TargetPosition
 from qubx.core.lookups import lookup
 from qubx.core.utils import recognize_time
 from qubx.restorers.interfaces import ISignalRestorer
-from qubx.restorers.utils import find_latest_run_folder
+from qubx.restorers.utils import find_latest_run_folder, latest_run_id
 
 
 def _parse_options_cell(value) -> dict:
@@ -421,12 +421,14 @@ class PostgresSignalRestorer(ISignalRestorer):
         signals_table_name: str = "qubx_logs_signals",
         targets_table_name: str = "qubx_logs_targets",
         max_restored_records: int = 20,
+        run_id: str | None = None,
     ):
         self.strategy_name = strategy_name
         self.connection = connection
         self.signals_table_name = signals_table_name
         self.targets_table_name = targets_table_name
         self.max_restored_records = max_restored_records
+        self.run_id = run_id
 
     def restore_signals(self) -> dict[Instrument, list[Signal]]:
         logger.info(f"Restoring latest {self.max_restored_records} signals per symbol from PostgreSQL")
@@ -507,16 +509,20 @@ class PostgresSignalRestorer(ISignalRestorer):
 
     def _load_data(self, table_name: str) -> list[dict] | None:
         try:
-            query = sql.SQL(
-                "SELECT * FROM ("
-                "  SELECT *, ROW_NUMBER() OVER ("
-                "    PARTITION BY symbol, exchange, market_type ORDER BY timestamp DESC"
-                "  ) AS rn FROM {table} WHERE strategy_name = %s"
-                ") sub WHERE rn <= %s ORDER BY symbol, exchange, market_type, timestamp DESC"
-            ).format(table=sql.Identifier(table_name))
-
+            since = datetime.now(timezone.utc) - timedelta(days=7)
             with self.connection.cursor() as cur:
-                cur.execute(query, (self.strategy_name, self.max_restored_records))
+                run_id = self.run_id or latest_run_id(cur, table_name, self.strategy_name, since)
+                if run_id is None:
+                    return None
+                query = sql.SQL(
+                    "SELECT * FROM ("
+                    "  SELECT *, ROW_NUMBER() OVER ("
+                    "    PARTITION BY symbol, exchange, market_type ORDER BY timestamp DESC"
+                    "  ) AS rn FROM {table} "
+                    "  WHERE strategy_name = %s AND run_id = %s AND timestamp >= %s"
+                    ") sub WHERE rn <= %s ORDER BY symbol, exchange, market_type, timestamp DESC"
+                ).format(table=sql.Identifier(table_name))
+                cur.execute(query, (self.strategy_name, run_id, since, self.max_restored_records))
                 columns = [desc.name for desc in cur.description]
                 return [dict(zip(columns, row)) for row in cur.fetchall()]
         except Exception as e:

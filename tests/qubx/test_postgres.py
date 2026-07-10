@@ -184,6 +184,22 @@ class TestPostgresPositionRestorer:
 class TestPostgresSignalRestorer:
     _strategy_name = "test_strategy"
 
+    def _target_columns_and_row(self):
+        col_names = [
+            "id", "run_id", "account_id", "strategy_name", "created_at",
+            "timestamp", "symbol", "exchange", "market_type",
+            "target_position", "entry_price", "stop_price", "take_price", "options", "rn",
+        ]
+        description = [MagicMock() for _ in col_names]
+        for desc, name in zip(description, col_names):
+            desc.name = name
+        row = (
+            1, "run-B", "acc", "test_strategy", "2026-07-10",
+            datetime(2026, 7, 10, tzinfo=timezone.utc), "BTCUSDT", "BINANCE.UM", "SWAP",
+            0.5, 100.0, None, None, None, 1,
+        )
+        return description, [row]
+
     def test_with_no_data(self):
         conn, cursor = _make_mock_connection()
         cursor.fetchall.return_value = []
@@ -210,6 +226,7 @@ class TestPostgresSignalRestorer:
         for desc, name in zip(cursor.description, col_names):
             desc.name = name
 
+        cursor.fetchone.return_value = ("run-123",)
         cursor.fetchall.return_value = [
             (1, "run-123", "acc", "test_strategy", ts,
              ts, "BTCUSDT", "BINANCE.UM", "SWAP",
@@ -239,6 +256,7 @@ class TestPostgresSignalRestorer:
         for desc, name in zip(cursor.description, col_names):
             desc.name = name
 
+        cursor.fetchone.return_value = ("run-123",)
         cursor.fetchall.return_value = [
             (1, "run-123", "acc", "test_strategy", ts,
              ts, "BTCUSDT", "BINANCE.UM", "SWAP",
@@ -253,6 +271,41 @@ class TestPostgresSignalRestorer:
         btc_targets = next(t for i, t in result.items() if i.symbol == "BTCUSDT")
         assert len(btc_targets) == 1
         assert btc_targets[0].target_position_size == 0.5
+
+    def test_targets_use_injected_run_id_without_fallback_query(self, mock_lookup):
+        conn, cursor = _make_mock_connection()
+        description, rows = self._target_columns_and_row()
+        cursor.description = description
+        cursor.fetchall.return_value = rows
+        restorer = PostgresSignalRestorer(
+            strategy_name="test_strategy", connection=conn, run_id="run-B"
+        )
+        result = restorer.restore_targets()
+        assert len(result) == 1  # BTC target restored
+        # Injected run_id → no separate latest-run lookup.
+        assert not cursor.fetchone.called
+        # The data query is filtered by the injected run_id.
+        params = cursor.execute.call_args[0][1]
+        assert "run-B" in params
+
+    def test_targets_fall_back_to_own_latest_run(self, mock_lookup):
+        conn, cursor = _make_mock_connection()
+        description, rows = self._target_columns_and_row()
+        cursor.description = description
+        cursor.fetchone.return_value = ("run-A",)  # latest_run_id fallback
+        cursor.fetchall.return_value = rows
+        restorer = PostgresSignalRestorer(strategy_name="test_strategy", connection=conn)
+        result = restorer.restore_targets()
+        assert len(result) == 1
+        assert cursor.fetchone.called  # resolved its own latest run
+        params = cursor.execute.call_args[0][1]
+        assert "run-A" in params
+
+    def test_targets_empty_when_no_run(self, mock_lookup):
+        conn, cursor = _make_mock_connection()
+        cursor.fetchone.return_value = None  # no run in window
+        restorer = PostgresSignalRestorer(strategy_name="test_strategy", connection=conn)
+        assert restorer.restore_targets() == {}
 
 
 # --- Balance restorer tests ---
