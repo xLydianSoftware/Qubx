@@ -25,7 +25,7 @@ from qubx.restorers.interfaces import (
 from qubx.restorers.position import PostgresPositionRestorer
 from qubx.restorers.signal import PostgresSignalRestorer
 from qubx.restorers.state import PostgresStateRestorer
-from qubx.restorers.utils import latest_run_id, canonical_run_id
+from qubx.restorers.utils import canonical_run_id, latest_run_id
 
 # --- Helpers ---
 
