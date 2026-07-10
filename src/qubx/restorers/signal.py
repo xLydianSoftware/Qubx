@@ -20,7 +20,7 @@ from qubx.core.basics import Instrument, Signal, TargetPosition
 from qubx.core.lookups import lookup
 from qubx.core.utils import recognize_time
 from qubx.restorers.interfaces import ISignalRestorer
-from qubx.restorers.utils import find_latest_run_folder, latest_run_id
+from qubx.restorers.utils import find_latest_run_folder, latest_run_id, mongo_latest_run_id
 
 
 def _parse_options_cell(value) -> dict:
@@ -283,12 +283,14 @@ class MongoDBSignalRestorer(ISignalRestorer):
         db_name: str = "default_logs_db",
         collection_name: str = "qubx_logs",
         max_restored_records: int = 20,
+        run_id: str | None = None,
     ):
         self.mongo_client = mongo_client
         self.db_name = db_name
         self.collection_name = collection_name
         self.strategy_name = strategy_name
         self.max_restored_records = max_restored_records
+        self.run_id = run_id
         self.collection = self.mongo_client[db_name][collection_name]
 
     def restore_signals(self) -> dict[Instrument, list[Signal]]:
@@ -381,10 +383,18 @@ class MongoDBSignalRestorer(ISignalRestorer):
 
     def _load_data_from_mongo(self, log_type: str) -> CommandCursor | None:
         try:
-            logger.info(f"Restoring latest {self.max_restored_records} signals per symbol from MongoDB")
+            since = datetime.utcnow() - timedelta(days=7)
+            base_match = {
+                "log_type": log_type,
+                "strategy_name": self.strategy_name,
+                "timestamp": {"$gte": since},
+            }
+            run_id = self.run_id or mongo_latest_run_id(self.collection, base_match)
+            if run_id is None:
+                return None
 
             pipeline = [
-                {"$match": {"log_type": log_type, "strategy_name": self.strategy_name}},
+                {"$match": {**base_match, "run_id": run_id}},
                 {"$sort": {"timestamp": -1}},
                 {
                     "$group": {

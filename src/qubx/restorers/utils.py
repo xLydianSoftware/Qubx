@@ -77,3 +77,28 @@ def canonical_run_id(cur, tables: list[str], strategy_name: str, since) -> str |
     cur.execute(query, params)
     row = cur.fetchone()
     return row[0] if row else None
+
+
+def mongo_latest_run_id(collection, match: dict) -> str | None:
+    """Return the most recent run_id in *collection* matching *match* (which must
+    already carry strategy_name/log_type and any lookback bound). None if no docs."""
+    doc = next(
+        collection.find(match, {"run_id": 1, "timestamp": 1}).sort("timestamp", -1).limit(1),
+        None,
+    )
+    return doc["run_id"] if doc else None
+
+
+def mongo_canonical_run_id(sources: list[tuple]) -> str | None:
+    """Return the run_id of the most recent doc across all *sources* (the previous
+    run), shared across log types. Each source is a ``(collection, match)`` pair.
+    None if no source has a matching doc."""
+    best_ts, best_run = None, None
+    for collection, match in sources:
+        doc = next(
+            collection.find(match, {"run_id": 1, "timestamp": 1}).sort("timestamp", -1).limit(1),
+            None,
+        )
+        if doc is not None and (best_ts is None or doc["timestamp"] > best_ts):
+            best_ts, best_run = doc["timestamp"], doc["run_id"]
+    return best_run

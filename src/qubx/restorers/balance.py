@@ -16,7 +16,7 @@ from pymongo import MongoClient
 from qubx import logger
 from qubx.core.basics import Balance
 from qubx.restorers.interfaces import IBalanceRestorer
-from qubx.restorers.utils import find_latest_run_folder, latest_run_id
+from qubx.restorers.utils import find_latest_run_folder, latest_run_id, mongo_latest_run_id
 
 
 class CsvBalanceRestorer(IBalanceRestorer):
@@ -139,11 +139,13 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
         mongo_client: MongoClient,
         db_name: str = "default_logs_db",
         collection_name: str = "qubx_logs",
+        run_id: str | None = None,
     ):
         self.mongo_client = mongo_client
         self.db_name = db_name
         self.collection_name = collection_name
         self.strategy_name = strategy_name
+        self.run_id = run_id
 
         self.collection = self.mongo_client[db_name][collection_name]
 
@@ -164,21 +166,15 @@ class MongoDBBalanceRestorer(IBalanceRestorer):
                 "timestamp": {"$gte": lookup_range},
             }
 
-            latest_run_doc = (
-                self.collection.find(base_match, {"run_id": 1, "timestamp": 1}).sort("timestamp", -1).limit(1)
-            )
-
-            latest_run = next(latest_run_doc, None)
-            if not latest_run:
+            run_id = self.run_id or mongo_latest_run_id(self.collection, base_match)
+            if run_id is None:
                 logger.warning("No balance logs found for given filters.")
                 return []
 
-            latest_run_id = latest_run["run_id"]
-
-            logger.info(f"Restoring balances from MongoDB for run_id: {latest_run_id}")
+            logger.info(f"Restoring balances from MongoDB for run_id: {run_id}")
 
             pipeline = [
-                {"$match": {**base_match, "run_id": latest_run_id}},
+                {"$match": {**base_match, "run_id": run_id}},
                 {"$sort": {"timestamp": -1}},
                 {"$group": {"_id": {"exchange": "$exchange", "currency": "$currency"}, "doc": {"$first": "$$ROOT"}}},
             ]
