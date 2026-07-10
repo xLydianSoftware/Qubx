@@ -470,26 +470,32 @@ class TestPostgresStateRestorer:
         conn.close.assert_called_once()
 
     @patch("qubx.restorers.state.psycopg")
-    def test_flat_previous_run_restores_no_targets(self, mock_psycopg, mock_lookup):
-        """Canonical run (from positions) that logged no targets → targets empty,
-        never an older run's targets."""
+    @patch("qubx.restorers.state.PostgresBalanceRestorer")
+    @patch("qubx.restorers.state.PostgresSignalRestorer")
+    @patch("qubx.restorers.state.PostgresPositionRestorer")
+    def test_injects_canonical_run_into_all_sub_restorers(
+        self, mock_pos, mock_sig, mock_bal, mock_psycopg
+    ):
+        """Task 4 wiring: one canonical run_id is computed and injected into
+        every sub-restorer, so positions/signals/targets/balance share a run."""
         conn, cursor = _make_mock_connection()
         mock_psycopg.connect.return_value = conn
-
-        # Tables exist (positions, signals, balance, targets).
-        cursor.fetchone.return_value = ("run-latest",)  # canonical + any per-table lookups
-        # existing-tables probe + all data queries return empty; only run resolution matters here.
         cursor.fetchall.return_value = [
             ("qubx_logs_positions",), ("qubx_logs_signals",),
             ("qubx_logs_balance",), ("qubx_logs_targets",),
         ]
-        cursor.description = []
+        cursor.fetchone.return_value = ("run-latest",)  # canonical_run_id result
+        mock_pos.return_value.restore_positions.return_value = {}
+        mock_sig.return_value.restore_signals.return_value = {}
+        mock_sig.return_value.restore_targets.return_value = {}
+        mock_bal.return_value.restore_balances.return_value = []
 
         restorer = PostgresStateRestorer(strategy_name="test_strategy")
-        state = restorer.restore_state()
+        restorer.restore_state()
 
-        assert isinstance(state, RestoredState)
-        assert state.instrument_to_target_positions == {}
+        assert mock_pos.call_args.kwargs["run_id"] == "run-latest"
+        assert mock_sig.call_args.kwargs["run_id"] == "run-latest"
+        assert mock_bal.call_args.kwargs["run_id"] == "run-latest"
 
 
 # --- Logger tests ---
