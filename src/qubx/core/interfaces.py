@@ -1535,6 +1535,20 @@ class IPositionGathering:
         """
         pass
 
+    def suspend(self, ctx: IStrategyContext) -> None:
+        """Suspend the gatherer — stop reconciling/re-quoting and drop pending targets.
+        Used by an operator kill-switch (panic). Default no-op."""
+        ...
+
+    def resume(self, ctx: IStrategyContext) -> None:
+        """Resume a previously suspended gatherer. Default no-op."""
+        ...
+
+    @property
+    def is_suspended(self) -> bool:
+        """True when the gatherer is suspended (not reconciling). Default False."""
+        return False
+
 
 class IPositionSizer:
     """Interface for calculating target positions from signals."""
