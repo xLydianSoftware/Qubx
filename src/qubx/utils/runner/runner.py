@@ -77,6 +77,7 @@ from qubx.utils.runner.factory import (
     create_metric_emitters,
     create_notifiers,
     create_state_persistence,
+    create_transfer_manager,
 )
 from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
 from qubx.utils.throttler import InstrumentThrottler
@@ -628,6 +629,19 @@ def create_strategy_context(
 
     _initializer = BasicStrategyInitializer(simulation=next(iter(_exchange_to_data_provider.values())).is_simulation)
 
+    # must be set before StrategyContext construction: __post_init__ is the only pickup
+    if config.live.transfers is not None and _initializer.get_transfer_manager() is None:
+        _transfer_manager = create_transfer_manager(
+            config.live.transfers,
+            paper=paper,
+            read_only=config.live.read_only,
+            account=_am,
+            time_provider=_time,
+            initializer=_initializer,
+        )
+        if _transfer_manager is not None:
+            _initializer.set_transfer_manager(_transfer_manager)
+
     # Create exporters if configured
     if no_exporters:
         logger.info("Trade exporters disabled via CLI flag")
@@ -1044,45 +1058,47 @@ def _run_warmup(
         instruments.extend(restored_state.instrument_to_signal_positions.keys())
 
     assert isinstance(ctx.initializer, BasicStrategyInitializer)
-    ctx.initializer.simulation = True
+    # stash: warmup force-assigns a sim manager into this shared initializer
+    _live_transfer_manager = ctx.initializer.get_transfer_manager()
 
     logger.info(f"<yellow>Running warmup from {warmup_start_time} to {current_time}</yellow>")
-    warmup_runner = SimulationRunner(
-        setup=SimulationSetup(
-            setup_type=SetupTypes.STRATEGY,
-            name=ctx.strategy_name,
-            generator=ctx.strategy,
-            tracker=None,
-            instruments=instruments,
-            # ctx.exchanges are already canonical (the runner canonicalizes at the config boundary)
-            exchanges=list(ctx.exchanges),
-            capital=ctx.account.get_total_capital(),
-            base_currency=ctx.account.get_base_currency(),
-            commissions=None,  # TODO: get commissions from somewhere
-            enable_funding=enable_funding,
-        ),
-        data_config=recognize_simulation_data_config(
-            data_storage=_warmup_data_storage,
-            custom_data=_warmup_custom_data,
-            aux_data_storage=_warmup_aux_storage,
-            prefetch_config=prefetch_config,
-            trading_sessions_time=trading_sessions_time,
-        ),
-        start=to_timestamp(warmup_start_time),
-        stop=to_timestamp(current_time),
-        emitter=ctx.emitter,
-        notifier=ctx.notifier,
-        strategy_state=ctx._strategy_state,
-        initializer=ctx.initializer,
-        warmup_mode=True,
-    )
-    _initial_capital = ctx.account.get_total_capital()
-
-    ctx._strategy_state.is_warmup_in_progress = True
-    QubxLogConfig.bind_phase("warmup")
-    QubxLogConfig.bind_time_provider(warmup_runner.ctx)
-
     try:
+        ctx.initializer.simulation = True
+        warmup_runner = SimulationRunner(
+            setup=SimulationSetup(
+                setup_type=SetupTypes.STRATEGY,
+                name=ctx.strategy_name,
+                generator=ctx.strategy,
+                tracker=None,
+                instruments=instruments,
+                # ctx.exchanges are already canonical (the runner canonicalizes at the config boundary)
+                exchanges=list(ctx.exchanges),
+                capital=ctx.account.get_total_capital(),
+                base_currency=ctx.account.get_base_currency(),
+                commissions=None,  # TODO: get commissions from somewhere
+                enable_funding=enable_funding,
+            ),
+            data_config=recognize_simulation_data_config(
+                data_storage=_warmup_data_storage,
+                custom_data=_warmup_custom_data,
+                aux_data_storage=_warmup_aux_storage,
+                prefetch_config=prefetch_config,
+                trading_sessions_time=trading_sessions_time,
+            ),
+            start=to_timestamp(warmup_start_time),
+            stop=to_timestamp(current_time),
+            emitter=ctx.emitter,
+            notifier=ctx.notifier,
+            strategy_state=ctx._strategy_state,
+            initializer=ctx.initializer,
+            warmup_mode=True,
+        )
+        _initial_capital = ctx.account.get_total_capital()
+
+        ctx._strategy_state.is_warmup_in_progress = True
+        QubxLogConfig.bind_phase("warmup")
+        QubxLogConfig.bind_time_provider(warmup_runner.ctx)
+
         warmup_runner.run(catch_keyboard_interrupt=False, close_data_readers=True)
     finally:
         # Restore the live time provider
@@ -1092,6 +1108,8 @@ def _run_warmup(
             ctx.emitter.set_context(ctx)
         ctx._strategy_state.is_warmup_in_progress = False
         ctx.initializer.simulation = False
+        # unconditional: a warmup-force-assigned sim manager must never linger past warmup
+        ctx.initializer.set_transfer_manager(_live_transfer_manager)
         QubxLogConfig.bind_phase("live")
 
     logger.info("<yellow>Warmup completed</yellow>")

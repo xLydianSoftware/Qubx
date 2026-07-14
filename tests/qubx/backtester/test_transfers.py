@@ -4,11 +4,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.transfers import SimulationTransferManager
-from qubx.backtester.utils import collect_transfers_log
+from qubx.backtester.utils import (
+    SetupTypes,
+    SimulationSetup,
+    collect_transfers_log,
+    find_instruments_and_exchanges,
+    recognize_simulation_data_config,
+)
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, ITimeProvider
-from qubx.core.interfaces import ITransferManager
+from qubx.core.initializer import BasicStrategyInitializer
+from qubx.core.interfaces import IStrategy, IStrategyInitializer, ITransferManager
+from qubx.data.registry import StorageRegistry
 
 
 class _T(ITimeProvider):
@@ -125,3 +134,71 @@ def test_collect_transfers_log_empty_for_base_manager():
     log = collect_transfers_log(ITransferManager())
     assert isinstance(log, pd.DataFrame)
     assert len(log) == 0
+
+
+class _ProbeStrategy(IStrategy):
+    def on_init(self, initializer: IStrategyInitializer):
+        initializer.set_base_subscription("ohlc(1h)")
+
+
+def _make_runner(
+    warmup_mode: bool = False,
+    initializer: BasicStrategyInitializer | None = None,
+    strategy: IStrategy | None = None,
+) -> SimulationRunner:
+    instruments, exchanges = find_instruments_and_exchanges(
+        ["BINANCE.UM:SWAP:BTCUSDT", "HYPERLIQUID:SWAP:BTCUSDC"], None
+    )
+    return SimulationRunner(
+        setup=SimulationSetup(
+            setup_type=SetupTypes.STRATEGY,
+            name="transfers-probe",
+            generator=strategy if strategy is not None else _ProbeStrategy(),
+            tracker=None,
+            instruments=instruments,
+            exchanges=exchanges,
+            capital=10_000.0,
+            base_currency="USDT",
+        ),
+        data_config=recognize_simulation_data_config(StorageRegistry.get("csv::tests/data/storages/multi/"), None),
+        start="2026-01-01 00:00",
+        stop="2026-01-01 05:00",
+        initializer=initializer,
+        warmup_mode=warmup_mode,
+    )
+
+
+def test_simulation_context_has_transfer_manager():
+    # regression: the pickup is StrategyContext.__post_init__, so the auto-assign must
+    # precede ctx construction — otherwise plain sims run with _transfer_manager = None
+    runner = _make_runner()
+
+    assert isinstance(runner.ctx._transfer_manager, SimulationTransferManager)
+
+    runner.ctx.transfer_funds("BINANCE.UM", "HYPERLIQUID", "USDT", 1000.0)
+    assert runner.account_manager.get_balance("USDT", exchange="BINANCE.UM").total == 4000.0
+    assert runner.account_manager.get_balance("USDT", exchange="HYPERLIQUID").total == 6000.0
+
+
+def test_warmup_mode_force_assigns_sim_manager():
+    stub = ITransferManager()
+    initializer = BasicStrategyInitializer(simulation=True)
+    initializer.set_transfer_manager(stub)
+
+    runner = _make_runner(warmup_mode=True, initializer=initializer)
+
+    assert isinstance(runner.ctx._transfer_manager, SimulationTransferManager)
+    assert runner.ctx._transfer_manager is not stub
+
+
+def test_on_init_injection_wins_in_plain_sim():
+    stub = ITransferManager()
+
+    class _InjectingStrategy(IStrategy):
+        def on_init(self, initializer: IStrategyInitializer):
+            initializer.set_base_subscription("ohlc(1h)")
+            initializer.set_transfer_manager(stub)
+
+    runner = _make_runner(strategy=_InjectingStrategy())
+
+    assert runner.ctx._transfer_manager is stub

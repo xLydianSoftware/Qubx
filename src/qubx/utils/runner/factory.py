@@ -7,10 +7,23 @@ import os
 from typing import Any
 
 from qubx import logger
-from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
+from qubx.backtester.transfers import SimulationTransferManager
+from qubx.core.account_manager import AccountManager
+from qubx.core.basics import ITimeProvider
+from qubx.core.initializer import BasicStrategyInitializer
+from qubx.core.interfaces import (
+    IAccountViewer,
+    IMetricEmitter,
+    IStatePersistence,
+    IStrategyNotifier,
+    ITradeDataExport,
+    ITransferManager,
+)
 from qubx.data.storage import IStorage
 from qubx.data.storages.multi import MultiStorage
 from qubx.emitters.composite import CompositeMetricEmitter
+from qubx.transfers.factory import create_transfer_manager as create_live_transfer_manager
+from qubx.transfers.factory import resolve_transfer_manager_class
 from qubx.utils.misc import class_import
 from qubx.utils.runner.configs import (
     EmissionConfig,
@@ -18,6 +31,7 @@ from qubx.utils.runner.configs import (
     NotifierConfig,
     StatePersistenceConfig,
     StorageConfig,
+    TransfersConfig,
     TypedStorageConfig,
 )
 
@@ -483,3 +497,28 @@ def create_state_persistence(
         raise
 
 
+def create_transfer_manager(
+    cfg: TransfersConfig,
+    paper: bool,
+    read_only: bool,
+    account: AccountManager,
+    time_provider: ITimeProvider,
+    initializer: BasicStrategyInitializer,
+) -> ITransferManager | None:
+    """Build the transfer manager for live runs; None disables transfers.
+
+    Unknown type -> ValueError (checked first, so a typo'd type also fails paper/read_only startups);
+    read_only -> None (wins over paper); paper -> SimulationTransferManager; live -> registry manager
+    from qubx.transfers built from cfg.parameters (a bad parameter name raises TypeError at startup).
+    """
+    cls = resolve_transfer_manager_class(cfg.type)
+    if read_only:
+        logger.warning("[TransferManager] :: read_only mode - transfers disabled")
+        return None
+    if paper:
+        logger.info("[TransferManager] :: paper mode - using SimulationTransferManager")
+        return SimulationTransferManager(account, time_provider)
+    logger.info(f"[TransferManager] :: live transfers via {cls.__name__}")
+    return create_live_transfer_manager(
+        cfg.type, dict(cfg.parameters), is_simulation=lambda: bool(initializer.simulation)
+    )

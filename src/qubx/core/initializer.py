@@ -241,7 +241,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
         """
         return self.delisting_check_days
 
-    def set_transfer_manager(self, manager: ITransferManager) -> None:
+    def set_transfer_manager(self, manager: ITransferManager | None) -> None:
         """
         Set the transfer manager for handling fund transfers between exchanges.
 
@@ -249,7 +249,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
         In simulation mode, a transfer manager is automatically assigned.
 
         Args:
-            manager: Transfer manager implementation
+            manager: Transfer manager implementation, or None to clear it
         """
         self._transfer_manager = manager
 
