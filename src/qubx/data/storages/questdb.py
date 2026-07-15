@@ -342,6 +342,15 @@ class xLTableMetaInfo:
             binance.umswap.candles_1m -> BINANCE.UM, SWAP, OHLC[1min]
         """
         ss = table_name.split(".")
+
+        # - a data-provider namespace prepends ONE segment to the canonical
+        #   `<exchange>.<market>.<dtype>_<tf>`, making it 4. Peel it off, decode the remaining 3 exactly
+        #   as a venue table, then prepend the provider to the exchange so its tables stay separate
+        #   (e.g. xdata.binance.umswap.basis_1m -> XDATA.BINANCE.UM, SWAP, basis[1m]).
+        provider = ""
+        if len(ss) == 4:
+            provider, ss = ss[0].upper() + ".", ss[1:]
+
         if len(ss) > 1:
             exch, mkt, data_type = ss[0], ss[1], (ss[2] if len(ss) > 2 else ss[1])
             exch, mkt = xLTableMetaInfo._TABLES_FIX.get((exch.lower(), mkt.lower()), (exch.lower(), mkt.lower()))
@@ -353,7 +362,7 @@ class xLTableMetaInfo:
                 r_dt, _ = DataType.from_str(f_data_type)
                 r_dt = DataType.RECORD if r_dt == DataType.NONE else r_dt
                 _alias = data_type if r_dt == DataType.RECORD else None
-                return xLTableMetaInfo(exch.upper(), mkt.upper(), r_dt, tframe, table_name, _alias)
+                return xLTableMetaInfo(provider + exch.upper(), mkt.upper(), r_dt, tframe, table_name, _alias)
 
         return None
 
@@ -438,6 +447,7 @@ class QuestDBReader(IReader):
         self.symbol_column_name = symbol_column_name
         self.pgc = pgc
         self._external_sql_builders = {}
+        self._columns_cache: dict[str, set[str]] = {}
 
         # Store references for refresh
         self._manifest_manager = manifest_manager
@@ -518,10 +528,20 @@ class QuestDBReader(IReader):
                     if x.data_timeframe:
                         # - prefer the decoded alias (e.g. 'structure'/'flow') over the RECORD fallback name, so
                         # - custom record-like tables surface as 'structure(1m)' instead of all colliding on 'record(1m)'
-                        _symbs_lookup[symb][dt := f"{x.alias_for_record_type or x.dtype}({x.data_timeframe})"] = x
+                        _name = x.alias_for_record_type or x.dtype
+                        _symbs_lookup[symb][dt := f"{_name}({x.data_timeframe})"] = x
+                        dtypes.append(dt)
+                        # - also resolve the canonical qubx spelling of the bar, so read('basis(1Min)') works
+                        # - like OHLC and not only the exact table suffix read('basis(1m)')
+                        try:
+                            _canon = f"{_name}({timedelta_to_str(to_timedelta(x.data_timeframe)).lower()})"
+                            if _canon != dt:
+                                dtypes.append(_canon)
+                        except Exception:
+                            pass
                     else:
                         _symbs_lookup[symb][dt := (x.alias_for_record_type if x.alias_for_record_type else x.dtype)] = x
-                    dtypes.append(dt)
+                        dtypes.append(dt)
 
             # - for every dtype store symbols and reference to table meta info
             for d in dtypes:
@@ -678,26 +698,39 @@ class QuestDBReader(IReader):
     def add_external_builder(self, dtype: str, fn: Callable[[set[str], list[str], str], str]):
         self._external_sql_builders[dtype] = fn
 
+    def _table_columns(self, table_name: str) -> set[str]:
+        """
+        Lower-cased column names of a table, cached per reader.
+
+        Lets the OHLC aggregation skip optional columns a table lacks: XDATA-style ohlc tables carry
+        only open/high/low/close/volume, while the venue candles tables also have quote_volume /
+        count / taker_buy_volume / taker_buy_quote_volume.
+        """
+        if table_name not in self._columns_cache:
+            cols, _ = self.pgc.execute(f'SELECT * FROM "{table_name}" LIMIT 0')
+            self._columns_cache[table_name] = {str(c).lower() for c in cols}
+        return self._columns_cache[table_name]
+
     def _prepare_sql_for_dtype(
         self, dtype: str, symbols: set[str], xtable: xLTableMetaInfo, conditions: list[str], resample: str
     ) -> str:
         match dtype:
             case DataType.OHLC:
-                r = """
-                    select
-                        timestamp,
-                        upper(symbol)               as symbol,
-                        first(open)                 as open,
-                        max(high)                   as high,
-                        min(low)                    as low,
-                        last(close)                 as close,
-                        sum(volume)                 as volume,
-                        sum(quote_volume)           as quote_volume,
-                        sum(count)                  as count,
-                        sum(taker_buy_volume)       as taker_buy_volume,
-                        sum(taker_buy_quote_volume) as taker_buy_quote_volume
-                    from "{table}" {where} {resample};
-                """
+                # - aggregate only the optional columns this table actually has (see _table_columns)
+                _cols = self._table_columns(xtable.table_name)
+                _sel = [
+                    "timestamp",
+                    "upper(symbol)               as symbol",
+                    "first(open)                 as open",
+                    "max(high)                   as high",
+                    "min(low)                    as low",
+                    "last(close)                 as close",
+                    "sum(volume)                 as volume",
+                ]
+                for _c in ("quote_volume", "count", "taker_buy_volume", "taker_buy_quote_volume"):
+                    if _c in _cols:
+                        _sel.append(f"sum({_c}) as {_c}")
+                r = "select " + ", ".join(_sel) + ' from "{table}" {where} {resample};'
 
                 # - select symbols
                 conditions.append(self._name_in_set("symbol", symbols))
