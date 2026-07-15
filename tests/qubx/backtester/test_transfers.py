@@ -10,11 +10,10 @@ from qubx.backtester.utils import (
     SetupTypes,
     SimulationSetup,
     collect_transfers_log,
-    find_instruments_and_exchanges,
     recognize_simulation_data_config,
 )
 from qubx.core.account_manager import SimulatedAccountManager
-from qubx.core.basics import Balance, ITimeProvider
+from qubx.core.basics import Balance, Instrument, ITimeProvider, MarketType
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import IStrategy, IStrategyInitializer, ITransferManager
 from qubx.data.registry import StorageRegistry
@@ -141,14 +140,30 @@ class _ProbeStrategy(IStrategy):
         initializer.set_base_subscription("ohlc(1h)")
 
 
+def _instr(exchange: str, symbol: str, quote: str) -> Instrument:
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SWAP,
+        exchange=exchange,
+        base="BTC",
+        quote=quote,
+        settle=quote,
+        exchange_symbol=symbol,
+        tick_size=0.1,
+        lot_size=0.001,
+        min_size=0.001,
+    )
+
+
 def _make_runner(
     warmup_mode: bool = False,
     initializer: BasicStrategyInitializer | None = None,
     strategy: IStrategy | None = None,
 ) -> SimulationRunner:
-    instruments, exchanges = find_instruments_and_exchanges(
-        ["BINANCE.UM:SWAP:BTCUSDT", "HYPERLIQUID:SWAP:BTCUSDC"], None
-    )
+    # instruments built directly: lookup-based resolution silently drops exchanges absent
+    # from the environment's instrument DB (CI), losing the HYPERLIQUID account state
+    instruments = [_instr("BINANCE.UM", "BTCUSDT", "USDT"), _instr("HYPERLIQUID", "BTCUSDC", "USDC")]
+    exchanges = ["BINANCE.UM", "HYPERLIQUID"]
     return SimulationRunner(
         setup=SimulationSetup(
             setup_type=SetupTypes.STRATEGY,
