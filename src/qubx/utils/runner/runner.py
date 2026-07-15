@@ -15,6 +15,7 @@ from qubx.backtester.connector import SimulatedConnector
 from qubx.backtester.optimization import variate
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.simulator import simulate
+from qubx.backtester.transfers import SimulationTransferManager
 from qubx.backtester.utils import (
     SetupTypes,
     SimulationConfigError,
@@ -77,7 +78,6 @@ from qubx.utils.runner.factory import (
     create_metric_emitters,
     create_notifiers,
     create_state_persistence,
-    create_transfer_manager,
 )
 from qubx.utils.s3 import S3Client, is_account_uri, is_cloud_path
 from qubx.utils.throttler import InstrumentThrottler
@@ -629,18 +629,9 @@ def create_strategy_context(
 
     _initializer = BasicStrategyInitializer(simulation=next(iter(_exchange_to_data_provider.values())).is_simulation)
 
-    # must be set before StrategyContext construction: __post_init__ is the only pickup
-    if config.live.transfers is not None and _initializer.get_transfer_manager() is None:
-        _transfer_manager = create_transfer_manager(
-            config.live.transfers,
-            paper=paper,
-            read_only=config.live.read_only,
-            account=_am,
-            time_provider=_time,
-            initializer=_initializer,
-        )
-        if _transfer_manager is not None:
-            _initializer.set_transfer_manager(_transfer_manager)
+    # paper twins rehearse transfers against simulated balances; a strategy's on_init may override (its responsibility)
+    if paper:
+        _initializer.set_transfer_manager(SimulationTransferManager(_am, _time))
 
     # Create exporters if configured
     if no_exporters:

@@ -201,14 +201,6 @@ class AccountManagerConfig(StrictBaseModel):
     terminal_order_history_size: int = 10_000
 
 
-class TransfersConfig(StrictBaseModel):
-    """Transfer manager; ``parameters`` are implementation-specific constructor kwargs
-    (see TRANSFER_MANAGER_REGISTRY in qubx.transfers.factory for available types)."""
-
-    type: str
-    parameters: dict = Field(default_factory=dict)
-
-
 class LiveConfig(StrictBaseModel):
     read_only: bool = False
     base_currency: str | None = None
@@ -225,7 +217,6 @@ class LiveConfig(StrictBaseModel):
     state: StatePersistenceConfig | None = None
     rate_limiting: RateLimitingConfig | None = None
     account_manager: AccountManagerConfig = Field(default_factory=AccountManagerConfig)
-    transfers: TransfersConfig | None = None
 
 
 class SimulationConfig(StrictBaseModel):
