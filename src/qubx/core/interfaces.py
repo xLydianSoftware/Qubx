@@ -475,7 +475,10 @@ class IAccountViewer:
         venues without normalising first:
           - Binance: 0..4, **higher = more likely to be auto-deleveraged** (read off v3
             positionRisk's ``adl``; the obsolete v2 endpoint spelled it ``adlQuantile``).
-          - Hyperliquid: has no ADL queue at all (it liquidates via the HLP vault) -> always None.
+          - Hyperliquid: runs ADL but publishes no rank -> always None. Its docs give a sorting
+            index, ``(mark_price / entry_price) * (notional_position / account_value)``, but ranking
+            by it needs every other account's figures, which no endpoint exposes. Do not infer
+            "no ADL risk" here.
 
         None means "the venue did not report a rank", NOT "no ADL risk".
 

@@ -698,7 +698,11 @@ class CcxtConnector(ChannelEmitter):
         row = self._fetch_position_row(instrument)
         if row is None:
             return None
-        adl = info_float(row.get("info") or {}, "adlQuantile")
+        raw = row.get("info") or {}
+        # - v3 positionRisk renamed the field to `adl`; v2 (params.useV2) still spells it `adlQuantile`.
+        adl = info_float(raw, "adl")
+        if adl is None:
+            adl = info_float(raw, "adlQuantile")
         return int(adl) if adl is not None else None
 
     def _fetch_position_row(self, instrument: Instrument) -> dict[str, Any] | None:
