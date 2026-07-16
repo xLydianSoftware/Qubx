@@ -269,9 +269,14 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
         if info.get("markPrice") is not None:
             pos.update_market_price(_pts, info["markPrice"], 1)
 
-    # Use exchange-provided maintenance margin if available (more accurate than calculated)
+    # Use exchange-provided margins when reported — only the venue knows the configured leverage
+    # tier. The internal fallback cannot: with no instrument.initial_margin metadata (0.0 on
+    # BINANCE.UM) it yields 0.0, and with metadata it applies a static ratio that ignores the tier.
     if info.get("maintenanceMargin") is not None:
         pos.set_external_maint_margin(float(info["maintenanceMargin"]))
+
+    if info.get("initialMargin") is not None:
+        pos.set_external_initial_margin(float(info["initialMargin"]))
 
     # Venue-reported per-instrument settings (only overwrite when the venue reports them,
     # so a later snapshot that omits a field preserves the last-known value):
