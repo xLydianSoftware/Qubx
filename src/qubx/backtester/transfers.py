@@ -29,11 +29,12 @@ class SimulationTransferManager(ITransferManager):
                 f"{from_balance.free:.8f} {currency} available, {amount:.8f} requested"
             )
 
-        # Instant transfer: debit the source and credit the destination. adjust_balance
-        # mutates the held Balance in place (holders keep a live reference) and creates
-        # the destination Balance if missing.
+        # adjust_balance mutates the held Balance in place (holders keep live references) and creates missing ones
         self._account.adjust_balance(from_exchange, currency, -amount)
-        self._account.adjust_balance(to_exchange, currency, amount)
+        # both-stables transfers credit the destination's base currency — mirrors the live service's route asset
+        to_base = self._account.get_base_currency(to_exchange)
+        credit_currency = to_base if {currency, to_base} <= {"USDT", "USDC"} else currency
+        self._account.adjust_balance(to_exchange, credit_currency, amount)
 
         transaction_id = f"sim_{uuid.uuid4().hex[:12]}"
         self._transfers[transaction_id] = {
@@ -42,10 +43,14 @@ class SimulationTransferManager(ITransferManager):
             "from_exchange": from_exchange,
             "to_exchange": to_exchange,
             "currency": currency,
+            "credited_currency": credit_currency,
             "amount": amount,
-            "status": "completed",  # transfers are instant in simulation
+            "status": "completed",
         }
-        logger.debug(f"[SimTransfer] {amount:.8f} {currency} {from_exchange} -> {to_exchange} ({transaction_id})")
+        logger.debug(
+            f"[SimTransfer] {amount:.8f} {currency} {from_exchange} -> {to_exchange} "
+            f"(credited as {credit_currency}, {transaction_id})"
+        )
         return transaction_id
 
     def get_transfer_status(self, transaction_id: str) -> dict[str, Any]:
