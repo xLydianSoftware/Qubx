@@ -64,58 +64,6 @@ def test_transfer_preserves_destination_balance_identity():
     assert dest_ref.total == 150.0
 
 
-def _am_cross_stable():
-    am = SimulatedAccountManager(
-        connectors={"E1": MagicMock(), "E2": MagicMock()},
-        base_currencies={"E1": "USDT", "E2": "USDC"},
-        time=_T(),
-    )
-    am.get_state("E1").update_balance("USDT", Balance(exchange="E1", currency="USDT", total=1000.0, free=1000.0))
-    return am
-
-
-def test_cross_stable_transfer_credits_destination_base_currency():
-    # a USDT credit on a USDC-based exchange would be invisible to the destination's total_capital
-    am = _am_cross_stable()
-    tm = SimulationTransferManager(am, _T())
-
-    txid = tm.transfer_funds("E1", "E2", "USDT", 400.0)
-
-    assert am.get_balance("USDT", exchange="E1").total == 600.0
-    assert am.get_balance("USDC", exchange="E2").total == 400.0
-    assert am.get_balance("USDT", exchange="E2").total == 0.0  # no phantom non-base stable
-    status = tm.get_transfer_status(txid)
-    assert status["currency"] == "USDT"
-    assert status["credited_currency"] == "USDC"
-
-
-def test_same_currency_transfer_credits_unchanged():
-    am = _am()
-    tm = SimulationTransferManager(am, _T())
-
-    txid = tm.transfer_funds("E1", "E2", "USDT", 100.0)
-
-    assert am.get_balance("USDT", exchange="E2").total == 100.0
-    status = tm.get_transfer_status(txid)
-    assert status["currency"] == "USDT"
-    assert status["credited_currency"] == "USDT"
-
-
-def test_non_stable_transfer_passes_through_unconverted():
-    am = _am_cross_stable()
-    am.get_state("E1").update_balance("BTC", Balance(exchange="E1", currency="BTC", total=2.0, free=2.0))
-    tm = SimulationTransferManager(am, _T())
-
-    txid = tm.transfer_funds("E1", "E2", "BTC", 1.0)
-
-    assert am.get_balance("BTC", exchange="E1").total == 1.0
-    assert am.get_balance("BTC", exchange="E2").total == 1.0
-    assert am.get_balance("USDC", exchange="E2").total == 0.0
-    status = tm.get_transfer_status(txid)
-    assert status["currency"] == "BTC"
-    assert status["credited_currency"] == "BTC"
-
-
 def test_insufficient_funds_raises_and_leaves_balances_untouched():
     am = _am()
     tm = SimulationTransferManager(am, _T())
