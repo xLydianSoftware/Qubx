@@ -469,16 +469,21 @@ class IAccountViewer:
         ...
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
-        """ADL queue index for a position, or None if not reported by the exchange.
+        """Venue-reported ADL queue rank for a position, or None when the venue reports none.
 
-        Lower values = higher risk of auto-deleveraging. Hyperliquid reports this
-        per-position via ``webData2``; CCXT and Lighter return None.
+        The scale AND its direction are venue-specific — never compare or threshold across
+        venues without normalising first:
+          - Binance: 0..4, **higher = more likely to be auto-deleveraged** (read off v3
+            positionRisk's ``adl``; the obsolete v2 endpoint spelled it ``adlQuantile``).
+          - Hyperliquid: has no ADL queue at all (it liquidates via the HLP vault) -> always None.
+
+        None means "the venue did not report a rank", NOT "no ADL risk".
 
         Args:
             instrument: The instrument to check
 
         Returns:
-            int | None: ADL queue index (typically 0-3), or None if unknown.
+            int | None: venue-native ADL rank, or None if the venue publishes none.
         """
         return self.get_position(instrument).adl_level
 

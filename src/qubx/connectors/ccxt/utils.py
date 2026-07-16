@@ -281,7 +281,10 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
     # Venue-reported per-instrument settings (only overwrite when the venue reports them,
     # so a later snapshot that omits a field preserves the last-known value):
     #   leverage/marginMode ride the unified position dict; the notional cap and adl are
-    #   venue-specific and read off the raw info (Binance ``maxNotionalValue``/``adlQuantile``).
+    #   venue-specific and read off the raw info.
+    # NOTE: ccxt's fetch_positions defaults to Binance's v3 positionRisk, which renamed the ADL
+    # field to ``adl`` and dropped ``leverage``/``maxNotionalValue`` entirely (they only exist on
+    # the obsolete v2 endpoint, params.useV2). Read both spellings so either payload works.
     raw = info.get("info") or {}
     lev = info_float(info, "leverage")
     if lev is not None:
@@ -292,7 +295,9 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
     max_ntl = info_float(raw, "maxNotionalValue")
     if max_ntl is not None:
         pos.max_notional = max_ntl
-    adl = info_float(raw, "adlQuantile")
+    adl = info_float(raw, "adl")  # v3
+    if adl is None:
+        adl = info_float(raw, "adlQuantile")  # v2 (useV2=True)
     if adl is not None:
         pos.adl_level = int(adl)
 

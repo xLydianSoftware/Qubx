@@ -1,3 +1,4 @@
+import copy
 import gzip
 import json
 
@@ -113,3 +114,40 @@ class TestCcxtOrderbookRelatedStuff:
         assert pos is not None
         assert pos._initial_margin_external is False
         assert pos._maint_margin_external is False
+
+    def test_ccxt_position_adl_from_v3_payload(self):
+        """fetch_positions defaults to Binance v3 positionRisk, where the ADL field is named `adl`.
+
+        Confirmed against a live account 2026-07-16: raw payload had `adl: 3` and no `adlQuantile`.
+        Binance scale is 0..4, higher = closer to the front of the ADL queue.
+        """
+        info = copy.deepcopy(POSITIONS_BINANCE_UM[0])
+        info["info"].pop("leverage", None)  # v3 dropped these two
+        info["info"].pop("maxNotionalValue", None)
+        info["info"]["adl"] = "3"
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.adl_level == 3
+
+    def test_ccxt_position_adl_from_v2_payload(self):
+        """v2 positionRisk (params.useV2) spells the same value `adlQuantile`."""
+        info = copy.deepcopy(POSITIONS_BINANCE_UM[0])
+        info["info"]["adlQuantile"] = "2"
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.adl_level == 2
+
+    def test_ccxt_position_adl_absent_stays_none(self):
+        """No ADL field -> None. None means 'venue reported no rank', not 'no ADL risk'."""
+        info = copy.deepcopy(POSITIONS_BINANCE_UM[0])
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.adl_level is None
+
+    def test_ccxt_position_adl_zero_is_kept(self):
+        """0 is a real Binance rank (safest bucket) — it must not be dropped as falsy."""
+        info = copy.deepcopy(POSITIONS_BINANCE_UM[0])
+        info["info"]["adl"] = "0"
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.adl_level == 0
