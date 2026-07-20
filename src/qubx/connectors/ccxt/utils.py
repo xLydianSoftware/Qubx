@@ -315,6 +315,37 @@ def ccxt_convert_positions(
     return positions
 
 
+def ccxt_extract_leverage_settings(rows: list[dict] | None) -> dict[str, tuple[float | None, float | None]]:
+    """Map ccxt symbol -> (leverage, max_notional) from ``fetch_leverages`` rows.
+
+    Binance's v3 positionRisk — what ``fetch_positions`` uses — carries neither field; both are
+    v2-only, so positions come back with ``leverage``/``max_notional`` None.
+    ``fetch_leverages`` hits ``GET /fapi/v1/symbolConfig``, which carries both per symbol with
+    no open position required, and leaves the v3 payload alone. That last part matters:
+    ``params.useV2`` would bring the fields back but makes ccxt recompute
+    ``initialMargin = notional / leverage`` instead of reading the venue's value — trading a
+    cosmetic gap for a regression in a field that IS consumed (available_margin, margin_ratio).
+
+    ``maxNotionalValue`` survives only in the raw row: ccxt's ``parse_leverage`` drops it.
+    """
+    out: dict[str, tuple[float | None, float | None]] = {}
+    for row in rows or []:
+        symbol = row.get("symbol")
+        if not symbol:
+            continue
+        raw = row.get("info") or {}
+        leverage = row.get("longLeverage")
+        if leverage is None:
+            leverage = row.get("shortLeverage")
+        if leverage is None:
+            leverage = info_float(raw, "leverage")
+        out[symbol] = (
+            float(leverage) if leverage is not None else None,
+            info_float(raw, "maxNotionalValue"),
+        )
+    return out
+
+
 def ccxt_convert_orderbook(
     ob: dict,
     instr: Instrument,
