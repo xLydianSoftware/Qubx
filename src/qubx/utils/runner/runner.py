@@ -709,7 +709,10 @@ def _setup_strategy_logging(
         format=file_formatter,
         rotation="100 MB",
         colorize=False,
-        level=QubxLogConfig.get_log_level(),
+        # - same gate as the stdout sink: a bare level= drops every QUBX_DEBUG_AREAS line,
+        #   so area DEBUG reached the console but never the persisted run log.
+        level=QubxLogConfig.sink_level(),
+        filter=QubxLogConfig.area_filter(),
     )
 
     _log_writer_name = log_config.logger
