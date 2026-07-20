@@ -259,6 +259,33 @@ class QubxLogConfig:
         return {a.strip() for a in (raw or "").split(",") if a.strip()}
 
     @staticmethod
+    def area_filter(level: str | None = None):
+        """Filter admitting base-level-and-above, plus DEBUG/TRACE from enabled areas.
+
+        Exposed because a sink added OUTSIDE ``setup_logger`` — the per-run strategy file in
+        ``utils/runner/runner.py`` — needs the same gate. With only ``level=`` such a sink
+        silently drops every area-enabled DEBUG line, so `QUBX_DEBUG_AREAS` appears to do
+        nothing in the persisted log while working on stdout. Pair with ``sink_level``.
+        """
+        level = level or QubxLogConfig.get_log_level()
+        areas = QubxLogConfig.get_debug_areas()
+        base_no = logger.level(level).no
+
+        def _filter(record):
+            if record["level"].no >= base_no:
+                return True
+            return _area_matches(record["extra"].get("area"), areas)
+
+        return _filter
+
+    @staticmethod
+    def sink_level(level: str | None = None) -> str:
+        """Level a sink must be opened at for ``area_filter`` to be able to admit anything:
+        DEBUG when any area is enabled (the filter then decides), else the base level."""
+        level = level or QubxLogConfig.get_log_level()
+        return "DEBUG" if QubxLogConfig.get_debug_areas() else level
+
+    @staticmethod
     def setup_logger(level: str | None = None, colorize: bool = True):
         global _DEBUG_AREAS
         logger.remove()
@@ -266,17 +293,11 @@ class QubxLogConfig:
 
         areas = QubxLogConfig.get_debug_areas()
         _DEBUG_AREAS = frozenset(areas)
-        base_no = logger.level(level).no
 
-        def _area_filter(record):
-            # base level and above always pass; sub-base (DEBUG/TRACE) only for enabled areas
-            if record["level"].no >= base_no:
-                return True
-            return _area_matches(record["extra"].get("area"), areas)
-
+        _area_filter = QubxLogConfig.area_filter(level)
         # admit sub-base records to the sink only when some area is enabled; otherwise the
         # sink stays at the base level and DEBUG calls short-circuit before formatting.
-        sink_level = "DEBUG" if areas else level
+        sink_level = QubxLogConfig.sink_level(level)
 
         log_format = os.getenv("QUBX_LOG_FORMAT", "text").lower()
         if log_format == "json":
