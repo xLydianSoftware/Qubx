@@ -8,6 +8,7 @@ psycopg equivalent of mongomock.
 from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from qubx.core.basics import (
@@ -166,8 +167,9 @@ class TestPostgresPositionRestorer:
         # Second call: get positions
         cursor.fetchone.return_value = ("run-123",)
         cursor.fetchall.return_value = [
-            # symbol, exchange, market_type, quantity, avg_price, r_pnl, current_price, funding, commissions, ts
-            ("BTCUSDT", "BINANCE.UM", "SWAP", 1.5, 90000.0, 100.0, 91000.0, 5.0, 10.0, ts),
+            # symbol, exchange, market_type, quantity, avg_price, r_pnl, current_price, funding, commissions,
+            #   episode_start_time, r_pnl_at_open, commissions_at_open, funding_at_open, ts  (legacy: episode NULL)
+            ("BTCUSDT", "BINANCE.UM", "SWAP", 1.5, 90000.0, 100.0, 91000.0, 5.0, 10.0, None, None, None, None, ts),
         ]
 
         restorer = PostgresPositionRestorer(strategy_name=self._strategy_name, connection=conn)
@@ -182,7 +184,7 @@ class TestPostgresPositionRestorer:
         conn, cursor = _make_mock_connection()
         cursor.fetchall.return_value = [
             ("BTCUSDT", "BINANCE.UM", "SWAP", 1.0, 100.0, 0.0, 101.0, 0.0, 0.0,
-             datetime(2026, 7, 10, tzinfo=timezone.utc)),
+             None, None, None, None, datetime(2026, 7, 10, tzinfo=timezone.utc)),
         ]
         restorer = PostgresPositionRestorer(
             strategy_name="test_strategy", connection=conn, run_id="run-B"
@@ -192,6 +194,41 @@ class TestPostgresPositionRestorer:
         assert not cursor.fetchone.called  # injected → no latest-run lookup
         params = cursor.execute.call_args[0][1]
         assert "run-B" in params
+
+    def test_episode_fields_roundtrip(self, mock_lookup):
+        # episode baselines present in the row -> round-trip verbatim
+        conn, cursor = _make_mock_connection()
+        ts = datetime.now(timezone.utc) - timedelta(hours=1)
+        est = datetime(2025, 1, 1, tzinfo=timezone.utc)
+        cursor.fetchone.return_value = ("run-123",)
+        cursor.fetchall.return_value = [
+            # ..., episode_start_time, r_pnl_at_open, commissions_at_open, funding_at_open, ts
+            ("BTCUSDT", "BINANCE.UM", "SWAP", 1.5, 90000.0, 100.0, 91000.0, -5.0, 3.0,
+             est, 90.0, 2.0, -4.0, ts),
+        ]
+        restorer = PostgresPositionRestorer(strategy_name=self._strategy_name, connection=conn)
+        btc = next(p for i, p in restorer.restore_positions().items() if i.symbol == "BTCUSDT")
+        assert btc.episode_start_time == pd.Timestamp(est).asm8
+        assert btc.r_pnl_at_open == 90.0
+        assert btc.commissions_at_open == 2.0
+        assert btc.cumulative_funding_at_open == -4.0
+
+    def test_episode_legacy_row_stamps_at_restore(self, mock_lookup):
+        # legacy row (episode columns NULL) -> episode-at-restore: baselines = restored accumulators,
+        # episode_start_time = the log-row timestamp
+        conn, cursor = _make_mock_connection()
+        ts = datetime(2025, 6, 1, 12, 0, tzinfo=timezone.utc)
+        cursor.fetchone.return_value = ("run-123",)
+        cursor.fetchall.return_value = [
+            ("BTCUSDT", "BINANCE.UM", "SWAP", 1.5, 90000.0, 100.0, 91000.0, -5.0, 3.0,
+             None, None, None, None, ts),
+        ]
+        restorer = PostgresPositionRestorer(strategy_name=self._strategy_name, connection=conn)
+        btc = next(p for i, p in restorer.restore_positions().items() if i.symbol == "BTCUSDT")
+        assert btc.episode_start_time == pd.Timestamp(ts).asm8
+        assert btc.r_pnl_at_open == 100.0
+        assert btc.commissions_at_open == 3.0
+        assert btc.cumulative_funding_at_open == -5.0
 
 
 # --- Signal restorer tests ---
@@ -420,8 +457,11 @@ class TestPostgresStateRestorer:
                 # Table existence check
                 return [("qubx_logs_positions",), ("qubx_logs_signals",), ("qubx_logs_balance",)]
             elif n == 2:
-                # Position restorer: fetch positions
-                return [("BTCUSDT", "BINANCE.UM", "SWAP", 1.0, 90000.0, 50.0, 91000.0, 5.0, 10.0, ts)]
+                # Position restorer: fetch positions (14 cols; legacy row -> episode fields NULL)
+                return [
+                    ("BTCUSDT", "BINANCE.UM", "SWAP", 1.0, 90000.0, 50.0, 91000.0, 5.0, 10.0,
+                     None, None, None, None, ts)
+                ]
             elif n == 3:
                 # Signal restorer: fetch signals (returns dicts via _load_data)
                 return []

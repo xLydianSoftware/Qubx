@@ -20,6 +20,21 @@ from qubx.utils.time import to_timedelta
 dt_64 = np.datetime64
 td_64 = np.timedelta64
 
+
+def _as_dt64_or_nat(value: Any) -> "dt_64":
+    """Normalize an arbitrary timestamp-like value (str / int / datetime / datetime64 / None) to a
+    nanosecond ``datetime64``. ``None`` and unparseable / NaT-like values become ``NaT``."""
+    if value is None:
+        return np.datetime64("NaT")
+    if isinstance(value, np.datetime64):
+        return value if not np.isnat(value) else np.datetime64("NaT")
+    try:
+        ts = pd.Timestamp(value)
+    except (ValueError, TypeError):
+        return np.datetime64("NaT")
+    return np.datetime64("NaT") if pd.isna(ts) else ts.asm8
+
+
 OPTION_FILL_AT_SIGNAL_PRICE = "fill_at_signal_price"
 OPTION_SIGNAL_PRICE = "signal_price"
 OPTION_SKIP_PRICE_CROSS_CONTROL = "skip_price_cross_control"
@@ -932,6 +947,15 @@ class Position:
     cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
     last_funding_time: dt_64 = np.datetime64("NaT")  # last funding payment time
 
+    # episode tracking - baselines stamped at the last flat->open transition.
+    # An episode is the span from one flat->open transition to the next return to flat.
+    # These are a view over the lifetime accumulators (r_pnl / commissions / cumulative_funding):
+    # with zero baselines the episode accessors equal the lifetime values (legacy degradation).
+    episode_start_time: dt_64 = np.datetime64("NaT")  # stamp of the opening deal
+    r_pnl_at_open: float = 0.0
+    commissions_at_open: float = 0.0
+    cumulative_funding_at_open: float = 0.0
+
     # - helpers for position processing
     _qty_multiplier: float = 1.0
     __pos_incr_qty: float = 0
@@ -944,6 +968,10 @@ class Position:
         r_pnl: float = 0.0,
         cumulative_funding: float = 0.0,
         commissions: float = 0.0,
+        episode_start_time: dt_64 | str | int | float | None = None,
+        r_pnl_at_open: float | None = None,
+        commissions_at_open: float | None = None,
+        cumulative_funding_at_open: float | None = None,
     ) -> None:
         self.instrument = instrument
 
@@ -957,6 +985,27 @@ class Position:
             self.quantity = quantity
             self.position_avg_price = pos_average_price
             self.__pos_incr_qty = abs(quantity)
+
+        # - episode baselines
+        # Round-trip path (restorer): the three at-open baselines are supplied -> assign verbatim
+        # (episode_start_time may legitimately be NaT/None, so we key off the baselines, not the time).
+        # Episode-at-init path: constructed open with baselines absent (legacy row or bare open
+        # construction) -> stamp the episode from the supplied lifetime accumulators. `episode_start_time`
+        # is the restore time when provided, else NaT ("opening never observed"). Flat construction keeps
+        # the zero defaults set by reset().
+        _baselines_provided = (
+            r_pnl_at_open is not None and commissions_at_open is not None and cumulative_funding_at_open is not None
+        )
+        if _baselines_provided:
+            self.episode_start_time = _as_dt64_or_nat(episode_start_time)
+            self.r_pnl_at_open = r_pnl_at_open
+            self.commissions_at_open = commissions_at_open
+            self.cumulative_funding_at_open = cumulative_funding_at_open
+        elif quantity != 0.0:
+            self.episode_start_time = _as_dt64_or_nat(episode_start_time)
+            self.r_pnl_at_open = self.r_pnl
+            self.commissions_at_open = self.commissions
+            self.cumulative_funding_at_open = self.cumulative_funding
 
     def reset(self) -> None:
         """
@@ -983,6 +1032,10 @@ class Position:
         self.max_notional = None
         self.cumulative_funding = 0.0
         self.last_funding_time = np.datetime64("NaT")  # type: ignore
+        self.episode_start_time = np.datetime64("NaT")  # type: ignore
+        self.r_pnl_at_open = 0.0
+        self.commissions_at_open = 0.0
+        self.cumulative_funding_at_open = 0.0
         self.__pos_incr_qty = 0
         self._qty_multiplier = self.instrument.quantity_multiplier
 
@@ -996,6 +1049,10 @@ class Position:
         exchange (already cash-settled) we cannot place a closing order, so we
         reconcile the in-memory position to flat. Unlike reset(), this preserves
         r_pnl so the record stays identical to a normally-closed position.
+
+        Episodes: no explicit change here. Going flat ends the current episode via the
+        canonical flat predicate (``abs(quantity) < lot_size``); the episode baselines are
+        left untouched so the closed episode's final values stay readable via the accessors.
         """
         self.quantity = 0.0
         self.market_value = 0.0
@@ -1027,16 +1084,32 @@ class Position:
         self.max_notional = pos.max_notional
         self.cumulative_funding = pos.cumulative_funding
         self.last_funding_time = pos.last_funding_time if hasattr(pos, "last_funding_time") else np.datetime64("NaT")
+        self.episode_start_time = getattr(pos, "episode_start_time", np.datetime64("NaT"))
+        self.r_pnl_at_open = getattr(pos, "r_pnl_at_open", 0.0)
+        self.commissions_at_open = getattr(pos, "commissions_at_open", 0.0)
+        self.cumulative_funding_at_open = getattr(pos, "cumulative_funding_at_open", 0.0)
         self.__pos_incr_qty = pos.__pos_incr_qty
 
-    def reconcile_size(self, quantity: float, avg_price: float) -> None:
+    def reconcile_size(self, quantity: float, avg_price: float, *, timestamp: dt_64 | None = None) -> None:
         """Authoritative size/avg-price correction (venue snapshot reconcile). Touches
         sizing fields only — accumulated accounting (r_pnl, commissions, funding) is
-        locally owned and must survive a snapshot."""
+        locally owned and must survive a snapshot.
+
+        Episodes: if this takes a flat position to open (first-connect recovery of a
+        pre-existing position whose true opening was never observed), stamp an episode
+        from the *current* accumulators — the honest lower bound, "episode starts now".
+        ``timestamp`` is the venue snapshot's time; falls back to ``last_update_time``.
+        """
+        was_open = self.is_open()
         self.quantity = quantity
         self.position_avg_price = avg_price
         self.position_avg_price_funds = avg_price  # conversion seam is fixed at 1.0 (AccountState.conversion_rate)
         self.__pos_incr_qty = abs(quantity)
+        if not was_open and self.is_open():
+            self.episode_start_time = timestamp if timestamp is not None else self.last_update_time
+            self.r_pnl_at_open = self.r_pnl
+            self.commissions_at_open = self.commissions
+            self.cumulative_funding_at_open = self.cumulative_funding
 
     @property
     def notional_value(self) -> float:
@@ -1085,6 +1158,9 @@ class Position:
         comms = 0
 
         if quantity != position:
+            # - whether the position is open *before* this deal (drives episode stamping below)
+            was_open = self.is_open()
+
             pos_change = position - quantity
             direction = np.sign(pos_change)
             prev_direction = np.sign(quantity)
@@ -1103,8 +1179,24 @@ class Position:
                 self.commissions += comms
                 return deal_pnl, comms
 
+            # - use the same flatness predicate the halves below use, so episode stamping / fee
+            #   attribution never disagree with the size mutation about which halves are present
+            has_closing = not np.isclose(qty_closing, 0.0)
+            has_opening = not np.isclose(qty_opening, 0.0)
+
+            # - fee attribution: when a single deal both closes and opens (a sign flip) the fee is split
+            #   pro-rata by |closing| : |opening|; otherwise the whole fee goes to the single side present.
+            abs_c, abs_o = abs(qty_closing), abs(qty_opening)
+            if has_closing and has_opening:
+                fee_closing = fee_amount * abs_c / (abs_c + abs_o)
+            elif has_closing:
+                fee_closing = fee_amount
+            else:
+                fee_closing = 0.0
+            fee_opening = fee_amount - fee_closing
+
             # - apply the realized close to the size
-            if not np.isclose(qty_closing, 0.0):
+            if has_closing:
                 self.__pos_incr_qty -= abs(qty_closing)
                 quantity += qty_closing
 
@@ -1116,7 +1208,7 @@ class Position:
                     self.__pos_incr_qty = 0
 
             # - if it has something to add to position let's update price and cost
-            if not np.isclose(qty_opening, 0.0):
+            if has_opening:
                 _abs_qty_open = abs(qty_opening)
 
                 pos_avg_price_raw = (_abs_qty_open * exec_price + self.__pos_incr_qty * self.position_avg_price) / (
@@ -1131,15 +1223,29 @@ class Position:
             self.position_avg_price_funds = self.position_avg_price / conversion_rate
             self.quantity = position
 
-            # - convert PnL to fund currency
+            # - the closing realization and its share of the fee belong to the OLD episode: book them
+            #   into the lifetime accumulators *before* stamping the new baselines.
             self.r_pnl += deal_pnl / conversion_rate
+            self.commissions += fee_closing / conversion_rate
+
+            # - episode stamping: a flat->open transition opens an episode; a sign flip always re-stamps
+            #   (its closing half was just attributed to the old episode above). The opening deal's own
+            #   fee (booked below) then lands INSIDE the new episode.
+            opens_episode = (not was_open and has_opening) or (has_closing and has_opening)
+            if opens_episode:
+                self.episode_start_time = _as_dt64_or_nat(time_as_nsec(timestamp))
+                self.r_pnl_at_open = self.r_pnl
+                self.commissions_at_open = self.commissions
+                self.cumulative_funding_at_open = self.cumulative_funding
+
+            # - the opening half's fee lands INSIDE the (possibly new) episode
+            self.commissions += fee_opening / conversion_rate
 
             # - update pnl
             self.update_market_price(time_as_nsec(timestamp), exec_price, conversion_rate)
 
-            # - calculate transaction costs
+            # - total transaction cost of this deal in funds currency (return contract: whole-deal fee)
             comms = fee_amount / conversion_rate
-            self.commissions += comms
 
         return deal_pnl, comms
 
@@ -1229,6 +1335,26 @@ class Position:
         Get the price PnL for this position excluding funding.
         """
         return self.pnl - self.cumulative_funding
+
+    def episode_pnl(self) -> float:
+        """Total P&L of the current episode (realized-since-open + unrealized + funding)."""
+        return self.pnl - self.r_pnl_at_open
+
+    def episode_funding(self) -> float:
+        """Funding accrued within the current episode."""
+        return self.cumulative_funding - self.cumulative_funding_at_open
+
+    def episode_commissions(self) -> float:
+        """Commissions paid within the current episode."""
+        return self.commissions - self.commissions_at_open
+
+    def episode_price_pnl(self) -> float:
+        """Episode P&L excluding funding (mirrors get_total_price_pnl)."""
+        return self.episode_pnl() - self.episode_funding()
+
+    def episode_net_pnl(self) -> float:
+        """Episode P&L with entry/exit costs included (the all-in figure)."""
+        return self.episode_pnl() - self.episode_commissions()
 
     def is_open(self) -> bool:
         return abs(self.quantity) >= self.instrument.lot_size

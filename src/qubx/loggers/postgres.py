@@ -24,6 +24,10 @@ _TABLE_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("current_price", "DOUBLE PRECISION"),
         ("market_value_quoted", "DOUBLE PRECISION"),
         ("commissions_quoted", "DOUBLE PRECISION"),
+        ("episode_start_time", "TIMESTAMPTZ"),
+        ("realized_pnl_at_open_quoted", "DOUBLE PRECISION"),
+        ("commissions_at_open_quoted", "DOUBLE PRECISION"),
+        ("funding_at_open_quoted", "DOUBLE PRECISION"),
     ],
     "portfolio": [
         ("timestamp", "TIMESTAMPTZ NOT NULL"),
@@ -39,6 +43,10 @@ _TABLE_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("exchange_time", "TIMESTAMPTZ"),
         ("commissions_quoted", "DOUBLE PRECISION"),
         ("cumulative_funding", "DOUBLE PRECISION"),
+        ("episode_start_time", "TIMESTAMPTZ"),
+        ("realized_pnl_at_open_quoted", "DOUBLE PRECISION"),
+        ("commissions_at_open_quoted", "DOUBLE PRECISION"),
+        ("funding_at_open_quoted", "DOUBLE PRECISION"),
     ],
     "executions": [
         ("timestamp", "TIMESTAMPTZ NOT NULL"),
