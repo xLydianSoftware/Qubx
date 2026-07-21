@@ -117,6 +117,12 @@ class PositionsDumper(_BaseIntervalDumper):
             "current_price": position.last_update_price,
             "market_value_quoted": position.market_value_funds,
             "commissions_quoted": position.commissions,
+            "episode_start_time": None
+            if np.isnat(position.episode_start_time)
+            else str(position.episode_start_time),
+            "realized_pnl_at_open_quoted": position.r_pnl_at_open,
+            "commissions_at_open_quoted": position.commissions_at_open,
+            "funding_at_open_quoted": position.cumulative_funding_at_open,
         }
 
     def dump(self, interval_start_time: np.datetime64, actual_timestamp: np.datetime64):
@@ -155,6 +161,10 @@ class PortfolioLogger(PositionsDumper):
                 "market_value_quoted": p.market_value_funds,
                 "exchange_time": str(actual_timestamp),
                 "commissions_quoted": p.commissions,
+                "episode_start_time": None if np.isnat(p.episode_start_time) else str(p.episode_start_time),
+                "realized_pnl_at_open_quoted": p.r_pnl_at_open,
+                "commissions_at_open_quoted": p.commissions_at_open,
+                "funding_at_open_quoted": p.cumulative_funding_at_open,
             }
             # Only add funding for SWAP instruments
             if i.market_type == MarketType.SWAP:
