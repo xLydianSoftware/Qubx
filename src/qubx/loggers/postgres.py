@@ -155,6 +155,19 @@ class PostgresLogsWriter(LogsWriter):
                             columns=sql.SQL(col_defs),
                         )
                     )
+                    # Additive schema migration: CREATE IF NOT EXISTS is a no-op on a
+                    # pre-existing table, so columns added to _TABLE_SCHEMAS after the
+                    # table was first created would be missing — INSERTs would fail
+                    # (silently dropped by the write path's broad except) and the
+                    # restorer SELECT would error out. ADD COLUMN IF NOT EXISTS is
+                    # idempotent and cheap, and keeps deployed tables self-healing.
+                    for name, col_type in columns:
+                        cur.execute(
+                            sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} " + col_type).format(
+                                table=sql.Identifier(tname),
+                                col=sql.Identifier(name),
+                            )
+                        )
                     # Index on strategy_name + timestamp for common queries
                     idx_name = f"idx_{tname}_strategy_ts"
                     cur.execute(
