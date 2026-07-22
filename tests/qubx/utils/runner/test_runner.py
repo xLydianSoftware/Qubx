@@ -341,6 +341,13 @@ class TestRunStrategyYaml:
         assert {i.exchange for i in ctx._initial_instruments} == {"BINANCE.UM"}
         acc_manager.get_exchange_settings.assert_any_call("BINANCE.PM")
 
+        # - the DATA provider is built with the canonical exchange too: data plugins key
+        #   catalogs/subscriptions by ctx.exchange_name (xdata "EXCHANGE:TYPE:SYMBOL"),
+        #   so a venue-named provider reports every canonical instrument as unlisted and
+        #   the universe manager sweeps the venue as delisted (observed live on BINANCE.PM)
+        _, dp_ctx = mock_create_data_provider.call_args[0]
+        assert dp_ctx.exchange_name == "BINANCE.UM"
+
         # - paper capital seeded into the canonical AM state
         balance = ctx.account.get_balance("USDT", exchange="BINANCE.UM")
         assert balance is not None

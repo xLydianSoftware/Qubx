@@ -5,7 +5,7 @@ import socket
 import tempfile
 import time
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from functools import reduce
 from pathlib import Path
 from threading import Thread
@@ -555,7 +555,14 @@ def create_strategy_context(
             params=dict(exchange_config.params),
         )
         _dp_name = (exchange_config.data_provider or exchange_config.connector).lower()
-        _data_provider = ConnectorRegistry.get_data_provider(_dp_name, _base_ctx)
+        # Market data is public and belongs to the CANONICAL exchange: a BINANCE.PM venue
+        # trades BINANCE.UM instruments, and data plugins key their catalogs/subscriptions
+        # by the configured exchange name (e.g. xdata's "EXCHANGE:TYPE:SYMBOL" catalog),
+        # so a venue-named provider misses every canonical instrument — is_instrument_listed
+        # returns False and the universe manager sweeps the whole venue as delisted. The
+        # venue name stays on the CONNECTOR context only (credentials + order routing).
+        _data_ctx = replace(_base_ctx, exchange_name=exchange_name) if exchange_name != venue_name else _base_ctx
+        _data_provider = ConnectorRegistry.get_data_provider(_dp_name, _data_ctx)
         _exchange_to_data_provider[exchange_name] = _data_provider
         # Per-exchange connector: paper wraps the OME in a SimulatedConnector (synchronous
         # execution); live builds the real connector. Everything downstream is identical.
