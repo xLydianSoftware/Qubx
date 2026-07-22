@@ -286,6 +286,58 @@ class TestRunStrategyYaml:
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_paper_context_preseeds_simulation_transfer_manager(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """Paper pre-seeds a SimulationTransferManager before ctx construction (the
+        __post_init__ pickup), so on_init already sees the manager in place."""
+        from qubx.backtester.transfers import SimulationTransferManager
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+
+        seen: dict = {}
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+                seen["manager"] = initializer.get_transfer_manager()
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions=None, testnet=False
+        )
+
+        with (
+            patch(
+                "qubx.utils.runner.runner.class_import",
+                side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+            ),
+            patch("qubx.utils.runner.runner._create_tcc", return_value=lookup.find_fees("BINANCE.UM", None)),
+        ):
+            ctx = create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="paper_transfer_preseed_test",
+            )
+
+        assert isinstance(seen["manager"], SimulationTransferManager)
+        assert isinstance(ctx._transfer_manager, SimulationTransferManager)
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     def test_paper_context_canonicalizes_binance_pm(
         self,
         mock_create_data_provider,

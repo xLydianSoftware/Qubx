@@ -497,6 +497,13 @@ class SimulationRunner:
         # - _aux_storage is always set by _basic_initialization() which runs before this
         assert self._aux_storage is not None, "_basic_initialization() must run before _create_backtest_context()"
 
+        # must precede ctx construction: StrategyContext.__post_init__ is the only pickup
+        if self.initializer is None:
+            self.initializer = BasicStrategyInitializer(simulation=True)
+        # warmup force-assigns even over a strategy-injected manager; plain sims fill only when unset
+        if self.warmup_mode or self.initializer.get_transfer_manager() is None:
+            self.initializer.set_transfer_manager(SimulationTransferManager(self.account_manager, self.time_provider))
+
         # - create strategy context with setup
         self.ctx = StrategyContext(
             strategy=strat,
@@ -514,15 +521,6 @@ class SimulationRunner:
             notifier=self.notifier,
             initializer=self.initializer,
         )
-
-        # - auto-assign the simulation transfer manager unless the strategy set its own in
-        #   on_init; context.start() then picks it up from the initializer. Wired via the
-        #   context's initializer (the runner's own initializer may be None — the context
-        #   builds a default one).
-        if self.ctx.initializer.get_transfer_manager() is None:
-            self.ctx.initializer.set_transfer_manager(
-                SimulationTransferManager(self.account_manager, self.time_provider)
-            )
 
         # - attach emmiter
         if self.emitter is not None:
