@@ -9,6 +9,7 @@ from ccxt.base.precise import Precise
 from ccxt.base.types import (
     Any,
     Balances,
+    Market,
     Num,
     Order,
     OrderSide,
@@ -704,18 +705,218 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
 
 
 class BinancePortfolioMargin(BinanceQVUSDM):
+    """Binance portfolio-margin account (papi) trading UM instruments.
+
+    ``portfolioMargin: True`` routes every unified REST/WS method to the papi
+    endpoints, but only on the linear/inverse code paths: ccxt resolves the
+    market type from ``defaultType`` FIRST, and its spot/margin branches
+    (``watch_orders``, ``watch_balance``, ``authenticate``, ``fetch_open_orders``,
+    ``fetch_funding_history``) short-circuit to the spot ws-api / papi margin
+    surfaces before ever consulting the portfolioMargin flag. With the previous
+    ``defaultType: "margin"`` the user-data stream silently connected to the
+    spot ws-api (zero UM events — fills only surfaced via snapshot reconcile)
+    and venue-wide open orders were fetched from the papi MARGIN surface.
+    ``defaultType: "swap"`` (+ the ``defaultSubType: "linear"`` inherited from
+    binanceusdm) keeps every param-less call on the UM path: papi listen key
+    (``papiPostListenKey``) + ``/pm/ws`` stream, ``papiGetUmOpenOrders``,
+    ``papiGetUmIncome``. It also makes the connector's derivatives-venue gate
+    pass, so the balance push loop runs.
+    """
+
     def describe(self):
         return self.deep_extend(
             super().describe(),
             {
                 "options": {
-                    "defaultType": "margin",
+                    "defaultType": "swap",
                     "portfolioMargin": True,
-                    "defaultSubType": None,
                     "fetchMarkets": ["spot", "linear", "inverse"],
                 }
             },
         )
+
+    def parse_balance_custom(self, response, type=None, marginMode=None, isPortfolioMargin=False) -> Balances:
+        # With defaultType "swap" the routed type is linear, whose PM parse branch reports
+        # umWalletBalance + umUnrealizedPNL (unrealized in totals, UM wallet only). Pin the
+        # cross branch instead: total = totalWalletBalance (whole-account, realized-only),
+        # used = crossMarginLocked — the semantics the account processor expects.
+        if isPortfolioMargin:
+            return super().parse_balance_custom(response, "margin", marginMode, True)
+        return super().parse_balance_custom(response, type, marginMode, isPortfolioMargin)
+
+    # Binance migrated PM conditional orders to the Algo Service on 2026-04-28: the old
+    # papi um/conditional/* endpoints 404 and ccxt (<= 4.5.50) still routes there. The
+    # replacement API (live-verified 2026-07-22) is fapi-algo-shaped but with renamed
+    # fields: trigger param is ``triggerPrice`` (NOT stopPrice), client id is
+    # ``clientAlgoId``, id is ``algoId``. ALGO_UPDATE WS events did not fire for
+    # NEW/CANCELED in testing — algo lifecycle is REST-confirmed; a triggered algo
+    # spawns a real order (``actualOrderId``) whose ORDER_TRADE_UPDATE/fills arrive on
+    # the normal stream. ccxt has no implicit methods for these (its abstract API map
+    # is pre-generated), hence raw ``self.request`` calls.
+    _ALGO_ORDER_PATH = "um/algo/order"
+    _ALGO_QUERY_PATH = "um/algo/algoOrder"
+    _ALGO_OPEN_PATH = "um/algo/openAlgoOrders"
+    _ALGO_STATUSES = {
+        "NEW": "open",
+        "WORKING": "open",
+        "CANCELED": "canceled",
+        "CANCELLED": "canceled",
+        "TRIGGERED": "closed",
+        "FINISHED": "closed",
+        "EXPIRED": "expired",
+        "REJECTED": "rejected",
+    }
+
+    def _is_trigger_params(self, type: OrderType, params: dict) -> bool:
+        return (
+            any(params.get(k) is not None for k in ("triggerPrice", "stopPrice", "stopLossPrice", "takeProfitPrice"))
+            or "stop" in str(type).lower()
+            or "take_profit" in str(type).lower()
+        )
+
+    def parse_algo_order(self, raw: dict, market=None) -> Order:
+        market = self.safe_market(self.safe_string(raw, "symbol"), market, None, "contract")
+        order_type = (self.safe_string_lower(raw, "orderType") or "").lower()
+        return self.safe_order(
+            {
+                "info": raw,
+                "id": self.safe_string(raw, "algoId"),
+                "clientOrderId": self.safe_string(raw, "clientAlgoId"),
+                "symbol": market["symbol"],
+                "timestamp": self.safe_integer(raw, "createTime"),
+                "lastUpdateTimestamp": self.safe_integer(raw, "updateTime"),
+                "type": "market" if order_type.endswith("market") else "limit",
+                "side": self.safe_string_lower(raw, "side"),
+                "price": self.omit_zero(self.safe_string(raw, "price")),
+                "triggerPrice": self.safe_number(raw, "triggerPrice"),
+                "amount": self.safe_number(raw, "quantity"),
+                "filled": self.safe_number(raw, "actualQty"),
+                "average": self.omit_zero(self.safe_string(raw, "actualPrice")),
+                "timeInForce": self.safe_string(raw, "timeInForce"),
+                "reduceOnly": self.safe_bool(raw, "reduceOnly"),
+                "status": self.safe_string(self._ALGO_STATUSES, self.safe_string(raw, "algoStatus", ""), "open"),
+            },
+            market,
+        )
+
+    async def create_order(
+        self, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}
+    ) -> Order:
+        if not self._is_trigger_params(type, params):
+            return await super().create_order(symbol, type, side, amount, price, params)
+        await self.load_markets()
+        market = self.market(symbol)
+        trigger = self.safe_number_n(params, ["triggerPrice", "stopPrice", "stopLossPrice"])
+        take_profit = self.safe_number(params, "takeProfitPrice")
+        is_market = "market" in str(type).lower()
+        if take_profit is not None and trigger is None:
+            trigger = take_profit
+            algo_order_type = "TAKE_PROFIT_MARKET" if is_market else "TAKE_PROFIT"
+        else:
+            algo_order_type = "STOP_MARKET" if is_market else "STOP"
+        request: dict = {
+            "symbol": market["id"],
+            "side": str(side).upper(),
+            "type": algo_order_type,
+            "algoType": "CONDITIONAL",
+            "quantity": self.amount_to_precision(symbol, amount),
+            "triggerPrice": self.price_to_precision(symbol, trigger),
+        }
+        if not is_market:
+            if price is None:
+                raise BadRequest(f"{self.id} algo {algo_order_type} requires a price")
+            request["price"] = self.price_to_precision(symbol, price)
+            request["timeInForce"] = self.safe_string_upper(params, "timeInForce", "GTC")
+        cid = self.safe_string_2(params, "clientOrderId", "newClientOrderId")
+        if cid is not None:
+            request["clientAlgoId"] = cid
+        if self.safe_bool(params, "reduceOnly", False):
+            request["reduceOnly"] = "true"
+        working_type = self.safe_string(params, "workingType")
+        if working_type is not None:
+            request["workingType"] = working_type
+        response = await self.request(self._ALGO_ORDER_PATH, "papi", "POST", request)
+        return self.parse_algo_order(response, market)
+
+    async def cancel_order(self, id: str, symbol: str | None = None, params={}) -> Order:
+        if not self.safe_bool_n(params, ["trigger", "stop", "conditional"], False):
+            return await super().cancel_order(id, symbol, params)
+        if symbol is None:
+            raise BadRequest(f"{self.id} cancelOrder for algo orders requires a symbol")
+        await self.load_markets()
+        market = self.market(symbol)
+        request: dict = {"symbol": market["id"]}
+        cid = self.safe_string_n(params, ["origClientOrderId", "clientOrderId", "clientAlgoId"])
+        if id:
+            request["algoId"] = id
+        elif cid is not None:
+            request["clientAlgoId"] = cid
+        else:
+            raise BadRequest(f"{self.id} cancelOrder for algo orders requires an id or client order id")
+        response = await self.request(self._ALGO_ORDER_PATH, "papi", "DELETE", request)
+        return self.safe_order(
+            {
+                "info": response,
+                "id": id or None,
+                "clientOrderId": cid,
+                "symbol": market["symbol"],
+                "status": "canceled",
+            },
+            market,
+        )
+
+    async def fetch_order(self, id: str, symbol: str | None = None, params={}) -> Order:
+        if not self.safe_bool_n(params, ["trigger", "stop", "conditional"], False):
+            return await super().fetch_order(id, symbol, params)
+        await self.load_markets()
+        market = self.market(symbol) if symbol is not None else None
+        request: dict = {}
+        if market is not None:
+            request["symbol"] = market["id"]
+        cid = self.safe_string_n(params, ["origClientOrderId", "clientOrderId", "clientAlgoId"])
+        if id:
+            request["algoId"] = id
+        elif cid is not None:
+            request["clientAlgoId"] = cid
+        response = await self.request(self._ALGO_QUERY_PATH, "papi", "GET", request)
+        return self.parse_algo_order(response, market)
+
+    async def fetch_open_orders(self, symbol: str | None = None, since=None, limit=None, params={}) -> list[Order]:
+        if not self.safe_bool_n(params, ["trigger", "stop", "conditional"], False):
+            return await super().fetch_open_orders(symbol, since, limit, params)
+        await self.load_markets()
+        market = self.market(symbol) if symbol is not None else None
+        request: dict = {}
+        if market is not None:
+            request["symbol"] = market["id"]
+        response = await self.request(self._ALGO_OPEN_PATH, "papi", "GET", request)
+        rows = response if isinstance(response, list) else []
+        orders = [self.parse_algo_order(row, market) for row in rows]
+        return self.filter_by_symbol_since_limit(orders, market["symbol"] if market else None, since, limit)
+
+    async def fetch_balance(self, params={}) -> Balances:
+        """papiGetBalance carries per-asset wallets but no account-level risk figures.
+        Graft ``GET /papi/v1/account`` (accountEquity/uniMMR/virtualMaxWithdrawAmount/...)
+        into ``info`` so BinancePmCcxtConnector can surface venue figures from the same
+        snapshot payload. Best-effort: on failure ``account`` is None and the connector
+        falls back to derived figures, exactly as before."""
+        balances = await super().fetch_balance(params)
+        account = None
+        try:
+            account = await self.papiGetAccount()
+        except Exception:  # noqa: BLE001
+            pass
+        balances["info"] = {"balance": balances.get("info"), "account": account}
+        return balances
+
+    def parse_position_risk(self, position, market: Market = None):
+        # papi positionRisk carries neither marginType nor isolatedMargin, so ccxt leaves
+        # marginMode None — PM positions are always cross-margined.
+        parsed = super().parse_position_risk(position, market)
+        if parsed.get("marginMode") is None:
+            parsed["marginMode"] = "cross"
+            parsed["marginType"] = "cross"
+        return parsed
 
 
 class BINANCE_UM_MM(BinanceQVUSDM):

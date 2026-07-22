@@ -207,7 +207,10 @@ class CcxtConnector(ChannelEmitter):
         except Exception:  # noqa: BLE001 — cancelled/loop-teardown; nothing to surface
             return
         if exc is not None:
-            logger.error(f"[{self.exchange_name}] background connector task failed: {exc!r}")
+            # Positional arg, NOT an f-string: venue error text can contain markup (e.g. a
+            # Binance HTML error page) that loguru's colorizer rejects as bad color tags —
+            # only the static format string is tag-parsed, args are inserted after.
+            logger.error("[{}] background connector task failed: {!r}", self.exchange_name, exc)
 
     def _run_sync(self, coro: Any, timeout: float | None = None) -> Any:
         """Run a coroutine on the exchange loop and block for the result.
@@ -1365,13 +1368,17 @@ class CcxtConnector(ChannelEmitter):
         leg's live orders as missing → false reconcile-away. None makes reconcile skip
         order diffing this tick (positions/balances still apply).
         """
+        # Venue exception text goes in as positional args (may contain HTML/markup that
+        # loguru's colorizer rejects when it appears in the format string — a raised log
+        # call here would sink the whole snapshot).
         if isinstance(raw_orders, BaseException):
-            logger.warning(f"[{self.exchange_name}] snapshot: fetch_open_orders failed: {raw_orders}")
+            logger.warning("[{}] snapshot: fetch_open_orders failed: {}", self.exchange_name, raw_orders)
             return None
         if isinstance(raw_trigger_orders, BaseException):
             logger.warning(
-                f"[{self.exchange_name}] snapshot: fetch_open_orders(trigger) failed: {raw_trigger_orders};"
-                " skipping order reconcile this tick"
+                "[{}] snapshot: fetch_open_orders(trigger) failed: {}; skipping order reconcile this tick",
+                self.exchange_name,
+                raw_trigger_orders,
             )
             return None
         open_orders: list[Order] = []
@@ -1426,7 +1433,7 @@ class CcxtConnector(ChannelEmitter):
 
         positions: list[Position] | None = None
         if isinstance(raw_positions, BaseException):
-            logger.warning(f"[{self.exchange_name}] snapshot: fetch_positions failed: {raw_positions}")
+            logger.warning("[{}] snapshot: fetch_positions failed: {}", self.exchange_name, raw_positions)
         else:
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
@@ -1434,7 +1441,7 @@ class CcxtConnector(ChannelEmitter):
         balances: list[Balance] | None = None
         equity = available_margin = margin_ratio = withdrawable = None
         if isinstance(raw_balance, BaseException):
-            logger.warning(f"[{self.exchange_name}] snapshot: fetch_balance failed: {raw_balance}")
+            logger.warning("[{}] snapshot: fetch_balance failed: {}", self.exchange_name, raw_balance)
         else:
             balances = self._convert_balances(raw_balance)
             equity, available_margin, margin_ratio, withdrawable = self._extract_venue_figures(raw_balance)

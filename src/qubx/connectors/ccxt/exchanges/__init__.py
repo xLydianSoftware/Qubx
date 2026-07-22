@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import ccxt.pro as cxp
 
 from ..connector import CcxtConnector
+from .binance.connector import BinancePmCcxtConnector
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.connector import BitfinexCcxtConnector
 from .gateio.gateio import GateioFutures
@@ -56,11 +57,14 @@ EXCHANGE_ALIASES = {
 # the bare ``okx``/``bitfinex`` aliases the factory may receive. Bitfinex's connector
 # subclass has NO dependency on the optional qubx-bitfinex-api package (it only needs
 # the base connector + shared mixin), so it is registered unconditionally.
+# The factory resolves by the configured VENUE name first, then the canonical name —
+# that's how ``binance.pm`` gets its own subclass while canonicalizing to BINANCE.UM.
 CUSTOM_CONNECTORS: dict[str, type[CcxtConnector]] = {
     "okx": OkxCcxtConnector,
     "okx.f": OkxCcxtConnector,
     "bitfinex": BitfinexCcxtConnector,
     "bitfinex.f": BitfinexCcxtConnector,
+    "binance.pm": BinancePmCcxtConnector,
 }
 
 READER_CAPABILITIES = {
@@ -93,7 +97,6 @@ cxp.okx_futures = OkxFutures  # type: ignore
 cxp.exchanges.append("binanceqv")
 cxp.exchanges.append("binanceqv_usdm")
 cxp.exchanges.append("binancepm")
-cxp.exchanges.append("binancepm_usdm")
 cxp.exchanges.append("binance_um_mm")
 cxp.exchanges.append("custom_krakenfutures")
 if _HAS_BITFINEX:

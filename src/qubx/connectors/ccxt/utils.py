@@ -339,9 +339,12 @@ def ccxt_extract_leverage_settings(rows: list[dict] | None) -> dict[str, tuple[f
             leverage = row.get("shortLeverage")
         if leverage is None:
             leverage = info_float(raw, "leverage")
+        max_notional = info_float(raw, "maxNotionalValue")
+        if max_notional is None:
+            max_notional = info_float(raw, "maxNotional")  # papi um/account spelling
         out[symbol] = (
             float(leverage) if leverage is not None else None,
-            info_float(raw, "maxNotionalValue"),
+            max_notional,
         )
     return out
 
