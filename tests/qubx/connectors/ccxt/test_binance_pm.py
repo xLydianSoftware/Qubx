@@ -389,6 +389,68 @@ class TestVenueErrorLogging:
             logger.remove(sink_id)
 
 
+class TestPmAdlLevels:
+    """PM has no adl in positionRisk — one bulk adlQuantile call per snapshot stamps
+    Position.adl_level and refreshes a cache; get_adl_level is a dict read (never a
+    blocking venue call — safe to iterate from the strategy thread)."""
+
+    ADL_ROWS = [
+        {"symbol": "DOGEUSDT", "adlQuantile": {"LONG": 2, "SHORT": 1}},
+        {"symbol": "BTCUSDT", "adlQuantile": {"BOTH": 3}},
+    ]
+
+    @staticmethod
+    def _connector_with_adl(rows):
+        connector = TestBinancePmVenueFigures._connector()
+
+        async def fake_adl(*args, **kwargs):
+            return rows
+
+        connector._em.exchange.papiGetUmAdlQuantile = fake_adl
+        connector._em.exchange.market = MagicMock(side_effect=Exception("markets not loaded"))
+        return connector
+
+    @staticmethod
+    def _position(symbol: str) -> MagicMock:
+        pos = MagicMock()
+        pos.instrument.symbol = symbol
+        pos.adl_level = None
+        pos.leverage = 1.0
+        pos.max_notional = 1.0  # short-circuits the base leverage fill (no fetch_leverages)
+        return pos
+
+    def test_fill_stamps_positions_and_cache(self):
+        connector = self._connector_with_adl(self.ADL_ROWS)
+        doge, btc = self._position("DOGEUSDT"), self._position("BTCUSDT")
+        run(connector._fill_adl_levels([doge, btc]))
+        assert doge.adl_level == 2  # max(LONG, SHORT)
+        assert btc.adl_level == 3
+        assert connector.get_adl_level(doge.instrument) == 2
+        assert connector.get_adl_level(btc.instrument) == 3
+
+    def test_get_adl_level_never_calls_venue(self):
+        connector = self._connector_with_adl(self.ADL_ROWS)
+        instrument = MagicMock()
+        instrument.symbol = "DOGEUSDT"
+        assert connector.get_adl_level(instrument) is None  # empty cache, no network
+        connector._run_sync = MagicMock(side_effect=AssertionError("must not block on venue"))
+        assert connector.get_adl_level(instrument) is None
+
+    def test_fetch_failure_keeps_previous_cache(self):
+        connector = self._connector_with_adl(self.ADL_ROWS)
+        doge = self._position("DOGEUSDT")
+        run(connector._fill_adl_levels([doge]))
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError("venue down")
+
+        connector._em.exchange.papiGetUmAdlQuantile = boom
+        fresh = self._position("DOGEUSDT")
+        run(connector._fill_adl_levels([fresh]))
+        assert connector.get_adl_level(doge.instrument) == 2  # cache preserved
+        assert fresh.adl_level is None  # nothing stamped on failure
+
+
 class TestPmConnectorResolution:
     def test_registered_for_venue_name(self):
         assert CUSTOM_CONNECTORS["binance.pm"] is BinancePmCcxtConnector
