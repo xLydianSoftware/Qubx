@@ -9,6 +9,7 @@ from ccxt.base.precise import Precise
 from ccxt.base.types import (
     Any,
     Balances,
+    Market,
     Num,
     Order,
     OrderSide,
@@ -704,18 +705,68 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
 
 
 class BinancePortfolioMargin(BinanceQVUSDM):
+    """Binance portfolio-margin account (papi) trading UM instruments.
+
+    ``portfolioMargin: True`` routes every unified REST/WS method to the papi
+    endpoints, but only on the linear/inverse code paths: ccxt resolves the
+    market type from ``defaultType`` FIRST, and its spot/margin branches
+    (``watch_orders``, ``watch_balance``, ``authenticate``, ``fetch_open_orders``,
+    ``fetch_funding_history``) short-circuit to the spot ws-api / papi margin
+    surfaces before ever consulting the portfolioMargin flag. With the previous
+    ``defaultType: "margin"`` the user-data stream silently connected to the
+    spot ws-api (zero UM events — fills only surfaced via snapshot reconcile)
+    and venue-wide open orders were fetched from the papi MARGIN surface.
+    ``defaultType: "swap"`` (+ the ``defaultSubType: "linear"`` inherited from
+    binanceusdm) keeps every param-less call on the UM path: papi listen key
+    (``papiPostListenKey``) + ``/pm/ws`` stream, ``papiGetUmOpenOrders``,
+    ``papiGetUmIncome``. It also makes the connector's derivatives-venue gate
+    pass, so the balance push loop runs.
+    """
+
     def describe(self):
         return self.deep_extend(
             super().describe(),
             {
                 "options": {
-                    "defaultType": "margin",
+                    "defaultType": "swap",
                     "portfolioMargin": True,
-                    "defaultSubType": None,
                     "fetchMarkets": ["spot", "linear", "inverse"],
                 }
             },
         )
+
+    def parse_balance_custom(self, response, type=None, marginMode=None, isPortfolioMargin=False) -> Balances:
+        # With defaultType "swap" the routed type is linear, whose PM parse branch reports
+        # umWalletBalance + umUnrealizedPNL (unrealized in totals, UM wallet only). Pin the
+        # cross branch instead: total = totalWalletBalance (whole-account, realized-only),
+        # used = crossMarginLocked — the semantics the account processor expects.
+        if isPortfolioMargin:
+            return super().parse_balance_custom(response, "margin", marginMode, True)
+        return super().parse_balance_custom(response, type, marginMode, isPortfolioMargin)
+
+    async def fetch_balance(self, params={}) -> Balances:
+        """papiGetBalance carries per-asset wallets but no account-level risk figures.
+        Graft ``GET /papi/v1/account`` (accountEquity/uniMMR/virtualMaxWithdrawAmount/...)
+        into ``info`` so BinancePmCcxtConnector can surface venue figures from the same
+        snapshot payload. Best-effort: on failure ``account`` is None and the connector
+        falls back to derived figures, exactly as before."""
+        balances = await super().fetch_balance(params)
+        account = None
+        try:
+            account = await self.papiGetAccount()
+        except Exception:  # noqa: BLE001
+            pass
+        balances["info"] = {"balance": balances.get("info"), "account": account}
+        return balances
+
+    def parse_position_risk(self, position, market: Market = None):
+        # papi positionRisk carries neither marginType nor isolatedMargin, so ccxt leaves
+        # marginMode None — PM positions are always cross-margined.
+        parsed = super().parse_position_risk(position, market)
+        if parsed.get("marginMode") is None:
+            parsed["marginMode"] = "cross"
+            parsed["marginType"] = "cross"
+        return parsed
 
 
 class BINANCE_UM_MM(BinanceQVUSDM):
