@@ -94,7 +94,9 @@ class TestBinancePmBalanceParse:
     def test_non_pm_passthrough(self):
         ex = _pm_exchange()
         try:
-            futures_account = {"assets": [{"asset": "USDT", "availableBalance": "10", "initialMargin": "2", "walletBalance": "12"}]}
+            futures_account = {
+                "assets": [{"asset": "USDT", "availableBalance": "10", "initialMargin": "2", "walletBalance": "12"}]
+            }
             parsed = ex.parse_balance_custom(futures_account, None, None, False)
             assert parsed["USDT"]["total"] == 12.0
         finally:
@@ -195,6 +197,27 @@ class TestBinancePmVenueFigures:
 
 
 class TestPmTriggerOrders:
+    def test_conditional_create_order_fails_fast(self):
+        """The papi conditional API is suspended (404 live-verified 2026-07-22) — a stop
+        order must raise NotSupported synchronously, before any network call."""
+        import ccxt
+
+        ex = _pm_exchange()
+        try:
+            for kwargs in (
+                {"params": {"triggerPrice": 0.05}},
+                {"params": {"stopLossPrice": 0.05}},
+                {"type": "stop_market", "params": {}},
+            ):
+                order_type = kwargs.get("type", "market")
+                try:
+                    run(ex.create_order("DOGE/USDT:USDT", order_type, "sell", 150, None, kwargs["params"]))
+                    raise AssertionError(f"expected NotSupported for {kwargs}")
+                except ccxt.NotSupported:
+                    pass
+        finally:
+            run(ex.close())
+
     def test_trigger_open_orders_short_circuit(self):
         # papi /um/conditional/openOrders 404s (live-verified 2026-07-22) — the PM
         # override must not touch the exchange at all

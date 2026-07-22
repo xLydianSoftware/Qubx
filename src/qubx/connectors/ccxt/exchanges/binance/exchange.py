@@ -4,7 +4,7 @@ import ccxt.pro as cxp
 import pandas as pd
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
-from ccxt.base.errors import BadRequest, InsufficientFunds
+from ccxt.base.errors import BadRequest, InsufficientFunds, NotSupported
 from ccxt.base.precise import Precise
 from ccxt.base.types import (
     Any,
@@ -743,6 +743,23 @@ class BinancePortfolioMargin(BinanceQVUSDM):
         if isPortfolioMargin:
             return super().parse_balance_custom(response, "margin", marginMode, True)
         return super().parse_balance_custom(response, type, marginMode, isPortfolioMargin)
+
+    async def create_order(
+        self, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}
+    ) -> Order:
+        # Binance suspended the PM conditional-order service (papi um/conditional/*) in
+        # 2026-04 and it 404s to this day (live-verified 2026-07-22: both placement and
+        # query; the regular papi um/order rejects STOP_MARKET with -1116). Fail fast
+        # with a clean venue-verdict instead of surfacing an HTML 404 page. Client-side
+        # alternative: trackers with risk_controlling_side="client".
+        if any(k in params for k in ("triggerPrice", "stopPrice", "stopLossPrice", "takeProfitPrice")) or "stop" in str(
+            type
+        ):
+            raise NotSupported(
+                f"{self.id} conditional/stop orders are not available on Binance portfolio margin "
+                "(papi conditional API suspended since 2026-04) — use client-side risk management"
+            )
+        return await super().create_order(symbol, type, side, amount, price, params)
 
     async def fetch_balance(self, params={}) -> Balances:
         """papiGetBalance carries per-asset wallets but no account-level risk figures.
