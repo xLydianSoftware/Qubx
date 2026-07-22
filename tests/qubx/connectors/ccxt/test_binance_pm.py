@@ -33,7 +33,13 @@ from qubx.connectors.ccxt.utils import ccxt_extract_leverage_settings
 
 
 def run(coro):
-    return asyncio.run(coro)
+    # NOT asyncio.run: that clears the thread's current event loop on exit, breaking
+    # later tests in the same worker that rely on asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 def _pm_exchange() -> BinancePortfolioMargin:
@@ -196,34 +202,176 @@ class TestBinancePmVenueFigures:
         assert self._connector()._extract_venue_figures({"info": [{"asset": "USDT"}]}) == (None, None, None, None)
 
 
-class TestPmTriggerOrders:
-    def test_conditional_create_order_fails_fast(self):
-        """The papi conditional API is suspended (404 live-verified 2026-07-22) — a stop
-        order must raise NotSupported synchronously, before any network call."""
-        import ccxt
+DOGE_MARKET = {
+    "id": "DOGEUSDT",
+    "lowercaseId": "dogeusdt",
+    "symbol": "DOGE/USDT:USDT",
+    "base": "DOGE",
+    "quote": "USDT",
+    "settle": "USDT",
+    "baseId": "DOGE",
+    "quoteId": "USDT",
+    "settleId": "USDT",
+    "type": "swap",
+    "spot": False,
+    "margin": False,
+    "swap": True,
+    "future": False,
+    "option": False,
+    "contract": True,
+    "linear": True,
+    "inverse": False,
+    "subType": "linear",
+    "active": True,
+    "taker": 0.0004,
+    "maker": 0.0002,
+    "contractSize": 1.0,
+    "expiry": None,
+    "expiryDatetime": None,
+    "strike": None,
+    "optionType": None,
+    "precision": {"amount": 1.0, "price": 0.00001},
+    "limits": {
+        "amount": {"min": 1.0, "max": None},
+        "price": {"min": None, "max": None},
+        "cost": {"min": None, "max": None},
+        "leverage": {"min": 1, "max": 75},
+    },
+    "info": {},
+    "created": None,
+    "marginModes": {"cross": True, "isolated": False},
+}
 
-        ex = _pm_exchange()
+ALGO_RESPONSE = {
+    "algoId": 4000001785373649,
+    "algoType": "CONDITIONAL",
+    "clientAlgoId": "qubx_DOGEUSDT_1",
+    "orderType": "STOP_MARKET",
+    "symbol": "DOGEUSDT",
+    "side": "SELL",
+    "positionSide": "BOTH",
+    "timeInForce": "GTC",
+    "quantity": "300",
+    "algoStatus": "NEW",
+    "actualOrderId": "",
+    "actualPrice": "0",
+    "actualQty": "0",
+    "triggerPrice": "0.050640",
+    "price": "0.000000",
+    "reduceOnly": False,
+    "createTime": 1784722758752,
+    "updateTime": 1784722758752,
+}
+
+
+def _pm_exchange_with_markets():
+    """PM exchange with preseeded DOGE market and a captured raw-request transport —
+    algo calls (place/cancel/query) never have implicit ccxt methods, so everything
+    goes through ``request``; capture it to assert paths and payloads offline."""
+    ex = _pm_exchange()
+    ex.set_markets([DOGE_MARKET])
+    calls = []
+
+    async def fake_request(path, api="public", method="GET", params={}, *args, **kwargs):
+        calls.append((path, api, method, dict(params)))
+        return dict(ALGO_RESPONSE)
+
+    ex.request = fake_request
+    return ex, calls
+
+
+class TestPmAlgoOrders:
+    """PM conditional orders migrated to the papi Algo Service on 2026-04-28 (old
+    um/conditional/* endpoints 404). Live-verified 2026-07-22: trigger param is
+    ``triggerPrice``, client id is ``clientAlgoId``, cancel/query by ``algoId``."""
+
+    def test_stop_market_routes_to_algo_endpoint(self):
+        # the exact shape prepare_ccxt_order_payload emits for STOP_MARKET
+        ex, calls = _pm_exchange_with_markets()
         try:
-            for kwargs in (
-                {"params": {"triggerPrice": 0.05}},
-                {"params": {"stopLossPrice": 0.05}},
-                {"type": "stop_market", "params": {}},
-            ):
-                order_type = kwargs.get("type", "market")
-                try:
-                    run(ex.create_order("DOGE/USDT:USDT", order_type, "sell", 150, None, kwargs["params"]))
-                    raise AssertionError(f"expected NotSupported for {kwargs}")
-                except ccxt.NotSupported:
-                    pass
+            order = run(
+                ex.create_order(
+                    "DOGE/USDT:USDT",
+                    "market",
+                    "sell",
+                    300,
+                    0.05064,
+                    {"triggerPrice": 0.05064, "clientOrderId": "qubx_DOGEUSDT_1", "timeInForce": "GTC", "type": "swap"},
+                )
+            )
+            path, api, method, req = calls[0]
+            assert (path, api, method) == ("um/algo/order", "papi", "POST")
+            assert req["type"] == "STOP_MARKET"
+            assert req["algoType"] == "CONDITIONAL"
+            assert req["triggerPrice"] == "0.05064"
+            assert req["clientAlgoId"] == "qubx_DOGEUSDT_1"
+            assert "stopPrice" not in req and "price" not in req
+            assert order["id"] == "4000001785373649"
+            assert order["status"] == "open"
+            assert order["triggerPrice"] == 0.05064
         finally:
             run(ex.close())
 
-    def test_trigger_open_orders_short_circuit(self):
-        # papi /um/conditional/openOrders 404s (live-verified 2026-07-22) — the PM
-        # override must not touch the exchange at all
-        connector = TestBinancePmVenueFigures._connector()
-        assert run(connector._fetch_trigger_open_orders()) == []
-        connector._em.exchange.fetch_open_orders.assert_not_called()
+    def test_stop_limit_carries_price_and_tif(self):
+        ex, calls = _pm_exchange_with_markets()
+        try:
+            run(ex.create_order("DOGE/USDT:USDT", "limit", "sell", 300, 0.0501, {"triggerPrice": 0.05064}))
+            _, _, _, req = calls[0]
+            assert req["type"] == "STOP"
+            assert req["price"] == "0.0501"
+            assert req["timeInForce"] == "GTC"
+        finally:
+            run(ex.close())
+
+    def test_non_trigger_orders_unaffected(self):
+        ex, calls = _pm_exchange_with_markets()
+        try:
+            try:
+                run(ex.create_order("DOGE/USDT:USDT", "limit", "buy", 300, 0.05, {}))
+            except Exception:
+                pass  # goes to the real papi order path (network) — only assert no algo call
+            assert calls == []
+        finally:
+            run(ex.close())
+
+    def test_cancel_by_algo_id_and_by_client_id(self):
+        ex, calls = _pm_exchange_with_markets()
+        try:
+            run(ex.cancel_order("4000001785373649", "DOGE/USDT:USDT", {"trigger": True}))
+            # the cid path used by cancel_order_with_client_order_id (id='')
+            run(ex.cancel_order("", "DOGE/USDT:USDT", {"trigger": True, "clientOrderId": "qubx_DOGEUSDT_1"}))
+            (p1, _, m1, r1), (p2, _, m2, r2) = calls
+            assert (p1, m1, r1.get("algoId")) == ("um/algo/order", "DELETE", "4000001785373649")
+            assert (p2, m2, r2.get("clientAlgoId")) == ("um/algo/order", "DELETE", "qubx_DOGEUSDT_1")
+            assert "algoId" not in r2
+        finally:
+            run(ex.close())
+
+    def test_fetch_order_and_open_orders_route_to_algo_queries(self):
+        ex, calls = _pm_exchange_with_markets()
+        try:
+            run(ex.fetch_order("4000001785373649", "DOGE/USDT:USDT", {"trigger": True}))
+            assert calls[-1][:3] == ("um/algo/algoOrder", "papi", "GET")
+
+            async def fake_list(path, api="public", method="GET", params={}, *args, **kwargs):
+                calls.append((path, api, method, dict(params)))
+                return [dict(ALGO_RESPONSE)]
+
+            ex.request = fake_list
+            orders = run(ex.fetch_open_orders("DOGE/USDT:USDT", params={"trigger": True}))
+            assert calls[-1][:3] == ("um/algo/openAlgoOrders", "papi", "GET")
+            assert len(orders) == 1 and orders[0]["clientOrderId"] == "qubx_DOGEUSDT_1"
+        finally:
+            run(ex.close())
+
+    def test_algo_status_mapping(self):
+        ex, _ = _pm_exchange_with_markets()
+        try:
+            for raw_status, unified in [("NEW", "open"), ("CANCELED", "canceled"), ("TRIGGERED", "closed")]:
+                parsed = ex.parse_algo_order(dict(ALGO_RESPONSE, algoStatus=raw_status))
+                assert parsed["status"] == unified, raw_status
+        finally:
+            run(ex.close())
 
 
 class TestVenueErrorLogging:

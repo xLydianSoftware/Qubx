@@ -56,15 +56,6 @@ class BinancePmCcxtConnector(CcxtConnector):
             info_float(account, "virtualMaxWithdrawAmount"),
         )
 
-    async def _fetch_trigger_open_orders(self) -> list[dict]:
-        """PM has no working venue-wide conditional open-orders endpoint: ccxt 4.5.50 maps
-        the ``trigger: True`` sweep to ``GET /papi/v1/um/conditional/openOrders``, which
-        404s with an HTML error page (live-verified 2026-07-22). Treat as "no trigger
-        orders" so the full snapshot sweep survives; regular open orders still reconcile.
-        Caveat: conditional/stop orders on PM are unverified end-to-end — if the papi
-        conditional API is dead, placing them likely fails too."""
-        return []
-
     def get_adl_level(self, instrument: Instrument) -> int | None:
         # papi positionRisk has no adl field — query the dedicated endpoint. Response:
         # [{"symbol": ..., "adlQuantile": {"LONG": n, "SHORT": n} | {"BOTH": n}}]; the
