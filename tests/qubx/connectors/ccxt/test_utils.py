@@ -1,3 +1,4 @@
+import copy
 import gzip
 import json
 
@@ -7,6 +8,7 @@ from qubx.connectors.ccxt.utils import (
     ccxt_convert_balance,
     ccxt_convert_liquidation,
     ccxt_convert_orderbook,
+    ccxt_convert_position,
     ccxt_convert_positions,
 )
 from qubx.core.lookups import lookup
@@ -88,3 +90,64 @@ class TestCcxtOrderbookRelatedStuff:
     def test_ccxt_position_conversion(self):
         positions = ccxt_convert_positions(POSITIONS_BINANCE_UM, "BINANCE.UM", BINANCE_MARKETS)
         assert len(positions) > 0
+
+    def test_ccxt_position_takes_venue_margins(self):
+        """Both margins must come from the venue, which knows the leverage tier.
+
+        Regression: only maintenanceMargin was read, so initial_margin fell back to the internal
+        calc -> 0.0 whenever instrument.initial_margin metadata is absent (it is 0.0 for
+        BINANCE.UM), and get_total_initial_margin under-reported the whole ccxt side.
+        """
+        info = POSITIONS_BINANCE_UM[0]
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.initial_margin == pytest.approx(float(info["initialMargin"]))
+        assert pos.maint_margin == pytest.approx(float(info["maintenanceMargin"]))
+        # external flags -> price updates must not recalculate these away
+        assert pos._initial_margin_external is True
+        assert pos._maint_margin_external is True
+
+    def test_ccxt_position_margins_absent_leaves_defaults(self):
+        """A venue that omits the margin fields must not blow up or fake a value."""
+        info = {k: v for k, v in POSITIONS_BINANCE_UM[0].items() if k not in ("initialMargin", "maintenanceMargin")}
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos._initial_margin_external is False
+        assert pos._maint_margin_external is False
+
+    def test_ccxt_position_adl_from_v3_payload(self):
+        """fetch_positions defaults to Binance v3 positionRisk, where the ADL field is named `adl`.
+
+        Confirmed against a live account 2026-07-16: raw payload had `adl: 3` and no `adlQuantile`.
+        Binance scale is 0..4, higher = closer to the front of the ADL queue.
+        """
+        info = copy.deepcopy(POSITIONS_BINANCE_UM[0])
+        info["info"].pop("leverage", None)  # v3 dropped these two
+        info["info"].pop("maxNotionalValue", None)
+        info["info"]["adl"] = "3"
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.adl_level == 3
+
+    def test_ccxt_position_adl_from_v2_payload(self):
+        """v2 positionRisk (params.useV2) spells the same value `adlQuantile`."""
+        info = copy.deepcopy(POSITIONS_BINANCE_UM[0])
+        info["info"]["adlQuantile"] = "2"
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.adl_level == 2
+
+    def test_ccxt_position_adl_absent_stays_none(self):
+        """No ADL field -> None. None means 'venue reported no rank', not 'no ADL risk'."""
+        info = copy.deepcopy(POSITIONS_BINANCE_UM[0])
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.adl_level is None
+
+    def test_ccxt_position_adl_zero_is_kept(self):
+        """0 is a real Binance rank (safest bucket) — it must not be dropped as falsy."""
+        info = copy.deepcopy(POSITIONS_BINANCE_UM[0])
+        info["info"]["adl"] = "0"
+        pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)
+        assert pos is not None
+        assert pos.adl_level == 0

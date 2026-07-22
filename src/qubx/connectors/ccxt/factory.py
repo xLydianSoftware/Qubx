@@ -149,17 +149,25 @@ def clear_exchange_manager_cache() -> None:
 
 def get_ccxt_connector(
     exchange_name: str,
+    venue_name: str | None = None,
     **kwargs,
 ) -> CcxtConnector:
     """Construct the right CcxtConnector subclass for the exchange.
 
-    Resolves the per-exchange subclass from ``CUSTOM_CONNECTORS`` keyed by the
-    lowercased framework exchange name (OKX/Bitfinex get the split orders/fills
-    streams), falling back to the base ``CcxtConnector`` for any unlisted exchange
-    (Binance, Hyperliquid, ...). The ``CUSTOM_CONNECTORS`` map carries both the dotted
-    (``okx.f``) and bare (``okx``) names, like ``EXCHANGE_ALIASES``.
+    Resolves the per-exchange subclass from ``CUSTOM_CONNECTORS`` — by the configured
+    venue name first (BINANCE.PM gets its PM subclass even though it canonicalizes to
+    BINANCE.UM), then by the lowercased canonical exchange name (OKX/Bitfinex get the
+    split orders/fills streams) — falling back to the base ``CcxtConnector`` for any
+    unlisted exchange (Binance, Hyperliquid, ...). The ``CUSTOM_CONNECTORS`` map
+    carries both the dotted (``okx.f``) and bare (``okx``) names, like
+    ``EXCHANGE_ALIASES``. The connector itself is always constructed with the
+    canonical ``exchange_name`` so its account events route to the canonical AM state.
     """
-    connector_cls = CUSTOM_CONNECTORS.get(exchange_name.lower(), CcxtConnector)
+    connector_cls = None
+    if venue_name is not None:
+        connector_cls = CUSTOM_CONNECTORS.get(venue_name.lower())
+    if connector_cls is None:
+        connector_cls = CUSTOM_CONNECTORS.get(exchange_name.lower(), CcxtConnector)
     return connector_cls(exchange_name=exchange_name, **kwargs)
 
 
@@ -192,6 +200,7 @@ def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
     # name is plumbing only (credentials lookup + ccxt exchange class, both above).
     return get_ccxt_connector(
         canonical_exchange(ctx.exchange_name),
+        venue_name=ctx.exchange_name,
         channel=ctx.channel,
         time_provider=ctx.time_provider,
         exchange_manager=exchange_manager,

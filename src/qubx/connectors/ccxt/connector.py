@@ -83,6 +83,7 @@ from .utils import (
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
     ccxt_convert_positions,
+    ccxt_extract_leverage_settings,
     ccxt_extract_deals_from_exec,
     ccxt_find_instrument,
     info_float,
@@ -206,7 +207,10 @@ class CcxtConnector(ChannelEmitter):
         except Exception:  # noqa: BLE001 — cancelled/loop-teardown; nothing to surface
             return
         if exc is not None:
-            logger.error(f"[{self.exchange_name}] background connector task failed: {exc!r}")
+            # Positional arg, NOT an f-string: venue error text can contain markup (e.g. a
+            # Binance HTML error page) that loguru's colorizer rejects as bad color tags —
+            # only the static format string is tag-parsed, args are inserted after.
+            logger.error("[{}] background connector task failed: {!r}", self.exchange_name, exc)
 
     def _run_sync(self, coro: Any, timeout: float | None = None) -> Any:
         """Run a coroutine on the exchange loop and block for the result.
@@ -680,10 +684,18 @@ class CcxtConnector(ChannelEmitter):
 
     # Authoritative venue pull for the per-instrument settings
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        # - symbolConfig first: Binance v3 positionRisk has no `leverage` at all
+        leverage, _ = self._fetch_leverage_row(instrument)
+        if leverage is not None:
+            return leverage
         row = self._fetch_position_row(instrument)
         return info_float(row, "leverage") if row is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        # - symbolConfig first: `maxNotionalValue` is v2-only on positionRisk
+        _, max_notional = self._fetch_leverage_row(instrument)
+        if max_notional is not None:
+            return max_notional
         row = self._fetch_position_row(instrument)
         if row is None:
             return float("inf")
@@ -698,8 +710,51 @@ class CcxtConnector(ChannelEmitter):
         row = self._fetch_position_row(instrument)
         if row is None:
             return None
-        adl = info_float(row.get("info") or {}, "adlQuantile")
+        raw = row.get("info") or {}
+        # - v3 positionRisk renamed the field to `adl`; v2 (params.useV2) still spells it `adlQuantile`.
+        adl = info_float(raw, "adl")
+        if adl is None:
+            adl = info_float(raw, "adlQuantile")
         return int(adl) if adl is not None else None
+
+    async def _fill_leverage_settings(self, positions: list[Position]) -> None:
+        """Fill ``leverage``/``max_notional`` from symbolConfig for positions the position
+        payload left blank (Binance v3 carries neither — see ccxt_extract_leverage_settings).
+
+        Best-effort: a failure leaves the fields None, exactly as before. Never overwrites a
+        value the position payload did supply, so venues that do carry them are untouched.
+        """
+        if not positions or not self._em.exchange.has.get("fetchLeverages"):
+            return
+        if all(p.leverage is not None and p.max_notional is not None for p in positions):
+            return
+        try:
+            rows = await self._em.exchange.fetch_leverages()
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] fetch_leverages failed: {e}")
+            return
+        settings = ccxt_extract_leverage_settings(list(rows.values()) if isinstance(rows, dict) else rows)
+        for pos in positions:
+            leverage, max_notional = settings.get(instrument_to_ccxt_symbol(pos.instrument), (None, None))
+            if pos.leverage is None and leverage is not None:
+                pos.leverage = leverage
+            if pos.max_notional is None and max_notional is not None:
+                pos.max_notional = max_notional
+
+    def _fetch_leverage_row(self, instrument: Instrument) -> tuple[float | None, float | None]:
+        """Blocking symbolConfig pull for one instrument -> (leverage, max_notional)."""
+        try:
+            if not self._em.exchange.has.get("fetchLeverages"):
+                return (None, None)
+            symbol = instrument_to_ccxt_symbol(instrument)
+            rows = self._run_sync(self._em.exchange.fetch_leverages([symbol]))
+            settings = ccxt_extract_leverage_settings(
+                list(rows.values()) if isinstance(rows, dict) else rows
+            )
+            return settings.get(symbol, (None, None))
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[{self.exchange_name}] fetch leverage settings for {instrument.symbol}: {e}")
+            return (None, None)
 
     def _fetch_position_row(self, instrument: Instrument) -> dict[str, Any] | None:
         """Blocking single-symbol position pull; None on error or when no position is held."""
@@ -1313,13 +1368,17 @@ class CcxtConnector(ChannelEmitter):
         leg's live orders as missing → false reconcile-away. None makes reconcile skip
         order diffing this tick (positions/balances still apply).
         """
+        # Venue exception text goes in as positional args (may contain HTML/markup that
+        # loguru's colorizer rejects when it appears in the format string — a raised log
+        # call here would sink the whole snapshot).
         if isinstance(raw_orders, BaseException):
-            logger.warning(f"[{self.exchange_name}] snapshot: fetch_open_orders failed: {raw_orders}")
+            logger.warning("[{}] snapshot: fetch_open_orders failed: {}", self.exchange_name, raw_orders)
             return None
         if isinstance(raw_trigger_orders, BaseException):
             logger.warning(
-                f"[{self.exchange_name}] snapshot: fetch_open_orders(trigger) failed: {raw_trigger_orders};"
-                " skipping order reconcile this tick"
+                "[{}] snapshot: fetch_open_orders(trigger) failed: {}; skipping order reconcile this tick",
+                self.exchange_name,
+                raw_trigger_orders,
             )
             return None
         open_orders: list[Order] = []
@@ -1374,14 +1433,15 @@ class CcxtConnector(ChannelEmitter):
 
         positions: list[Position] | None = None
         if isinstance(raw_positions, BaseException):
-            logger.warning(f"[{self.exchange_name}] snapshot: fetch_positions failed: {raw_positions}")
+            logger.warning("[{}] snapshot: fetch_positions failed: {}", self.exchange_name, raw_positions)
         else:
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
+            await self._fill_leverage_settings(positions)
 
         balances: list[Balance] | None = None
         equity = available_margin = margin_ratio = withdrawable = None
         if isinstance(raw_balance, BaseException):
-            logger.warning(f"[{self.exchange_name}] snapshot: fetch_balance failed: {raw_balance}")
+            logger.warning("[{}] snapshot: fetch_balance failed: {}", self.exchange_name, raw_balance)
         else:
             balances = self._convert_balances(raw_balance)
             equity, available_margin, margin_ratio, withdrawable = self._extract_venue_figures(raw_balance)

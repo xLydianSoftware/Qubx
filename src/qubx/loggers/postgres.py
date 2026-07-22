@@ -24,6 +24,10 @@ _TABLE_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("current_price", "DOUBLE PRECISION"),
         ("market_value_quoted", "DOUBLE PRECISION"),
         ("commissions_quoted", "DOUBLE PRECISION"),
+        ("episode_start_time", "TIMESTAMPTZ"),
+        ("realized_pnl_at_open_quoted", "DOUBLE PRECISION"),
+        ("commissions_at_open_quoted", "DOUBLE PRECISION"),
+        ("funding_at_open_quoted", "DOUBLE PRECISION"),
     ],
     "portfolio": [
         ("timestamp", "TIMESTAMPTZ NOT NULL"),
@@ -39,6 +43,10 @@ _TABLE_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("exchange_time", "TIMESTAMPTZ"),
         ("commissions_quoted", "DOUBLE PRECISION"),
         ("cumulative_funding", "DOUBLE PRECISION"),
+        ("episode_start_time", "TIMESTAMPTZ"),
+        ("realized_pnl_at_open_quoted", "DOUBLE PRECISION"),
+        ("commissions_at_open_quoted", "DOUBLE PRECISION"),
+        ("funding_at_open_quoted", "DOUBLE PRECISION"),
     ],
     "executions": [
         ("timestamp", "TIMESTAMPTZ NOT NULL"),
@@ -147,6 +155,19 @@ class PostgresLogsWriter(LogsWriter):
                             columns=sql.SQL(col_defs),
                         )
                     )
+                    # Additive schema migration: CREATE IF NOT EXISTS is a no-op on a
+                    # pre-existing table, so columns added to _TABLE_SCHEMAS after the
+                    # table was first created would be missing — INSERTs would fail
+                    # (silently dropped by the write path's broad except) and the
+                    # restorer SELECT would error out. ADD COLUMN IF NOT EXISTS is
+                    # idempotent and cheap, and keeps deployed tables self-healing.
+                    for name, col_type in columns:
+                        cur.execute(
+                            sql.SQL("ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {col} " + col_type).format(
+                                table=sql.Identifier(tname),
+                                col=sql.Identifier(name),
+                            )
+                        )
                     # Index on strategy_name + timestamp for common queries
                     idx_name = f"idx_{tname}_strategy_ts"
                     cur.execute(

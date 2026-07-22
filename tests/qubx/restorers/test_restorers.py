@@ -351,6 +351,54 @@ class TestCsvPositionRestorer:
         assert isinstance(btc_position.position_avg_price, float)
         assert btc_position.position_avg_price > 0
 
+    def test_episode_fields_roundtrip_and_legacy(self, mock_lookup):
+        """Episode baselines round-trip through the CSV log; a legacy row (columns absent/NaN) gets
+        episode-at-restore: baselines = restored accumulators, episode_start_time = the row timestamp."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            run_folder = Path(temp_dir) / "run_20250308120000"
+            run_folder.mkdir()
+            ts = "2025-01-08 12:00:00"
+
+            # BTC: full episode fields present -> round-trip verbatim
+            # ETH: episode columns NaN (legacy) -> episode-at-restore
+            df = pd.DataFrame(
+                {
+                    "timestamp": [ts, ts],
+                    "symbol": ["BTCUSDT", "ETHUSDT"],
+                    "exchange": ["BINANCE", "BINANCE"],
+                    "market_type": ["FUTURE", "FUTURE"],
+                    "quantity": [1.0, 2.0],
+                    "avg_position_price": [50000.0, 3000.0],
+                    "realized_pnl_quoted": [100.0, 70.0],
+                    "funding_pnl_quoted": [-5.0, -1.0],
+                    "commissions_quoted": [3.0, 4.0],
+                    "current_price": [50100.0, 3050.0],
+                    "episode_start_time": ["2025-01-01 00:00:00", np.nan],
+                    "realized_pnl_at_open_quoted": [90.0, np.nan],
+                    "commissions_at_open_quoted": [2.0, np.nan],
+                    "funding_at_open_quoted": [-4.0, np.nan],
+                }
+            )
+            df.to_csv(run_folder / "test_strategy_positions.csv", index=False)
+
+            restorer = CsvPositionRestorer(base_dir=temp_dir, file_pattern="*_positions.csv")
+            positions = restorer.restore_positions()
+
+            btc = next(p for i, p in positions.items() if i.symbol == "BTCUSDT")
+            eth = next(p for i, p in positions.items() if i.symbol == "ETHUSDT")
+
+            # BTC: episode fields round-trip verbatim
+            assert btc.episode_start_time == pd.Timestamp("2025-01-01 00:00:00").asm8
+            assert btc.r_pnl_at_open == 90.0
+            assert btc.commissions_at_open == 2.0
+            assert btc.cumulative_funding_at_open == -4.0
+
+            # ETH: legacy -> episode-at-restore (baselines = accumulators, start = row timestamp)
+            assert eth.episode_start_time == pd.Timestamp(ts).asm8
+            assert eth.r_pnl_at_open == 70.0
+            assert eth.commissions_at_open == 4.0
+            assert eth.cumulative_funding_at_open == -1.0
+
 
 class TestMongoDBPositionRestorer:
     """Tests for MongoDB position restorer."""
@@ -411,6 +459,49 @@ class TestMongoDBPositionRestorer:
         assert btc_position is not None
         assert btc_position.position_avg_price > 0
         assert btc_position.quantity > 0
+
+    def test_episode_fields_roundtrip_and_legacy(self):
+        """Episode baselines round-trip through the Mongo log; a legacy doc (fields absent) gets
+        episode-at-restore: baselines = restored accumulators, episode_start_time = the doc timestamp."""
+        mock_client = mongomock.MongoClient(self._mongo_uri)
+        col = mock_client["default_logs_db"]["qubx_logs"]
+        ts = (datetime.now() - timedelta(days=1)).replace(microsecond=0)
+
+        # BTC: full episode fields present -> round-trip verbatim
+        col.insert_one(
+            {
+                "timestamp": ts, "symbol": "BTCUSDT", "exchange": "BINANCE.UM", "market_type": "SWAP",
+                "quantity": 1, "realized_pnl_quoted": 100.0, "avg_position_price": 90000,
+                "funding_pnl_quoted": -5.0, "commissions_quoted": 3.0,
+                "episode_start_time": "2025-01-01T00:00:00", "realized_pnl_at_open_quoted": 90.0,
+                "commissions_at_open_quoted": 2.0, "funding_at_open_quoted": -4.0,
+                "run_id": "run-1", "strategy_name": self._strategy_name, "log_type": "positions",
+            }
+        )
+        # ETH: legacy doc (no episode fields) -> episode-at-restore
+        col.insert_one(
+            {
+                "timestamp": ts, "symbol": "ETHUSDT", "exchange": "BINANCE.UM", "market_type": "SWAP",
+                "quantity": 2, "realized_pnl_quoted": 70.0, "avg_position_price": 3000,
+                "funding_pnl_quoted": -1.0, "commissions_quoted": 4.0,
+                "run_id": "run-1", "strategy_name": self._strategy_name, "log_type": "positions",
+            }
+        )
+
+        restorer = MongoDBPositionRestorer(strategy_name=self._strategy_name, mongo_client=mock_client)
+        result = restorer.restore_positions()
+        btc = next(p for i, p in result.items() if i.symbol == "BTCUSDT")
+        eth = next(p for i, p in result.items() if i.symbol == "ETHUSDT")
+
+        assert btc.episode_start_time == pd.Timestamp("2025-01-01T00:00:00").asm8
+        assert btc.r_pnl_at_open == 90.0
+        assert btc.commissions_at_open == 2.0
+        assert btc.cumulative_funding_at_open == -4.0
+
+        assert eth.episode_start_time == pd.Timestamp(ts).asm8
+        assert eth.r_pnl_at_open == 70.0
+        assert eth.commissions_at_open == 4.0
+        assert eth.cumulative_funding_at_open == -1.0
 
 
 # Signal restorer tests

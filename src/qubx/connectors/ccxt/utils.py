@@ -269,14 +269,22 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
         if info.get("markPrice") is not None:
             pos.update_market_price(_pts, info["markPrice"], 1)
 
-    # Use exchange-provided maintenance margin if available (more accurate than calculated)
+    # Use exchange-provided margins when reported — only the venue knows the configured leverage
+    # tier. The internal fallback cannot: with no instrument.initial_margin metadata (0.0 on
+    # BINANCE.UM) it yields 0.0, and with metadata it applies a static ratio that ignores the tier.
     if info.get("maintenanceMargin") is not None:
         pos.set_external_maint_margin(float(info["maintenanceMargin"]))
+
+    if info.get("initialMargin") is not None:
+        pos.set_external_initial_margin(float(info["initialMargin"]))
 
     # Venue-reported per-instrument settings (only overwrite when the venue reports them,
     # so a later snapshot that omits a field preserves the last-known value):
     #   leverage/marginMode ride the unified position dict; the notional cap and adl are
-    #   venue-specific and read off the raw info (Binance ``maxNotionalValue``/``adlQuantile``).
+    #   venue-specific and read off the raw info.
+    # NOTE: ccxt's fetch_positions defaults to Binance's v3 positionRisk, which renamed the ADL
+    # field to ``adl`` and dropped ``leverage``/``maxNotionalValue`` entirely (they only exist on
+    # the obsolete v2 endpoint, params.useV2). Read both spellings so either payload works.
     raw = info.get("info") or {}
     lev = info_float(info, "leverage")
     if lev is not None:
@@ -287,7 +295,9 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
     max_ntl = info_float(raw, "maxNotionalValue")
     if max_ntl is not None:
         pos.max_notional = max_ntl
-    adl = info_float(raw, "adlQuantile")
+    adl = info_float(raw, "adl")  # v3
+    if adl is None:
+        adl = info_float(raw, "adlQuantile")  # v2 (useV2=True)
     if adl is not None:
         pos.adl_level = int(adl)
 
@@ -303,6 +313,40 @@ def ccxt_convert_positions(
         if pos is not None:
             positions.append(pos)
     return positions
+
+
+def ccxt_extract_leverage_settings(rows: list[dict] | None) -> dict[str, tuple[float | None, float | None]]:
+    """Map ccxt symbol -> (leverage, max_notional) from ``fetch_leverages`` rows.
+
+    Binance's v3 positionRisk — what ``fetch_positions`` uses — carries neither field; both are
+    v2-only, so positions come back with ``leverage``/``max_notional`` None.
+    ``fetch_leverages`` hits ``GET /fapi/v1/symbolConfig``, which carries both per symbol with
+    no open position required, and leaves the v3 payload alone. That last part matters:
+    ``params.useV2`` would bring the fields back but makes ccxt recompute
+    ``initialMargin = notional / leverage`` instead of reading the venue's value — trading a
+    cosmetic gap for a regression in a field that IS consumed (available_margin, margin_ratio).
+
+    ``maxNotionalValue`` survives only in the raw row: ccxt's ``parse_leverage`` drops it.
+    """
+    out: dict[str, tuple[float | None, float | None]] = {}
+    for row in rows or []:
+        symbol = row.get("symbol")
+        if not symbol:
+            continue
+        raw = row.get("info") or {}
+        leverage = row.get("longLeverage")
+        if leverage is None:
+            leverage = row.get("shortLeverage")
+        if leverage is None:
+            leverage = info_float(raw, "leverage")
+        max_notional = info_float(raw, "maxNotionalValue")
+        if max_notional is None:
+            max_notional = info_float(raw, "maxNotional")  # papi um/account spelling
+        out[symbol] = (
+            float(leverage) if leverage is not None else None,
+            max_notional,
+        )
+    return out
 
 
 def ccxt_convert_orderbook(

@@ -22,6 +22,29 @@ from qubx.restorers.interfaces import IPositionRestorer
 from qubx.restorers.utils import find_latest_run_folder, latest_run_id, mongo_latest_run_id
 
 
+def _num_or_none(value) -> float | None:
+    """Coerce a restored numeric cell to float, mapping missing / NaN to None (legacy-row signal)."""
+    if value is None:
+        return None
+    try:
+        f = float(value)
+    except (TypeError, ValueError):
+        return None
+    return None if f != f else f  # f != f is True only for NaN
+
+
+def _time_or_none(value):
+    """Return the timestamp value, or None when it is missing / NaN / NaT (keeps strings as-is)."""
+    if value is None:
+        return None
+    try:
+        if pd.isna(value):
+            return None
+    except (TypeError, ValueError):
+        pass
+    return value
+
+
 class CsvPositionRestorer(IPositionRestorer):
     """
     Position restorer that reads positions from CSV files.
@@ -122,6 +145,14 @@ class CsvPositionRestorer(IPositionRestorer):
             quantity_col = "quantity" if "quantity" in row else "size"
             price_col = "avg_position_price" if "avg_position_price" in row else "avg_price"
 
+            # - episode baselines (absent on legacy rows -> episode-at-restore stamped by Position.__init__)
+            r_pnl_at_open = _num_or_none(row.get("realized_pnl_at_open_quoted"))
+            commissions_at_open = _num_or_none(row.get("commissions_at_open_quoted"))
+            cumulative_funding_at_open = _num_or_none(row.get("funding_at_open_quoted"))
+            episode_start_time = _time_or_none(row.get("episode_start_time"))
+            if r_pnl_at_open is None or commissions_at_open is None or cumulative_funding_at_open is None:
+                episode_start_time = row["timestamp"]  # restore time
+
             # Create a Position object
             position = Position(
                 instrument=instrument,
@@ -130,6 +161,10 @@ class CsvPositionRestorer(IPositionRestorer):
                 r_pnl=cast(float, row.get("realized_pnl_quoted", row.get("realized_pnl", 0.0))),
                 cumulative_funding=cast(float, row.get("funding_pnl_quoted", 0.0)),
                 commissions=cast(float, row.get("commissions_quoted", 0.0)),
+                episode_start_time=episode_start_time,
+                r_pnl_at_open=r_pnl_at_open,
+                commissions_at_open=commissions_at_open,
+                cumulative_funding_at_open=cumulative_funding_at_open,
             )
 
             timestamp = recognize_time(cast(str, row["timestamp"]))
@@ -228,6 +263,14 @@ class MongoDBPositionRestorer(IPositionRestorer):
                 cumulative_funding = log.get("funding_pnl_quoted", 0.0)
                 commissions = log.get("commissions_quoted", 0.0)
 
+                # - episode baselines (absent on legacy rows -> episode-at-restore in Position.__init__)
+                r_pnl_at_open = _num_or_none(log.get("realized_pnl_at_open_quoted"))
+                commissions_at_open = _num_or_none(log.get("commissions_at_open_quoted"))
+                cumulative_funding_at_open = _num_or_none(log.get("funding_at_open_quoted"))
+                episode_start_time = _time_or_none(log.get("episode_start_time"))
+                if r_pnl_at_open is None or commissions_at_open is None or cumulative_funding_at_open is None:
+                    episode_start_time = log.get("timestamp")  # restore time
+
                 position = Position(
                     instrument=instrument,
                     quantity=cast(float, quantity),
@@ -235,6 +278,10 @@ class MongoDBPositionRestorer(IPositionRestorer):
                     r_pnl=cast(float, r_pnl),
                     cumulative_funding=cast(float, cumulative_funding),
                     commissions=cast(float, commissions),
+                    episode_start_time=episode_start_time,
+                    r_pnl_at_open=r_pnl_at_open,
+                    commissions_at_open=commissions_at_open,
+                    cumulative_funding_at_open=cumulative_funding_at_open,
                 )
 
                 if current_price is not None:
@@ -284,7 +331,9 @@ class PostgresPositionRestorer(IPositionRestorer):
                     sql.SQL(
                         "SELECT DISTINCT ON (symbol, exchange, market_type) "
                         "symbol, exchange, market_type, quantity, avg_position_price, "
-                        "realized_pnl_quoted, current_price, funding_pnl_quoted, commissions_quoted, timestamp "
+                        "realized_pnl_quoted, current_price, funding_pnl_quoted, commissions_quoted, "
+                        "episode_start_time, realized_pnl_at_open_quoted, commissions_at_open_quoted, "
+                        "funding_at_open_quoted, timestamp "
                         "FROM {table} "
                         "WHERE strategy_name = %s AND run_id = %s AND timestamp >= %s "
                         "ORDER BY symbol, exchange, market_type, timestamp DESC"
@@ -294,7 +343,22 @@ class PostgresPositionRestorer(IPositionRestorer):
 
                 positions: dict[Instrument, Position] = {}
                 for log in cur.fetchall():
-                    symbol, exchange, market_type, quantity, avg_price, r_pnl, current_price, funding, commissions, ts = log
+                    (
+                        symbol,
+                        exchange,
+                        market_type,
+                        quantity,
+                        avg_price,
+                        r_pnl,
+                        current_price,
+                        funding,
+                        commissions,
+                        episode_start_time,
+                        r_pnl_at_open,
+                        commissions_at_open,
+                        cumulative_funding_at_open,
+                        ts,
+                    ) = log
 
                     if not (symbol and exchange and market_type):
                         continue
@@ -304,6 +368,14 @@ class PostgresPositionRestorer(IPositionRestorer):
                         logger.warning(f"Instrument not found for {symbol} on {exchange}")
                         continue
 
+                    # - episode baselines (NULL on legacy rows -> episode-at-restore in Position.__init__)
+                    r_pnl_at_open = _num_or_none(r_pnl_at_open)
+                    commissions_at_open = _num_or_none(commissions_at_open)
+                    cumulative_funding_at_open = _num_or_none(cumulative_funding_at_open)
+                    episode_start_time = _time_or_none(episode_start_time)
+                    if r_pnl_at_open is None or commissions_at_open is None or cumulative_funding_at_open is None:
+                        episode_start_time = ts  # restore time
+
                     position = Position(
                         instrument=instrument,
                         quantity=cast(float, quantity or 0.0),
@@ -311,6 +383,10 @@ class PostgresPositionRestorer(IPositionRestorer):
                         r_pnl=cast(float, r_pnl or 0.0),
                         cumulative_funding=cast(float, funding or 0.0),
                         commissions=cast(float, commissions or 0.0),
+                        episode_start_time=episode_start_time,
+                        r_pnl_at_open=r_pnl_at_open,
+                        commissions_at_open=commissions_at_open,
+                        cumulative_funding_at_open=cumulative_funding_at_open,
                     )
 
                     if current_price is not None:

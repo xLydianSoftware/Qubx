@@ -420,7 +420,9 @@ class AccountState:
                 f"[{self.exchange}] reconcile: position <y>{snapshot.instrument}</y> from snapshot -> "
                 f"size {existing.quantity}->{snapshot.quantity} avg {existing.position_avg_price}->{snapshot.position_avg_price}"
             )
-            existing.reconcile_size(snapshot.quantity, snapshot.position_avg_price)
+            existing.reconcile_size(
+                snapshot.quantity, snapshot.position_avg_price, timestamp=snapshot.last_update_time
+            )
 
         # external margins first, so the mark refresh below skips recalculating them
         if snapshot._maint_margin_external:
