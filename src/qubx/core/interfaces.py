@@ -39,6 +39,7 @@ from qubx.core.basics import (
     TargetPosition,
     Timestamped,
     TransactionCostsCalculator,
+    Transfer,
     TriggerEvent,
     dt_64,
     td_64,
@@ -1187,7 +1188,7 @@ class ITransferManager:
         """
         ...
 
-    def get_transfer_status(self, transaction_id: str) -> dict[str, Any]:
+    def get_transfer_status(self, transaction_id: str) -> Transfer:
         """
         Get the status of a transfer.
 
@@ -1195,11 +1196,11 @@ class ITransferManager:
             transaction_id: Transaction ID
 
         Returns:
-            dict[str, Any]: Transfer status
+            Transfer: The transfer record (raises if the id is unknown).
         """
         ...
 
-    def get_transfers(self) -> dict[str, dict[str, Any]]:
+    def get_transfers(self) -> dict[str, Transfer]:
         """Recorded transfers keyed by transaction id, for reporting (e.g. the backtest
         transfers log).
 

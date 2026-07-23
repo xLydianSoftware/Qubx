@@ -640,10 +640,13 @@ def recognize_simulation_data_config(
     )
 
 
+_TRANSFERS_LOG_COLUMNS = ["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]
+
+
 def collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataFrame | None:
     """Build the transfers-log DataFrame from a transfer manager.
 
-    ``ITransferManager.get_transfers() -> dict[tid, record]`` (default no-op; the
+    ``ITransferManager.get_transfers() -> dict[tid, Transfer]`` (default no-op; the
     SimulationTransferManager overrides it). We reproduce the legacy frame shape: one row
     per transfer, ``timestamp`` as the index, the remaining record fields as columns. No
     transfers (incl. the no-op default) -> empty frame with the legacy schema; no manager
@@ -652,12 +655,22 @@ def collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataF
     if transfer_manager is None:
         return None
     try:
-        records = list(transfer_manager.get_transfers().values())
-        if not records:
-            return pd.DataFrame(
-                columns=["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]
-            )
-        return pd.DataFrame(records).set_index("timestamp")
+        transfers = list(transfer_manager.get_transfers().values())
+        if not transfers:
+            return pd.DataFrame(columns=_TRANSFERS_LOG_COLUMNS)
+        rows = [
+            {
+                "timestamp": t.timestamp,
+                "transaction_id": t.transaction_id,
+                "from_exchange": t.from_exchange,
+                "to_exchange": t.to_exchange,
+                "currency": t.currency,
+                "amount": t.amount,
+                "status": str(t.status),
+            }
+            for t in transfers
+        ]
+        return pd.DataFrame(rows).set_index("timestamp")
     except Exception as e:
         logger.error(f"Failed to get transfers log: {e}")
         return None

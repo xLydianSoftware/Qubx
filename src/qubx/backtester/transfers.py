@@ -1,9 +1,8 @@
 import uuid
-from typing import Any
 
 from qubx import logger
 from qubx.core.account_manager import AccountManager
-from qubx.core.basics import ITimeProvider
+from qubx.core.basics import ITimeProvider, Transfer, TransferStatus
 from qubx.core.interfaces import ITransferManager
 
 
@@ -17,7 +16,7 @@ class SimulationTransferManager(ITransferManager):
     def __init__(self, account_manager: AccountManager, time_provider: ITimeProvider):
         self._account = account_manager
         self._time = time_provider
-        self._transfers: dict[str, dict[str, Any]] = {}
+        self._transfers: dict[str, Transfer] = {}
 
     def transfer_funds(self, from_exchange: str, to_exchange: str, currency: str, amount: float) -> str:
         if amount <= 0:
@@ -36,23 +35,23 @@ class SimulationTransferManager(ITransferManager):
         self._account.adjust_balance(to_exchange, currency, amount)
 
         transaction_id = f"sim_{uuid.uuid4().hex[:12]}"
-        self._transfers[transaction_id] = {
-            "transaction_id": transaction_id,
-            "timestamp": self._time.time(),
-            "from_exchange": from_exchange,
-            "to_exchange": to_exchange,
-            "currency": currency,
-            "amount": amount,
-            "status": "completed",  # transfers are instant in simulation
-        }
+        self._transfers[transaction_id] = Transfer(
+            transaction_id=transaction_id,
+            from_exchange=from_exchange,
+            to_exchange=to_exchange,
+            currency=currency,
+            amount=amount,
+            status=TransferStatus.COMPLETED,  # transfers are instant in simulation
+            timestamp=self._time.time(),
+        )
         logger.debug(f"[SimTransfer] {amount:.8f} {currency} {from_exchange} -> {to_exchange} ({transaction_id})")
         return transaction_id
 
-    def get_transfer_status(self, transaction_id: str) -> dict[str, Any]:
-        record = self._transfers.get(transaction_id)
-        if record is None:
+    def get_transfer_status(self, transaction_id: str) -> Transfer:
+        transfer = self._transfers.get(transaction_id)
+        if transfer is None:
             raise ValueError(f"Transfer not found: {transaction_id}")
-        return dict(record)
+        return transfer
 
-    def get_transfers(self) -> dict[str, dict[str, Any]]:
-        return {tid: dict(rec) for tid, rec in self._transfers.items()}
+    def get_transfers(self) -> dict[str, Transfer]:
+        return dict(self._transfers)
