@@ -28,6 +28,7 @@ from qubx.core.basics import (
     Signal,
     TargetPosition,
     TransactionCostsCalculator,
+    Transfer,
     dt_64,
     td_64,
 )
@@ -959,12 +960,12 @@ class StrategyContext(IStrategyContext):
         return self._transfer_manager.transfer_funds(from_exchange, to_exchange, currency, amount)
 
     @check_transfer_manager
-    def get_transfer_status(self, transaction_id: str) -> dict[str, Any]:
+    def get_transfer_status(self, transaction_id: str) -> Transfer:
         assert self._transfer_manager is not None
         return self._transfer_manager.get_transfer_status(transaction_id)
 
     @check_transfer_manager
-    def get_transfers(self) -> dict[str, dict[str, Any]]:
+    def get_transfers(self) -> dict[str, Transfer]:
         assert self._transfer_manager is not None
         return self._transfer_manager.get_transfers()
 

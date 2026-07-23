@@ -908,6 +908,57 @@ class Balance:
         self.last_update_time = balance.last_update_time
 
 
+class TransferStatus(StrEnum):
+    """Normalized status of an inter-exchange fund transfer.
+
+    Live services expose a venue-native status (kept on ``Transfer.raw_status``); this is the
+    3-state vocabulary the framework and strategies reason about. Values are lowercase to match
+    the transfers-log column content and the historical status strings.
+    """
+
+    PENDING = "pending"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+    @property
+    def is_terminal(self) -> bool:
+        return self in (TransferStatus.COMPLETED, TransferStatus.FAILED)
+
+
+@dataclass(frozen=True)
+class Transfer:
+    """A single inter-exchange fund transfer tracked by an ``ITransferManager``.
+
+    Immutable: managers replace the tracked instance on each refresh rather than mutating it,
+    so a value handed to a caller never changes underfoot (the live manager is read from both
+    the strategy and the control-server threads).
+    """
+
+    transaction_id: str
+    from_exchange: str
+    to_exchange: str
+    currency: str
+    amount: float
+    status: TransferStatus
+    timestamp: dt_64
+    raw_status: str | None = None  # venue-native status; None for simulation
+    failure_reason: str | None = None  # populated when status is FAILED
+
+    def to_dict(self) -> dict[str, Any]:
+        """JSON-safe mapping (datetime64 -> str, status -> its value) for wire/reporting."""
+        return {
+            "transaction_id": self.transaction_id,
+            "timestamp": str(self.timestamp),
+            "from_exchange": self.from_exchange,
+            "to_exchange": self.to_exchange,
+            "currency": self.currency,
+            "amount": self.amount,
+            "status": str(self.status),
+            "raw_status": self.raw_status,
+            "failure_reason": self.failure_reason,
+        }
+
+
 DEFAULT_MAINTENANCE_MARGIN = 0.05
 
 

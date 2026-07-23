@@ -13,7 +13,7 @@ from qubx.backtester.utils import (
     recognize_simulation_data_config,
 )
 from qubx.core.account_manager import SimulatedAccountManager
-from qubx.core.basics import Balance, Instrument, ITimeProvider, MarketType
+from qubx.core.basics import Balance, Instrument, ITimeProvider, MarketType, Transfer, TransferStatus
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import IStrategy, IStrategyInitializer, ITransferManager
 from qubx.data.registry import StorageRegistry
@@ -34,6 +34,31 @@ def _am():
     return am
 
 
+def test_transfer_status_is_terminal():
+    assert TransferStatus.COMPLETED.is_terminal
+    assert TransferStatus.FAILED.is_terminal
+    assert not TransferStatus.PENDING.is_terminal
+
+
+def test_transfer_to_dict_is_json_safe():
+    t = Transfer(
+        transaction_id="tx1",
+        from_exchange="E1",
+        to_exchange="E2",
+        currency="USDC",
+        amount=100.0,
+        status=TransferStatus.COMPLETED,
+        timestamp=np.datetime64("2026-05-28T00:00:00", "ms"),
+        raw_status="COMPLETED",
+    )
+    d = t.to_dict()
+    assert d["transaction_id"] == "tx1"
+    assert d["status"] == "completed"  # enum -> its value
+    assert isinstance(d["timestamp"], str) and d["timestamp"].startswith("2026-05-28")
+    assert d["raw_status"] == "COMPLETED"
+    assert d["failure_reason"] is None
+
+
 def test_transfer_moves_balance_between_exchanges():
     am = _am()
     tm = SimulationTransferManager(am, _T())
@@ -45,10 +70,10 @@ def test_transfer_moves_balance_between_exchanges():
     assert am.get_balance("USDT", exchange="E2").total == 300.0
     assert am.get_balance("USDT", exchange="E2").free == 300.0
     status = tm.get_transfer_status(txid)
-    assert status["amount"] == 300.0
-    assert status["from_exchange"] == "E1"
-    assert status["to_exchange"] == "E2"
-    assert status["status"] == "completed"
+    assert status.amount == 300.0
+    assert status.from_exchange == "E1"
+    assert status.to_exchange == "E2"
+    assert status.status == TransferStatus.COMPLETED
     assert txid in tm.get_transfers()
 
 
