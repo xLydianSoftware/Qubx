@@ -325,6 +325,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
     ) -> None:
         """Create a strategy-owned table with explicit types (spec: strategy-tables §2.0)."""
         try:
+            if isinstance(symbol_columns, str):
+                raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
             decl: dict[str, str] = {"timestamp": "TIMESTAMP"}
             for key in self._default_tags:  # scope columns, injected first
                 decl[key] = "SYMBOL" if key in self.SYMBOL_TAGS else "STRING"
@@ -343,7 +345,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 f"TIMESTAMP(timestamp) PARTITION BY {partition_by} WAL"
             )
             if dedup_keys:
-                ddl += f" DEDUP UPSERT KEYS({', '.join(dedup_keys)})"
+                quoted_keys = ", ".join(f'"{k}"' for k in dedup_keys)
+                ddl += f" DEDUP UPSERT KEYS({quoted_keys})"
             ddl += ";"
             QuestDBClient(host=self._host, port=8812).execute(ddl)
             self._declared_columns[table] = set(decl)
@@ -359,18 +362,33 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         symbol_columns: Sequence[str] = (),
         timestamp: dt_64 | None = None,
     ) -> None:
-        """Emit one row to a strategy-owned table (spec: strategy-tables §2.1)."""
+        """Emit one row to a strategy-owned table (spec: strategy-tables §2.1).
+
+        The designated timestamp is taken only from the `timestamp` parameter (falling
+        back to the context's current time, then wall-clock `now()`) — a `"timestamp"`
+        key present in `record` is dropped so it can't collide with it.
+        """
         if self._sender is None:
             return
         try:
+            if isinstance(symbol_columns, str):
+                raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
             if self._context is not None and timestamp is None:
                 timestamp = self._context.time()
             row = {k: v for k, v in record.items() if v is not None}
+            row.pop("timestamp", None)  # designated timestamp comes only from the `timestamp` parameter
             row.update(self._default_tags)  # scope tags overwrite caller keys
             if self._context is not None:
                 row["is_live"] = not self._context.is_simulation
             declared = self._declared_columns.get(table)
-            if declared is not None:
+            if declared is None:
+                if table not in self._warned_undeclared:
+                    self._warned_undeclared.add(table)
+                    logger.warning(
+                        f"[QuestDBMetricEmitter] table '{table}' not declared via ensure_table — "
+                        "ILP auto-create with inferred types"
+                    )
+            else:
                 unknown = set(row) - declared
                 if unknown and table not in self._warned_undeclared:
                     self._warned_undeclared.add(table)

@@ -126,6 +126,16 @@ class CompositeMetricEmitter(BaseMetricEmitter):
         dedup_keys: Sequence[str] | None = None,
         partition_by: str = "DAY",
     ) -> None:
+        """
+        Declare a strategy-owned table on all configured emitters.
+
+        Args:
+            table: Table name (e.g. "frab.trades")
+            columns: Column name -> type (DOUBLE | LONG | STRING | BOOLEAN | TIMESTAMP)
+            symbol_columns: Column names to create as indexed SYMBOL columns
+            dedup_keys: Optional designated-timestamp-first dedup key columns
+            partition_by: Partitioning unit (default DAY)
+        """
         for emitter in self._emitters:
             try:
                 emitter.ensure_table(
@@ -141,6 +151,15 @@ class CompositeMetricEmitter(BaseMetricEmitter):
         symbol_columns: Sequence[str] = (),
         timestamp: dt_64 | None = None,
     ) -> None:
+        """
+        Emit one structured row to a strategy-owned table on all configured emitters.
+
+        Args:
+            table: Table name (should have been declared via ensure_table)
+            record: Column name -> value for this row
+            symbol_columns: Which keys are SYMBOL columns (used if the table was not declared)
+            timestamp: Designated timestamp of the row (defaults to context time / now)
+        """
         for emitter in self._emitters:
             try:
                 emitter.emit_record(table, record, symbol_columns=symbol_columns, timestamp=timestamp)

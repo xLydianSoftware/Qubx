@@ -96,7 +96,7 @@ class TestEnsureTable:
         assert '"pair" SYMBOL' in ddl_sql
         assert '"net_pnl" DOUBLE' in ddl_sql
         assert '"entry_time" TIMESTAMP' in ddl_sql
-        assert "TIMESTAMP(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS(timestamp, trade_id)" in ddl_sql
+        assert 'TIMESTAMP(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS("timestamp", "trade_id")' in ddl_sql
         assert emitter._declared_symbols["frab.trades"] >= {"pair", "asset", "strategy", "environment"}
 
     def test_rejects_unknown_type(self, emitter):
@@ -113,6 +113,12 @@ class TestEnsureTable:
         # run_id is a reserved scope column (STRING) -> symbol_columns must not flip it to SYMBOL
         assert '"run_id" STRING' in ddl_sql
         assert '"pair" SYMBOL' in ddl_sql
+
+    def test_rejects_bare_string_symbol_columns(self, emitter):
+        # a bare string iterates as characters ("p", "a", "i", "r", ...) -> would mint bogus
+        # single-letter SYMBOL columns; must be rejected instead, not silently misinterpreted.
+        emitter.ensure_table("t", {}, symbol_columns="pair")  # must not raise (logged), no DDL executed
+        emitter._ddl_client_for_test.execute.assert_not_called()
 
 
 class TestEmitRecord:
@@ -172,3 +178,32 @@ class TestEmitRecord:
         assert emitter._sender.rows[0][2]["net_pnl"] == 1.0
         assert emitter._sender.rows[1][2]["net_pnl"] == 2.0
         warning.assert_called_once()  # but the undeclared-column warning fires only once
+
+    def test_undeclared_table_warns_once_across_multiple_emits(self, emitter, monkeypatch):
+        warning = MagicMock()
+        monkeypatch.setattr(qdb_mod.logger, "warning", warning)
+
+        emitter.emit_record("frab.undeclared", {"ev": 1.0})
+        emitter.emit_record("frab.undeclared", {"ev": 2.0})
+
+        assert len(emitter._sender.rows) == 2  # rows are still written both times
+        assert emitter._sender.rows[0][2]["ev"] == 1.0
+        assert emitter._sender.rows[1][2]["ev"] == 2.0
+        warning.assert_called_once()  # but the "not declared via ensure_table" warning fires only once
+        msg = warning.call_args[0][0]
+        assert "frab.undeclared" in msg
+        assert "not declared via ensure_table" in msg
+
+    def test_rejects_bare_string_symbol_columns(self, emitter):
+        emitter.emit_record("t", {"a": 1.0}, symbol_columns="pair")  # must not raise (logged), no row emitted
+        assert emitter._sender.rows == []
+
+    def test_record_timestamp_key_is_dropped(self, emitter):
+        emitter.emit_record("frab.trades", {"net_pnl": 1.0, "timestamp": datetime.datetime(2020, 1, 1)})
+        _, _, columns, _ = emitter._sender.rows[0]
+        assert "timestamp" not in columns
+        assert columns["net_pnl"] == 1.0
+
+    def test_unsupported_timestamp_type_is_caught_and_logged(self, emitter):
+        emitter.emit_record("t", {"a": 1.0}, timestamp=object())  # must not raise (error logged)
+        assert emitter._sender.rows == []  # nothing was queued/emitted
