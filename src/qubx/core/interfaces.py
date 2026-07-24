@@ -14,6 +14,7 @@ This module includes:
 
 import datetime
 import traceback
+from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
@@ -2607,6 +2608,54 @@ class IMetricEmitter:
             instrument: Instrument the deals belong to
             deals: List of deals to emit
             account: Account viewer to get account information like total capital, leverage, etc.
+        """
+        pass
+
+    def ensure_table(
+        self,
+        table: str,
+        columns: dict[str, str],
+        symbol_columns: Sequence[str] = (),
+        dedup_keys: Sequence[str] | None = None,
+        partition_by: str = "DAY",
+    ) -> None:
+        """
+        Declare a strategy-owned table with an explicit schema.
+
+        Implementations that persist to a SQL store should create the table if it
+        does not exist (idempotent). Scope columns (strategy, run_id, is_live and
+        any configured default tags) are added automatically — callers declare only
+        their own columns. Default is a no-op.
+
+        Args:
+            table: Table name (e.g. "frab.trades")
+            columns: Column name -> type (DOUBLE | LONG | STRING | BOOLEAN | TIMESTAMP)
+            symbol_columns: Column names to create as indexed SYMBOL columns
+            dedup_keys: Optional designated-timestamp-first dedup key columns
+            partition_by: Partitioning unit (default DAY)
+        """
+        pass
+
+    def emit_record(
+        self,
+        table: str,
+        record: dict[str, Any],
+        symbol_columns: Sequence[str] = (),
+        timestamp: dt_64 | None = None,
+    ) -> None:
+        """
+        Emit one structured row to a strategy-owned table.
+
+        Scope tags (strategy, run_id, is_live, configured default tags) are injected
+        automatically and OVERWRITE caller keys of the same name. Values map to
+        column types naturally (float->DOUBLE, int->LONG, bool->BOOLEAN, str->STRING,
+        datetime-like->TIMESTAMP). None values are skipped. Default is a no-op.
+
+        Args:
+            table: Table name (should have been declared via ensure_table)
+            record: Column name -> value for this row
+            symbol_columns: Which keys are SYMBOL columns (used if the table was not declared)
+            timestamp: Designated timestamp of the row (defaults to context time / now)
         """
         pass
 

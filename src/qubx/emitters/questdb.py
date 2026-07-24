@@ -5,6 +5,7 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 """
 
 import datetime
+from collections.abc import Sequence
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
 
@@ -28,6 +29,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
     """
 
     SYMBOL_TAGS = ["symbol", "exchange", "type", "environment", "strategy"]
+    RECORD_COLUMN_TYPES = {"DOUBLE", "LONG", "STRING", "BOOLEAN", "TIMESTAMP", "SYMBOL"}
 
     def __init__(
         self,
@@ -71,6 +73,11 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._last_flush = None
         self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="questdb_emitter")
         self._stopped = False
+
+        # Strategy-owned tables declared via ensure_table: name -> column/symbol sets.
+        self._declared_columns: dict[str, set[str]] = {}
+        self._declared_symbols: dict[str, set[str]] = {}
+        self._warned_undeclared: set[str] = set()
 
         # Create signals table if it doesn't exist
         self._ensure_signals_table_exists()
@@ -307,6 +314,110 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             self._executor.submit(self._emit_deals_to_questdb, time, instrument, deals, account)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue deals emission: {e}")
+
+    def ensure_table(
+        self,
+        table: str,
+        columns: dict[str, str],
+        symbol_columns: Sequence[str] = (),
+        dedup_keys: Sequence[str] | None = None,
+        partition_by: str = "DAY",
+    ) -> None:
+        """Create a strategy-owned table with explicit types (spec: strategy-tables §2.0)."""
+        try:
+            if isinstance(symbol_columns, str):
+                raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
+            decl: dict[str, str] = {"timestamp": "TIMESTAMP"}
+            for key in self._default_tags:  # scope columns, injected first
+                decl[key] = "SYMBOL" if key in self.SYMBOL_TAGS else "STRING"
+            decl.setdefault("run_id", "STRING")
+            decl["is_live"] = "BOOLEAN"
+            for name in symbol_columns:
+                decl.setdefault(name, "SYMBOL")  # never overrides reserved scope columns (e.g. run_id, timestamp)
+            for name, typ in columns.items():
+                t = typ.upper()
+                if t not in self.RECORD_COLUMN_TYPES:
+                    raise ValueError(f"unsupported column type {typ!r} for column {name!r}")
+                decl.setdefault(name, t)  # symbol_columns take precedence
+            cols_sql = ", ".join(f'"{n}" {t}' for n, t in decl.items())
+            ddl = (
+                f'CREATE TABLE IF NOT EXISTS "{table}" ({cols_sql}) '
+                f"TIMESTAMP(timestamp) PARTITION BY {partition_by} WAL"
+            )
+            if dedup_keys:
+                quoted_keys = ", ".join(f'"{k}"' for k in dedup_keys)
+                ddl += f" DEDUP UPSERT KEYS({quoted_keys})"
+            ddl += ";"
+            QuestDBClient(host=self._host, port=8812).execute(ddl)
+            self._declared_columns[table] = set(decl)
+            self._declared_symbols[table] = {n for n, t in decl.items() if t == "SYMBOL"}
+            logger.info(f"[QuestDBMetricEmitter] Ensured table '{table}' exists")
+        except Exception as e:
+            logger.error(f"[QuestDBMetricEmitter] Failed to ensure table '{table}': {e}")
+
+    def emit_record(
+        self,
+        table: str,
+        record: dict[str, Any],
+        symbol_columns: Sequence[str] = (),
+        timestamp: dt_64 | None = None,
+    ) -> None:
+        """Emit one row to a strategy-owned table (spec: strategy-tables §2.1).
+
+        The designated timestamp is taken only from the `timestamp` parameter (falling
+        back to the context's current time, then wall-clock `now()`) — a `"timestamp"`
+        key present in `record` is dropped so it can't collide with it.
+        """
+        if self._sender is None:
+            return
+        try:
+            if isinstance(symbol_columns, str):
+                raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
+            if self._context is not None and timestamp is None:
+                timestamp = self._context.time()
+            row = {k: v for k, v in record.items() if v is not None}
+            row.pop("timestamp", None)  # designated timestamp comes only from the `timestamp` parameter
+            row.update(self._default_tags)  # scope tags overwrite caller keys
+            if self._context is not None:
+                row["is_live"] = not self._context.is_simulation
+            declared = self._declared_columns.get(table)
+            if declared is None:
+                if table not in self._warned_undeclared:
+                    self._warned_undeclared.add(table)
+                    logger.warning(
+                        f"[QuestDBMetricEmitter] table '{table}' not declared via ensure_table — "
+                        "ILP auto-create with inferred types"
+                    )
+            else:
+                unknown = set(row) - declared
+                if unknown and table not in self._warned_undeclared:
+                    self._warned_undeclared.add(table)
+                    logger.warning(f"[QuestDBMetricEmitter] '{table}': undeclared columns {sorted(unknown)}")
+            sym_names = self._declared_symbols.get(table)
+            if sym_names is None:
+                sym_names = set(symbol_columns) | (set(self.SYMBOL_TAGS) & set(row))
+            symbols = {k: str(row.pop(k)) for k in list(row) if k in sym_names}
+            columns: dict[str, Any] = {}
+            for k, v in row.items():
+                if isinstance(v, (pd.Timestamp, np.datetime64, datetime.datetime)):
+                    columns[k] = self._convert_timestamp(v)
+                elif isinstance(v, np.generic):  # numpy scalar (float64/int64/bool_/...) -> native Python
+                    columns[k] = v.item()
+                else:
+                    columns[k] = v
+            at = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
+            self._executor.submit(self._emit_record_to_questdb, table, symbols, columns, at)
+        except Exception as e:
+            logger.error(f"[QuestDBMetricEmitter] Failed to queue record for '{table}': {e}")
+
+    def _emit_record_to_questdb(
+        self, table: str, symbols: dict[str, str], columns: dict[str, Any], at: datetime.datetime
+    ) -> None:
+        try:
+            if self._sender is not None:
+                self._sender.row(table, symbols=symbols, columns=columns, at=at)
+        except Exception as e:
+            logger.error(f"[QuestDBMetricEmitter] Failed to emit record to '{table}': {e}")
 
     def _emit_signals_to_questdb(
         self,
