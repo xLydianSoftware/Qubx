@@ -331,7 +331,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             decl.setdefault("run_id", "STRING")
             decl["is_live"] = "BOOLEAN"
             for name in symbol_columns:
-                decl[name] = "SYMBOL"
+                decl.setdefault(name, "SYMBOL")  # never overrides reserved scope columns (e.g. run_id, timestamp)
             for name, typ in columns.items():
                 t = typ.upper()
                 if t not in self.RECORD_COLUMN_TYPES:
@@ -379,16 +379,22 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             if sym_names is None:
                 sym_names = set(symbol_columns) | (set(self.SYMBOL_TAGS) & set(row))
             symbols = {k: str(row.pop(k)) for k in list(row) if k in sym_names}
-            columns = {
-                k: (self._convert_timestamp(v) if isinstance(v, (pd.Timestamp, np.datetime64)) or hasattr(v, "astype") else v)
-                for k, v in row.items()
-            }
+            columns: dict[str, Any] = {}
+            for k, v in row.items():
+                if isinstance(v, (pd.Timestamp, np.datetime64, datetime.datetime)):
+                    columns[k] = self._convert_timestamp(v)
+                elif isinstance(v, np.generic):  # numpy scalar (float64/int64/bool_/...) -> native Python
+                    columns[k] = v.item()
+                else:
+                    columns[k] = v
             at = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
             self._executor.submit(self._emit_record_to_questdb, table, symbols, columns, at)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue record for '{table}': {e}")
 
-    def _emit_record_to_questdb(self, table: str, symbols: dict, columns: dict, at) -> None:
+    def _emit_record_to_questdb(
+        self, table: str, symbols: dict[str, str], columns: dict[str, Any], at: datetime.datetime
+    ) -> None:
         try:
             if self._sender is not None:
                 self._sender.row(table, symbols=symbols, columns=columns, at=at)

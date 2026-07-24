@@ -3,6 +3,7 @@
 import datetime
 from unittest.mock import MagicMock
 
+import numpy as np
 import pytest
 
 import qubx.emitters.questdb as qdb_mod
@@ -102,6 +103,17 @@ class TestEnsureTable:
         emitter.ensure_table("t", {"x": "JSONB"})  # must not raise (logged), and no DDL executed
         emitter._ddl_client_for_test.execute.assert_not_called()
 
+    def test_symbol_columns_do_not_override_reserved_scope_types(self, emitter):
+        emitter.ensure_table(
+            "frab.reserved",
+            {"net_pnl": "DOUBLE"},
+            symbol_columns=("run_id", "pair"),
+        )
+        ddl_sql = emitter._ddl_client_for_test.execute.call_args[0][0]
+        # run_id is a reserved scope column (STRING) -> symbol_columns must not flip it to SYMBOL
+        assert '"run_id" STRING' in ddl_sql
+        assert '"pair" SYMBOL' in ddl_sql
+
 
 class TestEmitRecord:
     def test_scope_tags_overwrite_and_symbols_split(self, emitter):
@@ -135,3 +147,28 @@ class TestEmitRecord:
     def test_errors_never_raise(self, emitter):
         emitter._sender = None
         emitter.emit_record("t", {"a": 1.0})  # early return, no raise
+
+    def test_numpy_scalar_columns_pass_through_natively(self, emitter):
+        emitter.emit_record("frab.trades", {"score": np.float64(1.5)})
+        _, _, columns, _ = emitter._sender.rows[0]
+        assert columns["score"] == 1.5
+        assert isinstance(columns["score"], float) and not isinstance(columns["score"], np.floating)
+
+    def test_numpy_datetime64_column_converted_to_datetime(self, emitter):
+        emitter.emit_record("frab.trades", {"entry_time": np.datetime64("2026-07-24T12:00:00")})
+        _, _, columns, _ = emitter._sender.rows[0]
+        assert isinstance(columns["entry_time"], datetime.datetime)
+        assert not isinstance(columns["entry_time"], np.datetime64)
+
+    def test_warns_once_per_table_for_undeclared_keys(self, emitter, monkeypatch):
+        warning = MagicMock()
+        monkeypatch.setattr(qdb_mod.logger, "warning", warning)
+        emitter.ensure_table("frab.trades", {"net_pnl": "DOUBLE"})
+
+        emitter.emit_record("frab.trades", {"net_pnl": 1.0, "surprise": "x"})
+        emitter.emit_record("frab.trades", {"net_pnl": 2.0, "surprise": "y"})
+
+        assert len(emitter._sender.rows) == 2  # row is still written both times
+        assert emitter._sender.rows[0][2]["net_pnl"] == 1.0
+        assert emitter._sender.rows[1][2]["net_pnl"] == 2.0
+        warning.assert_called_once()  # but the undeclared-column warning fires only once
