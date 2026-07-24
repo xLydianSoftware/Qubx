@@ -1,9 +1,14 @@
 """Tests for strategy-owned tables: ensure_table + emit_record (spec §2)."""
 
+import datetime
 from unittest.mock import MagicMock
 
+import pytest
+
+import qubx.emitters.questdb as qdb_mod
 from qubx.core.interfaces import IMetricEmitter
 from qubx.emitters.composite import CompositeMetricEmitter
+from qubx.emitters.questdb import QuestDBMetricEmitter
 
 
 class TestInterfaceDefaults:
@@ -32,3 +37,101 @@ class TestCompositeForwarding:
         comp = CompositeMetricEmitter([bad, good])
         comp.emit_record("t", {"a": 1.0})  # must not raise
         good.emit_record.assert_called_once()
+
+
+class FakeSender:
+    def __init__(self):
+        self.rows: list[tuple] = []
+
+    def row(self, table, symbols=None, columns=None, at=None):
+        self.rows.append((table, symbols, columns, at))
+
+    def flush(self):
+        pass
+
+    def close(self):
+        pass
+
+
+class SyncExecutor:
+    def submit(self, fn, *args, **kwargs):
+        fn(*args, **kwargs)
+
+    def shutdown(self, **kwargs):
+        pass
+
+
+@pytest.fixture
+def emitter(monkeypatch):
+    ddl = MagicMock()
+    monkeypatch.setattr(qdb_mod, "QuestDBClient", MagicMock(return_value=ddl))
+    # Sender is a Cython extension type (immutable); patch the module-level name instead
+    # of Sender.from_conf directly (setattr on the class raises TypeError: immutable type).
+    monkeypatch.setattr(qdb_mod, "Sender", MagicMock(from_conf=MagicMock(side_effect=RuntimeError("no net"))))
+    em = QuestDBMetricEmitter(host="qdb", tags={"strategy": "bot-1", "run_id": "r-1", "environment": "dev"})
+    em._sender = FakeSender()
+    em._executor = SyncExecutor()
+    ddl.reset_mock()  # drop the signals/deals DDL calls from __init__
+    em._ddl_client_for_test = ddl
+    return em
+
+
+class TestEnsureTable:
+    def test_generates_create_table_with_scope_columns_and_dedup(self, emitter):
+        emitter.ensure_table(
+            "frab.trades",
+            {"trade_id": "STRING", "entry_time": "TIMESTAMP", "net_pnl": "DOUBLE"},
+            symbol_columns=("pair", "asset"),
+            dedup_keys=("timestamp", "trade_id"),
+        )
+        ddl_sql = emitter._ddl_client_for_test.execute.call_args[0][0]
+        assert 'CREATE TABLE IF NOT EXISTS "frab.trades"' in ddl_sql
+        assert '"timestamp" TIMESTAMP' in ddl_sql
+        # scope columns injected: strategy/environment are SYMBOL_TAGS -> SYMBOL, run_id STRING, is_live BOOLEAN
+        assert '"strategy" SYMBOL' in ddl_sql
+        assert '"environment" SYMBOL' in ddl_sql
+        assert '"run_id" STRING' in ddl_sql
+        assert '"is_live" BOOLEAN' in ddl_sql
+        assert '"pair" SYMBOL' in ddl_sql
+        assert '"net_pnl" DOUBLE' in ddl_sql
+        assert '"entry_time" TIMESTAMP' in ddl_sql
+        assert "TIMESTAMP(timestamp) PARTITION BY DAY WAL DEDUP UPSERT KEYS(timestamp, trade_id)" in ddl_sql
+        assert emitter._declared_symbols["frab.trades"] >= {"pair", "asset", "strategy", "environment"}
+
+    def test_rejects_unknown_type(self, emitter):
+        emitter.ensure_table("t", {"x": "JSONB"})  # must not raise (logged), and no DDL executed
+        emitter._ddl_client_for_test.execute.assert_not_called()
+
+
+class TestEmitRecord:
+    def test_scope_tags_overwrite_and_symbols_split(self, emitter):
+        emitter.ensure_table("frab.trades", {"net_pnl": "DOUBLE", "trade_id": "STRING"}, symbol_columns=("pair",))
+        emitter.emit_record(
+            "frab.trades",
+            {"pair": "SOL:BIN:HPL", "net_pnl": 1.5, "trade_id": "SOL:123", "strategy": "SPOOFED"},
+            timestamp=datetime.datetime(2026, 7, 24, 12, 0, 0),
+        )
+        table, symbols, columns, at = emitter._sender.rows[0]
+        assert table == "frab.trades"
+        assert symbols["strategy"] == "bot-1"  # injected wins over caller "SPOOFED"
+        assert symbols["pair"] == "SOL:BIN:HPL"
+        assert columns["net_pnl"] == 1.5
+        assert columns["trade_id"] == "SOL:123"
+        assert "is_live" not in columns  # no context set -> is_live is not injected at all
+        assert at == datetime.datetime(2026, 7, 24, 12, 0, 0)
+
+    def test_none_values_skipped_and_datetime_columns_converted(self, emitter):
+        emitter.emit_record("frab.trades", {"ev": None, "entry_time": datetime.datetime(2026, 7, 24)})
+        _, _, columns, _ = emitter._sender.rows[0]
+        assert "ev" not in columns
+        assert isinstance(columns["entry_time"], datetime.datetime)
+
+    def test_undeclared_table_uses_symbol_columns_arg(self, emitter):
+        emitter.emit_record("frab.decisions", {"pair": "X", "ev": 1.0}, symbol_columns=("pair",))
+        _, symbols, columns, _ = emitter._sender.rows[0]
+        assert symbols["pair"] == "X"
+        assert columns["ev"] == 1.0
+
+    def test_errors_never_raise(self, emitter):
+        emitter._sender = None
+        emitter.emit_record("t", {"a": 1.0})  # early return, no raise
