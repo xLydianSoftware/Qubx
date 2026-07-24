@@ -5,7 +5,8 @@ This module provides a composite implementation of IMetricEmitter that delegates
 """
 
 import datetime
-from typing import Dict, List, Optional
+from collections.abc import Sequence
+from typing import Any, Dict, List, Optional
 
 import pandas as pd
 
@@ -116,6 +117,35 @@ class CompositeMetricEmitter(BaseMetricEmitter):
                 emitter.emit_deals(time, instrument, deals, account)
             except Exception as e:
                 logger.error(f"Error emitting deals to {emitter.__class__.__name__}: {e}")
+
+    def ensure_table(
+        self,
+        table: str,
+        columns: dict[str, str],
+        symbol_columns: Sequence[str] = (),
+        dedup_keys: Sequence[str] | None = None,
+        partition_by: str = "DAY",
+    ) -> None:
+        for emitter in self._emitters:
+            try:
+                emitter.ensure_table(
+                    table, columns, symbol_columns=symbol_columns, dedup_keys=dedup_keys, partition_by=partition_by
+                )
+            except Exception as e:
+                logger.error(f"Error ensuring table on {emitter.__class__.__name__}: {e}")
+
+    def emit_record(
+        self,
+        table: str,
+        record: dict[str, Any],
+        symbol_columns: Sequence[str] = (),
+        timestamp: dt_64 | None = None,
+    ) -> None:
+        for emitter in self._emitters:
+            try:
+                emitter.emit_record(table, record, symbol_columns=symbol_columns, timestamp=timestamp)
+            except Exception as e:
+                logger.error(f"Error emitting record to {emitter.__class__.__name__}: {e}")
 
     def set_context(self, context: IStrategyContext) -> None:
         """
