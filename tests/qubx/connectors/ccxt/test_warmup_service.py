@@ -24,7 +24,6 @@ class TestWarmupService:
         return [
             Instrument(
                 symbol="BTCUSDT",
-
                 market_type=MarketType.SWAP,
                 exchange="BINANCE.UM",
                 base="BTC",
@@ -37,7 +36,6 @@ class TestWarmupService:
             ),
             Instrument(
                 symbol="ETHUSDT",
-
                 market_type=MarketType.SWAP,
                 exchange="BINANCE.UM",
                 base="ETH",
@@ -50,7 +48,6 @@ class TestWarmupService:
             ),
             Instrument(
                 symbol="ADAUSDT",
-
                 market_type=MarketType.SPOT,
                 exchange="BINANCE",
                 base="ADA",
@@ -228,7 +225,7 @@ class TestWarmupService:
         warmup_service._handler_factory.get_handler = MagicMock(return_value=mock_handler)
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger") as mock_logger:
                 warmup_service.execute_warmup(warmups)
 
@@ -261,7 +258,7 @@ class TestWarmupService:
         warmup_service._handler_factory.get_handler = MagicMock(side_effect=get_handler_side_effect)
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger"):
                 warmup_service.execute_warmup(warmups)
 
@@ -271,7 +268,9 @@ class TestWarmupService:
         # Should submit ONE warmup task (execute_all_warmups) that gathers all tasks
         assert len(mock_async_thread_loop.submitted_tasks) == 1
 
-    def test_execute_warmup_multiple_instruments_same_type(self, warmup_service, mock_instruments, mock_async_thread_loop):
+    def test_execute_warmup_multiple_instruments_same_type(
+        self, warmup_service, mock_instruments, mock_async_thread_loop
+    ):
         """Test executing warmup for multiple instruments of same data type."""
         warmups = {
             ("ohlc", mock_instruments[0]): "1h",
@@ -285,7 +284,7 @@ class TestWarmupService:
         warmup_service._handler_factory.get_handler = MagicMock(return_value=mock_handler)
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger"):
                 warmup_service.execute_warmup(warmups)
 
@@ -304,7 +303,7 @@ class TestWarmupService:
         warmup_service._handler_factory.get_handler = MagicMock(return_value=None)
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger") as mock_logger:
                 warmup_service.execute_warmup(warmups)
 
@@ -338,7 +337,7 @@ class TestWarmupService:
         mock_async_thread_loop.submit = submit_with_error
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger") as mock_logger:
                 with pytest.raises(Exception, match="Warmup failed"):
                     warmup_service.execute_warmup(warmups)
@@ -365,7 +364,7 @@ class TestWarmupService:
         mock_async_thread_loop.submit = submit_with_timeout
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger") as mock_logger:
                 with pytest.raises(TimeoutError, match="Warmup timed out"):
                     warmup_service.execute_warmup(warmups)
@@ -395,7 +394,7 @@ class TestWarmupService:
         warmup_service._handler_factory.get_handler = MagicMock(side_effect=get_handler_side_effect)
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger"):
                 warmup_service.execute_warmup(warmups)
 
@@ -440,7 +439,7 @@ class TestWarmupService:
         warmup_service._handler_factory.get_handler = MagicMock(side_effect=lambda dt: mock_handlers.get(dt))
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger"):
                 warmup_service.execute_warmup(warmups)
 
@@ -451,7 +450,9 @@ class TestWarmupService:
         for handler in mock_handlers.values():
             handler.warmup.assert_called_once()
 
-    def test_warmup_state_isolation(self, handler_factory, mock_ctrl_channel, mock_exchange_manager, mock_instruments, mock_async_thread_loop):
+    def test_warmup_state_isolation(
+        self, handler_factory, mock_ctrl_channel, mock_exchange_manager, mock_instruments, mock_async_thread_loop
+    ):
         """Test that multiple warmup services don't interfere with each other."""
         # Create two separate warmup services
         service1 = WarmupService(
@@ -480,7 +481,7 @@ class TestWarmupService:
 
         # Execute warmups on both services
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger"):
                 service1.execute_warmup(warmups1)
                 service2.execute_warmup(warmups2)
@@ -500,7 +501,7 @@ class TestWarmupService:
         warmup_service._handler_factory.get_handler = MagicMock(return_value=mock_handler)
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger"):
                 warmup_service.execute_warmup(warmups)
 
@@ -535,7 +536,7 @@ class TestWarmupService:
         warmup_service._handler_factory.get_handler = MagicMock(side_effect=get_handler_side_effect)
 
         # Patch AsyncThreadLoop creation to return our mock and avoid timeout
-        with patch('qubx.connectors.ccxt.warmup_service.AsyncThreadLoop', return_value=mock_async_thread_loop):
+        with patch("qubx.connectors.ccxt.warmup_service.AsyncThreadLoop", return_value=mock_async_thread_loop):
             with patch("qubx.connectors.ccxt.warmup_service.logger") as mock_logger:
                 warmup_service.execute_warmup(warmups)
 
@@ -548,3 +549,55 @@ class TestWarmupService:
         # Both valid handlers should be called
         mock_ohlc_handler.warmup.assert_called_once()
         mock_trade_handler.warmup.assert_called_once()
+
+    def test_execute_warmup_caps_concurrent_groups(
+        self, handler_factory, mock_ctrl_channel, mock_exchange_manager, mock_instruments
+    ):
+        """Throttle (quantkit#106): 10 warmup groups never exceed WARMUP_MAX_CONCURRENCY."""
+        import threading
+        from unittest.mock import PropertyMock
+
+        from qubx.utils.misc import AsyncThreadLoop
+
+        service = WarmupService(
+            handler_factory=handler_factory,
+            channel=mock_ctrl_channel,
+            exchange_id="test_exchange",
+            exchange_manager=mock_exchange_manager,
+            warmup_timeout=30,
+        )
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        active = 0
+        peak = 0
+
+        async def tracking_warmup(**kwargs):
+            nonlocal active, peak
+            active += 1
+            peak = max(peak, active)
+            await asyncio.sleep(0.02)
+            active -= 1
+
+        handler = MagicMock()
+        handler.warmup = tracking_warmup
+
+        # 10 distinct subscription params -> 10 warmup groups
+        warmups = {(f"ohlc({n}m)", mock_instruments[0]): "1d" for n in range(1, 11)}
+
+        try:
+            with (
+                patch.object(service._handler_factory, "get_handler", return_value=handler),
+                patch.object(WarmupService, "_async_loop", new_callable=PropertyMock) as prop,
+            ):
+                prop.return_value = AsyncThreadLoop(loop)
+                service.execute_warmup(warmups)
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=5)
+            loop.close()
+
+        assert peak <= WarmupService.WARMUP_MAX_CONCURRENCY
+        assert peak >= 2  # genuinely concurrent, not serialized
