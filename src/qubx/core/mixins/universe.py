@@ -81,12 +81,13 @@ class UniverseManager(IUniverseManager):
         prev_set = self._instruments.copy()
 
         # - determine instruments to remove depending on if_has_position_then policy
-        may_be_removed = list(prev_set - new_set)
+        may_be_removed = sorted(prev_set - new_set)
 
         # - split instruments into removable and keepable
         to_remove, to_keep = self._get_what_can_be_removed_or_kept(may_be_removed, skip_callback, if_has_position_then)
 
-        to_add = list(new_set - prev_set)
+        # sorted: set-diff order is hash-seed dependent and leaks into stream/subscription order (nondeterministic backtests)
+        to_add = sorted(new_set - prev_set)
         self.__do_add_instruments(to_add)
         self.__do_remove_instruments(to_remove)
 
@@ -123,7 +124,8 @@ class UniverseManager(IUniverseManager):
                 self._removal_queue.pop(instr)
 
     def add_instruments(self, instruments: list[Instrument]):
-        to_add = list(set([instr for instr in instruments if instr not in self._instruments]))
+        # sorted: same set-iteration hash-seed nondeterminism as set_universe's diff (see above)
+        to_add = sorted(set([instr for instr in instruments if instr not in self._instruments]))
         self.__do_add_instruments(to_add)
         self.__cleanup_removal_queue(instruments)
         self._strategy.on_universe_change(self._context, to_add, [])

@@ -1,7 +1,7 @@
 import pytest
 from pytest_mock import MockerFixture
 
-from qubx.core.basics import DataType, Instrument
+from qubx.core.basics import DataType, Instrument, MarketType
 from qubx.core.mixins.universe import UniverseManager
 
 
@@ -48,15 +48,26 @@ def universe_manager(mock_dependencies):
     )
 
 
-def test_set_universe_adds_new_instruments(universe_manager, mock_dependencies, mocker: MockerFixture):
-    instruments = list(
-        set(
-            [
-                mocker.Mock(spec=Instrument, symbol="BTCUSDT"),
-                mocker.Mock(spec=Instrument, symbol="ETHUSDT"),
-            ]
-        )
+def _make_instrument(symbol: str, min_size: float = 0.0) -> Instrument:
+    # - real (non-mock) Instrument: needed because sort order relies on the
+    # - dataclass-generated __lt__, which Mock(spec=Instrument) does not provide
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SPOT,
+        exchange="BINANCE",
+        base=symbol.replace("USDT", ""),
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol=symbol,
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=min_size,
     )
+
+
+def test_set_universe_adds_new_instruments(universe_manager, mock_dependencies):
+    # - deliberately unsorted: to_add must come out sorted regardless of input order
+    instruments = [_make_instrument("ETHUSDT"), _make_instrument("BTCUSDT")]
     mock_dependencies["subscription_manager"].auto_subscribe = True
 
     universe_manager.set_universe(instruments)
@@ -65,7 +76,7 @@ def test_set_universe_adds_new_instruments(universe_manager, mock_dependencies, 
     mock_dependencies["subscription_manager"].subscribe.assert_called_once()
     mock_dependencies["subscription_manager"].commit.assert_called_once()
     mock_dependencies["strategy"].on_universe_change.assert_called_once_with(
-        mock_dependencies["context"], instruments, []
+        mock_dependencies["context"], sorted(instruments), []
     )
 
 
@@ -97,12 +108,12 @@ def test_set_universe_with_skip_callback(universe_manager, mock_dependencies, mo
 def test_set_universe_with_position_close(universe_manager, mock_dependencies, mocker: MockerFixture):
     ctx = mock_dependencies["context"]
 
-    sol = (mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0),)
+    sol = (_make_instrument("SOLUSDT"),)
     universe_manager.set_universe(
         [
-            btc := mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0),
-            eth := mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0),
-            ltc := mocker.Mock(spec=Instrument, symbol="LTCUSDT", min_size=0.0),
+            btc := _make_instrument("BTCUSDT"),
+            eth := _make_instrument("ETHUSDT"),
+            ltc := _make_instrument("LTCUSDT"),
         ]
     )
     mock_dependencies["account"].positions = {btc: mocker.Mock(quantity=1.0)}
@@ -121,12 +132,12 @@ def test_set_universe_with_position_wait_for_close(universe_manager, mock_depend
     account = mock_dependencies["account"]
     strategy = mock_dependencies["strategy"]
 
-    sol = mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0)
+    sol = _make_instrument("SOLUSDT")
     universe_manager.set_universe(
         [
-            btc := mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0),
-            eth := mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0),
-            ltc := mocker.Mock(spec=Instrument, symbol="LTCUSDT", min_size=0.0),
+            btc := _make_instrument("BTCUSDT"),
+            eth := _make_instrument("ETHUSDT"),
+            ltc := _make_instrument("LTCUSDT"),
         ]
     )
     # - set position for btc
@@ -152,12 +163,12 @@ def test_set_universe_with_position_wait_for_change(universe_manager, mock_depen
     account = mock_dependencies["account"]
     strategy = mock_dependencies["strategy"]
 
-    sol = mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0)
+    sol = _make_instrument("SOLUSDT")
     universe_manager.set_universe(
         [
-            btc := mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0),
-            eth := mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0),
-            ltc := mocker.Mock(spec=Instrument, symbol="LTCUSDT", min_size=0.0),
+            btc := _make_instrument("BTCUSDT"),
+            eth := _make_instrument("ETHUSDT"),
+            ltc := _make_instrument("LTCUSDT"),
         ]
     )
     # - set position for btc
@@ -184,11 +195,11 @@ def test_set_universe_with_position_wait_for_change(universe_manager, mock_depen
     assert universe_manager._removal_queue == {}
 
 
-def test_set_universe_filters_delisting_instruments(universe_manager, mock_dependencies, mocker: MockerFixture):
+def test_set_universe_filters_delisting_instruments(universe_manager, mock_dependencies):
     """Test that delisting filter is applied to instruments being added to universe."""
-    btc = mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0)
-    eth = mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0)
-    delisting_instrument = mocker.Mock(spec=Instrument, symbol="SOLUSDT", min_size=0.0)
+    btc = _make_instrument("BTCUSDT")
+    eth = _make_instrument("ETHUSDT")
+    delisting_instrument = _make_instrument("SOLUSDT")
 
     # Configure the mock detector to filter out the delisting instrument
     mock_dependencies["delisting_detector"].filter_delistings.side_effect = lambda instruments: [
@@ -229,11 +240,37 @@ def test_set_universe_filters_delisting_even_with_skip_callback(
     assert delisting_instrument not in universe_manager.instruments
 
 
-def test_set_universe_keeps_non_delisting_instruments(universe_manager, mock_dependencies, mocker: MockerFixture):
+def test_set_universe_adds_instruments_in_sorted_order(universe_manager, mock_dependencies):
+    """Regression: to_add must be canonically sorted, not raw set-diff (hash-seed dependent) order."""
+    # - deliberately shuffled, not alphabetical
+    shuffled = [_make_instrument(s) for s in ["SOLUSDT", "ADAUSDT", "LTCUSDT", "BTCUSDT", "ETHUSDT"]]
+    mock_dependencies["subscription_manager"].auto_subscribe = True
+
+    universe_manager.set_universe(shuffled)
+
+    add_instruments = mock_dependencies["strategy"].on_universe_change.call_args.args[1]
+    assert add_instruments == sorted(shuffled)
+    assert [i.symbol for i in add_instruments] == ["ADAUSDT", "BTCUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT"]
+
+
+def test_add_instruments_adds_in_sorted_order(universe_manager, mock_dependencies):
+    """Regression: add_instruments' to_add must be canonically sorted, not raw set() iteration order."""
+    # - deliberately shuffled, not alphabetical
+    shuffled = [_make_instrument(s) for s in ["SOLUSDT", "ADAUSDT", "LTCUSDT", "BTCUSDT", "ETHUSDT"]]
+    mock_dependencies["subscription_manager"].auto_subscribe = True
+
+    universe_manager.add_instruments(shuffled)
+
+    add_instruments = mock_dependencies["strategy"].on_universe_change.call_args.args[1]
+    assert add_instruments == sorted(shuffled)
+    assert [i.symbol for i in add_instruments] == ["ADAUSDT", "BTCUSDT", "ETHUSDT", "LTCUSDT", "SOLUSDT"]
+
+
+def test_set_universe_keeps_non_delisting_instruments(universe_manager, mock_dependencies):
     """Test that instruments without delist dates pass through the filter."""
     instruments = [
-        mocker.Mock(spec=Instrument, symbol="BTCUSDT", min_size=0.0),
-        mocker.Mock(spec=Instrument, symbol="ETHUSDT", min_size=0.0),
+        _make_instrument("BTCUSDT"),
+        _make_instrument("ETHUSDT"),
     ]
 
     # Default mock behavior is to return all instruments (no filtering)
