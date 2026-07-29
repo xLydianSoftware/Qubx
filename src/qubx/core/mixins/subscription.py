@@ -2,11 +2,13 @@ import pprint
 import threading
 import time
 from collections import defaultdict
+from functools import partial
 from typing import Any
 
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.exceptions import NotSupported
+from qubx.core.fit_executor import FitCycleState
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager, ITimeProvider, StrategyState
 from qubx.utils.misc import synchronized
 
@@ -49,6 +51,7 @@ class SubscriptionManager(ISubscriptionManager):
         default_base_subscription: str = DataType.NONE,
         monitor_interval_seconds: float = 30.0,
         resub_backlog_threshold: int = 1000,
+        fit_state: FitCycleState | None = None,
     ) -> None:
         self._time_provider = time_provider
         self._data_providers = data_providers
@@ -67,26 +70,82 @@ class SubscriptionManager(ISubscriptionManager):
         # A.4: a busy/blocked ProcessorThread must not trigger resub churn on top of an already
         # overloaded loop — guard the [1/4]..[4/4] flow on the shared channel's backlog.
         self._resub_backlog_threshold = resub_backlog_threshold
+        # B.2 threaded fit: fit-thread calls are recorded for ProcessorThread replay
+        # instead of touching the (ProcessorThread-owned) pending-operation queues.
+        self._fit_state = fit_state
+        # (subscription_type, instrument) warmup pairs already prefetched on the fit
+        # thread via prepare(); consumed (skipped) by the commit-time _run_warmup so the
+        # FitCommit apply stays fast. Guarded by a lock: written by the fit thread, read
+        # by the ProcessorThread.
+        self._prewarmed: set[tuple[str, Instrument]] = set()
+        self._prewarmed_lock = threading.Lock()
         self._init_connection_status_callbacks()
         self._init_subscription_monitoring()
 
     @synchronized
     def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
+        if self._fit_state is not None and self._fit_state.is_fit_thread():
+            # - threaded fit: pending-op queues are ProcessorThread-owned — record for
+            #   replay at the FitCommit (replay re-enters here off the fit thread)
+            self._fit_state.record(partial(self.subscribe, subscription_type, instruments))
+            return
         self._subscribe(subscription_type, instruments)
 
     @synchronized
     def unsubscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
+        if self._fit_state is not None and self._fit_state.is_fit_thread():
+            self._fit_state.record(partial(self.unsubscribe, subscription_type, instruments))
+            return
         self._unsubscribe(subscription_type, instruments)
+
+    def prepare(self, instruments: list[Instrument]) -> None:
+        """Warmup prefetch for instruments about to be added by a deferred (fit-thread)
+        universe change — the slow half of commit(), run on the fit thread against the
+        bulk REST loop while the ProcessorThread keeps draining events.
+
+        Pure fetching: warmed history rides the channel as historical events exactly as
+        in commit-time warmup; the only manager state touched is the pre-warmed ledger,
+        which the commit-time _run_warmup consults to skip refetching (making the
+        FitCommit apply fast).
+        """
+        pairs: dict[tuple[str, Instrument], str] = {}
+        for instr in instruments:
+            try:
+                _dp = self._get_data_provider(instr.exchange)
+            except ValueError:
+                continue
+            for sub, period in self._sub_to_warmup.items():
+                if instr not in set(_dp.get_subscribed_instruments(sub)):
+                    pairs[(sub, instr)] = period
+        if not pairs:
+            return
+        for _data_provider in self._data_providers:
+            _configs = {
+                (sub, instr): period
+                for (sub, instr), period in pairs.items()
+                if instr.exchange == _data_provider.exchange()
+            }
+            if _configs:
+                _data_provider.warmup(_configs)
+        with self._prewarmed_lock:
+            self._prewarmed.update(pairs.keys())
+
+    def discard_prewarmed(self) -> None:
+        """Drop pre-warmed entries not consumed by the commit-time warmup (e.g. the
+        replayed universe change filtered an instrument out) so they can never
+        suppress a legitimate future warmup for the same pair."""
+        with self._prewarmed_lock:
+            self._prewarmed.clear()
 
     @synchronized
     def commit(self) -> None:
         if not self._has_operations_to_commit():
             return
 
-        # - warm up subscriptions
+        # - warm up subscriptions (prepare: slow, pure fetching)
         self._run_warmup()
 
-        # - update subscriptions
+        # - apply: the subscribe/unsubscribe swap (fast)
         for _sub in self._get_updated_subs():
             _current_sub_instruments = set(self.get_subscribed_instruments(_sub))
             _removed_instruments = self._pending_stream_unsubscriptions.get(_sub, set())
@@ -285,6 +344,13 @@ class SubscriptionManager(ISubscriptionManager):
 
             # TODO: think about appropriate handling of timeouts
             _warmup_configs = self._get_pending_warmups_for_exchange(_data_provider.exchange())
+            # - skip (and consume) pairs already prefetched on the fit thread (prepare())
+            with self._prewarmed_lock:
+                if self._prewarmed:
+                    _consumed = self._prewarmed.intersection(_warmup_configs.keys())
+                    if _consumed:
+                        _warmup_configs = {k: v for k, v in _warmup_configs.items() if k not in _consumed}
+                        self._prewarmed.difference_update(_consumed)
             _data_provider.warmup(_warmup_configs)
 
         self._pending_warmups.clear()

@@ -1,6 +1,11 @@
+import traceback
+from functools import partial
+from typing import Callable
+
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.detectors import DelistingDetector
+from qubx.core.fit_executor import FitCycleState
 from qubx.core.instrument_service import IInstrumentService, NullInstrumentService
 from qubx.core.interfaces import (
     IAccountViewer,
@@ -46,6 +51,7 @@ class UniverseManager(IUniverseManager):
         position_gathering: IPositionGathering,
         delisting_detector: DelistingDetector,
         instrument_service: IInstrumentService | None = None,
+        fit_state: FitCycleState | None = None,
     ):
         self._context = context
         self._strategy = strategy
@@ -61,6 +67,9 @@ class UniverseManager(IUniverseManager):
         self._removal_in_progress = set()
         self._delisting_detector = delisting_detector
         self._instrument_service = instrument_service if instrument_service is not None else NullInstrumentService()
+        # B.2 threaded fit: universe changes called from the fit thread are recorded as
+        # intents (replayed by the ProcessorThread at the FitCommit) instead of applied.
+        self._fit_state = fit_state
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (
@@ -164,6 +173,14 @@ class UniverseManager(IUniverseManager):
             "wait_for_change",
         ), "Invalid if_has_position_then policy"
 
+        if self._fit_state is not None and self._fit_state.is_fit_thread():
+            # - threaded fit: record the intent for ProcessorThread replay at the
+            #   FitCommit and pre-warm the additions here (bulk REST loop)
+            self._defer_universe_change(
+                partial(self.set_universe, instruments, skip_callback, if_has_position_then), instruments
+            )
+            return
+
         # Settle & exclude instruments whose market is already gone (state B) FIRST,
         # so a gone instrument that also carries a delist_date is settled in place
         # before the delisting filter (state A) would otherwise strip it from the list.
@@ -226,7 +243,31 @@ class UniverseManager(IUniverseManager):
             if instr in self._removal_queue:
                 self._removal_queue.pop(instr)
 
+    def _defer_universe_change(self, op: Callable[[], None], candidates: list[Instrument]) -> None:
+        """Threaded-fit interception (single-mutator invariant): record the universe
+        change for ProcessorThread replay at the FitCommit, and prefetch warmup history
+        for the would-be additions here on the fit thread (against the bulk REST loop)
+        so the commit-time apply is fast.
+
+        The additions diff reads a snapshot of the live universe — best-effort by
+        design: a concurrent ProcessorThread removal at worst prefetches an extra
+        instrument or leaves one to be warmed at commit time.
+        """
+        assert self._fit_state is not None
+        self._fit_state.record(op)
+        _additions = sorted(set(candidates) - set(self._instruments))
+        if _additions:
+            try:
+                self._subscription_manager.prepare(_additions)
+            except Exception as e:
+                logger.error(f"[UniverseManager] :: fit-thread warmup prefetch failed: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
+
     def add_instruments(self, instruments: list[Instrument]):
+        if self._fit_state is not None and self._fit_state.is_fit_thread():
+            self._defer_universe_change(partial(self.add_instruments, instruments), instruments)
+            return
+
         # Settle & exclude already-gone markets (same gone-filter as set_universe).
         # Only _drop_gone (already-gone), NOT filter_delistings (future/scheduled),
         # so an explicitly-added still-listed instrument with a future delist_date
@@ -252,6 +293,11 @@ class UniverseManager(IUniverseManager):
             "wait_for_close",
             "wait_for_change",
         ), "Invalid if_has_position_then policy"
+
+        if self._fit_state is not None and self._fit_state.is_fit_thread():
+            # - removals need no warmup prefetch: record the intent only
+            self._fit_state.record(partial(self.remove_instruments, instruments, if_has_position_then))
+            return
 
         # - split instruments into removable and keepable
         to_remove, to_keep = self._get_what_can_be_removed_or_kept(instruments, False, if_has_position_then)

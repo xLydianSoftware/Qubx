@@ -37,6 +37,7 @@ from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.events import ChannelMessage
 from qubx.core.exceptions import QueueTimeout, ReadOnlyConnector, StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.fit_executor import FitCycleState
 from qubx.core.helpers import (
     BasicScheduler,
     set_parameters_to_object,
@@ -82,6 +83,7 @@ from .mixins import (
     TradingManager,
     UniverseManager,
 )
+from .mixins.market import CachedMarketDataHolder
 
 DEFAULT_POSITION_TRACKER: Callable[[], PositionsTracker] = lambda: PositionsTracker(
     FixedSizer(1.0, amount_in_quote=False)
@@ -169,6 +171,8 @@ class StrategyContext(IStrategyContext):
         rate_limiting_config: Any | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
         read_only: bool = False,
+        fit_executor: str = "inline",
+        fit_soft_deadline_s: float = 120.0,
     ) -> None:
         self._read_only = read_only
         self._account_manager = account_manager
@@ -222,6 +226,11 @@ class StrategyContext(IStrategyContext):
         if __position_gathering is None:
             __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
 
+        # B.2 threaded fit: one shared token identifies fit-thread ctx calls across the
+        # managers and the read accessors below. Inert (a single None check) unless a
+        # threaded fit is in flight — simulation and inline mode never arm it.
+        self._fit_state = FitCycleState()
+
         self._subscription_manager = SubscriptionManager(
             time_provider=self._time_provider,
             data_providers=self._data_providers,
@@ -230,6 +239,7 @@ class StrategyContext(IStrategyContext):
             default_base_subscription=DataType.ORDERBOOK[0, 1]
             if not self._data_providers[0].is_simulation
             else DataType.NONE,
+            fit_state=self._fit_state,
         )
 
         self._market_data_provider = MarketManager(
@@ -261,6 +271,7 @@ class StrategyContext(IStrategyContext):
             position_gathering=__position_gathering,
             delisting_detector=self._delisting_detector,
             instrument_service=self._instrument_service,
+            fit_state=self._fit_state,
         )
         self._trading_manager = TradingManager(
             context=self,
@@ -288,7 +299,17 @@ class StrategyContext(IStrategyContext):
             health_monitor=self._health_monitor,
             delisting_detector=self._delisting_detector,
             data_throttler=data_throttler,
+            fit_executor=fit_executor,
+            fit_soft_deadline_s=fit_soft_deadline_s,
+            fit_state=self._fit_state,
         )
+
+        # - thread-mode fit executor (live only): arm the market-cache series lock so
+        #   ProcessorThread appends serialize against fit-thread snapshot reads
+        if fit_executor == "thread" and not self._data_providers[0].is_simulation:
+            _cache = self._market_data_provider.get_market_data_cache()
+            if isinstance(_cache, CachedMarketDataHolder):
+                _cache.enable_concurrent_fit_reads(self._fit_state)
 
         # Late-wire the processing manager into the account manager (the AM is built
         # before the PM exists) so its periodic ticks can register.
@@ -640,20 +661,30 @@ class StrategyContext(IStrategyContext):
 
     # balance and position information
     def get_balances(self, exchange: str | None = None) -> list[Balance]:
-        return self.account.get_balances(exchange)
+        _balances = self.account.get_balances(exchange)
+        # B.2 threaded fit: hand the fit thread shallow copies of the live account views
+        # so its iteration can't race ProcessorThread mutations (dict-size-changed
+        # guard). Everywhere else (ProcessorThread / simulation) views pass through
+        # unchanged — the check is a single None test when no threaded fit is in flight.
+        if self._fit_state.is_fit_thread():
+            return list(_balances)
+        return _balances
 
     def get_balance(self, currency: str, exchange: str | None = None) -> Balance:
         return self.account.get_balance(currency, exchange)
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
-        return self.account.get_positions(exchange)
+        _positions = self.account.get_positions(exchange)
+        if self._fit_state.is_fit_thread():
+            return dict(_positions)
+        return _positions
 
     def get_position(self, instrument: Instrument) -> Position:
         return self.account.get_position(instrument)
 
     @property
     def positions(self):
-        return self.account.get_positions()
+        return self.get_positions()
 
     def get_orders(
         self,
@@ -661,7 +692,10 @@ class StrategyContext(IStrategyContext):
         exchange: str | None = None,
         origin: OrderOrigin | None = None,
     ) -> dict[str, Order]:
-        return self.account.get_orders(instrument, exchange, origin)
+        _orders = self.account.get_orders(instrument, exchange, origin)
+        if self._fit_state.is_fit_thread():
+            return dict(_orders)
+        return _orders
 
     def find_order_by_id(self, order_id: str) -> Order | None:
         return self.account.find_order_by_id(order_id)
@@ -677,7 +711,10 @@ class StrategyContext(IStrategyContext):
         return self.account.get_leverage(instrument)
 
     def get_leverages(self, exchange: str | None = None) -> dict[Instrument, float]:
-        return self.account.get_leverages(exchange)
+        _leverages = self.account.get_leverages(exchange)
+        if self._fit_state.is_fit_thread():
+            return dict(_leverages)
+        return _leverages
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
         return self.account.get_net_leverage(exchange)
@@ -895,6 +932,12 @@ class StrategyContext(IStrategyContext):
 
     def commit(self):
         return self._subscription_manager.commit()
+
+    def prepare(self, instruments: list[Instrument]) -> None:
+        return self._subscription_manager.prepare(instruments)
+
+    def discard_prewarmed(self) -> None:
+        return self._subscription_manager.discard_prewarmed()
 
     @property
     def auto_subscribe(self) -> bool:

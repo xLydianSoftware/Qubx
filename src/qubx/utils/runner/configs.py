@@ -1,6 +1,6 @@
 import os
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -219,6 +219,14 @@ class LiveConfig(StrictBaseModel):
     state: StatePersistenceConfig | None = None
     rate_limiting: RateLimitingConfig | None = None
     account_manager: AccountManagerConfig = Field(default_factory=AccountManagerConfig)
+    # B.2: where strategy.on_fit runs in live mode. "inline" (default) is today's
+    # behavior — the fit blocks the ProcessorThread. "thread" hands the fit body to a
+    # dedicated StrategyFitThread so event processing continues during a slow fit;
+    # deferred ctx mutations are applied atomically on the ProcessorThread at fit end.
+    # Simulation always runs inline regardless of this setting.
+    fit_executor: Literal["inline", "thread"] = "inline"
+    # WARNING logged when a fit runs longer than this (no abort — visibility only).
+    fit_soft_deadline_s: float = 120.0
 
 
 class SimulationConfig(StrictBaseModel):

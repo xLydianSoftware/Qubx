@@ -1,4 +1,6 @@
+import threading
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -7,6 +9,7 @@ import pandas as pd
 from qubx import logger
 from qubx.core.basics import SW, DataType, Instrument, ITimeProvider, dt_64, td_64
 from qubx.core.exceptions import SymbolNotFound
+from qubx.core.fit_executor import FitCycleState
 from qubx.core.helpers import extract_price
 from qubx.core.interfaces import IDataProvider, IMarketDataCache, IMarketManager, IUniverseManager
 from qubx.core.lookups import lookup
@@ -29,6 +32,9 @@ INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE
 #   if current time is very close to bar's end
 MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER = 1.5
 
+# - reusable no-op context for the lock-free (simulation / inline-fit) append path
+_NO_LOCK = nullcontext()
+
 
 class CachedMarketDataHolder(IMarketDataCache):
     """
@@ -47,8 +53,23 @@ class CachedMarketDataHolder(IMarketDataCache):
         self._updates = dict()
         self._generic_series = defaultdict(dict)
         self._max_series_length = max_buffer_size
+        # B.2 threaded fit: when enabled, OHLCV appends take the per-holder lock and
+        # fit-thread reads return locked snapshots. None (the default — simulation and
+        # inline mode) keeps today's zero-lock semantics.
+        self._fit_state: FitCycleState | None = None
+        self._series_lock = threading.RLock()
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
+
+    def enable_concurrent_fit_reads(self, fit_state: FitCycleState) -> None:
+        """Arm the per-holder series lock for the threaded fit executor (live thread
+        mode only): OHLCV appends serialize against fit-thread reads, and the
+        fit-thread read path returns a copy. Never called in simulation/inline mode."""
+        self._fit_state = fit_state
+
+    def _append_lock(self):
+        # - single attribute check on the (hot) simulation/inline path
+        return self._series_lock if self._fit_state is not None else _NO_LOCK
 
     def update_default_timeframe(self, default_timeframe: str):
         self.default_timeframe = convert_tf_str_td64(default_timeframe)
@@ -101,6 +122,17 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def get_ohlcv(
+        self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
+    ) -> OHLCV:
+        if self._fit_state is not None and self._fit_state.is_fit_thread():
+            # - threaded fit read: snapshot under the lock so the fit's iteration can't
+            #   race ProcessorThread appends (which also take the lock). The copy has no
+            #   indicators attached — on_fit must not attach live indicators in thread mode.
+            with self._series_lock:
+                return self._get_ohlcv_series(instrument, timeframe, max_size).clone()
+        return self._get_ohlcv_series(instrument, timeframe, max_size)
+
+    def _get_ohlcv_series(
         self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
     ) -> OHLCV:
         if timeframe is None:
@@ -204,6 +236,15 @@ class CachedMarketDataHolder(IMarketDataCache):
            - Skipping bars that are already present
            - Adding newer bars to the front
         """
+        if self._fit_state is not None and self._fit_state.is_fit_thread():
+            # - threaded fit fetch-merge (ctx.ohlc with length): mutate under the lock,
+            #   hand the fit a snapshot (same contract as the fit-thread get_ohlcv)
+            with self._series_lock:
+                return self._update_by_bars(instrument, timeframe, bars).clone()
+        with self._append_lock():
+            return self._update_by_bars(instrument, timeframe, bars)
+
+    def _update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
         if instrument not in self._ohlcvs:
             self._ohlcvs[instrument] = {}
 
@@ -235,6 +276,10 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_bar(self, instrument: Instrument, bar: Bar):
+        with self._append_lock():
+            self._update_by_bar(instrument, bar)
+
+    def _update_by_bar(self, instrument: Instrument, bar: Bar):
         self._updates[instrument] = bar
 
         _last_bar = self._last_bar[instrument]
@@ -273,16 +318,21 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
-        self._updates[instrument] = quote
-        series = self._ohlcvs.get(instrument)
-        if series:
-            for ser in series.values():
-                if len(ser) > 0 and ser[0].time > quote.time:
-                    continue
-                ser.update(quote.time, quote.mid_price(), 0)
+        with self._append_lock():
+            self._updates[instrument] = quote
+            series = self._ohlcvs.get(instrument)
+            if series:
+                for ser in series.values():
+                    if len(ser) > 0 and ser[0].time > quote.time:
+                        continue
+                    ser.update(quote.time, quote.mid_price(), 0)
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_trade(self, instrument: Instrument, trade: Trade):
+        with self._append_lock():
+            self._update_by_trade(instrument, trade)
+
+    def _update_by_trade(self, instrument: Instrument, trade: Trade):
         self._updates[instrument] = trade
         series = self._ohlcvs.get(instrument)
         if series:

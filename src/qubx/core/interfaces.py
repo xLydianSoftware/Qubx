@@ -1151,6 +1151,21 @@ class ISubscriptionManager:
         """
         ...
 
+    def prepare(self, instruments: list[Instrument]) -> None:
+        """
+        Prefetch warmup history for instruments about to be added by a deferred
+        (fit-thread) universe change — the slow half of commit(), safe to run off the
+        ProcessorThread. Default implementation is a no-op.
+        """
+        return None
+
+    def discard_prewarmed(self) -> None:
+        """
+        Drop any pre-warmed warmup entries recorded by prepare() that were not consumed
+        by a commit. Default implementation is a no-op.
+        """
+        return None
+
     @property
     def auto_subscribe(self) -> bool:
         """
