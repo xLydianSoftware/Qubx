@@ -96,6 +96,13 @@ class ApplyResult:
     balance: Balance | None = None
     # positions reconciled by a snapshot (Reconciler path) — PM fires on_position_change per entry
     positions: list[Position] = field(default_factory=list)
+    # True when _reconcile_fill_gap booked a synthetic deficit fill (A.4 loudness): the live
+    # stream under-delivered what the venue's terminal report counted. Metadata only — never
+    # part of the suppress signal below (it's only ever set alongside deal/position, which
+    # already make the result non-empty). The AccountManager reads this to record a
+    # stream-integrity violation (it holds the health_monitor collaborator; the reducer stays a
+    # pure state-mutation function with no I/O dependency).
+    deficit_fill: bool = False
 
     def is_empty(self) -> bool:
         """All fields None — the suppress signal (see module docstring): no callback fires."""
@@ -350,6 +357,14 @@ def _reconcile_fill_gap(state: AccountState, order: Order, event: OrderFilledEve
 
     Returns None (no gap) when the connector didn't supply the cumulative figure (sim/backtest,
     split-stream venues), so behaviour is unchanged unless a connector opts in by setting it.
+
+    A.4 loudness: when the gap is actually booked (not deduped — see the trade-id note below),
+    this logs at ERROR. The live stream should have delivered this execution and silently
+    didn't; the incident that motivated this (a swallowed cancel-found-terminal, 25 minutes of
+    invisible unhedged divergence) is exactly this path firing. ``_handle_fill`` surfaces the
+    fact via ``ApplyResult.deficit_fill`` so the AccountManager (which holds the health_monitor
+    collaborator; this module stays a pure, I/O-free state mutator) can also record a
+    ``record_stream_violation(exchange, "executions", "deficit_fill")``.
     """
     venue_filled = event.venue_filled_quantity
     if venue_filled is None or order.instrument is None:
@@ -361,6 +376,8 @@ def _reconcile_fill_gap(state: AccountState, order: Order, event: OrderFilledEve
     if price is None:
         return None
     synthetic = Deal(
+        # Deterministic trade_id (order-scoped, not event-scoped): a re-delivered terminal
+        # report for the same order dedups here rather than double-booking the gap.
         trade_id=f"{order.venue_order_id or order.client_order_id}:fill-reconcile",
         order_id=order.venue_order_id or "",
         time=now,
@@ -368,7 +385,14 @@ def _reconcile_fill_gap(state: AccountState, order: Order, event: OrderFilledEve
         price=price,
         aggressive=False,
     )
-    return _apply_execution(state, order, synthetic, now, update_time=event.last_update_time)
+    booked = _apply_execution(state, order, synthetic, now, update_time=event.last_update_time)
+    if booked is not None:
+        logger.error(
+            f"[{state.exchange}] {order.client_order_id} stream under-delivered fills: venue cumulative "
+            f"{venue_filled} vs booked {order.filled_quantity} — synthesized a {remainder} deficit fill "
+            f"@ {price} (the live stream never delivered this execution)"
+        )
+    return booked
 
 
 def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime64) -> ApplyResult:
@@ -387,11 +411,15 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
     position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
     # Terminal fill-gap: book executions the venue counted but never delivered as deals so
     # position AND realized PnL converge now, not size-only at the next snapshot.
+    deficit_fill = False
     if (gap := _reconcile_fill_gap(state, order, event, now)) is not None and order.instrument is not None:
         position = _book_deal(state, order.instrument, gap)
         deal = deal or gap
+        deficit_fill = True
     order = transition(state, order.client_order_id, OrderStatus.FILLED, now, update_time=event.last_update_time)
-    return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
+    return ApplyResult(
+        order=order, order_change=OrderChange.FILLED, deal=deal, position=position, deficit_fill=deficit_fill
+    )
 
 
 def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, now: np.datetime64) -> ApplyResult:

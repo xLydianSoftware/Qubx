@@ -12,6 +12,16 @@ from qubx.utils.misc import synchronized
 
 from .utils import EXCHANGE_MAPPINGS
 
+# Mirrors qubx.health.base.STALE_THRESHOLDS, in seconds — the StreamHealth ledger's ages are
+# time.monotonic() seconds (A.1), not the td_64/dt_64 domain the consumer-side is_stale() uses.
+# Duplicated rather than imported to avoid core/mixins depending on a concrete IHealthMonitor
+# implementation (core only depends on the interface; BaseHealthMonitor is a plugin of it).
+_STREAM_STALE_THRESHOLDS_S: dict[str, float] = {
+    "quote": 600.0,
+    "orderbook": 600.0,
+    "trade": 1800.0,
+}
+
 
 class SubscriptionManager(ISubscriptionManager):
     _time_provider: ITimeProvider
@@ -38,6 +48,7 @@ class SubscriptionManager(ISubscriptionManager):
         auto_subscribe: bool = True,
         default_base_subscription: str = DataType.NONE,
         monitor_interval_seconds: float = 30.0,
+        resub_backlog_threshold: int = 1000,
     ) -> None:
         self._time_provider = time_provider
         self._data_providers = data_providers
@@ -53,6 +64,9 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_stream_unsubscriptions = defaultdict(set)
         self._auto_subscribe = auto_subscribe
         self._monitor_interval_seconds = monitor_interval_seconds
+        # A.4: a busy/blocked ProcessorThread must not trigger resub churn on top of an already
+        # overloaded loop — guard the [1/4]..[4/4] flow on the shared channel's backlog.
+        self._resub_backlog_threshold = resub_backlog_threshold
         self._init_connection_status_callbacks()
         self._init_subscription_monitoring()
 
@@ -318,11 +332,37 @@ class SubscriptionManager(ISubscriptionManager):
                 if data_provider.is_simulation or not data_provider.is_connected():
                     continue
                 instruments = data_provider.get_subscribed_instruments(data_type)
-                for instrument in instruments:
-                    if self._health_monitor.is_stale(instrument, data_type):
-                        exch_sub_to_stale_instr[data_provider.exchange()][data_type].add(instrument)
+                if not instruments:
+                    continue
+                exchange = data_provider.exchange()
+                # A.4: prefer the producer-side StreamHealth ledger when it has entries for this
+                # exchange's stream (ccxt data providers feed record_stream_event at the wire —
+                # see ConnectionManager.listen_to_stream). It is exchange-wide, so unlike the
+                # consumer-side timestamp below it can't be fooled by a blocked ProcessorThread
+                # (processing.py's on_data_arrival call) — a long fit makes every subscribed
+                # instrument look stale even though the wire is fine. A data provider that
+                # records nothing (third-party, e.g. xdata) never populates the ledger, so it
+                # falls through to today's consumer-side check unchanged (back-compat).
+                producer_age = self._health_monitor.get_stream_health(exchange).ages.get(data_type)
+                if producer_age is not None:
+                    event_age_s, _drive_age_s = producer_age
+                    threshold_s = _STREAM_STALE_THRESHOLDS_S.get(data_type)
+                    if threshold_s is not None and event_age_s > threshold_s:
+                        exch_sub_to_stale_instr[exchange][data_type].update(instruments)
+                else:
+                    for instrument in instruments:
+                        if self._health_monitor.is_stale(instrument, data_type):
+                            exch_sub_to_stale_instr[exchange][data_type].add(instrument)
 
         if not exch_sub_to_stale_instr:
+            return
+
+        # A.4: a consumer that's already behind must not be piled on with resub churn — that's
+        # extra loop load exactly when the loop is already overloaded, and (pre-producer-side-
+        # preference above) is often what made the staleness look real in the first place.
+        backlog = self._health_monitor.get_queue_size()
+        if backlog > self._resub_backlog_threshold:
+            logger.info(f"skipping resubscription: channel backlog {backlog} — consumer is behind")
             return
 
         for exchange, sub_to_stale_instr in exch_sub_to_stale_instr.items():

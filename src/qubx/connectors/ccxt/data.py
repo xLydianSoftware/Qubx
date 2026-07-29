@@ -65,6 +65,7 @@ class CcxtDataProvider(IDataProvider):
             exchange_manager=self._exchange_manager,
             max_ws_retries=max_ws_retries,
             subscription_manager=self._subscription_manager,
+            health_monitor=self._health_monitor,
         )
         self._subscription_orchestrator = SubscriptionOrchestrator(
             exchange_id=self._exchange_id,

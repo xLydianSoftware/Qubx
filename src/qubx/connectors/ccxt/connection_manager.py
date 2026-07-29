@@ -27,6 +27,8 @@ from ccxt.pro import Exchange
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel
+from qubx.core.interfaces import IHealthMonitor
+from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
 from .exceptions import CcxtSymbolNotRecognized
@@ -65,12 +67,19 @@ class ConnectionManager:
         max_ws_retries: int = 10,
         subscription_manager: SubscriptionManager | None = None,
         cleanup_timeout: float = 3.0,
+        health_monitor: IHealthMonitor | None = None,
     ):
         self._exchange_id = exchange_id
         self._exchange_manager = exchange_manager
         self.max_ws_retries = max_ws_retries
         self._subscription_manager = subscription_manager
         self._cleanup_timeout = cleanup_timeout
+        # A.4 producer-side staleness (market data): record_stream_event at the producer edge
+        # (this shared read loop, not per-handler) so the central staleness monitor
+        # (SubscriptionManager._monitor_subscription_status) can tell "wire is fine, consumer is
+        # blocked" apart from a genuinely dead stream. Defaults to the no-op ledger — same
+        # default-to-DummyHealthMonitor pattern as CcxtConnector/AccountManager.
+        self._health_monitor = health_monitor or DummyHealthMonitor()
 
         # Stream state management
         self._is_stream_enabled: dict[str, bool] = defaultdict(lambda: False)
@@ -122,6 +131,11 @@ class ConnectionManager:
             try:
                 await subscriber()
                 n_retry = 0  # Reset retry counter on success
+                # A.4 producer-side staleness: record at the wire, not the (possibly blocked)
+                # consumer — mirrors CcxtConnector._run_ws_loop's record_stream_event for
+                # account streams. One call per successful round-trip regardless of how many
+                # instruments/messages this subscriber batched internally.
+                self._health_monitor.record_stream_event(self._exchange_id, subscription_type)
 
                 # Mark subscription as active on first successful data reception
                 if not connection_established and self._subscription_manager:
@@ -156,9 +170,7 @@ class ConnectionManager:
                 continue
             except (RateLimitExceeded, DDoSProtection) as e:
                 # Rate limit hit — report to rate limiter if available and backoff
-                logger.warning(
-                    f"<yellow>{self._exchange_id}</yellow> Rate limited in {stream_name}: {e}"
-                )
+                logger.warning(f"<yellow>{self._exchange_id}</yellow> Rate limited in {stream_name}: {e}")
                 if hasattr(self, "_exchange_manager") and self._exchange_manager.rate_limiter:
                     self._exchange_manager.rate_limiter.report_limit_hit(
                         pool_name="ccxt_rest", reason=f"{e.__class__.__name__}: {e}"

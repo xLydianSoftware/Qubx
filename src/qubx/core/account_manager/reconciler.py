@@ -29,6 +29,7 @@ from qubx.core.account_manager.diffs import (
     PositionFieldMismatch,
     PositionSizeMismatch,
 )
+from qubx.core.account_manager.reducer import fill_qty_epsilon
 from qubx.core.account_manager.state import AccountState, VenueAccountFigures
 from qubx.core.account_manager.state_machine import can_transition
 from qubx.core.basics import EXTERNAL_CID_PREFIX, Instrument, Order, OrderOrigin, OrderStatus, Position
@@ -83,7 +84,17 @@ class RouteEvent:
     event: object
 
 
-Action = RequestStatus | RequestSnapshot | RequestHistDeals | RouteEvent | OrderPartiallyFilledEvent
+@dataclass(frozen=True)
+class RecordViolation:
+    # - A.4 loudness: the snapshot diff (or a task it spawned) discovered something a live
+    #   stream should have delivered and didn't. The Reconciler already logged the ERROR (it's
+    #   pure/I/O-free and has no health_monitor); this asks the AM to call
+    #   health_monitor.record_stream_violation(exchange, "executions", kind) — the stream is
+    #   always "executions" here, only ``kind`` distinguishes the site.
+    kind: str
+
+
+Action = RequestStatus | RequestSnapshot | RequestHistDeals | RouteEvent | RecordViolation | OrderPartiallyFilledEvent
 
 
 class Tick:
@@ -161,7 +172,7 @@ class ResolveMissingOrder(Task):
         match inp:
             case OrderIn():
                 self._done = True  # - any event for our id resolves it (normal path applies it)
-                return []
+                return self._check_resolved_with_fills(state)
             case SnapshotIn(snap=snap):
                 # - reappeared open, or just applied terminal → no longer missing
                 order = state.get_order(self._cid)
@@ -172,6 +183,29 @@ class ResolveMissingOrder(Task):
             case _:
                 return []
 
+    def _check_resolved_with_fills(self, state: AccountState) -> list[Action]:
+        """A.4 loudness: this order was missing from a snapshot and just resolved (via the
+        normal event path — reducer.apply already ran before the Reconciler sees the event, see
+        AccountManager._apply_to_state) to a terminal status carrying real fills. That is exactly
+        the incident shape: the live stream never delivered this fill, only the reconcile-driven
+        status fetch (or an out-of-band event) recovered it. A terminal CANCELED/EXPIRED/REJECTED
+        with no fills is a benign resolution (the stream just raced the snapshot) — not a
+        violation.
+        """
+        order = state.get_order(self._cid)
+        if (
+            order is not None
+            and order.status.is_terminal
+            and order.filled_quantity > fill_qty_epsilon(order.instrument)
+        ):
+            _log.error(
+                f"[{state.exchange}] reconcile: missing order <g>{self._cid}</g> resolved "
+                f"<r>{order.status}</r> with filled={order.filled_quantity} — the live stream never "
+                "delivered this fill, only the reconcile fetch recovered it"
+            )
+            return [RecordViolation(kind="missing_order_filled")]
+        return []
+
     def _on_tick(self, state: AccountState, now: np.datetime64) -> list[Action]:
         if now < self._next_fetch_at:
             return []
@@ -180,13 +214,15 @@ class ResolveMissingOrder(Task):
             self._next_fetch_at = now + self._wait
             return [RequestStatus(cid=self._cid, venue_id=self._venue_id, instrument=self._instrument)]
         # - budget exhausted → route LOST via the bus (never silent: a silent mutate is invisible
-        #   and the later WS dup gets deduped, so the strategy would miss it)
-        _log.warning(
+        #   and the later WS dup gets deduped, so the strategy would miss it). A.4: this is a
+        #   stream-integrity violation, not a routine outcome — ERROR (was WARNING) + the metric.
+        _log.error(
             f"[{state.exchange}] reconcile give-up on order <g>{self._cid}</g> (vid=<blue>{self._venue_id}</blue>) "
             f"-> <r>LOST</r> after {self._retries} status fetches with no venue answer"
         )
         self._done = True
         return [
+            RecordViolation(kind="order_lost"),
             RouteEvent(
                 OrderLostEvent(
                     instrument=self._instrument,
@@ -194,7 +230,7 @@ class ResolveMissingOrder(Task):
                     venue_order_id=self._venue_id,
                     reason=f"reconcile give-up after {self._retries} status fetches",
                 )
-            )
+            ),
         ]
 
     def _matches(self, event: object) -> bool:
@@ -448,8 +484,22 @@ class Reconciler:
                         if (ev := self._reconcile_order(state, snap_order)) is not None:
                             actions.append(RouteEvent(ev))
 
-                    # - size diff = missed deals
-                    case PositionSizeMismatch(origin=snap_pos) | OriginalPositionMissing(position=snap_pos):
+                    # - size diff = missed deals. In-session (spawn_confirm) this is a live stream
+                    #   that should have delivered the fill and didn't — A.4 loudness. The FIRST
+                    #   reconcile after start (spawn_confirm=False) is startup adoption, not a
+                    #   stream failure, so it stays quiet (see _reconcile_missed_position).
+                    case PositionSizeMismatch(origin=snap_pos):
+                        changed.append(self._reconcile_missed_position(state, snap, now, snap_pos, spawn_confirm))
+                        if spawn_confirm:
+                            _log.error(
+                                f"[{state.exchange}] reconcile: <y>{snap_pos.instrument}</y> position size "
+                                "drifted in-session — the live stream never delivered the missing fill(s)"
+                            )
+                            actions.append(RecordViolation(kind="position_mismatch"))
+
+                    # - venue has a position we don't track at all (not necessarily a stream miss —
+                    #   could be a manual/external trade) -> recover it, no violation.
+                    case OriginalPositionMissing(position=snap_pos):
                         changed.append(self._reconcile_missed_position(state, snap, now, snap_pos, spawn_confirm))
 
                     # - avg/margin only = figure refresh, no missed deals
@@ -457,11 +507,19 @@ class Reconciler:
                         if state.reconcile_position_from_snapshot(snap_pos):
                             changed.append(state.get_position(snap_pos.instrument))
 
-                    # - local holds it, venue flat = missed the close
+                    # - local holds it, venue flat = missed the close. Same A.4 reasoning as the
+                    #   size-mismatch arm above: in-session, this is the stream failing to deliver
+                    #   the closing fill(s).
                     case LocalPositionMissing(position=local_pos):
                         changed.append(
                             self._flatten_missed_close(state, snap, now, local_pos.instrument, spawn_confirm)
                         )
+                        if spawn_confirm:
+                            _log.error(
+                                f"[{state.exchange}] reconcile: <y>{local_pos.instrument}</y> missed close — "
+                                "the live stream never delivered the closing fill(s)"
+                            )
+                            actions.append(RecordViolation(kind="position_mismatch"))
 
                     case BalanceMismatch(origin=snap_bal) | OriginalBalanceMissing(balance=snap_bal):
                         # - push-wins: a WS push at/after the snapshot's as_of supersedes it (venue event

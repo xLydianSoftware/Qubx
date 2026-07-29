@@ -18,6 +18,7 @@ from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     HIST_DEALS_LOOKBACK,
     Reconciler,
+    RecordViolation,
     RequestHistDeals,
     RequestSnapshot,
     RequestStatus,
@@ -30,6 +31,7 @@ from qubx.core.events import (
     DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
+    OrderFilledEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
 )
@@ -202,6 +204,47 @@ def test_missing_order_resolved_by_arriving_event_drops_task():
     assert rec.active_keys() == set()  # task done & dropped — no LOST
 
 
+def test_missing_order_resolved_with_fills_records_violation():
+    # A.4 loudness / the incident shape: the AM applies the incoming event via reducer.apply
+    # BEFORE routing it to the reconciler (see AccountManager._apply_to_state), so by the time
+    # this task sees the OrderIn, state already reflects the terminal-with-fills order. The order
+    # was missing from a snapshot (LocalOrderMissing) and only the reconcile-driven status fetch
+    # (or an out-of-band event) revealed it filled — the live stream never delivered this fill.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_snapshot(st, _origin(open_orders=[]), T0)
+    assert rec.active_keys() == {"X1"}
+
+    event = OrderFilledEvent(
+        instrument=_inst(),
+        client_order_id="X1",
+        venue_order_id="v_X1",
+        fill=None,
+        venue_filled_quantity=1.0,
+        venue_avg_price=50_000.0,
+    )
+    reducer.apply(st, event, _passed_seconds(T0, 4))  # mirrors the AM's apply-then-route order
+    out = rec.on_event(st, event, _passed_seconds(T0, 4))
+
+    assert out == [RecordViolation(kind="missing_order_filled")]
+    assert rec.active_keys() == set()  # resolved — no LOST
+
+
+def test_missing_order_resolved_by_canceled_with_no_fill_records_nothing():
+    # A benign resolution — the order simply canceled with nothing filled, the stream just raced
+    # the snapshot — is NOT a stream-integrity violation.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_snapshot(st, _origin(open_orders=[]), T0)
+
+    event = OrderCanceledEvent(instrument=_inst(), client_order_id="X1", venue_order_id="v_X1")
+    reducer.apply(st, event, _passed_seconds(T0, 4))
+    out = rec.on_event(st, event, _passed_seconds(T0, 4))
+
+    assert out == []
+    assert rec.active_keys() == set()
+
+
 def test_unacked_missing_order_detected_by_cid_fallback_ends_lost():
     # X1 never got its venue ack (venue_order_id=None) and is absent from the snapshot —
     # the Differ can't match by venue id, falls back to cid, still flags it missing.
@@ -212,8 +255,10 @@ def test_unacked_missing_order_detected_by_cid_fallback_ends_lost():
     rec.on_tick(st, _passed_seconds(T0, 3))  # retry 1
     rec.on_tick(st, _passed_seconds(T0, 5))  # retry 2
     out = rec.on_tick(st, _passed_seconds(T0, 7))  # give up -> routes a LOST event (no silent mutate)
-    assert [type(a) for a in out] == [RouteEvent]
-    assert isinstance(out[0].event, OrderLostEvent) and out[0].event.client_order_id == "X1"
+    # A.4: give-up is a stream-integrity violation, not just a routine LOST.
+    assert [type(a) for a in out] == [RecordViolation, RouteEvent]
+    assert out[0] == RecordViolation(kind="order_lost")
+    assert isinstance(out[1].event, OrderLostEvent) and out[1].event.client_order_id == "X1"
     assert rec.active_keys() == set()
 
 
@@ -227,8 +272,9 @@ def test_missing_order_with_no_answer_ends_lost():
     rec.on_tick(st, _passed_seconds(T0, 3))  # retry 1 -> RequestStatus
     rec.on_tick(st, _passed_seconds(T0, 5))  # retry 2 -> RequestStatus
     out = rec.on_tick(st, _passed_seconds(T0, 7))  # exhausted -> routes a LOST event
-    assert [type(a) for a in out] == [RouteEvent]
-    assert isinstance(out[0].event, OrderLostEvent) and out[0].event.client_order_id == "X1"
+    assert [type(a) for a in out] == [RecordViolation, RouteEvent]
+    assert out[0] == RecordViolation(kind="order_lost")
+    assert isinstance(out[1].event, OrderLostEvent) and out[1].event.client_order_id == "X1"
     assert rec.active_keys() == set()
 
 
@@ -255,8 +301,8 @@ def test_missing_one_order_with_no_answer_ends_lost():
     rec.on_tick(st, _passed_seconds(T0, 5))  # retry 2 -> RequestStatus
     out = rec.on_tick(st, _passed_seconds(T0, 7))  # exhausted -> routes a LOST event for X1
 
-    assert [type(a) for a in out] == [RouteEvent]
-    assert isinstance(out[0].event, OrderLostEvent) and out[0].event.client_order_id == "X1"
+    assert [type(a) for a in out] == [RecordViolation, RouteEvent]
+    assert isinstance(out[1].event, OrderLostEvent) and out[1].event.client_order_id == "X1"
     assert st.get_order("X2").status == OrderStatus.ACCEPTED  # type: ignore # untouched
     assert rec.active_keys() == set()
     D_OFF()
@@ -441,7 +487,10 @@ def test_in_session_position_size_diff_spawns_confirm_task():
     assert pos.quantity == 0.005  # type: ignore
     assert pos.r_pnl == 5.0  # type: ignore
     assert rec.active_keys() == {"BTCUSDT"}  # ConfirmPositionBySnapshot task owns the symbol
-    assert a == []
+    # A.4: an in-session size drift is a stream-integrity violation (the live stream should have
+    # delivered the missing fill) — unlike the first-reconcile-after-start case (see
+    # test_first_snapshot_position_diff_does_not_request_hist_deals below), which stays quiet.
+    assert a == [RecordViolation(kind="position_mismatch")]
 
 
 def test_venue_figures_applied_from_snapshot():
@@ -568,7 +617,9 @@ def test_local_position_missing_flattens_and_spawns_confirm_task():
     assert pos.quantity == 0.0  # type: ignore # flattened (venue authoritative)
     assert pos.r_pnl == 7.0  # type: ignore # local accounting preserved
     assert rec.active_keys() == {"BTCUSDT"}  # confirm task to recover the closing deals
-    assert a == []
+    # A.4: a missed close in-session is a stream-integrity violation (the live stream should
+    # have delivered the closing fill).
+    assert a == [RecordViolation(kind="position_mismatch")]
     D_OFF()
 
 

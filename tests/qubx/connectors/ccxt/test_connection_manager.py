@@ -16,6 +16,7 @@ from ccxt import BadSymbol, ExchangeClosedByUser, ExchangeError, ExchangeNotAvai
 from qubx.connectors.ccxt.connection_manager import ConnectionManager
 from qubx.connectors.ccxt.exceptions import CcxtSymbolNotRecognized
 from qubx.connectors.ccxt.subscription_manager import SubscriptionManager
+from qubx.health.dummy import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 
 
@@ -29,7 +30,7 @@ class TestConnectionManager:
         loop.submit = MagicMock()
         return loop
 
-    @pytest.fixture  
+    @pytest.fixture
     def mock_exchange_manager(self, mock_async_loop):
         """Create a mock ExchangeManager for testing."""
         exchange_manager = MagicMock()
@@ -53,6 +54,60 @@ class TestConnectionManager:
             max_ws_retries=3,
             subscription_manager=subscription_manager,
         )
+
+    def test_default_health_monitor_is_dummy_and_safe(self, subscription_manager, mock_exchange_manager):
+        """No health_monitor passed at construction -> falls back to DummyHealthMonitor (the
+        sim/no-op contract, same default-to-Dummy pattern as CcxtConnector/AccountManager)."""
+        manager = ConnectionManager(
+            exchange_id="test_exchange",
+            exchange_manager=mock_exchange_manager,
+            max_ws_retries=3,
+            subscription_manager=subscription_manager,
+        )
+        assert isinstance(manager._health_monitor, DummyHealthMonitor)
+
+    async def test_listen_to_stream_records_producer_side_event_on_success(self, connection_manager, mock_async_loop):
+        """A.4: a successful subscriber() round-trip records a producer-side stream_event —
+        the wire-level signal the central staleness monitor prefers over the (possibly blocked)
+        consumer-side timestamp."""
+        hm = MagicMock()
+        connection_manager._health_monitor = hm
+        mock_subscriber = AsyncMock()
+        mock_exchange = MagicMock()
+        mock_ctrl_channel = MagicMock()
+        mock_ctrl_channel.control.is_set.side_effect = [True, False]
+
+        await connection_manager.listen_to_stream(
+            subscriber=mock_subscriber,
+            exchange=mock_exchange,
+            channel=mock_ctrl_channel,
+            subscription_type="orderbook",
+            stream_name="test_stream",
+        )
+
+        hm.record_stream_event.assert_called_once_with("test_exchange", "orderbook")
+
+    async def test_listen_to_stream_does_not_record_event_on_failure(self, connection_manager, mock_async_loop):
+        """A subscriber() that raises must NOT record an event — only a genuine round-trip
+        counts (mirrors _run_ws_loop's drive-vs-event split on the account-stream side)."""
+        hm = MagicMock()
+        connection_manager._health_monitor = hm
+        mock_subscriber = AsyncMock()
+        mock_subscriber.side_effect = NetworkError("Connection lost")
+        mock_exchange = MagicMock()
+        mock_ctrl_channel = MagicMock()
+        mock_ctrl_channel.control.is_set.side_effect = [True, False]
+
+        with patch("asyncio.sleep", new_callable=AsyncMock):
+            await connection_manager.listen_to_stream(
+                subscriber=mock_subscriber,
+                exchange=mock_exchange,
+                channel=mock_ctrl_channel,
+                subscription_type="orderbook",
+                stream_name="test_stream",
+            )
+
+        hm.record_stream_event.assert_not_called()
 
     def test_initialization(self, subscription_manager, mock_exchange_manager):
         """Test that ConnectionManager initializes with correct state."""
@@ -400,9 +455,9 @@ class TestConnectionManager:
         mock_unsub_future = MagicMock()
         mock_unsub_future.running.return_value = False
         mock_loop.submit.return_value = mock_unsub_future
-        
+
         # Patch AsyncThreadLoop creation to return our mock
-        with patch('qubx.connectors.ccxt.connection_manager.AsyncThreadLoop', return_value=mock_loop):
+        with patch("qubx.connectors.ccxt.connection_manager.AsyncThreadLoop", return_value=mock_loop):
             # Execute - should not raise exception
             connection_manager.stop_stream(stream_name, wait=False)
 
@@ -477,7 +532,10 @@ class TestConnectionManager:
     def test_set_subscription_manager(self, mock_exchange_manager):
         """Test setting subscription manager after initialization."""
         manager = ConnectionManager(
-            exchange_id="test_exchange", exchange_manager=mock_exchange_manager, max_ws_retries=3, subscription_manager=None
+            exchange_id="test_exchange",
+            exchange_manager=mock_exchange_manager,
+            max_ws_retries=3,
+            subscription_manager=None,
         )
 
         # Initially no subscription manager

@@ -57,12 +57,13 @@ def _Inst() -> Instrument:
     )
 
 
-def _am():
+def _am(health_monitor=None):
     return AccountManager(
         connectors={"binance": MagicMock()},
         base_currencies={"binance": "USDT"},
         time=_T(),
         account_id="test",
+        health_monitor=health_monitor,
     )
 
 
@@ -886,7 +887,8 @@ def test_filled_books_gap_for_dropped_ws_fills():
     # arrive as deals; the terminal FILLED carries fill=None plus the venue's cumulative
     # filled_quantity. The reducer books the unbooked remainder so position AND filled_quantity
     # converge now, instead of size-only at the next snapshot reconcile.
-    am = _am()
+    hm = MagicMock()
+    am = _am(health_monitor=hm)
     inst = _Inst()
     state = am.get_state("binance")
     add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
@@ -911,11 +913,14 @@ def test_filled_books_gap_for_dropped_ws_fills():
     assert state.get_position(inst).quantity == 1.0  # full position, not 0.3
     assert r.deal is not None and abs(r.deal.amount - 0.7) < 1e-9  # the synthetic gap fill is surfaced
     assert r.deal.fee_amount is None  # a synthesized fill carries no fee
+    # A.4 loudness: a booked deficit fill is a stream-integrity violation.
+    hm.record_stream_violation.assert_called_once_with("binance", "executions", "deficit_fill")
 
 
 def test_filled_books_gap_on_top_of_a_delivered_last_deal():
     # FILLED carries the last real deal AND the venue cumulative still exceeds what we booked.
-    am = _am()
+    hm = MagicMock()
+    am = _am(health_monitor=hm)
     inst = _Inst()
     state = am.get_state("binance")
     add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
@@ -937,11 +942,13 @@ def test_filled_books_gap_on_top_of_a_delivered_last_deal():
     o = state.get_order("cid-1")
     assert o.filled_quantity == 1.0  # 0.3 + 0.2 + 0.5 gap
     assert state.get_position(inst).quantity == 1.0
+    hm.record_stream_violation.assert_called_once_with("binance", "executions", "deficit_fill")
 
 
 def test_filled_no_gap_when_cumulative_matches_booked():
     # When the venue cumulative equals the sum we booked, no synthetic fill is created.
-    am = _am()
+    hm = MagicMock()
+    am = _am(health_monitor=hm)
     inst = _Inst()
     state = am.get_state("binance")
     add_order(state, status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
@@ -958,6 +965,7 @@ def test_filled_no_gap_when_cumulative_matches_booked():
     assert state.get_order("cid-1").filled_quantity == 1.0
     assert state.get_position(inst).quantity == 1.0
     assert r.deal.trade_id == "t1"  # the real delivered deal, not a synthetic gap
+    hm.record_stream_violation.assert_not_called()  # no gap -> no violation
 
 
 def test_filled_without_venue_cumulative_is_unchanged():

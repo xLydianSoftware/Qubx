@@ -46,13 +46,14 @@ def _instrument(symbol="BTCUSDT", exchange="binance") -> Instrument:
     )
 
 
-def _am(exchange="binance", cfg=None):
+def _am(exchange="binance", cfg=None, health_monitor=None):
     return AccountManager(
         connectors={exchange: MagicMock()},
         base_currencies={exchange: "USDT"},
         time=_T(),
         cfg=cfg or AccountManagerConfig(snapshot_grace_ms=5_000),
         account_id="test",
+        health_monitor=health_monitor,
     )
 
 
@@ -563,6 +564,41 @@ def test_size_drift_snapshot_corrects_size_but_preserves_accounting():
     assert pos.commissions == 6.78
     assert pos.cumulative_funding == 9.99
     assert result.positions == [pos]
+
+
+def test_in_session_position_drift_records_stream_violation():
+    # A.4 loudness, end-to-end through the AccountManager: an in-session position-size drift is
+    # exactly what a live stream should have delivered a fill for and didn't. The Reconciler's
+    # RecordViolation action must reach health_monitor.record_stream_violation via AM._execute
+    # (RecordViolation case) — not just the raw Reconciler unit tests (reconciler_test.py).
+    hm = MagicMock()
+    am = _am(health_monitor=hm)
+    state = am._states["binance"]
+    inst = _instrument()
+    pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    state.set_position(inst, pos)
+
+    # first snapshot after start (matches local) consumes the first-reconcile allowance — no
+    # violation on startup adoption.
+    am._time.t = np.datetime64("2026-05-28T00:59:00")
+    am.apply(
+        _snap_event(
+            as_of="2026-05-28T00:59:00",
+            positions=[Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)],
+        )
+    )
+    hm.record_stream_violation.assert_not_called()
+
+    # in-session drift: the venue now reports a different size — the live stream missed a fill.
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(
+        _snap_event(
+            as_of="2026-05-28T01:00:00",
+            positions=[Position(instrument=inst, quantity=2.0, pos_average_price=49_000.0)],
+        )
+    )
+
+    hm.record_stream_violation.assert_called_once_with("binance", "executions", "position_mismatch")
 
 
 def test_snapshot_margin_and_mark_refresh_even_when_size_unchanged():

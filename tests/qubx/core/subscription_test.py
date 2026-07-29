@@ -1,9 +1,10 @@
-from unittest.mock import Mock, call
+from collections import Counter
+from unittest.mock import Mock, call, patch
 
 import pytest
 
 from qubx.core.basics import DataType, Instrument
-from qubx.core.interfaces import StrategyState
+from qubx.core.interfaces import StrategyState, StreamHealth
 from qubx.core.lookups import lookup
 from qubx.core.mixins.subscription import SubscriptionManager
 from qubx.health.dummy import DummyHealthMonitor
@@ -133,3 +134,112 @@ class TestSubscriptionStuff:
             | {(DataType.TRADE, i): "10m" for i in instruments}
         )
         self.mock_broker.warmup.assert_called_once_with(expected_warmup)
+
+
+class TestSubscriptionStaleness:
+    """A.4: the staleness monitor prefers producer-side StreamHealth ages when the ledger has
+    entries for an exchange's market-data stream (fixing the blocked-consumer false positive —
+    processing.py:892's on_data_arrival call is consumer-side and can't tell "loop is busy" apart
+    from "stream is dead"), falls back to today's consumer-side is_stale() when the ledger has no
+    entries (third-party data providers, e.g. xdata, record nothing — CRITICAL back-compat), and
+    skips the whole [1/4]..[4/4] remediation cycle when the shared channel is backlogged.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.exchange = "BINANCE.UM"
+        self.instrument = lookup.find_symbol(self.exchange, "BTCUSDT")
+        assert self.instrument is not None
+
+        self.data_provider = Mock()
+        self.data_provider.is_simulation = False
+        self.data_provider.is_connected.return_value = True
+        self.data_provider.exchange.return_value = self.exchange
+        # Only "quote" carries a subscribed instrument; "orderbook"/"trade" are skipped
+        # (not subscribed) so each test only has one stream in play.
+        self.data_provider.get_subscribed_instruments.side_effect = (
+            lambda data_type: [self.instrument] if data_type == "quote" else []
+        )
+
+        self.hm = Mock()
+        self.hm.get_stream_health.return_value = StreamHealth(ages={}, violations=Counter())
+        self.hm.get_queue_size.return_value = 0
+        self.hm.is_stale.return_value = False
+
+        self.manager = SubscriptionManager(Mock(), [self.data_provider], self.hm, StrategyState())
+
+    def test_producer_side_fresh_skips_consumer_check_and_resub(self):
+        # The ledger has a fresh event for "quote" -> trusted directly; the per-instrument
+        # consumer-side check (which a blocked ProcessorThread would fool) is never consulted.
+        self.hm.get_stream_health.return_value = StreamHealth(ages={"quote": (5.0, 5.0)}, violations=Counter())
+
+        self.manager._monitor_subscription_status()
+
+        self.hm.is_stale.assert_not_called()
+        self.data_provider.unsubscribe.assert_not_called()
+        self.data_provider.subscribe.assert_not_called()
+
+    def test_producer_side_stale_flags_without_consumer_check(self):
+        # The ledger itself shows the stream is genuinely stale (event_age past threshold) ->
+        # flagged directly, still without ever consulting the consumer-side timestamp.
+        self.hm.get_stream_health.return_value = StreamHealth(ages={"quote": (700.0, 700.0)}, violations=Counter())
+
+        with patch("qubx.core.mixins.subscription.time.sleep"):
+            self.manager._monitor_subscription_status()
+
+        self.hm.is_stale.assert_not_called()
+        self.data_provider.unsubscribe.assert_called_once_with("quote", {self.instrument})
+        self.data_provider.subscribe.assert_called_once_with("quote", {self.instrument})
+
+    def test_falls_back_to_consumer_side_when_ledger_has_no_entries(self):
+        # No producer-side entries for this exchange/stream (e.g. a third-party data provider
+        # like xdata that never calls record_stream_event) -> today's exact behavior, unchanged.
+        self.hm.get_stream_health.return_value = StreamHealth(ages={}, violations=Counter())
+        self.hm.is_stale.return_value = True
+
+        with patch("qubx.core.mixins.subscription.time.sleep"):
+            self.manager._monitor_subscription_status()
+
+        self.hm.is_stale.assert_called_once_with(self.instrument, "quote")
+        self.data_provider.unsubscribe.assert_called_once_with("quote", {self.instrument})
+        self.data_provider.subscribe.assert_called_once_with("quote", {self.instrument})
+
+    def test_falls_back_and_stays_healthy_when_consumer_side_not_stale(self):
+        self.hm.get_stream_health.return_value = StreamHealth(ages={}, violations=Counter())
+        self.hm.is_stale.return_value = False
+
+        self.manager._monitor_subscription_status()
+
+        self.data_provider.unsubscribe.assert_not_called()
+
+    def test_backlog_guard_skips_resub_cycle(self):
+        # Even a genuinely stale stream must not trigger resub churn while the shared channel is
+        # backlogged — that's extra loop load exactly when the loop is already overloaded.
+        self.hm.is_stale.return_value = True
+        self.hm.get_queue_size.return_value = 5_000
+
+        self.manager._monitor_subscription_status()
+
+        self.data_provider.unsubscribe.assert_not_called()
+        self.data_provider.subscribe.assert_not_called()
+
+    def test_backlog_at_threshold_does_not_skip(self):
+        # Strictly greater-than: a backlog exactly at the configured threshold still runs.
+        self.hm.is_stale.return_value = True
+        self.hm.get_queue_size.return_value = 1000  # default threshold
+
+        with patch("qubx.core.mixins.subscription.time.sleep"):
+            self.manager._monitor_subscription_status()
+
+        self.data_provider.unsubscribe.assert_called_once_with("quote", {self.instrument})
+
+    def test_backlog_guard_is_configurable(self):
+        manager = SubscriptionManager(
+            Mock(), [self.data_provider], self.hm, StrategyState(), resub_backlog_threshold=10
+        )
+        self.hm.is_stale.return_value = True
+        self.hm.get_queue_size.return_value = 20
+
+        manager._monitor_subscription_status()
+
+        self.data_provider.unsubscribe.assert_not_called()

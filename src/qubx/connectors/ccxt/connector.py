@@ -331,18 +331,26 @@ class CcxtConnector(ChannelEmitter):
         # touch the live, AM-mutated object. ``symbol`` is what most venues (e.g. Binance) need.
         # A stop/conditional order lives on the venue's trigger surface, so the cancel must
         # target it (else Binance answers -2011 for a live order and the cancel silently fails).
+        # ``instrument`` rides along too (also read synchronously) so the already-gone probe
+        # below can fetch status without ever touching the live Order from the async task.
         is_trigger = order.type in (OrderType.STOP_MARKET, OrderType.STOP_LIMIT)
         self._spawn(
             self._cancel_async(
                 order.client_order_id,
                 order.venue_order_id,
                 instrument_to_ccxt_symbol(order.instrument),
+                order.instrument,
                 is_trigger,
             )
         )
 
     async def _cancel_async(
-        self, client_order_id: str | None, venue_order_id: str | None, symbol: str, is_trigger: bool = False
+        self,
+        client_order_id: str | None,
+        venue_order_id: str | None,
+        symbol: str,
+        instrument: Instrument,
+        is_trigger: bool = False,
     ) -> None:
         """A successful REST cancel ack emits OrderCanceledEvent immediately; the WS
         read side also emits one and AM dedups. A definitive venue cancel-rejection
@@ -360,8 +368,20 @@ class CcxtConnector(ChannelEmitter):
             return
         if ok is None:
             # Order already gone at the venue (filled/expired/canceled before our cancel landed).
-            # Emit nothing — the WS terminal + snapshot reconciler resolve the true terminal state.
-            logger.debug(f"[{self.exchange_name}] cancel: {client_order_id or venue_order_id} already gone; no event")
+            # This is the incident shape: a definitive "gone" verdict on a cancel is exactly what
+            # a swallowed fill looks like (the venue filled the order right before our cancel
+            # landed) — so probe status immediately instead of waiting for the next periodic
+            # sweep. WARNING + a stream-integrity violation make it operator-visible, and
+            # spawning the existing status-fetch primitive routes the fetched terminal state
+            # through the normal event path (the deficit-fill synthesizer in reducer.py books
+            # any missed fill within seconds). Does not change cancel_order's return contract —
+            # still nothing emitted from THIS call; the status fetch emits its own event(s).
+            logger.warning(
+                f"[{self.exchange_name}] cancel: {client_order_id or venue_order_id} already gone at venue "
+                "(found terminal on cancel) — fetching status to recover any missed fill"
+            )
+            self._health_monitor.record_stream_violation(self.exchange_name, "executions", "cancel_found_terminal")
+            self._spawn(self._order_status_async(client_order_id, venue_order_id, symbol, instrument, is_trigger))
             return
         if ok:
             self._emit_canceled_from_response(client_order_id, venue_order_id, response)
@@ -757,9 +777,7 @@ class CcxtConnector(ChannelEmitter):
                 return (None, None)
             symbol = instrument_to_ccxt_symbol(instrument)
             rows = self._run_sync(self._em.exchange.fetch_leverages([symbol]))
-            settings = ccxt_extract_leverage_settings(
-                list(rows.values()) if isinstance(rows, dict) else rows
-            )
+            settings = ccxt_extract_leverage_settings(list(rows.values()) if isinstance(rows, dict) else rows)
             return settings.get(symbol, (None, None))
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] fetch leverage settings for {instrument.symbol}: {e}")

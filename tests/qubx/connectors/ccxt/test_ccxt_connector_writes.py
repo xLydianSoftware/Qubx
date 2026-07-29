@@ -28,6 +28,7 @@ from qubx.core.events import (
     OrderAcceptedEvent,
     OrderCanceledEvent,
     OrderCancelRejectedEvent,
+    OrderFilledEvent,
     OrderRejectedEvent,
     OrderUpdatedEvent,
     OrderUpdateRejectedEvent,
@@ -61,6 +62,7 @@ def _make_connector(
     *,
     exchange: Mock | None = None,
     data_provider: Mock | None = None,
+    health_monitor: Mock | None = None,
 ) -> tuple[CcxtConnector, list, Mock]:
     """Build a connector with a capturing channel and a mocked exchange.
 
@@ -92,6 +94,7 @@ def _make_connector(
         time_provider=DummyTimeProvider(),
         exchange_manager=em,
         data_provider=data_provider,
+        health_monitor=health_monitor,
     )
 
     captured: list = []
@@ -435,25 +438,82 @@ async def test_cancel_by_cloid_uses_cloid_endpoint() -> None:
     assert isinstance(sent[0], OrderCanceledEvent)
 
 
+def _raw_status(status: str, *, trades: list | None = None) -> dict:
+    # Minimal ccxt fetch_order payload for the status-probe path: enough for
+    # ccxt_convert_order_info (info/id/timestamp/side/status) and for _instrument_for_symbol
+    # to resolve via the connector's own symbol cache (see _seed_symbol_cache below).
+    return {
+        "info": {},
+        "id": "VENUE123",
+        "clientOrderId": "qubx_BTCUSDT_1",
+        "symbol": "BTC/USDT:USDT",
+        "timestamp": 1700000000000,
+        "side": "buy",
+        "price": 100.0,
+        "amount": 1.0,
+        "status": status,
+        "trades": trades or [],
+    }
+
+
+def _seed_symbol_cache(conn: CcxtConnector) -> None:
+    conn._symbol_to_instrument["BTC/USDT:USDT"] = _instrument()
+
+
 @pytest.mark.asyncio
-async def test_cancel_acked_order_gone_at_venue_emits_nothing_no_retry() -> None:
+async def test_cancel_acked_order_gone_at_venue_emits_nothing_directly_no_retry() -> None:
     # An ACKED order (has venue id) that the venue already removed (filled/expired/canceled)
     # before our cancel lands answers -2011 "Unknown order sent". Because it was acked, that is
     # DEFINITIVE ("gone"), not the submit/cancel race — so the connector must NOT retry and must
-    # emit nothing (the WS terminal + snapshot reconciler resolve it), avoiding the 32s retry storm.
+    # emit nothing DIRECTLY from _cancel_async itself, avoiding the 32s retry storm. It DOES probe
+    # status immediately now (incident fix) — see test_cancel_gone_at_venue_probes_status below
+    # for the warning/violation/spawn assertions; here we only pin the no-retry contract.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.cancel_order = AsyncMock(
         side_effect=ccxt.ExchangeError('binanceusdm {"code":-2011,"msg":"Unknown order sent."}')
     )
+    exchange.fetch_order = AsyncMock(return_value=_raw_status("canceled"))
     conn, sent, _ = _make_connector(exchange=exchange)
+    _seed_symbol_cache(conn)
 
     with patch("qubx.connectors.ccxt.connector.asyncio.sleep", AsyncMock()):
         conn.cancel_order(_order(venue_order_id="VENUE123"))
         await _drive(conn)
 
     exchange.cancel_order.assert_awaited_once()  # - definitive 'gone' -> no retry storm
-    assert sent == []  # - neither canceled nor cancel-rejected; WS/snapshot resolve the terminal
+
+
+@pytest.mark.asyncio
+async def test_cancel_gone_at_venue_probes_status() -> None:
+    # The incident: an already-filled maker order's cancel is rejected as "already gone" at the
+    # venue. The old code emitted nothing at all and silently waited for the next periodic sweep
+    # (25 minutes of invisible unhedged divergence). Now: WARNING + a stream-integrity violation
+    # + an immediate status fetch, reusing the same primitive request_order_status uses
+    # (_order_status_async) so the recovered terminal status/fill flows through the normal event
+    # path within seconds instead of the next sweep.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.cancel_order = AsyncMock(
+        side_effect=ccxt.ExchangeError('binanceusdm {"code":-2011,"msg":"Unknown order sent."}')
+    )
+    exchange.fetch_order = AsyncMock(return_value=_raw_status("closed"))  # closed, no trades
+    hm = Mock()
+    conn, sent, _ = _make_connector(exchange=exchange, health_monitor=hm)
+    _seed_symbol_cache(conn)
+
+    with patch("qubx.connectors.ccxt.connector.asyncio.sleep", AsyncMock()):
+        conn.cancel_order(_order(venue_order_id="VENUE123"))
+        await _drive(conn)
+
+    hm.record_stream_violation.assert_called_once_with("BINANCE.UM", "executions", "cancel_found_terminal")
+    exchange.fetch_order.assert_awaited_once_with("VENUE123", "BTC/USDT:USDT")
+    # the recovered terminal status flows through the normal event path (ACCEPTED synth + a
+    # status-only FILLED, since the closed order carries no trades — the same "carried no
+    # trades" gap path the deficit-fill synthesizer books downstream in the AccountManager).
+    assert isinstance(sent[-1], OrderFilledEvent)
+    assert sent[-1].venue_order_id == "VENUE123"
+    assert sent[-1].fill is None
 
 
 @pytest.mark.asyncio

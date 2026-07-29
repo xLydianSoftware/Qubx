@@ -19,6 +19,7 @@ from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     Reconciler,
+    RecordViolation,
     RequestHistDeals,
     RequestSnapshot,
     RequestStatus,
@@ -364,6 +365,11 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         # Everything else goes through the reducer; order/deal events additionally drive the
         # Reconciler's tasks (coverage, resolve-by-event).
         result = reducer.apply(state, event, now)
+        if result.deficit_fill:
+            # A.4 loudness: the reducer already logged the ERROR (it has the remainder/price
+            # context); this is just the metric side, which needs the health_monitor
+            # collaborator the reducer deliberately doesn't hold.
+            self._health_monitor.record_stream_violation(state.exchange, "executions", "deficit_fill")
         if isinstance(event, OrderEvent):
             self._execute(state, rec.on_event(state, event, now))
 
@@ -409,6 +415,11 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                                 f"<y>{instrument.symbol}</y> since {since} -> connector.request_hist_deals"
                             )
                             connector.request_hist_deals(instrument, since)
+
+                    case RecordViolation(kind=kind):
+                        # A.4 loudness: the Reconciler already logged the ERROR (it's pure/I/O-free
+                        # and doesn't hold the health_monitor) — this is just the metric side.
+                        self._health_monitor.record_stream_violation(state.exchange, "executions", kind)
 
                     case _:
                         logger.warning(f"[{state.exchange}] unknown reconcile action: {action!r}")
