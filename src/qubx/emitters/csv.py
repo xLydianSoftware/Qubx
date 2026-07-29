@@ -4,8 +4,10 @@ CSV Metric Emitter.
 This module provides an implementation of IMetricEmitter that exports metrics to a CSV file.
 """
 
+import csv
 import datetime
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
@@ -49,6 +51,8 @@ class CSVMetricEmitter(BaseMetricEmitter):
             file_path = os.path.join(os.getcwd(), "metrics.csv")
 
         self._file_path = Path(file_path)
+        self._record_fields: dict[str, list[str]] = {}
+        self._warned_undeclared: set[str] = set()
         self._initialize_file()
 
     def _initialize_file(self) -> None:
@@ -168,8 +172,7 @@ class CSVMetricEmitter(BaseMetricEmitter):
             if not deals_file_path.exists():
                 with open(deals_file_path, "w") as f:
                     f.write(
-                        "timestamp,symbol,exchange,amount,price,aggressive,"
-                        "fee_amount,fee_currency,deal_id,order_id\n"
+                        "timestamp,symbol,exchange,amount,price,aggressive,fee_amount,fee_currency,deal_id,order_id\n"
                     )
 
             with open(deals_file_path, "a") as f:
@@ -185,3 +188,73 @@ class CSVMetricEmitter(BaseMetricEmitter):
 
         except Exception as e:
             logger.error(f"[CSVMetricEmitter] Failed to emit deals: {e}")
+
+    def _record_path(self, table: str) -> Path:
+        return self._file_path.parent / f"{table}.csv"
+
+    def ensure_table(
+        self,
+        table: str,
+        columns: dict[str, str],
+        symbol_columns: Sequence[str] = (),
+        dedup_keys: Sequence[str] | None = None,
+        partition_by: str = "DAY",
+    ) -> None:
+        """
+        Declare a strategy-owned table as one CSV file beside the metrics file.
+        """
+        try:
+            if isinstance(symbol_columns, str):
+                raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
+
+            fields = ["timestamp", *self._default_tags]
+            for name in ("run_id", "is_live", *symbol_columns, *columns):
+                if name not in fields:
+                    fields.append(name)
+
+            self._record_fields[table] = fields
+
+            path = self._record_path(table)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            if not path.exists():
+                with open(path, "w", newline="") as f:
+                    csv.DictWriter(f, fieldnames=fields).writeheader()
+        except Exception as e:
+            logger.error(f"[CSVMetricEmitter] Failed to ensure table '{table}': {e}")
+
+    def emit_record(
+        self, table: str, record: dict[str, Any], symbol_columns: Sequence[str] = (), timestamp: dt_64 | None = None
+    ) -> None:
+        """
+        Append one row to a strategy-owned table, mirroring the QuestDB emitter's scope tags
+        """
+        try:
+            if isinstance(symbol_columns, str):
+                raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
+            if self._context is not None and timestamp is None:
+                timestamp = self._context.time()
+            row = {k: v for k, v in record.items() if v is not None}
+            row.pop("timestamp", None)
+            row.update(self._default_tags)
+            if self._context is not None:
+                row["is_live"] = not self._context.is_simulation
+            row["timestamp"] = str(timestamp) if timestamp is not None else str(time_now())
+
+            path = self._record_path(table)
+            fields = self._record_fields.get(table)
+            if fields is None:
+                # - undeclared table: take the schema from this first row
+                fields = ["timestamp", *(k for k in row if k != "timestamp")]
+                self._record_fields[table] = fields
+                path.parent.mkdir(parents=True, exist_ok=True)
+                with open(path, "w", newline="") as f:
+                    csv.DictWriter(f, fieldnames=fields).writeheader()
+            elif (unknown := set(row) - set(fields)) and table not in self._warned_undeclared:
+                self._warned_undeclared.add(table)
+                logger.warning(f"[CSVMetricEmitter] '{table}': dropping undeclared columns {sorted(unknown)}")
+
+            with open(path, "a", newline="") as f:
+                csv.DictWriter(f, fieldnames=fields, restval="", extrasaction="ignore").writerow(row)
+
+        except Exception as e:
+            logger.error(f"[CSVMetricEmitter] Failed to emit record to '{table}': {e}")
