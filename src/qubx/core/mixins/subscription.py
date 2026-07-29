@@ -211,7 +211,9 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_stream_unsubscriptions[subscription_type].update(instruments)
 
     def _get_updated_subs(self) -> list[str]:
-        return list(
+        # sorted: commit order is behavior-relevant in the backtester (last-processed sub decides
+        # OME quote priming) and set order is hash-seed dependent
+        return sorted(
             set(self._pending_stream_unsubscriptions.keys())
             | set(self._pending_stream_subscriptions.keys())
             | self._pending_global_subscriptions
