@@ -81,7 +81,9 @@ class IteratedDataStreamsSlicer(Iterator[SlicerOutData]):
 
     def _build_initial_iteration_seq(self):
         _init_seq = {k: self._time_func(self._buffers[k][-1]) for k in self._keys if self._buffers[k]}
-        _init_seq = dict(sorted(_init_seq.items(), key=lambda item: item[1]))
+        # (time, key): equal-timestamp streams must not tie-break by dict insertion
+        # order, which is arrival/hash-order dependent across processes.
+        _init_seq = dict(sorted(_init_seq.items(), key=lambda item: (item[1], item[0])))
         self._keys = deque(_init_seq.keys())
 
     def _load_next_chunk_to_buffer(self, index: str) -> list[Timestamped]:

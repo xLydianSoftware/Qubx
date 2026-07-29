@@ -169,14 +169,17 @@ class TestSimulatedDataStuff:
             if k == 11: slicer += {'x10': iter(data4)}
             k += 1
             ti = t[2].time
+        # NOTE: ties (same timestamp across streams, e.g. 'x10'/D1 vs 'x3'/C1 at 00:10) are now
+        # broken by canonical (time, key) order instead of insertion order, so 'x10' < 'x3'
+        # (lexicographic string compare) puts D1 before C1 from that point on.
         assert r == [
-            'A1', 'A1', 'A1', 'A1', 
-            'B1', 'B1', 'B1', 
-            'B1', 'C1', 'B1', 'C1', 
-            'B1', 'C1', 'D1', 
-            'C1', 'D1', 'B1', 'C1', 'D1', 'B1', 'C1', 'D1', 'B1', 'C1', 'D1', 'B1', 'C1', 'D1', 'B1', 'C1', 'D1', 
-            'B2', 'C1', 'D1', 'B2', 'C1', 'D1', 'B2', 'C2', 'D1', 'B2', 'C2', 'D1', 'B2', 
-            'C2', 'B2', 'C2', 'B2', 'C2', 'B2', 'C2', 'B2', 'C2', 'B2', 'C2', 'B2', 
+            'A1', 'A1', 'A1', 'A1',
+            'B1', 'B1', 'B1',
+            'B1', 'C1', 'B1', 'C1',
+            'B1', 'D1', 'C1',
+            'D1', 'C1', 'B1', 'D1', 'C1', 'B1', 'D1', 'C1', 'B1', 'D1', 'C1', 'B1', 'D1', 'C1', 'B1', 'D1', 'C1',
+            'B2', 'D1', 'C1', 'B2', 'D1', 'C1', 'B2', 'D1', 'C2', 'B2', 'D1', 'C2', 'B2',
+            'C2', 'B2', 'C2', 'B2', 'C2', 'B2', 'C2', 'B2', 'C2', 'B2', 'C2', 'B2',
             'C2', 'C2', 'C2'
         ]
         # fmt: on
@@ -201,12 +204,42 @@ class TestSimulatedDataStuff:
             r.append(t[2].data)
 
         assert r == [
-            'A1', 'A1', 
-            'C1', 'A1', 'C1', 'A1', 'C1', 'D1', 
-            'E1', 'A1', 'C1', 'D1', 'E1', 'A1', 'C1', 'D1', 'E1', 'B1', 'A1', 'C1', 'D1', 'E1', 
-            'B1', 'A1', 'C1', 'D1', 'E1', 'B1', 'A1', 'C1', 'D1', 'E1', 'B1', 'A1', 'C1', 'D1', 
-            'E1', 'B1', 'A1', 'C1', 'D1', 'E1', 'B1', 'C1', 'D1', 'E1', 'B1', 'D1', 'E1', 'B1', 'D1', 'E1', 
+            'A1', 'A1',
+            'C1', 'A1', 'C1', 'A1', 'C1', 'D1',
+            'E1', 'A1', 'C1', 'D1', 'E1', 'A1', 'C1', 'D1', 'E1', 'B1', 'A1', 'C1', 'D1', 'E1',
+            'B1', 'A1', 'C1', 'D1', 'E1', 'B1', 'A1', 'C1', 'D1', 'E1', 'B1', 'A1', 'C1', 'D1',
+            'E1', 'B1', 'A1', 'C1', 'D1', 'E1', 'B1', 'C1', 'D1', 'E1', 'B1', 'D1', 'E1', 'B1', 'D1', 'E1',
             'B1', 'B1', 'B1'
         ]
 
         # fmt: on
+
+    def test_iterator_slicer_tie_break_is_insertion_order_independent(self):
+        # regression: equal-timestamp streams must tie-break by a canonical key order,
+        # not by the order they happened to be put() into the slicer (dict insertion order,
+        # which in production comes from a hash-seed-dependent set-diff)
+        events_a = DummyTimeEvent.from_seq("2020-01-01 00:00", 4, "1Min", "A")
+        events_b = DummyTimeEvent.from_seq("2020-01-01 00:00", 4, "1Min", "B")
+
+        def run(order: list[str]) -> list[tuple[str, int]]:
+            streams = {"A": iter([events_a]), "B": iter([events_b])}
+            slicer = IteratedDataStreamsSlicer()
+            slicer += {k: streams[k] for k in order}
+            seq = []
+            for t in slicer:
+                if not t:
+                    continue
+                seq.append((t[0], t[2].time))
+            return seq
+
+        seq_ab = run(["A", "B"])
+        seq_ba = run(["B", "A"])
+
+        assert seq_ab == seq_ba, "tie-break order must not depend on stream put() order"
+
+        # canonical: at every shared timestamp, keys must come out in sorted (key) order
+        by_time: dict[int, list[str]] = {}
+        for k, t in seq_ab:
+            by_time.setdefault(t, []).append(k)
+        for t, keys in by_time.items():
+            assert keys == sorted(keys), f"tie at t={t} not canonically key-ordered: {keys}"
