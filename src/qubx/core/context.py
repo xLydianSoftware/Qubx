@@ -531,6 +531,16 @@ class StrategyContext(IStrategyContext):
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to close aux data storage: {e}")
 
+        # PRIORITY 2.5: Stop the AccountManager's liveness watchdog thread (A.3) — before
+        # tearing down connectors below, so it never calls reconnect()/is_ws_ready() on an
+        # already-disconnected connector. No-op in simulation (SimulatedAccountManager never
+        # starts it) and no-op if the live liveness tick is config-disabled.
+        try:
+            self._account_manager.stop()
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to stop account manager: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
+
         # PRIORITY 3: Tear down exchange connectors (no-op in simulation)
         for connector in self._connectors.values():
             try:

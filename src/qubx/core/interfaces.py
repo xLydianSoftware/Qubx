@@ -1807,6 +1807,20 @@ class IHealthWriter(Protocol):
         """
         ...
 
+    def record_gauge(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+        """
+        Record/overwrite a single named point-in-time gauge (last-write-wins), emitted on
+        the next periodic emission pass. Generic escape hatch for health signals that don't
+        fit an existing ledger (e.g. ``event_loop_lag_ms`` — the A.3 loop-lag heartbeat)
+        rather than one bespoke tracking dict per new signal.
+
+        Args:
+            name: Metric name
+            value: Current value
+            tags: Optional extra tags (merged with the standard ``{"type": "health"}`` tag)
+        """
+        ...
+
 
 class IHealthReader(Protocol):
     """

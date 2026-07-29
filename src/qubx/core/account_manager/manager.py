@@ -6,6 +6,8 @@ Periodic ticks (reconcile, sweep, liveness) call the reconcile.py decision helpe
 fire the connector requests — connector calls stay manager-only, as does PM wiring.
 """
 
+import threading
+from dataclasses import dataclass
 from typing import Callable, Literal
 
 import numpy as np
@@ -44,7 +46,8 @@ from qubx.core.events import (
     FundingPaymentEvent,
     OrderEvent,
 )
-from qubx.core.interfaces import IAccountConfigurator, IAccountViewer, IProcessingManager
+from qubx.core.interfaces import IAccountConfigurator, IAccountViewer, IHealthMonitor, IProcessingManager, StreamHealth
+from qubx.health import DummyHealthMonitor
 from qubx.utils.time import timedelta_to_crontab
 
 # Module logger bound to the "account_manager" area (see reducer.py for the contract).
@@ -53,6 +56,57 @@ logger = area_logger("account_manager")
 
 def liveness_overdue(unready_since: np.datetime64, now: np.datetime64, threshold: np.timedelta64) -> bool:
     return (now - unready_since) >= threshold  # type: ignore
+
+
+# Fallback read-timeout (A.3 verdict) for a connector that doesn't expose
+# ``ACCOUNT_WATCH_TIMEOUT_S`` — mirrors CcxtConnector's own class-attribute default.
+# IConnector is venue-agnostic and deliberately doesn't carry this ccxt-specific knob, so
+# the AM reads it via getattr (duck-typed) rather than widening the connector protocol for
+# every plugin (hyperliquid/lighter adoption is a later PR — see spec §A.1 last bullet).
+DEFAULT_ACCOUNT_WATCH_TIMEOUT_S = 60.0
+
+
+@dataclass(frozen=True)
+class LivenessVerdict:
+    """A.3 central verdict for one exchange's liveness tick."""
+
+    unhealthy: bool
+    reason: str | None = None  # "ws_not_ready" | "stream_drive_stale" | "violation_burst"
+
+
+def evaluate_liveness(
+    *,
+    ws_ready: bool,
+    stream_health: StreamHealth,
+    account_watch_timeout_s: float,
+    violations_delta: int,
+    violation_burst_threshold: int,
+) -> LivenessVerdict:
+    """Pure A.3 verdict: ``unhealthy = not ws_ready OR max(drive_age) > 3*T OR violation burst``.
+
+    The drive-age and violation-burst legs only participate when the exchange has at least
+    one registered stream in ``stream_health.ages`` — an exchange reporting no registered
+    streams at all (a connector that hasn't adopted the StreamHealth ledger) is judged on
+    ``ws_ready`` alone (migration grace for plugins, spec §A.1 last bullet). In practice only
+    account/execution WS loops ever feed the ledger (market data never calls
+    record_stream_drive/event), so "has registered streams" already means "has account
+    streams" — no separate stream-name filtering is needed here.
+
+    ``violation_burst_threshold <= 0`` disables the violation-burst leg entirely (default,
+    per reviewer decision: violation bursts are alert-only in this release).
+    """
+    if not ws_ready:
+        return LivenessVerdict(True, "ws_not_ready")
+
+    if stream_health.ages:
+        max_drive_age = max(drive_age for _event_age, drive_age in stream_health.ages.values())
+        if max_drive_age > 3 * account_watch_timeout_s:
+            return LivenessVerdict(True, "stream_drive_stale")
+
+        if violation_burst_threshold > 0 and violations_delta >= violation_burst_threshold:
+            return LivenessVerdict(True, "violation_burst")
+
+    return LivenessVerdict(False, None)
 
 
 class AccountManager(IAccountViewer, IAccountConfigurator):
@@ -64,11 +118,17 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
     _cfg: AccountManagerConfig
     _tcc: dict[str, TransactionCostsCalculator]
     _states: dict[str, AccountState]
+    _health_monitor: IHealthMonitor
     _snapshot_grace: np.timedelta64
     _snapshot_interval: np.timedelta64
     _liveness_threshold: np.timedelta64
     _terminal_retention: np.timedelta64
     _liveness_unready_since: dict[str, np.datetime64]
+    _liveness_cycles_unhealthy: dict[str, int]
+    _liveness_escalated: set[str]
+    _liveness_last_violations: dict[str, int]
+    _liveness_thread: threading.Thread | None
+    _liveness_stop_event: threading.Event | None
     _last_eviction_sweep: np.datetime64
     _reconcilers: dict[str, Reconciler]
 
@@ -82,6 +142,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         cfg: AccountManagerConfig | None = None,
         account_id: str = "AccountManager",
         tcc: dict[str, TransactionCostsCalculator] | None = None,
+        health_monitor: IHealthMonitor | None = None,
     ):
         self._pm = pm
         self._init_state(
@@ -91,6 +152,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             cfg=cfg,
             account_id=account_id,
             tcc=tcc,
+            health_monitor=health_monitor,
         )
         # Live passes pm=None and registers the ticks later — see set_processing_manager.
         if self._pm is not None:
@@ -116,6 +178,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         cfg: AccountManagerConfig | None,
         account_id: str,
         tcc: dict[str, TransactionCostsCalculator] | None,
+        health_monitor: IHealthMonitor | None = None,
     ) -> None:
         # Shared field init for both the live and simulation managers, so the
         # subclass can't silently drift from the parent's field set.
@@ -125,6 +188,10 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         self.account_id = account_id
         # Per-exchange fee schedules, keyed like connectors/base_currencies.
         self._tcc = tcc or {}
+        # A.3 verdict input: StreamHealth ages/violations per exchange. Defaults to the
+        # no-op ledger (sim/paper-without-a-monitor, unit tests) — same
+        # default-to-DummyHealthMonitor pattern as CcxtConnector.
+        self._health_monitor = health_monitor or DummyHealthMonitor()
         # Derived timedeltas (config is fixed for the AM's lifetime) — computed once
         # here rather than rebuilt on every tick/snapshot.
         self._snapshot_grace = np.timedelta64(self._cfg.snapshot_grace_ms, "ms")
@@ -142,6 +209,11 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             for ex in connectors
         }
         self._liveness_unready_since = {}
+        self._liveness_cycles_unhealthy = {}
+        self._liveness_escalated = set()
+        self._liveness_last_violations = {}
+        self._liveness_thread = None
+        self._liveness_stop_event = None
         self._last_eviction_sweep = time.time()
         # Stage-2 Reconciler per exchange. Wired into on_event now (no-op until on_snapshot
         # spawns tasks); on_snapshot/on_tick wiring + the old-path sweep land in a later step.
@@ -166,14 +238,47 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         # One reconcile heartbeat drives the Reconciler: its on_tick gates the snapshot request
         # (snapshot_interval) AND nudges the order/position tasks. Replaces the old inflight +
         # snapshot ticks. Fires at the (fast) inflight interval so task timers stay responsive.
+        # It stays on the channel/ProcessorThread — on_tick mutates AccountState, and that's
+        # the single-mutator invariant's whole point.
         if cfg.reconcile_tick_interval_ms > 0:
             self._pm.schedule(
                 timedelta_to_crontab(pd.Timedelta(cfg.reconcile_tick_interval_ms, "ms")), self._on_reconcile_tick
             )
+        # A.3: liveness runs on its OWN dedicated daemon thread, not the channel — see
+        # _on_liveness_tick's docstring for why that's safe (it never touches AccountState).
         if cfg.liveness_check_interval_ms > 0:
-            self._pm.schedule(
-                timedelta_to_crontab(pd.Timedelta(cfg.liveness_check_interval_ms, "ms")), self._on_liveness_tick
-            )
+            self._start_liveness_watchdog(cfg.liveness_check_interval_ms / 1000.0)
+
+    def _start_liveness_watchdog(self, interval_s: float) -> None:
+        """Start the dedicated liveness-tick thread (pattern: subscription.py's monitor
+        thread). Idempotent — a second call (e.g. a stray extra set_processing_manager)
+        is a no-op, mirroring set_processing_manager's own idempotency."""
+        if self._liveness_thread is not None:
+            return
+        self._liveness_stop_event = threading.Event()
+        self._liveness_thread = threading.Thread(
+            target=self._liveness_loop, args=(interval_s,), daemon=True, name="AccountManagerLivenessWatchdog"
+        )
+        self._liveness_thread.start()
+
+    def _liveness_loop(self, interval_s: float) -> None:
+        assert self._liveness_stop_event is not None
+        # Event.wait(timeout) returns True as soon as the event is set, so stop() below
+        # doesn't block waiting out a long interval — unlike a plain time.sleep loop.
+        while not self._liveness_stop_event.wait(interval_s):
+            try:
+                self._on_liveness_tick()
+            except Exception:
+                logger.exception("liveness watchdog tick failed")
+
+    def stop(self) -> None:
+        """Stop the liveness watchdog thread (idempotent; a no-op if it never started —
+        SimulatedAccountManager, or any live AM whose liveness tick is config-disabled)."""
+        if self._liveness_stop_event is not None:
+            self._liveness_stop_event.set()
+        if self._liveness_thread is not None:
+            self._liveness_thread.join(timeout=5.0)
+            self._liveness_thread = None
 
     def add_order(self, order: Order) -> None:
         exchange = order.instrument.exchange
@@ -587,7 +692,17 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 logger.exception(f"[{exchange}] reconcile tick failed")
         self._sweep_terminal_evictions()
 
-    def _on_liveness_tick(self, ctx) -> None:
+    def _on_liveness_tick(self) -> None:
+        """Central A.3 watchdog: runs on ``_liveness_thread``, NOT the channel/ProcessorThread
+        the reconcile tick above rides. Safe to run off-channel because this method touches
+        only its own private ``_liveness_*`` dicts (never AccountState) plus
+        ``connector.is_ws_ready()/reconnect()`` and ``self._health_monitor.get_stream_health()``
+        — no AccountState access, so the single-mutator invariant that keeps the reconcile
+        tick on the channel doesn't apply here.
+
+        No ``ctx`` parameter (unlike the reconcile tick): this is no longer a
+        ``pm.schedule``-registered callback, it's called directly from ``_liveness_loop``.
+        """
         now = self._time.time()
         for exchange, connector in self._connectors.items():
             try:
@@ -597,23 +712,68 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 # abort the checks for the rest. The unready timer is left as-is.
                 logger.exception(f"[{exchange}] liveness check failed")
                 continue
-            if ws_ready:
+
+            stream_health = self._health_monitor.get_stream_health(exchange)
+            total_violations = sum(stream_health.violations.values())
+            violations_delta = total_violations - self._liveness_last_violations.get(exchange, total_violations)
+            self._liveness_last_violations[exchange] = total_violations
+            # getattr'd lazily (only when there's telemetry to judge against it) so a
+            # MagicMock/plain-object connector with no such attribute never has to care —
+            # evaluate_liveness only reads this when stream_health.ages is non-empty.
+            account_watch_timeout_s = (
+                getattr(connector, "ACCOUNT_WATCH_TIMEOUT_S", DEFAULT_ACCOUNT_WATCH_TIMEOUT_S)
+                if stream_health.ages
+                else DEFAULT_ACCOUNT_WATCH_TIMEOUT_S
+            )
+
+            verdict = evaluate_liveness(
+                ws_ready=ws_ready,
+                stream_health=stream_health,
+                account_watch_timeout_s=account_watch_timeout_s,
+                violations_delta=violations_delta,
+                violation_burst_threshold=self._cfg.liveness_violation_burst_threshold,
+            )
+
+            if not verdict.unhealthy:
                 self._liveness_unready_since.pop(exchange, None)
+                self._liveness_cycles_unhealthy.pop(exchange, None)
+                self._liveness_escalated.discard(exchange)
                 continue
+
             since = self._liveness_unready_since.setdefault(exchange, now)
-            if liveness_overdue(since, now, self._liveness_threshold):
-                logger.warning(f"[{exchange}] WS unready past threshold; reconnecting")
-                try:
-                    reconnected = connector.reconnect()
-                except Exception:
-                    logger.exception(f"reconnect failed for {exchange}")
-                    continue
-                if reconnected:
-                    # Clear only on success; on failure keep the timestamp so the next
-                    # tick retries instead of restarting the full threshold.
-                    self._liveness_unready_since.pop(exchange, None)
-                else:
-                    logger.warning(f"[{exchange}] reconnect failed; will retry on next liveness tick")
+            if not liveness_overdue(since, now, self._liveness_threshold):
+                continue
+
+            cycles = self._liveness_cycles_unhealthy.get(exchange, 0) + 1
+            self._liveness_cycles_unhealthy[exchange] = cycles
+            logger.warning(f"[{exchange}] WS unhealthy past threshold ({verdict.reason}); reconnecting")
+            try:
+                reconnected = connector.reconnect()
+            except Exception:
+                logger.exception(f"reconnect failed for {exchange}")
+                reconnected = False
+
+            if reconnected:
+                # Clear only on success; on failure keep the timestamp so the next
+                # tick retries instead of restarting the full threshold.
+                self._liveness_unready_since.pop(exchange, None)
+                self._liveness_cycles_unhealthy.pop(exchange, None)
+                self._liveness_escalated.discard(exchange)
+                continue
+
+            logger.warning(f"[{exchange}] reconnect failed; will retry on next liveness tick")
+            # Escalation ladder (A.3): WARNING+reconnect already fired above; if STILL
+            # unhealthy `liveness_escalation_cycles` cycles later (reconnect raising or
+            # returning False both count — either way the exchange stayed unhealthy),
+            # escalate to ERROR once per episode. No notifier surface on the AM, so the
+            # violation record is the alert the platform's metric-based alerting reads.
+            if cycles >= self._cfg.liveness_escalation_cycles and exchange not in self._liveness_escalated:
+                logger.error(
+                    f"[{exchange}] WS still unhealthy after {cycles} liveness cycles past threshold "
+                    f"({verdict.reason}); escalating"
+                )
+                self._health_monitor.record_stream_violation(exchange, "executions", "liveness_escalation")
+                self._liveness_escalated.add(exchange)
 
 
 class SimulatedAccountManager(AccountManager):
@@ -628,6 +788,7 @@ class SimulatedAccountManager(AccountManager):
         cfg: AccountManagerConfig | None = None,
         account_id: str = "SimulatedAccountManager",
         tcc: dict[str, TransactionCostsCalculator] | None = None,
+        health_monitor: IHealthMonitor | None = None,
     ):
         super().__init__(
             connectors=connectors,
@@ -636,6 +797,7 @@ class SimulatedAccountManager(AccountManager):
             cfg=cfg,
             account_id=account_id,
             tcc=tcc,
+            health_monitor=health_monitor,
         )
 
     def set_processing_manager(self, pm: IProcessingManager) -> None:

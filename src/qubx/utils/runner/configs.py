@@ -196,6 +196,8 @@ class AccountManagerConfig(StrictBaseModel):
 
     liveness_check_interval_ms: int = 5_000
     liveness_check_threshold_ms: int = 30_000
+    liveness_escalation_cycles: int = 3
+    liveness_violation_burst_threshold: int = 0
 
     terminal_order_retention_ms: int = 30_000
     terminal_order_history_size: int = 10_000

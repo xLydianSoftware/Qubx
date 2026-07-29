@@ -1,3 +1,5 @@
+import asyncio
+import contextlib
 import os
 import tempfile
 import time
@@ -338,6 +340,111 @@ class TestRunStrategyYaml:
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_context_starts_loop_lag_heartbeat_when_loop_given(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """A.3: the loop-lag heartbeat is submitted onto the shared loop whenever
+        create_strategy_context is given one — always true from run_strategy's live/paper
+        entry point (backtester/runner.py builds its StrategyContext directly and never
+        calls this function, so simulation is excluded structurally)."""
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions=None, testnet=False
+        )
+        fake_loop = MagicMock()
+
+        with (
+            patch(
+                "qubx.utils.runner.runner.class_import",
+                side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+            ),
+            patch("qubx.utils.runner.runner._create_tcc", return_value=lookup.find_fees("BINANCE.UM", None)),
+            patch("qubx.utils.runner.runner.AsyncThreadLoop") as mock_async_thread_loop_cls,
+        ):
+            create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="paper_loop_lag_heartbeat_test",
+                loop=fake_loop,
+            )
+
+        mock_async_thread_loop_cls.assert_called_once_with(fake_loop)
+        mock_async_thread_loop_cls.return_value.submit.assert_called_once()
+        # Close the never-awaited coroutine object to avoid an RuntimeWarning from GC —
+        # AsyncThreadLoop itself is mocked here, so nothing ever runs it.
+        submitted_coro = mock_async_thread_loop_cls.return_value.submit.call_args[0][0]
+        submitted_coro.close()
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_context_skips_loop_lag_heartbeat_without_a_loop(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        """No shared loop given (e.g. construction-only callers that omit it) -> nothing
+        submitted; there's no loop to schedule the heartbeat on."""
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        mock_create_data_provider.return_value = mock_data_provider
+        mock_live_time_provider_class.return_value = mock_time_provider
+
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions=None, testnet=False
+        )
+
+        with (
+            patch(
+                "qubx.utils.runner.runner.class_import",
+                side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+            ),
+            patch("qubx.utils.runner.runner._create_tcc", return_value=lookup.find_fees("BINANCE.UM", None)),
+            patch("qubx.utils.runner.runner.AsyncThreadLoop") as mock_async_thread_loop_cls,
+        ):
+            create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="paper_no_loop_test",
+            )
+
+        mock_async_thread_loop_cls.assert_not_called()
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     def test_paper_context_canonicalizes_binance_pm(
         self,
         mock_create_data_provider,
@@ -581,6 +688,31 @@ class TestRunStrategyYaml:
         pos = ctx.get_position(sorted(ctx.instruments, key=lambda x: x.symbol)[0])
         assert pos.quantity == 1
         assert pos.instrument == sorted(ctx.instruments, key=lambda x: x.symbol)[0]
+
+
+class TestEventLoopLagHeartbeat:
+    """A.3 loop-lag heartbeat: isolated smoke test of the coroutine itself (no
+    create_strategy_context/loop-thread machinery involved) — records a gauge each
+    iteration via IHealthMonitor.record_gauge."""
+
+    def test_heartbeat_records_a_gauge_each_iteration(self):
+        from qubx.utils.runner.runner import _event_loop_lag_heartbeat
+
+        health_monitor = MagicMock()
+
+        async def _run_a_few_iterations():
+            task = asyncio.ensure_future(_event_loop_lag_heartbeat(health_monitor, interval_s=0.01))
+            await asyncio.sleep(0.05)  # let several 0.01s iterations fire
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+        asyncio.run(_run_a_few_iterations())
+
+        assert health_monitor.record_gauge.call_count >= 1
+        name, value = health_monitor.record_gauge.call_args[0]
+        assert name == "event_loop_lag_ms"
+        assert isinstance(value, float)
 
 
 def test_inject_restored_state_preserves_accounting_fields():

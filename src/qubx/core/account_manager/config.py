@@ -18,6 +18,15 @@ class AccountManagerConfig:
 
     liveness_check_interval_ms: int = 5_000
     liveness_check_threshold_ms: int = 30_000
+    # A.3 escalation ladder: WARNING+reconnect fires once `liveness_check_threshold_ms` is
+    # overdue; if still unhealthy `liveness_escalation_cycles` further ticks later, ERROR +
+    # record_stream_violation(..., "liveness_escalation").
+    liveness_escalation_cycles: int = 3
+    # A.3 violation-burst trigger (part of the unhealthy verdict alongside is_ws_ready/drive
+    # age): 0 disables it (default — reviewer decision: violation bursts are alert-only in
+    # this release, the plumbing is wired but the OR-clause never fires); N>=1 arms it —
+    # unhealthy once violations-since-last-tick >= N for an exchange with registered streams.
+    liveness_violation_burst_threshold: int = 0
 
     terminal_order_retention_ms: int = 30_000
     terminal_order_history_size: int = 10_000

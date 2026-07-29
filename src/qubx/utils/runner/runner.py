@@ -42,6 +42,7 @@ from qubx.core.exceptions import QueueTimeout, WarmupValidationError
 from qubx.core.helpers import BasicScheduler
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import (
+    IHealthMonitor,
     IStrategyContext,
     ITimeProvider,
 )
@@ -56,7 +57,7 @@ from qubx.rate_limiting.manager import RateLimitManager
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
-from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
+from qubx.utils.misc import AsyncThreadLoop, class_import, green, install_uvloop, makedirs, red
 from qubx.utils.results import SimulationResultsSaver, normalize_tags
 from qubx.utils.runner.configs import (
     ExchangeConfig,
@@ -123,6 +124,24 @@ def _cleanup_event_loop(loop: asyncio.AbstractEventLoop | None) -> None:
             logger.debug("Shared event loop stopped")
     except Exception as e:
         logger.warning(f"Failed to cleanup event loop: {e}")
+
+
+async def _event_loop_lag_heartbeat(health_monitor: IHealthMonitor, interval_s: float = 1.0) -> None:
+    """A.3 loop-lag heartbeat: sleeps `interval_s` on the shared WS loop and records how
+    much longer that actually took (scheduling drift under load, monotonic clock so NTP
+    steps can't hide it) as the `event_loop_lag_ms` gauge. Every ccxt connector's
+    account/market-data loops share this one loop, so a starved/blocked loop shows up here
+    before any individual WS stream's drive/event age would.
+
+    Runs forever (fire-and-forget, like the other perpetual tasks on this loop, e.g. the
+    account WS streams) — no explicit cancellation on shutdown; it simply stops being
+    scheduled once `_cleanup_event_loop` stops the loop.
+    """
+    while True:
+        started = time.monotonic()
+        await asyncio.sleep(interval_s)
+        lag_ms = (time.monotonic() - started - interval_s) * 1000.0
+        health_monitor.record_gauge("event_loop_lag_ms", lag_ms)
 
 
 def run_strategy_yaml(
@@ -518,6 +537,14 @@ def create_strategy_context(
         _time, emitter=_metric_emitter, channel=_chan, **config.live.health.model_dump()
     )
 
+    # A.3 loop-lag heartbeat: only when there's an actual shared loop to schedule it on.
+    # `create_strategy_context` is the live/paper-only entry point (backtester/runner.py
+    # builds its StrategyContext directly and never calls this), so this is already
+    # simulation-excluded; the extra `loop is not None` guard covers construction-only
+    # callers (some tests) that omit `loop` entirely.
+    if loop is not None:
+        AsyncThreadLoop(loop).submit(_event_loop_lag_heartbeat(_health_monitor))
+
     # Rate limiting (backend, IP discovery, per-exchange limiters)
     _rl_manager = RateLimitManager(config.live.rate_limiting, loop)
 
@@ -617,6 +644,7 @@ def create_strategy_context(
         cfg=AccountManagerConfig(**config.live.account_manager.model_dump()),
         account_id=stg_name,
         tcc=_exchange_to_tcc,
+        health_monitor=_health_monitor,
     )
     # Paper seeds the configured initial capital per exchange (no venue to query); live seeds
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions

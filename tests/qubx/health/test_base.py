@@ -1,3 +1,4 @@
+import math
 import threading
 import time
 from collections import Counter
@@ -11,6 +12,7 @@ import pytest
 from qubx.core.basics import CtrlChannel, Instrument, dt_64
 from qubx.core.interfaces import ITimeProvider, LatencyMetrics, StreamHealth
 from qubx.core.lookups import lookup
+from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.health.base import BaseHealthMonitor
 from qubx.health.dummy import DummyHealthMonitor
 
@@ -577,7 +579,9 @@ class TestBaseHealthMonitor:
         # Test unknown event returns None
         assert monitor.get_last_event_time(instrument, "trade") is None  # Not subscribed
 
-    def test_last_event_times_multiple_events(self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider) -> None:
+    def test_last_event_times_multiple_events(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
         """Test that last event times are tracked correctly for multiple event types."""
         instrument = _get_test_instrument()
         event_types = ["ohlc", "quote", "trade"]  # Use valid DataTypes
@@ -910,3 +914,95 @@ class TestStreamHealthLedger:
 
         assert errors == []
         assert ledger.get_stream_health("BINANCE.UM").violations["executions"] == n_threads * n_calls
+
+
+class TestGenericGauge:
+    """A.3: record_gauge — a small generic escape hatch (the loop-lag heartbeat is the
+    first consumer) for point-in-time health signals that don't warrant their own ledger."""
+
+    def test_record_and_emit_gauge(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        monitor.record_gauge("event_loop_lag_ms", 12.5)
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="event_loop_lag_ms")
+        assert len(df) == 1
+        assert df.iloc[0]["value"] == pytest.approx(12.5)
+
+    def test_gauge_is_last_write_wins(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        monitor.record_gauge("event_loop_lag_ms", 1.0)
+        monitor.record_gauge("event_loop_lag_ms", 2.0)
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="event_loop_lag_ms")
+        assert len(df) == 1
+        assert df.iloc[0]["value"] == pytest.approx(2.0)
+
+    def test_gauge_tags_are_merged_with_health_type(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        monitor.record_gauge("custom_gauge", 3.0, tags={"exchange": "BINANCE.UM"})
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="custom_gauge")
+        assert len(df) == 1
+        assert df.iloc[0]["exchange"] == "BINANCE.UM"
+
+    def test_dummy_monitor_record_gauge_is_noop(self) -> None:
+        DummyHealthMonitor().record_gauge("x", 1.0)  # must not raise
+
+
+class TestStreamHealthEmissionClamp:
+    """A.3 follow-up from PR1: stream ages clamp to a large finite sentinel on the
+    emission path only — get_stream_health (in-process consumers, e.g. the A.3 watchdog)
+    still sees true infinity."""
+
+    def test_infinite_ages_clamp_to_finite_sentinel_on_emit(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        # drive-only -> event_age stays inf forever (fail-closed, per A.1)
+        monitor.record_stream_drive("BINANCE.UM", "executions")
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="stream_event_age")
+        assert len(df) == 1
+        value = df.iloc[0]["value"]
+        assert math.isfinite(value)
+        assert value == pytest.approx(1e9)
+
+    def test_finite_ages_are_emitted_unchanged(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        monitor.record_stream_drive("BINANCE.UM", "executions")
+        monitor.record_stream_event("BINANCE.UM", "executions")
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="stream_drive_age")
+        # Real time.monotonic() (unmocked here) — a tiny real elapsed gap between the
+        # record and the emit is expected; the point is it's finite and nowhere near the
+        # clamp sentinel, not that it's exactly zero.
+        assert 0.0 <= df.iloc[0]["value"] < 1.0
+
+    def test_get_stream_health_still_reports_true_infinity_despite_clamped_emission(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        monitor.record_stream_drive("BINANCE.UM", "executions")
+        monitor._emit()  # emission path clamps ages to the sentinel...
+
+        # ...but the in-process reader contract (get_stream_health) is untouched.
+        assert monitor.get_stream_health("BINANCE.UM").ages["executions"][0] == float("inf")

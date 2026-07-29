@@ -19,6 +19,16 @@ STALE_THRESHOLDS = {
     "trade": "30min",
 }
 
+# QuestDB ILP has no wire representation for a literal float('inf') field value — a
+# never-driven/never-eventd StreamHealth age (see get_stream_health) must not reach the
+# emitter as-is. Large-and-finite reads unambiguously as "ages ago" on any dashboard/alert
+# without special-casing infinity downstream.
+_STREAM_AGE_INF_SENTINEL_S = 1e9
+
+
+def _clamp_stream_age(age_s: float) -> float:
+    return _STREAM_AGE_INF_SENTINEL_S if age_s == float("inf") else age_s
+
 
 @dataclass
 class TimingContext:
@@ -94,6 +104,12 @@ class BaseHealthMonitor(IHealthMonitor):
         self._stream_last_event: dict[tuple[str, str], float] = {}  # (exchange, stream) -> monotonic
         self._stream_last_drive: dict[tuple[str, str], float] = {}  # (exchange, stream) -> monotonic
         self._stream_violations: dict[str, Counter[str]] = defaultdict(Counter)  # exchange -> Counter[stream]
+
+        # Generic named-gauge escape hatch (A.3 loop-lag heartbeat and any future
+        # point-in-time health signal that doesn't warrant its own ledger). Last-write-wins
+        # per name; same cross-thread-write/emitter-thread-read split as the stream ledger.
+        self._gauge_lock = threading.Lock()
+        self._gauges: dict[str, tuple[float, dict[str, str]]] = {}
 
         # Execution latency tracking (unchanged)
         self._execution_latency = defaultdict(lambda: DequeIndicator(buffer_size))
@@ -269,6 +285,13 @@ class BaseHealthMonitor(IHealthMonitor):
         with self._stream_lock:
             self._stream_violations[exchange][stream] += 1
             self._stream_names[exchange].add(stream)
+
+    def record_gauge(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+        """Record/overwrite a single named gauge (last-write-wins), emitted on the next
+        `_emit()` pass. Generic escape hatch — prefer a dedicated ledger (e.g. StreamHealth)
+        for anything richer than "one current value per name"."""
+        with self._gauge_lock:
+            self._gauges[name] = (value, dict(tags) if tags else {})
 
     def get_stream_health(self, exchange: str) -> StreamHealth:
         """StreamHealth snapshot for `exchange`: ages (seconds since last event/drive,
@@ -556,6 +579,10 @@ class BaseHealthMonitor(IHealthMonitor):
         with self._stream_lock:
             return list(self._stream_names.keys())
 
+    def _get_gauges(self) -> list[tuple[str, float, dict[str, str]]]:
+        with self._gauge_lock:
+            return [(name, value, tags) for name, (value, tags) in self._gauges.items()]
+
     def _emit(self) -> None:
         """Emit all metrics to the configured emitter."""
         if not self._emit_health or self._emitter is None:
@@ -573,6 +600,14 @@ class BaseHealthMonitor(IHealthMonitor):
 
         for exchange in self._get_stream_exchanges():
             self._emit_stream_health(exchange)
+
+        self._emit_gauges(current_time)
+
+    def _emit_gauges(self, current_time: dt_64) -> None:
+        """Emit the generic named-gauge escape hatch (e.g. `event_loop_lag_ms`)."""
+        assert self._emitter is not None
+        for name, value, tags in self._get_gauges():
+            self._emitter.emit(name=name, value=value, tags={"type": "health", **tags}, timestamp=current_time)
 
     def _emit_exchange_latencies(self, exchange: str) -> None:
         current_time = self.time_provider.time()
@@ -601,14 +636,26 @@ class BaseHealthMonitor(IHealthMonitor):
     def _emit_stream_health(self, exchange: str) -> None:
         """Emit the StreamHealth ledger (A.1/A.2) per (exchange, stream): event/drive ages
         in seconds and cumulative violation count. Feeds the Grafana alert on drive_age /
-        violations (A.4) without any per-connector emission code."""
+        violations (A.4) without any per-connector emission code.
+
+        Ages are clamped to ``_STREAM_AGE_INF_SENTINEL_S`` before emission — the QuestDB
+        ILP line-protocol path has no representation for a literal ``float('inf')`` field
+        value, and a never-driven/never-eventd stream reports exactly that from
+        ``get_stream_health``. In-process consumers (the A.3 watchdog) call
+        ``get_stream_health`` directly and still see true infinity; only this emission
+        path clamps.
+        """
         current_time = self.time_provider.time()
         health = self.get_stream_health(exchange)
         assert self._emitter is not None
         for stream, (event_age, drive_age) in health.ages.items():
             tags = {"type": "health", "exchange": exchange, "stream": stream}
-            self._emitter.emit(name="stream_event_age", value=event_age, tags=tags, timestamp=current_time)
-            self._emitter.emit(name="stream_drive_age", value=drive_age, tags=tags, timestamp=current_time)
+            self._emitter.emit(
+                name="stream_event_age", value=_clamp_stream_age(event_age), tags=tags, timestamp=current_time
+            )
+            self._emitter.emit(
+                name="stream_drive_age", value=_clamp_stream_age(drive_age), tags=tags, timestamp=current_time
+            )
             self._emitter.emit(
                 name="stream_violations_total",
                 value=float(health.violations.get(stream, 0)),

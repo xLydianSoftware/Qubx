@@ -50,6 +50,9 @@ class DummyHealthMonitor(IHealthMonitor):
     def get_stream_health(self, exchange: str) -> StreamHealth:
         return StreamHealth(ages={}, violations=Counter())
 
+    def record_gauge(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+        pass
+
     def watch(self, name: str = ""):
         def decorator(func):
             return func
