@@ -1,5 +1,6 @@
 """Tests for strategy-owned tables: ensure_table + emit_record (spec §2)."""
 
+import csv as csv_mod
 import datetime
 from unittest.mock import MagicMock
 
@@ -9,6 +10,7 @@ import pytest
 import qubx.emitters.questdb as qdb_mod
 from qubx.core.interfaces import IMetricEmitter
 from qubx.emitters.composite import CompositeMetricEmitter
+from qubx.emitters.csv import CSVMetricEmitter
 from qubx.emitters.questdb import QuestDBMetricEmitter
 
 
@@ -207,3 +209,54 @@ class TestEmitRecord:
     def test_unsupported_timestamp_type_is_caught_and_logged(self, emitter):
         emitter.emit_record("t", {"a": 1.0}, timestamp=object())  # must not raise (error logged)
         assert emitter._sender.rows == []  # nothing was queued/emitted
+
+
+class TestCSVRecords:
+    def _emitter(self, tmp_path):
+        return CSVMetricEmitter(file_path=str(tmp_path / "metrics.csv"), tags={"strategy": "LoeTest"})
+
+    def test_ensure_table_writes_a_header_file_per_table(self, tmp_path):
+        em = self._emitter(tmp_path)
+        em.ensure_table("loe.execution", {"price": "DOUBLE"}, symbol_columns=("kind", "symbol"))
+
+        path = tmp_path / "loe.execution.csv"
+        header = path.read_text().splitlines()[0].split(",")
+        assert header[0] == "timestamp"
+        assert {"kind", "symbol", "price", "strategy", "run_id", "is_live"} <= set(header)
+
+    def test_emit_record_appends_one_row_per_call(self, tmp_path):
+        em = self._emitter(tmp_path)
+        em.ensure_table("loe.execution", {"price": "DOUBLE"}, symbol_columns=("kind", "symbol"))
+        em.emit_record(
+            "loe.execution",
+            {"kind": "FILL", "symbol": "SLPUSDT", "price": 0.1001},
+            timestamp=np.datetime64("2026-07-01T00:00:00", "ns"),
+        )
+        em.emit_record("loe.execution", {"kind": "PHASE_END", "symbol": "SLPUSDT"})
+
+        rows = list(csv_mod.DictReader((tmp_path / "loe.execution.csv").read_text().splitlines()))
+        assert [r["kind"] for r in rows] == ["FILL", "PHASE_END"]
+        assert rows[0]["price"] == "0.1001"
+        assert rows[0]["timestamp"].startswith("2026-07-01T00:00:00")
+        assert rows[0]["strategy"] == "LoeTest"
+        # a column the row does not carry stays blank rather than shifting the line
+        assert rows[1]["price"] == ""
+
+    def test_emit_record_without_ensure_table_still_writes(self, tmp_path):
+        em = self._emitter(tmp_path)
+        em.emit_record("adhoc.table", {"a": 1.0})
+
+        rows = list(csv_mod.DictReader((tmp_path / "adhoc.table.csv").read_text().splitlines()))
+        assert rows[0]["a"] == "1.0"
+
+    def test_rejects_bare_string_symbol_columns(self, tmp_path):
+        # a bare string iterates as characters -> would mint bogus single-letter columns in the header
+        em = self._emitter(tmp_path)
+        em.ensure_table("t", {}, symbol_columns="pair")  # must not raise (logged), no file written
+        assert not (tmp_path / "t.csv").exists()
+
+    def test_a_write_failure_does_not_raise(self, tmp_path):
+        em = self._emitter(tmp_path)
+        em.ensure_table("loe.execution", {"price": "DOUBLE"})
+        em._record_path = lambda table: tmp_path / "no_such_dir" / "x" / "y.csv"
+        em.emit_record("loe.execution", {"price": 1.0})  # must not raise
