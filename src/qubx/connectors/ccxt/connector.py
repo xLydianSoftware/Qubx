@@ -71,8 +71,9 @@ from qubx.core.events import (
     OrderUpdateRejectedEvent,
 )
 from qubx.core.exceptions import InvalidOrderParameters
-from qubx.core.interfaces import IDataProvider, ITimeProvider
+from qubx.core.interfaces import IDataProvider, IHealthMonitor, ITimeProvider
 from qubx.core.utils import recognize_time
+from qubx.health import DummyHealthMonitor
 from qubx.utils.misc import AsyncThreadLoop
 from qubx.utils.time import to_timedelta
 
@@ -83,8 +84,8 @@ from .utils import (
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
     ccxt_convert_positions,
-    ccxt_extract_leverage_settings,
     ccxt_extract_deals_from_exec,
+    ccxt_extract_leverage_settings,
     ccxt_find_instrument,
     info_float,
     instrument_to_ccxt_symbol,
@@ -133,6 +134,12 @@ class CcxtConnector(ChannelEmitter):
     # make_client_id actually produces, so producer and classifier can never drift.
     cid_framework_prefix: str = FRAMEWORK_CID_PREFIX
 
+    # Read-timeout wrapping the account-stream `await watch()` (A.2) — venue-overridable.
+    # Purpose is NOT death detection (a quiet account is normal); it guarantees a periodic
+    # re-drive of watch() so `stream_drive_age` is meaningful, and forces ccxt to touch its
+    # client state so a torn-down transport surfaces as an exception instead of a hang.
+    ACCOUNT_WATCH_TIMEOUT_S: float = 60.0
+
     def __init__(
         self,
         *,
@@ -146,6 +153,7 @@ class CcxtConnector(ChannelEmitter):
         cancel_retry_interval: int = 2,
         max_cancel_retries: int = 10,
         max_ws_retries: int = 10,
+        health_monitor: IHealthMonitor | None = None,
         **kwargs: Any,
     ):
         self.exchange_name = exchange_name
@@ -160,6 +168,7 @@ class CcxtConnector(ChannelEmitter):
         self.cancel_retry_interval = cancel_retry_interval
         self.max_cancel_retries = max_cancel_retries
         self.max_ws_retries = max_ws_retries
+        self._health_monitor = health_monitor or DummyHealthMonitor()
 
         # Memoized ccxt-symbol -> Instrument resolution shared by the WS loop and the
         # snapshot/order-status converters (ccxt_find_instrument populates it lazily).
@@ -805,6 +814,7 @@ class CcxtConnector(ChannelEmitter):
                 handle=self._handle_ws_order,
                 stream="executions",
                 mark_ready=True,
+                is_account_stream=True,
             )
         ]
         # D4 scope: the balance push handler parses Binance ACCOUNT_UPDATE shapes. Other
@@ -821,6 +831,7 @@ class CcxtConnector(ChannelEmitter):
                     stream="balance",
                     mark_ready=False,
                     iterate=False,  # watch_balance resolves one Balances dict, not a list
+                    is_account_stream=True,
                 )
             )
         return streams
@@ -844,6 +855,7 @@ class CcxtConnector(ChannelEmitter):
         stream: str,
         mark_ready: bool,
         iterate: bool = True,
+        is_account_stream: bool = False,
     ) -> None:
         """Generic WS subscription loop: ``await watch()`` → ``handle(raw)`` per item.
 
@@ -866,20 +878,41 @@ class CcxtConnector(ChannelEmitter):
         given-up stream is the AccountManager liveness reconnect. ``iterate=False``
         passes the resolved value to ``handle`` whole (``watch_balance`` returns a
         single Balances dict, not a list of updates).
+
+        Every iteration records a StreamHealth drive (A.1) regardless of outcome, and a
+        successful await records a stream event. ``is_account_stream=True`` (account/execution
+        streams only — market-data loops keep their current unbounded await) additionally
+        wraps the await in ``asyncio.wait_for(ACCOUNT_WATCH_TIMEOUT_S)``: on timeout this is a
+        heartbeat, not an error (a quiet account is normal) — it just loops back around, which
+        re-drives ``watch()`` and re-records the drive on the next iteration (A.2).
         """
         n_retry = 0
         while self.channel.control.is_set():
             if mark_ready:
                 self._ws_ready = True
             watch_started = time.monotonic()
+            self._health_monitor.record_stream_drive(self.exchange_name, stream)
             try:
-                updates = await watch()
+                updates = await (
+                    asyncio.wait_for(watch(), timeout=self.ACCOUNT_WATCH_TIMEOUT_S) if is_account_stream else watch()
+                )
                 n_retry = 0
+                self._health_monitor.record_stream_event(self.exchange_name, stream)
                 if iterate:
                     for raw in updates:
                         handle(raw)
                 else:
                     handle(updates)
+            except TimeoutError:
+                # Read-timeout heartbeat (is_account_stream only): no traffic within
+                # ACCOUNT_WATCH_TIMEOUT_S is expected for a quiet account, so this is NOT an
+                # error — keep it below WARNING. The next iteration's top-of-loop drive call
+                # re-drives watch(), which is what actually forces ccxt to touch its client
+                # state (a torn-down transport then surfaces as an exception, not a hang).
+                logger.debug(
+                    f"[{self.exchange_name}] {stream} watch heartbeat ({self.ACCOUNT_WATCH_TIMEOUT_S}s, no traffic)"
+                )
+                continue
             except CcxtSymbolNotRecognized:
                 continue
             except CancelledError:

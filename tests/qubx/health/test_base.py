@@ -1,4 +1,6 @@
+import threading
 import time
+from collections import Counter
 from datetime import datetime, timedelta
 from typing import Generator
 from unittest.mock import MagicMock
@@ -7,7 +9,7 @@ import numpy as np
 import pytest
 
 from qubx.core.basics import CtrlChannel, Instrument, dt_64
-from qubx.core.interfaces import IMetricEmitter, ITimeProvider, LatencyMetrics
+from qubx.core.interfaces import ITimeProvider, LatencyMetrics, StreamHealth
 from qubx.core.lookups import lookup
 from qubx.health.base import BaseHealthMonitor
 from qubx.health.dummy import DummyHealthMonitor
@@ -62,6 +64,18 @@ class TestDummyHealthMonitor:
 
         # Verify no state change after operations
         assert monitor.get_data_latency("test_exchange", "test_event") == 0.0
+
+    def test_dummy_monitor_stream_health_is_noop(self) -> None:
+        """DummyHealthMonitor accepts the stream-health calls as pure no-ops (sim/dummy
+        must never trip the ledger's fail-closed "unknown = unhealthy" semantics)."""
+        monitor = DummyHealthMonitor()
+
+        monitor.record_stream_event("BINANCE.UM", "executions")
+        monitor.record_stream_drive("BINANCE.UM", "executions")
+        monitor.record_stream_violation("BINANCE.UM", "executions", "cancel_found_terminal")
+
+        health = monitor.get_stream_health("BINANCE.UM")
+        assert health == StreamHealth(ages={}, violations=Counter())
 
     def test_dummy_monitor_watch_decorator(self) -> None:
         """Test that DummyHealthMonitor's watch decorator returns function unchanged."""
@@ -778,3 +792,121 @@ class TestBaseHealthMonitor:
         assert (instrument1, event_type1) not in monitor._active_subscriptions
         assert (instrument1, event_type2) in monitor._active_subscriptions
         assert (instrument2, event_type1) in monitor._active_subscriptions
+
+
+class _FakeClock:
+    """A controllable stand-in for ``time.monotonic`` — the StreamHealth ledger uses
+    monotonic time deliberately (immune to the NTP backward steps that affect the
+    dt_64/ITimeProvider math elsewhere in this class), so it needs its own fake clock
+    rather than ``MockTimeProvider``."""
+
+    def __init__(self, start: float = 1_000.0):
+        self._t = start
+
+    def __call__(self) -> float:
+        return self._t
+
+    def advance(self, seconds: float) -> None:
+        self._t += seconds
+
+
+class TestStreamHealthLedger:
+    """A.1: record_stream_event/drive/violation + get_stream_health on BaseHealthMonitor."""
+
+    @pytest.fixture
+    def clock(self, monkeypatch: pytest.MonkeyPatch) -> _FakeClock:
+        fake = _FakeClock()
+        monkeypatch.setattr(time, "monotonic", fake)
+        return fake
+
+    @pytest.fixture
+    def ledger(self, clock: _FakeClock) -> BaseHealthMonitor:
+        return BaseHealthMonitor(MockTimeProvider())
+
+    def test_unknown_exchange_returns_empty_ages(self, ledger: BaseHealthMonitor) -> None:
+        """An exchange the ledger has never heard of (no plugin adoption yet) reports
+        empty ages, distinct from a registered-but-never-driven stream (which is inf)."""
+        assert ledger.get_stream_health("NO_SUCH_EXCHANGE") == StreamHealth(ages={}, violations=Counter())
+
+    def test_record_event_and_drive_ages(self, ledger: BaseHealthMonitor, clock: _FakeClock) -> None:
+        ledger.record_stream_drive("BINANCE.UM", "executions")
+        ledger.record_stream_event("BINANCE.UM", "executions")
+        clock.advance(5.0)
+
+        event_age, drive_age = ledger.get_stream_health("BINANCE.UM").ages["executions"]
+        assert event_age == pytest.approx(5.0)
+        assert drive_age == pytest.approx(5.0)
+
+    def test_drive_only_stream_has_infinite_event_age(self, ledger: BaseHealthMonitor, clock: _FakeClock) -> None:
+        # A loop that drives but never sees traffic (quiet account stream) or a plugin
+        # that hasn't adopted record_stream_event at all must read infinitely stale on
+        # the event axis — fail-closed per A.1, never silently healthy.
+        ledger.record_stream_drive("HYPERLIQUID", "executions")
+        clock.advance(3.0)
+
+        event_age, drive_age = ledger.get_stream_health("HYPERLIQUID").ages["executions"]
+        assert event_age == float("inf")
+        assert drive_age == pytest.approx(3.0)
+
+    def test_ages_are_independent_per_stream(self, ledger: BaseHealthMonitor, clock: _FakeClock) -> None:
+        ledger.record_stream_drive("BINANCE.UM", "executions")
+        clock.advance(2.0)
+        ledger.record_stream_drive("BINANCE.UM", "balance")
+        clock.advance(1.0)
+
+        ages = ledger.get_stream_health("BINANCE.UM").ages
+        assert ages["executions"][1] == pytest.approx(3.0)
+        assert ages["balance"][1] == pytest.approx(1.0)
+
+    def test_ages_independent_per_exchange(self, ledger: BaseHealthMonitor, clock: _FakeClock) -> None:
+        ledger.record_stream_drive("BINANCE.UM", "executions")
+        clock.advance(10.0)
+        ledger.record_stream_drive("OKX", "orders")
+
+        assert "orders" not in ledger.get_stream_health("BINANCE.UM").ages
+        assert ledger.get_stream_health("OKX").ages["orders"][1] == pytest.approx(0.0)
+
+    def test_violations_counted_per_stream(self, ledger: BaseHealthMonitor) -> None:
+        ledger.record_stream_violation("BINANCE.UM", "executions", "cancel_found_terminal")
+        ledger.record_stream_violation("BINANCE.UM", "executions", "position_size_mismatch")
+        ledger.record_stream_violation("BINANCE.UM", "balance", "order_lost")
+
+        violations = ledger.get_stream_health("BINANCE.UM").violations
+        assert violations["executions"] == 2
+        assert violations["balance"] == 1
+
+    def test_violation_alone_registers_stream_with_infinite_ages(self, ledger: BaseHealthMonitor) -> None:
+        # A pure violation with no prior drive/event still surfaces the stream (so its
+        # (inf, inf) ages are visible) instead of silently dropping it from the ledger.
+        ledger.record_stream_violation("BINANCE.UM", "executions", "order_lost")
+
+        health = ledger.get_stream_health("BINANCE.UM")
+        assert health.ages["executions"] == (float("inf"), float("inf"))
+        assert health.violations["executions"] == 1
+
+    def test_thread_safety_smoke(self, ledger: BaseHealthMonitor) -> None:
+        """Concurrent producers (one per exchange asyncio-loop thread in production)
+        hammering the ledger while readers poll it (the emitter thread) must not
+        corrupt counts or raise."""
+        n_threads = 8
+        n_calls = 500
+        errors: list[Exception] = []
+
+        def _hammer() -> None:
+            try:
+                for _ in range(n_calls):
+                    ledger.record_stream_drive("BINANCE.UM", "executions")
+                    ledger.record_stream_event("BINANCE.UM", "executions")
+                    ledger.record_stream_violation("BINANCE.UM", "executions", "kind")
+                    ledger.get_stream_health("BINANCE.UM")
+            except Exception as e:  # noqa: BLE001
+                errors.append(e)
+
+        threads = [threading.Thread(target=_hammer) for _ in range(n_threads)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+        assert ledger.get_stream_health("BINANCE.UM").violations["executions"] == n_threads * n_calls

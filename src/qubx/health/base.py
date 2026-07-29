@@ -1,6 +1,6 @@
 import threading
 import time
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass
 from typing import Callable
 
@@ -8,7 +8,7 @@ import numpy as np
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64, td_64
-from qubx.core.interfaces import IHealthMonitor, IMetricEmitter, ITimeProvider, LatencyMetrics
+from qubx.core.interfaces import IHealthMonitor, IMetricEmitter, ITimeProvider, LatencyMetrics, StreamHealth
 from qubx.core.utils import recognize_timeframe
 from qubx.utils import convert_tf_str_td64
 from qubx.utils.collections import DequeFloat64, DequeIndicator
@@ -84,6 +84,16 @@ class BaseHealthMonitor(IHealthMonitor):
 
         # Connection tracking (per exchange)
         self._is_connected_callbacks = {}  # dict[exchange, Callable[[], bool]]
+
+        # StreamHealth ledger (per exchange per stream) - fed from asyncio loop threads
+        # (one or more per exchange), read by the emitter thread -> needs its own lock
+        # (unlike the rest of this class's dicts, which rely on GIL-atomic single-key
+        # get/set and are never read+written as a compound operation across threads).
+        self._stream_lock = threading.Lock()
+        self._stream_names: dict[str, set[str]] = defaultdict(set)
+        self._stream_last_event: dict[tuple[str, str], float] = {}  # (exchange, stream) -> monotonic
+        self._stream_last_drive: dict[tuple[str, str], float] = {}  # (exchange, stream) -> monotonic
+        self._stream_violations: dict[str, Counter[str]] = defaultdict(Counter)  # exchange -> Counter[stream]
 
         # Execution latency tracking (unchanged)
         self._execution_latency = defaultdict(lambda: DequeIndicator(buffer_size))
@@ -237,6 +247,45 @@ class BaseHealthMonitor(IHealthMonitor):
             except Exception:
                 return False
         return True  # Default to True if no callback registered
+
+    def record_stream_event(self, exchange: str, stream: str) -> None:
+        """Record that a message was delivered on a WS stream (producer-side)."""
+        now = time.monotonic()
+        with self._stream_lock:
+            self._stream_last_event[(exchange, stream)] = now
+            self._stream_names[exchange].add(stream)
+
+    def record_stream_drive(self, exchange: str, stream: str) -> None:
+        """Record that a WS read loop woke up / (re-)armed its watch call."""
+        now = time.monotonic()
+        with self._stream_lock:
+            self._stream_last_drive[(exchange, stream)] = now
+            self._stream_names[exchange].add(stream)
+
+    def record_stream_violation(self, exchange: str, stream: str, kind: str) -> None:
+        """Record a stream integrity violation. ``kind`` is caller context only (logging);
+        the ledger counts violations per (exchange, stream) for the `stream_violations_total`
+        metric — it does not break the count down by kind."""
+        with self._stream_lock:
+            self._stream_violations[exchange][stream] += 1
+            self._stream_names[exchange].add(stream)
+
+    def get_stream_health(self, exchange: str) -> StreamHealth:
+        """StreamHealth snapshot for `exchange`: ages (seconds since last event/drive,
+        `float("inf")` if never recorded) and violation counts, per registered stream.
+        An exchange with no registered streams (never driven or eventd) returns empty ages."""
+        now = time.monotonic()
+        with self._stream_lock:
+            streams = self._stream_names.get(exchange, set())
+            ages = {}
+            for stream in streams:
+                last_event = self._stream_last_event.get((exchange, stream))
+                last_drive = self._stream_last_drive.get((exchange, stream))
+                event_age = now - last_event if last_event is not None else float("inf")
+                drive_age = now - last_drive if last_drive is not None else float("inf")
+                ages[stream] = (event_age, drive_age)
+            violations = Counter(self._stream_violations.get(exchange, Counter()))
+        return StreamHealth(ages=ages, violations=violations)
 
     def get_last_event_time(self, instrument: Instrument, event_type: str) -> dt_64 | None:
         return self._last_event_time.get((instrument, event_type))
@@ -503,6 +552,10 @@ class BaseHealthMonitor(IHealthMonitor):
     def _get_exchanges(self) -> list[str]:
         return list(set(ex for ex, _ in self._data_latency.keys()))
 
+    def _get_stream_exchanges(self) -> list[str]:
+        with self._stream_lock:
+            return list(self._stream_names.keys())
+
     def _emit(self) -> None:
         """Emit all metrics to the configured emitter."""
         if not self._emit_health or self._emitter is None:
@@ -517,6 +570,9 @@ class BaseHealthMonitor(IHealthMonitor):
         exchanges = self._get_exchanges()
         for exchange in exchanges:
             self._emit_exchange_latencies(exchange)
+
+        for exchange in self._get_stream_exchanges():
+            self._emit_stream_health(exchange)
 
     def _emit_exchange_latencies(self, exchange: str) -> None:
         current_time = self.time_provider.time()
@@ -541,3 +597,21 @@ class BaseHealthMonitor(IHealthMonitor):
             tags=tags,
             timestamp=current_time,
         )
+
+    def _emit_stream_health(self, exchange: str) -> None:
+        """Emit the StreamHealth ledger (A.1/A.2) per (exchange, stream): event/drive ages
+        in seconds and cumulative violation count. Feeds the Grafana alert on drive_age /
+        violations (A.4) without any per-connector emission code."""
+        current_time = self.time_provider.time()
+        health = self.get_stream_health(exchange)
+        assert self._emitter is not None
+        for stream, (event_age, drive_age) in health.ages.items():
+            tags = {"type": "health", "exchange": exchange, "stream": stream}
+            self._emitter.emit(name="stream_event_age", value=event_age, tags=tags, timestamp=current_time)
+            self._emitter.emit(name="stream_drive_age", value=drive_age, tags=tags, timestamp=current_time)
+            self._emitter.emit(
+                name="stream_violations_total",
+                value=float(health.violations.get(stream, 0)),
+                tags=tags,
+                timestamp=current_time,
+            )

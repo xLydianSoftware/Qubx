@@ -1,7 +1,8 @@
+from collections import Counter
 from typing import Callable
 
 from qubx.core.basics import Instrument, dt_64, td_64
-from qubx.core.interfaces import IHealthMonitor, LatencyMetrics
+from qubx.core.interfaces import IHealthMonitor, LatencyMetrics, StreamHealth
 
 
 class DummyHealthMonitor(IHealthMonitor):
@@ -36,6 +37,18 @@ class DummyHealthMonitor(IHealthMonitor):
 
     def set_is_connected(self, exchange: str, is_connected: Callable[[], bool]) -> None:
         pass
+
+    def record_stream_event(self, exchange: str, stream: str) -> None:
+        pass
+
+    def record_stream_drive(self, exchange: str, stream: str) -> None:
+        pass
+
+    def record_stream_violation(self, exchange: str, stream: str, kind: str) -> None:
+        pass
+
+    def get_stream_health(self, exchange: str) -> StreamHealth:
+        return StreamHealth(ages={}, violations=Counter())
 
     def watch(self, name: str = ""):
         def decorator(func):

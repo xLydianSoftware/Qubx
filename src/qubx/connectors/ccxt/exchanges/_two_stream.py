@@ -58,12 +58,14 @@ class _TwoStreamCcxtConnector(CcxtConnector):
                 handle=self._handle_ws_order,
                 stream="orders",
                 mark_ready=True,
+                is_account_stream=True,
             ),
             self._run_ws_loop(
                 watch=self._em.exchange.watch_my_trades,
                 handle=self._handle_ws_trade,
                 stream="my_trades",
                 mark_ready=False,
+                is_account_stream=True,
             ),
         ]
 

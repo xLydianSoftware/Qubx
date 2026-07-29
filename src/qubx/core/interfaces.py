@@ -14,8 +14,9 @@ This module includes:
 
 import datetime
 import traceback
+from collections import Counter
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
@@ -1665,6 +1666,20 @@ class LatencyMetrics:
     order_cancel: float
 
 
+@dataclass
+class StreamHealth:
+    """Liveness snapshot for one exchange's registered WS streams.
+
+    ``ages`` maps stream name -> ``(last_event_age_s, last_drive_age_s)``, both in
+    seconds since ``time.monotonic()`` (``float("inf")`` if never recorded). ``violations``
+    counts ``record_stream_violation`` calls per stream. An exchange with no registered
+    streams (unknown, or a plugin that hasn't adopted the ledger) reports empty ``ages``.
+    """
+
+    ages: dict[str, tuple[float, float]] = field(default_factory=dict)
+    violations: Counter[str] = field(default_factory=Counter)
+
+
 class IHealthWriter(Protocol):
     """
     Interface for recording health metrics.
@@ -1753,6 +1768,42 @@ class IHealthWriter(Protocol):
 
         Returns:
             Decorator function that times the decorated function.
+        """
+        ...
+
+    def record_stream_event(self, exchange: str, stream: str) -> None:
+        """
+        Record that a message was delivered on a WS stream (producer-side).
+
+        Args:
+            exchange: Exchange name
+            stream: Stream name (e.g. "executions", "balance", "orders", "my_trades")
+        """
+        ...
+
+    def record_stream_drive(self, exchange: str, stream: str) -> None:
+        """
+        Record that a WS read loop woke up / (re-)armed its watch call.
+
+        Called once per loop iteration regardless of outcome, so a parked-forever
+        task or a starved loop shows up as a growing drive age even when the stream
+        never delivers a message (e.g. a quiet account stream).
+
+        Args:
+            exchange: Exchange name
+            stream: Stream name
+        """
+        ...
+
+    def record_stream_violation(self, exchange: str, stream: str, kind: str) -> None:
+        """
+        Record a stream integrity violation (e.g. a reconcile finding the stream
+        should have delivered something it didn't).
+
+        Args:
+            exchange: Exchange name
+            stream: Stream name
+            kind: Violation kind, for logging/labeling context
         """
         ...
 
@@ -1895,6 +1946,18 @@ class IHealthReader(Protocol):
 
         Returns:
             HealthMetrics object for the exchange
+        """
+        ...
+
+    def get_stream_health(self, exchange: str) -> StreamHealth:
+        """
+        Get the StreamHealth ledger snapshot (event/drive ages + violations) for an exchange.
+
+        Args:
+            exchange: Exchange name
+
+        Returns:
+            StreamHealth with empty ages for an exchange with no registered streams.
         """
         ...
 

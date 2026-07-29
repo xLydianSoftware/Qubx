@@ -206,6 +206,7 @@ def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
         exchange_manager=exchange_manager,
         data_provider=ctx.data_provider,
         loop=ctx.loop,
+        health_monitor=ctx.health_monitor,
     )
 
 
