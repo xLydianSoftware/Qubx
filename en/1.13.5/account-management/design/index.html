@@ -1,0 +1,2071 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Qubx - Quantitative Trading Framework">
+      
+      
+      
+        <link rel="canonical" href="https://xlydian.com/stable/account-management/design/">
+      
+      
+      
+      
+      <link rel="icon" href="../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.5">
+    
+    
+      
+        <title>Account Manager — Design & Decisions - Qubx</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../assets/stylesheets/main.8608ea7d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../stylesheets/qx.extra.css">
+    
+    <script>__md_scope=new URL("../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#account-manager-design-decisions" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../.." title="Qubx" class="md-header__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Qubx
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Account Manager — Design &amp; Decisions
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+
+<!-- Main navigation -->
+
+
+<div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../.." title="Qubx" class="md-nav__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Qubx
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quick Start Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../getting-started/configuration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Core Concepts
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Core Concepts
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/backtesting-framework/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtesting Framework
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/strategies/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategies
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/data-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../core-concepts/release-deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release & Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Backtesting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Backtesting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backtesting/simulations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Simulations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backtesting/management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtest Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backtesting/scheduling/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Scheduling
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../backtesting/performance-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Metrics
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Trading
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Trading
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../trading/paper-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Paper Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../trading/live-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Live Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../trading/control-protocol/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Bot Control Protocol
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../trading/risk-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Risk Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Analysis and Reporting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Analysis and Reporting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../analysis/visualization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Visualization
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../analysis/reporting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reporting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    API Reference
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            API Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/core-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Core API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/strategy-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategy API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../api/data-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Tutorials and Examples
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Tutorials and Examples
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/basic/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Basic
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/data-preparation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Preparation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/questdb-setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    QuestDB setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../tutorials/signal-export/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Signal Export
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../connectors/creating-connectors/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Creating Connectors
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../connectors/rate-limiting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Rate Limiting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Development
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Development
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Development Setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../development/release/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release Process
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../about/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    About
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+        </div>
+    </div>
+</div>
+
+
+<!-- Table of contents -->
+<!-- 
+
+<div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#components" class="md-nav__link">
+    <span class="md-ellipsis">
+      Components
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#order-model" class="md-nav__link">
+    <span class="md-ellipsis">
+      Order model
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#state-machine" class="md-nav__link">
+    <span class="md-ellipsis">
+      State machine
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#accountstate" class="md-nav__link">
+    <span class="md-ellipsis">
+      AccountState
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#capital-margin" class="md-nav__link">
+    <span class="md-ellipsis">
+      Capital / margin
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Capital / margin">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#venue-reported-figures-option-2" class="md-nav__link">
+    <span class="md-ellipsis">
+      Venue-reported figures (option 2)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#event-model-hybrid-b" class="md-nav__link">
+    <span class="md-ellipsis">
+      Event model (hybrid B)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#strategy-callbacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Strategy callbacks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#apply-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      apply contract
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#reconciler" class="md-nav__link">
+    <span class="md-ellipsis">
+      Reconciler
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Reconciler">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#snapshot-reconcile-reconcileron_snapshot" class="md-nav__link">
+    <span class="md-ellipsis">
+      Snapshot reconcile (Reconciler.on_snapshot)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#ticks-sweeps" class="md-nav__link">
+    <span class="md-ellipsis">
+      Ticks &amp; sweeps
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#connectors-iconnector" class="md-nav__link">
+    <span class="md-ellipsis">
+      Connectors (IConnector)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Connectors (IConnector)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#rejection-boundary" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rejection boundary
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#connect-reconnect-contract" class="md-nav__link">
+    <span class="md-ellipsis">
+      connect / reconnect contract
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#runtimes-wiring" class="md-nav__link">
+    <span class="md-ellipsis">
+      Runtimes &amp; wiring
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#divergences-from-pr-302" class="md-nav__link">
+    <span class="md-ellipsis">
+      Divergences from PR #302
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#deferred-open" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deferred / open
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+        </div>
+    </div>
+</div>
+ -->
+
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="account-manager-design-decisions">Account Manager — Design &amp; Decisions<a class="headerlink" href="#account-manager-design-decisions" title="Permanent link">&para;</a></h1>
+<p>Redesign of order submission, lifecycle, and account-state ownership. Replaces the
+<code>IBroker</code> / <code>IAccountProcessor</code> split with a central account-state owner, a typed-event
+channel, and an explicit order state machine.</p>
+<p>This document records the decisions and their rationale — it is the source of truth for
+<em>why</em> the code is shaped the way it is. It started from PR #302's design doc and is
+adapted to what this branch actually built; deliberate departures are collected in
+<a href="#divergences-from-pr-302">Divergences from PR #302</a>.</p>
+<h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
+<p><code>ProcessingManager   — drains the channel, routes AccountMessages to AccountManager.apply,
+                      fires strategy callbacks from the ApplyResult (error-isolated)
+        │
+AccountManager      — routes an event to the right per-exchange AccountState; applies order/
+                      deal events via the reducer and drives the Reconciler (on_event); routes
+                      snapshot events to the Reconciler (on_snapshot); owns the reconcile +
+                      liveness ticks and the apply-path terminal-eviction sweep; executes the
+                      Reconciler's actions — the only place connector calls / event routing happen.
+                      SimulatedAccountManager = the same minus ticks (paper + backtest)
+        │
+reducer.apply()     — applies one (non-snapshot) event to one AccountState, drives the state
+                      machine, returns ApplyResult (pure mutation; no callbacks/connectors/clock)
+        │
+Reconciler          — owns snapshots: Differ (stage 1) + diff→task engine (stage 2). Pure —
+   (+ diffs.py)       returns list[Action], mutates in-mem state, no I/O. See reconciliation-
+                      redesign.md.
+        │
+reconcile.py        — the shared validate+transition chokepoint, fill_qty_epsilon, liveness_overdue
+        │
+AccountState        — per-exchange data + indices + derived metrics (pure store)
+state_machine       — legal order transitions (pure, I/O-free)
+core/events.py      — typed ChannelMessage hierarchy (the AccountMessage side is live;
+                      MarketDataMessage is reserved — market data rides tuples today)</code></p>
+<p><strong>Single-mutator invariant:</strong> all <code>AccountState</code> writes happen on the strategy's
+event-processing thread (the PM drains the channel and calls <code>apply</code> there; the AM ticks
+are PM-scheduled onto the same thread). The reducer never touches the strategy or
+connectors; routing and callback-firing live outside it. To keep the invariant honest,
+<code>on_fit</code> / <code>on_warmup_finished</code> run <strong>inline on the processing thread</strong> (the old
+ThreadPool(2) is deleted): strategies call <code>ctx.trade()</code> / <code>get_position</code> from those
+callbacks, and <code>get_position</code> is a mutating read. Trade-off, stated in the <code>IStrategy</code>
+docstrings: a long fit blocks event processing.</p>
+<p>Import rule: <code>reconcile.py</code> never imports the reducer or the manager (they import <em>it</em>).
+The shared <code>transition()</code> (validate-then-apply, the single legality chokepoint) lives in
+<code>reconcile.py</code> for exactly that reason.</p>
+<h2 id="order-model">Order model<a class="headerlink" href="#order-model" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Identity is <strong><code>client_order_id</code></strong> (primary) + <strong><code>venue_order_id</code></strong> (exchange id).
+  No <code>id</code>/<code>time</code>/<code>cost</code>. Full names, not <code>client_id</code>/<code>venue_id</code>: both ids travel together
+  through connectors, events and reconcile, where the short forms were ambiguous.</li>
+<li><strong>Statuses</strong> (<code>OrderStatus</code>, <code>StrEnum</code>): <code>INITIALIZED, SUBMITTED, ACCEPTED,
+  PARTIALLY_FILLED, PENDING_CANCEL, PENDING_UPDATE, FILLED, CANCELED, REJECTED, EXPIRED</code>.</li>
+<li><code>OrderStatus.is_terminal</code> (FILLED/CANCELED/REJECTED/EXPIRED), <code>is_inflight</code>
+  (SUBMITTED + PENDING_<em>), and <code>is_pending</code> (PENDING_</em> only — pure classification, used
+  where "a modify is outstanding" is the question). The revert path never infers from
+  these; it keys off the captured <code>pre_pending_status</code>.</li>
+<li><strong><code>filled_quantity</code> is unsigned magnitude</strong> (direction lives in <code>side</code>), matching
+  <code>Order.quantity</code> and the OME's positive-amount rule. <code>Deal.amount</code> is signed, so fills
+  accumulate <code>abs(amount)</code>.</li>
+<li><code>OrderOrigin</code>: <code>FRAMEWORK / RECOVERED / EXTERNAL</code>, classified from the cid prefix by
+  <code>classify_origin</code> in <code>basics</code> — the shared constants <code>FRAMEWORK_CID_PREFIX</code> (<code>qubx_</code>)
+  and <code>EXTERNAL_CID_PREFIX</code> (<code>ext:</code>) live next to it; nothing else spells the prefixes.</li>
+<li><strong>Transition audit:</strong> every status change appends an <code>OrderTransition</code> to
+  <code>Order.transitions</code> and bumps a per-exchange per-status counter
+  (<code>get_order_history(cid)</code> / <code>get_metrics()</code> read them; counters are operator/debug
+  surface, never reset within a session).</li>
+</ul>
+<h2 id="state-machine">State machine<a class="headerlink" href="#state-machine" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Venue-authoritative terminalization:</strong> any live order may move straight to a terminal
+  state, so the <code>TRANSITIONS</code> table lists only <strong>non-terminal → non-terminal</strong> edges;
+  <code>into terminal</code> is allowed from any live state by rule, terminals have no outgoing edges.</li>
+<li>Single legality chokepoint: every status change goes through <code>validate_transition</code>
+  (via <code>reconcile.transition</code>). One sanctioned exception: snapshot reconcile may <strong>force</strong>
+  an illegal transition with a WARNING — the venue is authoritative, but it must still go
+  through <code>transition_order</code> so the audit and indices stay consistent.</li>
+</ul>
+<h2 id="accountstate">AccountState<a class="headerlink" href="#accountstate" title="Permanent link">&para;</a></h2>
+<p>Pure per-exchange store: <em>data + indices + derived metrics</em>. Enforces no transition
+legality, runs no reconcile rules, fires no callbacks, depends on no clock.</p>
+<ul>
+<li>Mutators are <strong>public, unprefixed</strong> methods (<code>add_order</code>, <code>transition_order</code>,
+  <code>set_position</code>, …), framework-internal by contract (module docstring): the callers are
+  sibling modules (reducer/reconcile/manager), so underscore-privates would be a lie.
+  Strategies only ever see the read API.</li>
+<li><code>add_order</code> <strong>refuses a duplicate active cid</strong> (raises): silent overwrite orphaned the
+  caller's Order reference and left stale index entries behind.</li>
+<li>Indices (mutator-maintained): venue-id, in-flight, pending-evict, <code>seen_trade_ids</code>
+  (fill dedup), terminal-history ring buffer, applied-funding buckets (bounded,
+  oldest-evicted), per-instrument position-reconcile watermark (<code>_position_reconcile_as_of</code>,
+  the realize-only guard for situation-II recovered deals).</li>
+<li>Side-table (maintained by <code>transition_order</code>): <code>pre_pending_status</code> (revert target),
+  captured on first entry to a PENDING_* state so <code>PENDING_UPDATE → PENDING_CANCEL</code> keeps the
+  original; cleared on leaving pending, dropped on eviction. Chosen over fields-on-<code>Order</code> to
+  keep <code>Order</code> a clean record. (The old <code>retry_count</code> and snapshot-fill deficit/suppressed
+  side-tables were deleted with the reconciler redesign — retries are now task-local in the
+  Reconciler, and the deficit was replaced by the venue-clock watermark.)</li>
+<li>Snapshot ratchet: <code>get_last_snapshot_as_of</code> / <code>mark_snapshot_applied</code>. The stale-check
+  itself is a reconcile <em>rule</em> → lives in the reconciler, not here.</li>
+<li><code>prune_terminal_orders(now, retention)</code> — grace-window eviction into history.</li>
+<li><code>base_currency</code> is <strong>explicit, per exchange</strong> (constructor arg). Never inferred from
+  balances.</li>
+<li><strong>Derived metrics are methods on <code>AccountState</code></strong> (<code>total_capital</code>, <code>available_margin</code>,
+  <code>margin_ratio</code>, <code>leverage</code>, <code>net_leverage</code>, <code>gross_leverage</code>, …). <code>AccountManager</code>
+  aggregates across exchanges; leverage aggregation is capital-weighted.</li>
+<li>Identity-preserving writes: <code>set_position</code>/<code>update_balance</code> update the existing object
+  in place (callers across the framework hold references), never swap it.</li>
+</ul>
+<h2 id="capital-margin">Capital / margin<a class="headerlink" href="#capital-margin" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>get_available_margin = total_capital − total_initial_margin</code> (old parity). The
+  <code>get_capital</code> alias is <strong>removed</strong> (it only aliased available margin).</li>
+<li><code>total_capital = venue.equity ?? base.total + Σ market_value_funds</code> (old formula).
+  The derived branch counts <strong>only base-currency cash</strong> — non-base cash balances are
+  excluded until the multi-currency conversion seam is filled; live is shielded because
+  venue equity (e.g. Binance <code>totalMarginBalance</code>, which values all collateral assets in
+  multi-asset mode) is preferred when reported.</li>
+<li><code>get_reserved</code> is <strong>removed</strong> end-to-end (viewer interface, AM, rebalancer tracker);
+  the reservation concept itself is gone.</li>
+<li><strong>Capital locking deferred.</strong> The old limit-order lock only moved <code>base.free ↔
+  base.locked</code>, which no capital query reads; it was inert. In live, <code>free</code>/<code>locked</code> come
+  from the venue anyway. Reintroduce <strong>sim-only</strong> if a consumer ever appears.</li>
+<li><code>conversion_rate = 1.0</code> — <strong>single-base-currency limitation</strong>: realized PnL, fees and
+  funding are booked 1:1 into the settle/quote currency. Instruments not quoted/settled
+  in the portfolio base currency (e.g. COIN-M) are out of scope until the multi-currency
+  seam is filled.</li>
+<li>Per-exchange fee schedules: the AM holds <code>tcc: dict[exchange →
+  TransactionCostsCalculator]</code> (ZERO_COSTS fallback), keyed like connectors.</li>
+</ul>
+<h3 id="venue-reported-figures-option-2">Venue-reported figures (option 2)<a class="headerlink" href="#venue-reported-figures-option-2" title="Permanent link">&para;</a></h3>
+<p><code>AccountState</code> holds an optional <code>VenueAccountFigures{equity, available_margin,
+margin_ratio, withdrawable, as_of}</code>. Each metric prefers its venue counterpart when
+present, else derives. The figures ride <strong>flat on <code>AccountSnapshot</code></strong> (optional fields
+next to <code>as_of</code>/orders/positions/balances) and are set only by snapshot reconcile; the
+connector extracts them via the <code>_extract_venue_figures</code> seam (Binance and OKX wired;
+Bitfinex documented derive-only — <code>fetch_balance</code> carries no account figures; other
+venues return None and always derive — as does sim).</p>
+<ul>
+<li><code>withdrawable</code> maps Binance fapi <code>maxWithdrawAmount</code>; OKX exposes max-withdrawal only
+  on a separate endpoint (outside the snapshot seam) so it stays None there. The derived
+  fallback equals available margin (withdrawable ≤ available conceptually; equality is
+  the documented sim/no-venue simplification).</li>
+</ul>
+<ul>
+<li><strong>Freshness = WS liveness, not a TTL.</strong> Venue figures arrive in lockstep with the
+  events that would change them; the only staleness is a dead WS, which the liveness →
+  reconnect → snapshot machinery repairs. We never time-out to derived.</li>
+<li>Cross-margin only for now (account-level figures; no per-instrument isolated equity).</li>
+</ul>
+<h2 id="event-model-hybrid-b">Event model (hybrid B)<a class="headerlink" href="#event-model-hybrid-b" title="Permanent link">&para;</a></h2>
+<p>Order <strong>status</strong> events drive the lifecycle; a <strong><code>DealEvent</code></strong> drives the ledger.</p>
+<ul>
+<li>Events live in <strong><code>core/events.py</code></strong>, not inside the <code>account_manager</code> package:
+  connectors and the PM are producers/consumers too, and the package must stay
+  importable without dragging the manager. <code>AccountMessage</code> is the marker base the PM
+  routes on (<code>isinstance</code>) — market data cannot be misrouted into the state machine.</li>
+<li><code>OrderEvent.client_order_id</code> is <strong><code>str | None</code></strong>: connectors pervasively see venue-id-
+  only messages (deals/rejects before the cid index is seeded, external orders). The
+  reducer resolves by cid then venue id, and materializes <code>ext:&lt;venue_id&gt;</code> orders only on
+  <strong>money-carrying</strong> events (fill/partial/deal/updated) — never for bare rejects/cancels.</li>
+<li><code>OrderFilledEvent</code> / <code>OrderPartiallyFilledEvent</code> carry an <strong>optional</strong> embedded <code>fill</code>;
+  <code>DealEvent</code> carries a <code>deal</code>. Combined-stream venues (Binance) deliver status+deal
+  together → the deal rides embedded. Split-stream venues (OKX/Bitfinex, via the
+  two-stream connector base) deliver them separately → the deal arrives as a <code>DealEvent</code>.</li>
+<li><strong>Dedup by <code>trade_id</code></strong> makes deal application idempotent: whichever stream delivers a
+  deal first applies it to <code>filled_quantity</code> <em>and</em> the ledger; the other is a no-op.</li>
+<li>Out-of-order delivery is absorbed by the reducer, not the connector: a FILLED arriving
+  before its ACCEPTED leaves the late accept a benign no-op (venue id still captured),
+  and an accept racing an outstanding cancel <strong>never wipes <code>PENDING_CANCEL</code></strong> — the sweep
+  keeps polling and a later cancel-rejected still reverts.</li>
+<li>A deal for a <strong>terminal-but-retained</strong> order (inside the eviction grace window) still
+  books — the split-stream FILLED status can beat its final trade. Past eviction the
+  dedup table is gone, so post-eviction deals are suppressed instead of risking a
+  double-count.</li>
+<li><code>FundingPaymentEvent</code> is an AccountMessage: the reducer values the payment at the
+  position's mark price and dedups per <code>(instrument, funding-interval bucket)</code> (bounded
+  set), so venue + simulated re-deliveries apply once. No mark yet → skip <em>without</em>
+  consuming the bucket, so a re-delivery can apply later.</li>
+<li>
+<p><code>BalanceUpdateEvent</code> is an <strong>absolute venue push</strong> (Binance UM <code>ACCOUNT_UPDATE</code>, riding
+  the existing listenKey user-data WS — other venues stay snapshot-only via the
+  <code>_account_streams()</code> seam), while the deal path books <strong>deltas</strong>. The venue's per-fill
+  ordering of <code>ORDER_TRADE_UPDATE</code> vs <code>ACCOUNT_UPDATE</code> is not reliably documented, so
+  application is <strong>ordering-agnostic</strong>:</p>
+<ul>
+<li><strong>Position size is never written by a venue push.</strong> There is no <code>watch_positions</code> loop:
+  a venue position push can arrive before its own fill/deal events, so comparing it
+  against local state yields spurious drift. Size is owned by the deal ledger on the
+  event path; non-order-driven changes (liquidation/ADL, manual/external trades) surface
+  at the next snapshot reconcile (≤30 s), which is the <strong>sole</strong> size-correction authority.
+  Reconcile is surgical (size/avg-price/margin/mark only) — <code>r_pnl</code>, commissions and
+  <code>cumulative_funding</code> always survive.</li>
+<li><strong>Balance pushes apply absolutely</strong> (<code>apply_balance_push</code>) under a per-currency
+  <code>as_of</code> ratchet — strictly-older pushes drop; <code>as_of</code> is venue event time, the same
+  clock domain as <code>Deal.time</code>. Futures pushes carry the wallet total only (free/locked
+  = NaN by producer contract): <code>total</code> overwrites, <code>free</code> moves by the delta, <code>locked</code>
+  survives; a real split (free AND locked non-NaN) overwrites all three.</li>
+<li><strong>Covered-delta guard:</strong> <code>_book_deal</code> and <code>_handle_funding_payment</code> skip <em>only their
+  <code>adjust_balance</code> leg</em> when the currency's push <code>as_of</code> is at/after the deal/funding
+  venue time — the absolute push already incorporated that cash change. Correct under
+  both <code>[deal, push]</code> and <code>[push, deal]</code> orderings (the ordering-matrix tests pin
+  convergence to identical qty/r_pnl/balances), and it fixes the funding double-count
+  (our computed <code>FundingPaymentEvent</code> vs the venue's actual <code>FUNDING_FEE</code> debit).
+  Position size, <code>r_pnl</code> and <code>cumulative_funding</code> always book.</li>
+<li>Dispatch: balance pushes fire <strong>no</strong> strategy callback (see Strategy callbacks);
+  position size changes reach <code>on_position_change</code> only via the deal path or the
+  snapshot reconcile (<code>ApplyResult.positions</code>).</li>
+</ul>
+<p>Venue balance changes reach state at WS latency; position size relies on the deal ledger
+plus the ~30 s snapshot reconcile (and the on-connect / reconnect / liveness-timeout
+snapshots) for non-order-driven changes such as liquidation/ADL.</p>
+</li>
+</ul>
+<h2 id="strategy-callbacks">Strategy callbacks<a class="headerlink" href="#strategy-callbacks" title="Permanent link">&para;</a></h2>
+<p>The PR #302 callback collapse is <strong>adopted</strong>: <code>on_order_update</code> / <code>on_account_update</code>
+are hard-removed (a strategy defining either fails at construction with a migration
+TypeError — no deprecation period, dual surfaces would double-fire), replaced by three
+callbacks:</p>
+<ul>
+<li><code>on_order(ctx, order, change: OrderChange)</code> — once per applied order-lifecycle change;
+  <code>change</code> is the reducer's vocabulary (ACCEPTED / PARTIALLY_FILLED / FILLED / CANCELED /
+  EXPIRED / REJECTED / UPDATED / CANCEL_REJECTED / UPDATE_REJECTED).</li>
+<li><code>on_execution(ctx, instrument, deal)</code> — once per newly applied, deduplicated fill
+  (<code>Deal</code> carries no instrument field, hence the explicit parameter).</li>
+<li><code>on_position_change(ctx, position)</code> — position changed: every fill, funding payments,
+  and each position corrected by a snapshot reconcile. High fire rate by design — keep it
+  cheap.</li>
+</ul>
+<p>There is deliberately <strong>no balance callback</strong>: balances are read via
+<code>ctx.get_balances()</code> / <code>ctx.get_balance()</code>, and <code>BalanceUpdateEvent</code> applies to account
+state silently — for applied pushes (<code>ApplyResult.balance</code> set) and suppressed ones
+alike (both pinned in the dispatch tests).</p>
+<p>The dead-callback class of bug (a stale-arity override dying in a swallowed TypeError on
+every dispatch) is addressed at the root: a one-time <strong>signature guard at strategy
+construction</strong> fails loudly on incompatible overrides and on the removed pre-collapse
+names, and the <code>qubx init</code> templates ship the current signatures. Cancel/update reject
+reasons stay PM-log-only (the STILL-ALIVE warnings), not stored on the order.
+Framework-internal fill consumers (trackers, gatherers, logging, export) are fed off
+<code>result.deal</code> — the deduped truth — independent of the strategy callback. Exception: a
+<strong>historical recovery deal</strong> (<code>DealEvent.historical</code>, from <code>RequestHistDeals</code>) is ledger-only —
+it reaches <code>save_deals</code> but neither the strategy nor the trackers/gatherers (it's a
+reconciliation artifact, not a live execution).</p>
+<h2 id="apply-contract"><code>apply</code> contract<a class="headerlink" href="#apply-contract" title="Permanent link">&para;</a></h2>
+<p>```python
+def apply(state, event, now) -&gt; ApplyResult: ...   # AM.apply; reducer.apply for non-snapshot events</p>
+<p>@dataclass
+class ApplyResult:
+    order: Order | None = None              # status changed -&gt; on_order(order, change)
+    order_change: OrderChange | None = None # paired with order
+    deal: Deal | None = None                # new deal applied -&gt; on_execution + downstream fill consumers
+    position: Position | None = None        # position changed -&gt; on_position_change
+    positions: list[Position] = []          # snapshot-reconciled positions -&gt; on_position_change per entry
+    balance: Balance | None = None          # balance push applied -&gt; internal visibility only, NO strategy callback
+```</p>
+<ul>
+<li>The reducer <strong>mutates state and returns the result</strong>; it fires no callbacks (testable
+  without a strategy; a raising callback stays away from state mutation). Snapshot events
+  don't go through the reducer at all — <code>AccountManager.apply</code> routes them to
+  <code>Reconciler.on_snapshot</code>, which collects the reconciled positions into <code>result.positions</code>.</li>
+<li>The <strong>ProcessingManager</strong> fires callbacks from the result, error-isolated.</li>
+<li><strong>None-as-suppress:</strong> an empty result means the AM suppressed the event (late/
+  duplicate/terminal/unknown/deduped funding/stale snapshot — already logged) and nothing
+  fires. Each set field fires its callback: <code>order</code> + <code>order_change</code> → <code>on_order</code>,
+  <code>deal</code> → <code>on_execution</code> (plus downstream fill consumers — <strong>except</strong> a historical recovery
+  deal, which is ledger-only), <code>position</code> / each of <code>positions</code> → <code>on_position_change</code>.
+  <code>BalanceUpdateEvent</code> fires nothing strategy-side either way (see Strategy callbacks).</li>
+</ul>
+<h2 id="reconciler">Reconciler<a class="headerlink" href="#reconciler" title="Permanent link">&para;</a></h2>
+<p>Split along the logic-vs-orchestration line: the <strong><code>Reconciler</code></strong> (pure — <code>reconciler.py</code> +
+<code>diffs.py</code>) owns snapshots end-to-end (diff + apply + tasks + venue figures) and returns a
+<code>list[Action]</code>; the <strong><code>AccountManager</code></strong> drives the ticks, routes events into the Reconciler,
+and executes its actions (every connector call). <code>reconcile.py</code> keeps only the shared
+<code>transition</code> chokepoint + <code>fill_qty_epsilon</code> + <code>liveness_overdue</code>.</p>
+<blockquote>
+<p>Full detail — the Differ atoms, the task FSMs (<code>ResolveMissingOrder</code> / <code>AwaitOrderConfirm</code> /
+<code>ConfirmPositionBySnapshot</code>), and the Mermaid diagrams — lives in
+<strong><code>reconciliation-redesign.md</code></strong>. This section is the summary.</p>
+</blockquote>
+<h3 id="snapshot-reconcile-reconcileron_snapshot">Snapshot reconcile (Reconciler.on_snapshot)<a class="headerlink" href="#snapshot-reconcile-reconcileron_snapshot" title="Permanent link">&para;</a></h3>
+<ol>
+<li><strong>as_of ratchet</strong> — a snapshot at/before the last applied one is dropped wholesale.</li>
+<li><strong>Differ.diff(state, snapshot)</strong> → a flat <code>list[Diff]</code>; each atom is applied in its own
+   <code>try/except</code> (one bad atom can't abort the rest), then venue figures last.</li>
+<li><strong>Orders</strong> — <code>OriginalOrderMissing → _recover_order</code> (framework prefix → <code>RECOVERED</code> keeping
+   the cid, else <code>ext:&lt;venue_id&gt;</code> → <code>EXTERNAL</code>); a since-completed order we hold terminal is
+   <em>not</em> re-recovered. <code>LocalOrderMissing → ResolveMissingOrder</code> task (wait → fetch status ≤ n →
+   resolve via the real event, or give up by routing <code>OrderLostEvent</code>). <code>OrderFieldMismatch →
+   _reconcile_order</code> (fix status/filled in-mem, route <code>OrderPartiallyFilledEvent</code>).</li>
+<li><strong>Positions — surgical</strong> (<code>reconcile_position_from_snapshot</code>): snapshot is authoritative for
+   size/avg-price/margin/mark <strong>only</strong>; <code>r_pnl</code>/commissions/funding always survive. A size diff
+   spawns <code>ConfirmPositionBySnapshot</code> and stamps a per-instrument <strong>venue-clock watermark</strong>: a
+   later deal at/under it books <strong>realize-only</strong> (r_pnl, no size/balance move) — this replaces the
+   old covered-quantity <em>deficit</em>. Missed deals are recovered via <code>RequestHistDeals</code>
+   (<code>since = watermark − 2s</code>), pushed back as <code>DealEvent(historical=True)</code> → recorded in the ledger
+   but <strong>ledger-only</strong> (no strategy <code>on_execution</code>/<code>on_position_change</code>), materialized as a terminal
+   audit order (never an <code>ACCEPTED</code> phantom). A local position absent from an observed snapshot →
+   flatten (keeps accounting).</li>
+<li><strong>Balances</strong> — overwrite (identity-preserving) under a <strong>1-cent absolute tolerance</strong> (sub-cent
+   margin/PnL drift doesn't reconcile), except a currency whose WS-push <code>as_of</code> ≥ the snapshot's
+   <code>as_of</code> (push-wins tie-break). <strong>Venue figures</strong> — set when present; absence keeps the prior capture.</li>
+</ol>
+<h3 id="ticks-sweeps">Ticks &amp; sweeps<a class="headerlink" href="#ticks-sweeps" title="Permanent link">&para;</a></h3>
+<p><code>AccountManagerConfig</code> (defaults), tunable via the <code>live.account_manager</code> YAML block (1:1 onto the
+dataclass): one <strong>reconcile heartbeat</strong> <code>reconcile_tick_interval_ms</code>=2000 drives
+<code>Reconciler.on_tick</code> (the snapshot due-timer <code>snapshot_interval_ms</code>=30000 + the order/position task
+nudges) <strong>and</strong> the terminal-eviction sweep — it replaces the old separate inflight + snapshot
+ticks. <code>snapshot_grace_ms</code>=5000 (Differ grace); <code>missing_order_wait_ms</code>/<code>order_confirm_wait_ms</code>=5000
++ <code>_retries</code>=5; <code>position_confirm_wait_ms</code>=2000; liveness check every 5s (unready 30s → <code>reconnect()</code>);
+terminal retention 30s, history ring 10k.</p>
+<ul>
+<li>Ticks register via <code>pm.schedule</code> in <code>set_processing_manager</code> (the AM↔PM cycle — late, idempotent),
+  on the processing thread, preserving the single-mutator invariant.</li>
+<li><strong>Give-up = routed event.</strong> A <code>ResolveMissingOrder</code>/<code>AwaitOrderConfirm</code> task that exhausts its
+  fetches terminalizes to <code>LOST</code> by routing <code>OrderLostEvent</code> through <code>pm.process_event</code> (the same
+  path venue events take); the AM never calls the strategy directly.</li>
+<li><strong>Terminal eviction is not tick-dependent:</strong> <code>AccountManager.apply</code> runs an opportunistic sweep
+  once <code>terminal_retention</code> elapses — paper/backtest (no ticks) and <code>reconcile_tick_interval_ms=0</code>
+  still evict; live additionally sweeps from the reconcile tick.</li>
+<li>Liveness: a failed/raising <code>reconnect()</code> keeps the unready timestamp, so the next tick retries
+  instead of restarting the full threshold.</li>
+</ul>
+<h2 id="connectors-iconnector">Connectors (IConnector)<a class="headerlink" href="#connectors-iconnector" title="Permanent link">&para;</a></h2>
+<p>One protocol (<code>core/connector.py</code>): <code>submit_order</code>, <code>cancel_order</code> / <code>update_order</code> /
+<code>request_order_status</code> (addressed by <strong>either id</strong> — the connector picks the id the venue
+accepts), <code>request_snapshot</code>, <code>is_ws_ready</code> / <code>reconnect</code> / <code>connect</code> / <code>disconnect</code>,
+<code>make_client_id</code>, <code>set_instrument_leverage</code> / <code>set_margin_mode</code>. Live
+connectors resolve via the <code>ConnectorRegistry</code> (<code>@connector("name")</code>) — a new venue is
+one IConnector + a registry entry. The connector is a <strong>pure adapter</strong>: its only outbound
+surface is <code>send(event)</code> on the channel; it holds no AM/PM reference. Connectors stay
+dumb — the reducer correlates deals to orders, absorbing split-stream stitching.</p>
+<h3 id="rejection-boundary">Rejection boundary<a class="headerlink" href="#rejection-boundary" title="Permanent link">&para;</a></h3>
+<p>Framework-side rejections (bad params, quote unavailable, below min-notional, read-only)
+<strong>raise synchronously</strong> from submit/cancel/update so the caller sees them immediately.
+Venue verdicts (insufficient funds, post-only crossing, rate-limit, auth, generic
+exchange error) are <strong>caught and emitted</strong> as OrderRejected/Cancel/UpdateRejected events
+on the channel — never raised — even when the venue returns them as a synchronous REST
+error.</p>
+<p>On the TradingManager side, a synchronous raise after the optimistic local transition is
+rolled back, not stranded: <code>trade()</code> removes the phantom order and re-raises;
+<code>cancel_order</code> / <code>update_order</code> route a synthetic Cancel/UpdateRejectedEvent through the
+PM (same shape as the reconcile give-up — reverts PENDING_* via <code>pre_pending</code>, fires the
+error-isolated STILL-ALIVE warning) and then re-raise to keep the synchronous-failure
+contract.</p>
+<h3 id="connect-reconnect-contract">connect / reconnect contract<a class="headerlink" href="#connect-reconnect-contract" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Case 1 — <code>connect()</code>:</strong> start the WS account-event subscription and emit the initial
+  snapshot, which seeds/reconciles AM state against venue truth at startup.</li>
+<li><strong>Case 2 — exchange recreation:</strong> the old WS stream is dead; restart the subscription
+  against the fresh exchange and pull a snapshot to resync the AM after the gap.</li>
+</ul>
+<p>Read-only connectors keep the read surface alive (account events + snapshots flow);
+write methods raise.</p>
+<h2 id="runtimes-wiring">Runtimes &amp; wiring<a class="headerlink" href="#runtimes-wiring" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Live:</strong> runner builds connectors via the registry, the AM (with per-exchange base
+  currencies + TCCs), then the context; <code>set_processing_manager</code> closes the AM↔PM cycle.</li>
+<li><strong>Paper + backtest:</strong> <code>SimulatedAccountManager</code> — same apply path, no asyncio, no WS,
+  no ticks (<code>set_processing_manager</code> is a no-op; the simulated connector feeds the OME
+  through the <code>IMarketDataSink</code> protocol). Venue figures are never set → always derive.</li>
+<li><strong>Restoration/seeding:</strong> the only sanctioned out-of-AM mutation paths are AM-level
+  <code>seed_position</code> / <code>seed_balance</code> (restored state, initial paper capital; skip-unknown-
+  exchange) and <code>adjust_balance</code> (simulated transfer legs). <code>AccountState</code> mutators are
+  never called from outside the AM.</li>
+<li><strong>Unbounded channel:</strong> <code>CtrlChannel</code> reverted to an unbounded queue — account events
+  must never be dropped, and with no bound the typed-drop-protection question is moot.</li>
+</ul>
+<h2 id="divergences-from-pr-302">Divergences from PR #302<a class="headerlink" href="#divergences-from-pr-302" title="Permanent link">&para;</a></h2>
+<p>Sanctioned departures, detailed in the sections above:</p>
+<ol>
+<li><code>client_order_id</code> / <code>venue_order_id</code> naming (PR: <code>client_id</code>/<code>venue_id</code>).</li>
+<li><code>OrderStatus.is_pending</code> exists (classification only; revert still via <code>pre_pending</code>).</li>
+<li>PENDING_CANCEL-on-accept guard (and snapshot-side pending guard).</li>
+<li>Flat <code>AccountSnapshot</code> (<code>as_of</code> + flat venue figures on the event).</li>
+<li><code>get_position</code> materializes an empty Position for known instruments (consumers expect
+   an object, not None) — a mutating read, which is what forced D3 (fit/warmup inline).</li>
+<li>Terminal-but-retained deal booking + post-eviction suppression.</li>
+<li>Unprefixed (public) <code>AccountState</code> mutators, framework-internal by contract.</li>
+<li>Events in <code>core/events.py</code>, not in the <code>account_manager</code> package.</li>
+<li>Snapshots owned by a pure <code>Reconciler</code> (Differ + task engine), not the reducer.</li>
+<li>Funding payments as account events with bucketed dedup.</li>
+<li>Per-order transition audit + per-status counters.</li>
+<li><code>AccountManagerConfig</code> + the single reconcile tick (+ liveness) + the apply-path eviction sweep.</li>
+<li><code>SimulatedAccountManager</code> for paper/backtest.</li>
+<li>Restoration/seeding via AM-level <code>seed_*</code>/<code>adjust_balance</code>.</li>
+<li>Unbounded channel instead of bounded-with-drop-protection.</li>
+<li>Cancel/update synchronous-raise contract: synthetic reject through the PM + re-raise.</li>
+<li>Order recovery via temporal tasks (<code>ResolveMissingOrder</code> → fetch → LOST give-up).</li>
+<li>Surgical position reconcile (local accounting survives) + venue-clock realize-only watermark.</li>
+</ol>
+<h2 id="deferred-open">Deferred / open<a class="headerlink" href="#deferred-open" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong><code>on_reconcile_complete(ctx, ...)</code></strong>: snapshot order-corrections stay callback-silent
+  beyond the per-position <code>on_position_change</code> fan-out (<code>ReconcileDiff</code> was deleted in the
+  reconciler redesign). If a strategy-facing summary of a reconcile is wanted, the Reconciler
+  would surface it (e.g. on <code>ApplyResult</code>) for the PM to fan out.</li>
+<li><strong>Venue figures beyond Binance/OKX</strong>: Binance and OKX snapshot legs extract venue
+  figures; Bitfinex is documented derive-only (figures absent from <code>fetch_balance</code>);
+  other venues derive (sound fallback).</li>
+<li><strong>Real multi-currency <code>conversion_rate</code></strong>: currently 1.0 — see the single-base-currency
+  limitation under Capital/margin (COIN-M and non-base-quoted instruments out of scope).</li>
+<li><strong>Cancel+recreate update fallback</strong>: <code>_update_via_cancel_recreate</code> raises NotSupported
+  (fail-safe: rejects before canceling); all current target venues have <code>editOrder</code>, so
+  it is unreachable until a venue without it is onboarded.</li>
+<li><strong>Binance SPOT cid-only edits</strong>: the empty-id scrub override covers the futures path
+  (<code>edit_contract_order_request</code>); spot's <code>edit_spot_order_request</code> still sends
+  <code>cancelOrderId=""</code> for cid-only edits — graceful venue reject; override when spot
+  trading matters.</li>
+<li><strong><code>set_instrument_leverage</code> / <code>set_margin_mode</code> delegation</strong>: connector methods exist
+  but are unwired from the strategy surface; the AM returns neutral per-instrument
+  settings until venue-sourced leverage/margin-mode is held in <code>AccountState</code>.</li>
+<li><strong><code>qubx_lighter</code> plugin port</strong>: the external plugin targets the removed
+  <code>IBroker</code>/<code>IAccountProcessor</code> registry API and must be ported to
+  IConnector + ConnectorRegistry before any Lighter deployment.</li>
+<li><strong>Binance <code>priceMatch</code> support</strong>: regressed vs main in the IBroker→IConnector cutover.
+  The generic submit path forwards the <code>priceMatch</code> option but keeps <code>price</code> set, which
+  Binance rejects — restoring it needs main's rule that <code>priceMatch</code> orders are sent with
+  the price cleared.</li>
+<li><strong>Hyperliquid broker port</strong>: main's Hyperliquid-specific broker behavior —
+  slippage-priced market orders and order-response enrichment — was dropped in the
+  cutover; HL live trading regresses to the generic ccxt path until reimplemented as a
+  <code>CcxtConnector</code> subclass.</li>
+</ul>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+
+<!-- Place this tag in your head or just before your close body tag. -->
+<script async defer src="https://buttons.github.io/buttons.js"></script>
+<script src="https://code.jquery.com/jquery-3.4.1.min.js"
+    integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
+
+
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../..", "features": ["content.code.annotate", "search.share", "content.code.copy", "navigation.top", "navigation.footer"], "search": "../../assets/javascripts/workers/search.f8cc74c7.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "provider": "mike"}}</script>
+    
+    
+      <script src="../../assets/javascripts/bundle.f1b6f286.min.js"></script>
+      
+        <script src="../../javascripts/config.js"></script>
+      
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
