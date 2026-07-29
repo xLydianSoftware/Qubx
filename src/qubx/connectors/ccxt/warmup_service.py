@@ -17,14 +17,19 @@ from .handlers import DataTypeHandlerFactory
 
 
 class WarmupService:
-    """Service responsible for warming up historical data using data type handlers."""
+    """Service responsible for warming up historical data using data type handlers.
 
-    # Interim throttle (quantkit#106): warmup shares the event loop with the venue
-    # websockets and their keepalives — an unthrottled burst of warmup groups can
-    # occupy the loop long enough for keepalives to lapse and streams to die
-    # silently (2026-07-29 incident). Cap concurrent groups and force a scheduling
-    # gap after each so keepalive tasks always get the loop. Removed once bulk REST
-    # moves to its own loop.
+    Loop-agnostic: warmup coroutines run on whatever loop the given exchange manager's
+    exchange lives on. In live that is the bulk exchange on the process-wide BulkRestLoop
+    (quantkit#106) — the handler factory passed in must be bound to the SAME manager so
+    the fetches actually await on that loop.
+    """
+
+    # Throttle (quantkit#106): originally added while warmup still shared the realtime
+    # websocket loop (an unthrottled burst starved keepalives — 2026-07-29 incident).
+    # Warmup now runs on the dedicated BulkRestLoop, so the throttle no longer protects
+    # keepalives; it stays to bound REST burst pressure on the venue and to keep the
+    # bulk loop responsive for concurrent snapshot/history work.
     WARMUP_MAX_CONCURRENCY: int = 3
     WARMUP_YIELD_S: float = 0.05
 

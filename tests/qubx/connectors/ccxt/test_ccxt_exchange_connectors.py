@@ -77,6 +77,9 @@ def _make_connector(cls: type[CcxtConnector], exchange: Mock | None = None) -> t
 
     captured: list = []
     conn._spawn = Mock(side_effect=lambda coro: captured.append(coro))
+    # Bulk-class paths (snapshot, hist-deals) spawn on the bulk loop; capture them too
+    # (with no separate bulk manager, _bulk_em is _em — same fake exchange).
+    conn._spawn_bulk = Mock(side_effect=lambda coro: captured.append(coro))
     conn._captured = captured  # type: ignore[attr-defined]
     return conn, sent, exchange
 

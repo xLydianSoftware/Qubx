@@ -19,6 +19,8 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
 
 from typing import Any
 
+import ccxt.pro
+
 from qubx.core.basics import Instrument, Position
 
 from ...connector import CcxtConnector
@@ -79,19 +81,22 @@ class BinancePmCcxtConnector(CcxtConnector):
             info_float(account, "virtualMaxWithdrawAmount"),
         )
 
-    async def _fill_leverage_settings(self, positions: list[Position]) -> None:
+    async def _fill_leverage_settings(self, positions: list[Position], ex: ccxt.pro.Exchange) -> None:
         # snapshot post-processing hook: leverage/max_notional from the base, then ADL
-        await super()._fill_leverage_settings(positions)
-        await self._fill_adl_levels(positions)
+        await super()._fill_leverage_settings(positions, ex)
+        await self._fill_adl_levels(positions, ex)
 
-    async def _fill_adl_levels(self, positions: list[Position]) -> None:
+    async def _fill_adl_levels(self, positions: list[Position], ex: ccxt.pro.Exchange) -> None:
         """Stamp ``Position.adl_level`` from ONE account-wide adlQuantile call per
         snapshot and refresh the cache ``get_adl_level`` reads. Best-effort: a failure
-        leaves the previous cache and the positions' levels unchanged."""
+        leaves the previous cache and the positions' levels unchanged.
+
+        ``ex`` is the calling snapshot's (bulk) exchange — the awaited call must run on
+        the loop the snapshot was spawned on."""
         if not positions:
             return
         try:
-            rows = await self._em.exchange.papiGetUmAdlQuantile()
+            rows = await ex.papiGetUmAdlQuantile()
         except Exception as e:  # noqa: BLE001
             self._dbg.debug("fetch adl quantiles failed: {}", e)
             return

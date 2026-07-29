@@ -422,7 +422,7 @@ class TestPmAdlLevels:
     def test_fill_stamps_positions_and_cache(self):
         connector = self._connector_with_adl(self.ADL_ROWS)
         doge, btc = self._position("DOGEUSDT"), self._position("BTCUSDT")
-        run(connector._fill_adl_levels([doge, btc]))
+        run(connector._fill_adl_levels([doge, btc], connector._bulk_em.exchange))
         assert doge.adl_level == 2  # max(LONG, SHORT)
         assert btc.adl_level == 3
         assert connector.get_adl_level(doge.instrument) == 2
@@ -439,14 +439,14 @@ class TestPmAdlLevels:
     def test_fetch_failure_keeps_previous_cache(self):
         connector = self._connector_with_adl(self.ADL_ROWS)
         doge = self._position("DOGEUSDT")
-        run(connector._fill_adl_levels([doge]))
+        run(connector._fill_adl_levels([doge], connector._bulk_em.exchange))
 
         async def boom(*args, **kwargs):
             raise RuntimeError("venue down")
 
         connector._em.exchange.papiGetUmAdlQuantile = boom
         fresh = self._position("DOGEUSDT")
-        run(connector._fill_adl_levels([fresh]))
+        run(connector._fill_adl_levels([fresh], connector._bulk_em.exchange))
         assert connector.get_adl_level(doge.instrument) == 2  # cache preserved
         assert fresh.adl_level is None  # nothing stamped on failure
 

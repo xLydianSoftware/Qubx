@@ -6,6 +6,7 @@ across different exchange connectors to comply with API rate limits.
 """
 
 import asyncio
+import threading
 import time
 from functools import wraps
 from typing import Callable, Optional
@@ -19,6 +20,17 @@ class TokenBucketRateLimiter:
 
     The token bucket algorithm allows bursts of requests up to the capacity,
     then enforces the average rate defined by refill_rate.
+
+    Loop-agnostic (quantkit#106): one bucket may be shared by coroutines running on
+    DIFFERENT event loops (the realtime websocket loop and the BulkRestLoop). The
+    bucket math is synchronous under a ``threading.Lock``; only the wait is an
+    ``asyncio.sleep`` on the caller's own loop, so no asyncio primitive ever crosses
+    loops.
+
+    Waiters sleep outside the lock and re-contend on wakeup, re-validating against the
+    CURRENT bucket state — important because ``set_tokens`` (exchange header sync) can
+    move the balance while they sleep. Fairness is best-effort rather than FIFO; total
+    issuance still can't exceed capacity + refill (check-and-decrement is atomic).
 
     Usage:
         >>> limiter = TokenBucketRateLimiter(capacity=100, refill_rate=100)
@@ -40,10 +52,10 @@ class TokenBucketRateLimiter:
 
         self._tokens = float(capacity)
         self._last_refill = time.monotonic()
-        self._lock = asyncio.Lock()
+        self._lock = threading.Lock()
 
     def _refill_tokens(self) -> None:
-        """Refill tokens based on elapsed time since last refill."""
+        """Refill tokens based on elapsed time since last refill. Caller holds ``_lock``."""
         now = time.monotonic()
         elapsed = now - self._last_refill
 
@@ -68,12 +80,12 @@ class TokenBucketRateLimiter:
         if weight > self.capacity:
             raise ValueError(f"Requested weight {weight} exceeds bucket capacity {self.capacity} for {self.name}")
 
-        async with self._lock:
-            while True:
+        while True:
+            with self._lock:
                 # Refill tokens based on elapsed time
                 self._refill_tokens()
 
-                # Check if we have enough tokens
+                # Check if we have enough tokens (atomic check-and-decrement)
                 if self._tokens >= weight:
                     self._tokens -= weight
                     return
@@ -82,15 +94,15 @@ class TokenBucketRateLimiter:
                 tokens_needed = weight - self._tokens
                 wait_time = tokens_needed / self.refill_rate
 
-                # Log warning for significant delays
-                if wait_time > 1.0:
-                    logger.debug(
-                        f"Rate limiter {self.name}: waiting {wait_time:.2f}s "
-                        f"(need {tokens_needed:.1f} tokens, refill rate: {self.refill_rate}/s)"
-                    )
+            # Log warning for significant delays
+            if wait_time > 1.0:
+                logger.debug(
+                    f"Rate limiter {self.name}: waiting {wait_time:.2f}s "
+                    f"(need {tokens_needed:.1f} tokens, refill rate: {self.refill_rate}/s)"
+                )
 
-                # Release lock while waiting to allow other tasks to check
-                await asyncio.sleep(wait_time)
+            # Sleep on the caller's own loop, outside the lock, then re-contend
+            await asyncio.sleep(wait_time)
 
     def get_available_tokens(self) -> float:
         """
@@ -99,8 +111,18 @@ class TokenBucketRateLimiter:
         Returns:
             Current token count
         """
-        self._refill_tokens()
-        return self._tokens
+        with self._lock:
+            self._refill_tokens()
+            return self._tokens
+
+    def set_tokens(self, tokens: float) -> None:
+        """
+        Force-set the current token count (external sync with exchange-reported
+        state), resetting the refill clock.
+        """
+        with self._lock:
+            self._tokens = tokens
+            self._last_refill = time.monotonic()
 
 
 class RateLimiterRegistry:

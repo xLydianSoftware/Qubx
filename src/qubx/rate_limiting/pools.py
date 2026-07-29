@@ -3,10 +3,19 @@
 Each pool type encapsulates its own gate behavior, acquisition logic,
 sync mechanism, and metrics state. The engine delegates to pools
 polymorphically — no pool_type branching in the engine.
+
+Loop-agnostic (quantkit#106): one ExchangeRateLimiter spans a venue's realtime
+websocket loop AND the process-wide BulkRestLoop, so pool state must be usable from
+coroutines on multiple event loops. Gate truth lives in ``_MultiLoopGate`` (plain
+bool + per-loop mirror events), gate reopen runs on a ``threading.Timer`` (no
+loop-bound task), and mutable pool state is guarded by a ``threading.Lock``.
 """
 
 import asyncio
+import threading
+import time
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from qubx import logger
 
@@ -22,16 +31,92 @@ class RateLimitGateTimeout(Exception):
         self.pool_name = pool_name
 
 
+class _MultiLoopGate:
+    """Open/closed gate awaitable from coroutines on multiple event loops.
+
+    ``asyncio.Event`` is loop-affine: ``wait()`` parks a future on the waiting loop and
+    ``set()`` completes it without cross-thread scheduling, so a single Event cannot
+    serve both the realtime and the bulk REST loop. Here the authoritative state is a
+    plain bool behind a ``threading.Lock``; every loop that waits gets its own mirror
+    ``asyncio.Event``, flipped via ``loop.call_soon_threadsafe`` so wakeups always
+    happen on the waiter's own loop.
+    """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._open = True
+        self._events: WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Event] = WeakKeyDictionary()
+
+    @property
+    def is_open(self) -> bool:
+        with self._lock:
+            return self._open
+
+    def open(self) -> None:
+        self._set_state(True)
+
+    def close(self) -> None:
+        self._set_state(False)
+
+    def _set_state(self, is_open: bool) -> None:
+        with self._lock:
+            self._open = is_open
+            for loop, event in list(self._events.items()):
+                try:
+                    loop.call_soon_threadsafe(event.set if is_open else event.clear)
+                except RuntimeError:
+                    continue  # loop already closed — its waiters are gone anyway
+
+    def _event_for_running_loop(self) -> asyncio.Event:
+        loop = asyncio.get_running_loop()
+        with self._lock:
+            event = self._events.get(loop)
+            if event is None:
+                event = asyncio.Event()
+                if self._open:
+                    event.set()
+                self._events[loop] = event
+            return event
+
+    async def wait_open(self, timeout: float) -> None:
+        """Wait until the gate is open; raises ``TimeoutError`` on expiry.
+
+        The bool is the authority — the mirror event only provides the sleep. The loop
+        re-checks after every wakeup so a gate extension (close while waiting) keeps the
+        waiter parked, and a mirror that briefly lags its scheduled clear/set callback
+        (queued on this very loop) only costs an extra yield, never a lost wakeup.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            event = self._event_for_running_loop()
+            if self.is_open:
+                return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError
+            await asyncio.wait_for(event.wait(), timeout=remaining)
+
+
 class BasePool:
-    """Base pool with gate mechanism and metrics tracking."""
+    """Base pool with gate mechanism and metrics tracking.
+
+    Gate reopen scheduling is epoch-guarded: every transition (close, extension,
+    reset, sync-reopen) bumps ``_gate_epoch`` under ``_state_lock``, and a pending
+    reopen timer only fires if its captured epoch is still current — a stale timer
+    from a superseded close can never reopen a freshly-closed gate.
+
+    Metrics counters (``hits``/``total_wait``/``consumed``) are updated without the
+    lock; cross-thread drift is cosmetic and not worth serializing every acquire.
+    """
 
     def __init__(self, config: PoolConfig, exchange: str, scope_id: str):
         self._config = config
         self._exchange = exchange
         self._scope_id = scope_id
-        self._gate = asyncio.Event()
-        self._gate.set()
-        self._gate_task: asyncio.Task | None = None
+        self._gate = _MultiLoopGate()
+        self._gate_timer: threading.Timer | None = None
+        self._gate_epoch = 0
+        self._state_lock = threading.Lock()
         self.hits: int = 0
         self.total_wait: float = 0
         self.consumed: float = 0
@@ -50,7 +135,7 @@ class BasePool:
 
     @property
     def is_gate_closed(self) -> bool:
-        return not self._gate.is_set()
+        return not self._gate.is_open
 
     def update_scope_id(self, scope_id: str) -> None:
         self._scope_id = scope_id
@@ -65,17 +150,29 @@ class BasePool:
         raise NotImplementedError
 
     def reset_gate(self) -> None:
-        """Reopen gate and cancel any pending reopen task."""
-        self._gate.set()
-        self._cancel_gate_task()
+        """Reopen gate and invalidate any pending reopen timer."""
+        self._open_gate_now()
 
     async def get_state(self) -> dict[str, Any]:
         raise NotImplementedError
 
-    def _cancel_gate_task(self) -> None:
-        if self._gate_task is not None and not self._gate_task.done():
-            self._gate_task.cancel()
-        self._gate_task = None
+    def _open_gate_now(self) -> None:
+        with self._state_lock:
+            self._gate_epoch += 1
+            self._cancel_gate_timer()
+            self._gate.open()
+
+    def _close_gate_now(self) -> None:
+        with self._state_lock:
+            self._gate_epoch += 1
+            self._cancel_gate_timer()
+            self._gate.close()
+
+    def _cancel_gate_timer(self) -> None:
+        """Cancel a pending reopen timer. Caller holds ``_state_lock``."""
+        if self._gate_timer is not None:
+            self._gate_timer.cancel()
+        self._gate_timer = None
 
     def _base_state(self, remaining: float, capacity: float) -> dict[str, Any]:
         return {
@@ -110,10 +207,10 @@ class RatePool(BasePool):
         self._key = self._make_key()
 
     async def acquire(self, weight: float, gate_max_wait: float) -> None:
-        if not self._gate.is_set():
+        if not self._gate.is_open:
             try:
-                await asyncio.wait_for(self._gate.wait(), timeout=gate_max_wait)
-            except asyncio.TimeoutError:
+                await self._gate.wait_open(gate_max_wait)
+            except TimeoutError:
                 raise RateLimitGateTimeout(
                     f"{self._exchange}: gate for pool '{self.name}' did not reopen "
                     f"within {gate_max_wait:.0f}s",
@@ -125,19 +222,28 @@ class RatePool(BasePool):
         self.consumed += weight
 
     def close_gate(self, cooldown: float, reason: str) -> None:
-        verb = "extended" if not self._gate.is_set() else "closed"
+        verb = "extended" if not self._gate.is_open else "closed"
         logger.warning(f"Rate limit gate {verb} for {self._exchange}:{self.name} ({cooldown:.1f}s): {reason}")
-        self._gate.clear()
-        self._cancel_gate_task()
-        self._gate_task = asyncio.ensure_future(self._reopen_after(cooldown))
+        with self._state_lock:
+            self._gate_epoch += 1
+            epoch = self._gate_epoch
+            self._cancel_gate_timer()
+            self._gate.close()
+            # threading.Timer, not an asyncio task: reopen must not be bound to any of
+            # the loops acquiring from this pool (the closing loop may not be the only
+            # waiter, and a timer is cancellable from any thread).
+            timer = threading.Timer(cooldown, self._reopen_after, args=(epoch, cooldown))
+            timer.daemon = True
+            self._gate_timer = timer
+        timer.start()
 
-    async def _reopen_after(self, delay: float) -> None:
-        try:
-            await asyncio.sleep(delay)
-            self._gate.set()
-            logger.info(f"Rate limit gate reopened for {self._exchange}:{self.name} after {delay:.1f}s")
-        except asyncio.CancelledError:
-            pass
+    def _reopen_after(self, epoch: int, delay: float) -> None:
+        with self._state_lock:
+            if epoch != self._gate_epoch:
+                return  # superseded by a later close/extension/reset
+            self._gate_timer = None
+            self._gate.open()
+        logger.info(f"Rate limit gate reopened for {self._exchange}:{self.name} after {delay:.1f}s")
 
     def sync(self, remaining: float, capacity: float | None = None) -> None:
         try:
@@ -165,24 +271,28 @@ class QuotaPool(BasePool):
         return self._remaining
 
     async def acquire(self, weight: float, gate_max_wait: float) -> None:
-        if not self._gate.is_set() or self._remaining <= 0:
-            if self._remaining <= 0:
-                self.close_gate(self._config.cooldown, "quota depleted")
-            raise RateLimitGateTimeout(
-                f"{self._exchange}: quota pool '{self.name}' depleted",
-                pool_name=self.name,
-            )
-        self._remaining = max(0, self._remaining - weight)
-        self.consumed += weight
+        with self._state_lock:
+            depleted = self._remaining <= 0
+            if not depleted and self._gate.is_open:
+                # atomic check-and-decrement — no over-issue across loops
+                self._remaining = max(0, self._remaining - weight)
+                self.consumed += weight
+                return
+        if depleted:
+            self.close_gate(self._config.cooldown, "quota depleted")
+        raise RateLimitGateTimeout(
+            f"{self._exchange}: quota pool '{self.name}' depleted",
+            pool_name=self.name,
+        )
 
     def close_gate(self, cooldown: float, reason: str) -> None:
-        verb = "extended" if not self._gate.is_set() else "closed"
+        verb = "extended" if not self._gate.is_open else "closed"
         logger.warning(f"Rate limit gate {verb} for {self._exchange}:{self.name} ({cooldown:.1f}s): {reason}")
-        self._gate.clear()
-        self._cancel_gate_task()
+        self._close_gate_now()
 
     def sync(self, remaining: float, capacity: float | None = None) -> None:
-        self._remaining = remaining
+        with self._state_lock:
+            self._remaining = remaining
         if remaining <= 0:
             self.close_gate(self._config.cooldown, f"quota {self.name} depleted (remaining={remaining})")
         else:
@@ -190,9 +300,8 @@ class QuotaPool(BasePool):
             # real account quota (best approximation when exchange only reports remaining)
             if capacity is None:
                 self._config.capacity = max(self._config.capacity, remaining)
-            if not self._gate.is_set():
-                self._cancel_gate_task()
-                self._gate.set()
+            if not self._gate.is_open:
+                self._open_gate_now()
                 logger.info(
                     f"Rate limit gate reopened for {self._exchange}:{self.name} (remaining={remaining})"
                 )

@@ -171,7 +171,8 @@ class TestBasicFunctionality:
         mock_async_thread_loop = Mock()
         mock_async_thread_loop.submit.return_value = mock_future
 
-        with patch.object(data_provider._data_type_handler_factory, "get_handler", return_value=mock_ohlc_handler):
+        # get_ohlc history is bulk-class REST -> served by the bulk handler factory
+        with patch.object(data_provider._bulk_handler_factory, "get_handler", return_value=mock_ohlc_handler):
             # Patch AsyncThreadLoop in the data module
             with patch("qubx.connectors.ccxt.data.AsyncThreadLoop", return_value=mock_async_thread_loop):
                 bars = data_provider.get_ohlc(btc_instrument, "1m", 1)
@@ -180,7 +181,7 @@ class TestBasicFunctionality:
 
     def test_get_ohlc_no_handler_raises_error(self, data_provider, btc_instrument):
         """Test OHLC retrieval when handler is not available."""
-        with patch.object(data_provider._data_type_handler_factory, "get_handler", return_value=None):
+        with patch.object(data_provider._bulk_handler_factory, "get_handler", return_value=None):
             with pytest.raises(ValueError, match="OHLC handler not available"):
                 data_provider.get_ohlc(btc_instrument, "1m", 10)
 
@@ -188,7 +189,7 @@ class TestBasicFunctionality:
         """Test OHLC retrieval when wrong handler type is returned."""
         mock_wrong_handler = Mock()  # Not an OhlcDataHandler
 
-        with patch.object(data_provider._data_type_handler_factory, "get_handler", return_value=mock_wrong_handler):
+        with patch.object(data_provider._bulk_handler_factory, "get_handler", return_value=mock_wrong_handler):
             with pytest.raises(ValueError, match="Expected OhlcDataHandler"):
                 data_provider.get_ohlc(btc_instrument, "1m", 10)
 

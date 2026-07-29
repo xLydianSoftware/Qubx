@@ -108,10 +108,16 @@ def get_ccxt_exchange_manager(
 
     Returns ExchangeManager wrapper that handles exchange recreation
     during data stall scenarios via self-monitoring. Instances are cached
-    by (exchange, api_key, secret, use_testnet) to enable sharing across
+    by (exchange, api_key, secret, use_testnet, loop) to enable sharing across
     data provider, account processor, and broker.
+
+    The loop is part of the cache key so one venue can hold TWO instances: the
+    realtime one on the runner's shared websocket loop, and a bulk one on the
+    process-wide ``BulkRestLoop`` (``get_bulk_rest_loop``) for warmup/history/
+    snapshot traffic. A ccxt exchange's aiohttp session is bound to its loop, so
+    instances must never be shared across loops.
     """
-    cache_key = (exchange.lower(), api_key, secret, use_testnet, check_interval_seconds)
+    cache_key = (exchange.lower(), api_key, secret, use_testnet, check_interval_seconds, loop)
 
     if cache_key in _exchange_manager_cache:
         return _exchange_manager_cache[cache_key]
@@ -178,7 +184,18 @@ def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
     cached manager from the unauthenticated one ``CcxtDataProvider`` uses for market data
     (the manager cache keys on api_key/secret) — and resolves the per-exchange
     ``CcxtConnector`` subclass via ``get_ccxt_connector``.
+
+    Two authenticated instances are built (quantkit#106): the realtime one on the
+    runner's shared websocket loop (account streams, order submit/cancel, status
+    probes) and a bulk one on the process-wide ``BulkRestLoop`` (periodic account
+    snapshots, hist-deals recovery). The bulk instance is independent and NOT
+    auto-recreated: its manager never starts stall monitoring (staleness is a
+    stream property of the realtime instance), and a failed bulk call surfaces to
+    its caller, which already handles fetch errors per leg. ``force_recreation``
+    keeps working for the realtime instance only.
     """
+    from qubx.utils.misc import get_bulk_rest_loop
+
     creds = ctx.credentials.get_exchange_credentials(ctx.exchange_name)
     exchange_manager = get_ccxt_exchange_manager(
         exchange=ctx.exchange_name,
@@ -190,10 +207,22 @@ def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
         loop=ctx.loop,
         **(creds.model_extra or {}),
     )
+    bulk_exchange_manager = get_ccxt_exchange_manager(
+        exchange=ctx.exchange_name,
+        use_testnet=creds.testnet,
+        api_key=creds.api_key,
+        secret=creds.secret,
+        health_monitor=ctx.health_monitor,
+        time_provider=ctx.time_provider,
+        loop=get_bulk_rest_loop().loop,
+        **(creds.model_extra or {}),
+    )
     # Share the same per-exchange limiter the data provider uses (closes the gap where the
-    # order-placing side was previously unthrottled).
+    # order-placing side was previously unthrottled). The SAME limiter is attached to both
+    # instances so the venue budget spans the realtime and the bulk loop.
     if ctx.rate_limiter is not None:
         exchange_manager.attach_rate_limiter(ctx.rate_limiter)
+        bulk_exchange_manager.attach_rate_limiter(ctx.rate_limiter)
     # The connector self-reports the canonical (instrument-universe) exchange so the
     # account events it stamps (balances/snapshots) route to the same AM state its
     # instruments do: a BINANCE.PM account trades BINANCE.UM instruments — the venue
@@ -204,6 +233,7 @@ def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
         channel=ctx.channel,
         time_provider=ctx.time_provider,
         exchange_manager=exchange_manager,
+        bulk_exchange_manager=bulk_exchange_manager,
         data_provider=ctx.data_provider,
         loop=ctx.loop,
         health_monitor=ctx.health_monitor,

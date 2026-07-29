@@ -504,6 +504,30 @@ class BackgroundEventLoop:
         self._thread.join()
 
 
+_bulk_rest_loop: BackgroundEventLoop | None = None
+_bulk_rest_loop_lock = Lock()
+
+
+def get_bulk_rest_loop() -> BackgroundEventLoop:
+    """Process-wide event loop dedicated to bulk REST traffic (quantkit#106).
+
+    Live connectors route heavy, bursty REST work here — warmup fetches, OHLC history
+    requests, periodic account snapshots, hist-deals recovery — so it can never occupy
+    the realtime websocket loop long enough to starve keepalives, ``watch_*`` streams,
+    or order submit/cancel (the 2026-07 incident). Latency-critical traffic stays on the
+    realtime loop.
+
+    Created lazily on first call and shared by all venues. Only live connector
+    construction paths call this — simulation never touches ccxt factories or loops, so
+    no thread is spawned in backtests.
+    """
+    global _bulk_rest_loop
+    with _bulk_rest_loop_lock:
+        if _bulk_rest_loop is None:
+            _bulk_rest_loop = BackgroundEventLoop(name="BulkRestLoop")
+        return _bulk_rest_loop
+
+
 def synchronized(func: Callable):
     """Decorator that ensures only one thread can execute the decorated function at a time."""
     lock = Lock()

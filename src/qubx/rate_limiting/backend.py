@@ -5,6 +5,7 @@ Provides the interface and in-memory implementation for token bucket state.
 Redis backend can be added later for cross-bot coordination.
 """
 
+import threading
 import time
 from abc import ABC, abstractmethod
 
@@ -59,15 +60,21 @@ class InMemoryBackend(IRateLimitBackend):
 
     Each key gets its own TokenBucketRateLimiter instance.
     Suitable for single-bot usage without cross-bot coordination.
+
+    Loop-agnostic (quantkit#106): the same backend is shared by the realtime websocket
+    loop and the BulkRestLoop. The buckets' math is synchronous under a threading.Lock
+    (see TokenBucketRateLimiter); only bucket creation is guarded here.
     """
 
     def __init__(self):
         self._limiters: dict[str, TokenBucketRateLimiter] = {}
+        self._lock = threading.Lock()
 
     def _get_or_create(self, key: str, capacity: float, refill_rate: float) -> TokenBucketRateLimiter:
-        if key not in self._limiters:
-            self._limiters[key] = TokenBucketRateLimiter(capacity, refill_rate, name=key)
-        return self._limiters[key]
+        with self._lock:
+            if key not in self._limiters:
+                self._limiters[key] = TokenBucketRateLimiter(capacity, refill_rate, name=key)
+            return self._limiters[key]
 
     async def acquire(self, key: str, weight: float, capacity: float, refill_rate: float) -> float:
         limiter = self._get_or_create(key, capacity, refill_rate)
@@ -84,5 +91,4 @@ class InMemoryBackend(IRateLimitBackend):
     async def set_remaining(self, key: str, remaining: float) -> None:
         limiter = self._limiters.get(key)
         if limiter is not None:
-            limiter._tokens = remaining
-            limiter._last_refill = time.monotonic()
+            limiter.set_tokens(remaining)

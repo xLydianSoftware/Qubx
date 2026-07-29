@@ -148,6 +148,7 @@ class CcxtConnector(ChannelEmitter):
         time_provider: ITimeProvider,
         exchange_manager: ExchangeManager,
         data_provider: IDataProvider,
+        bulk_exchange_manager: ExchangeManager | None = None,
         loop: asyncio.AbstractEventLoop | None = None,
         cancel_timeout: int = 30,
         cancel_retry_interval: int = 2,
@@ -162,6 +163,14 @@ class CcxtConnector(ChannelEmitter):
         self.channel = channel
         self._time = time_provider
         self._em = exchange_manager
+        # Second exchange instance on the process-wide BulkRestLoop (quantkit#106): the
+        # periodic account snapshot (4-way REST gather) and hist-deals recovery run there
+        # so they can never occupy the realtime loop that drives the account WS stream and
+        # order submit/cancel. When no separate bulk instance is provided (unit tests,
+        # bespoke constructions), bulk-class calls run on the single realtime instance —
+        # exactly the pre-bulk-loop behavior. The bulk instance is independent and NOT
+        # auto-recreated (see create_ccxt_connector).
+        self._bulk_em = bulk_exchange_manager or exchange_manager
         self._data_provider = data_provider
         self._explicit_loop = loop
         self.cancel_timeout = cancel_timeout
@@ -198,6 +207,15 @@ class CcxtConnector(ChannelEmitter):
         loop = self._explicit_loop or self._em.exchange.asyncio_loop
         return AsyncThreadLoop(loop)
 
+    @property
+    def _bulk_loop(self) -> AsyncThreadLoop:
+        """AsyncThreadLoop bound to the bulk exchange's loop (the BulkRestLoop in live).
+
+        Coroutines touching ``self._bulk_em.exchange`` MUST run here — a ccxt
+        exchange's aiohttp session is bound to its own loop.
+        """
+        return AsyncThreadLoop(self._bulk_em.exchange.asyncio_loop)
+
     def _spawn(self, coro: Any) -> None:
         """Fire-and-forget a coroutine on the exchange loop.
 
@@ -208,6 +226,15 @@ class CcxtConnector(ChannelEmitter):
         future = self._loop.submit(coro)
         # The Future is otherwise discarded; surface any uncaught exception in the
         # coroutine (e.g. post-success emit work) instead of silently dead-lettering it.
+        future.add_done_callback(self._log_spawn_error)
+
+    def _spawn_bulk(self, coro: Any) -> None:
+        """Fire-and-forget a coroutine on the bulk exchange loop (see ``_spawn``).
+
+        Used by the bulk-REST paths (snapshot, hist-deals) so they never occupy the
+        realtime loop. Stubbed separately in tests to assert loop routing.
+        """
+        future = self._bulk_loop.submit(coro)
         future.add_done_callback(self._log_spawn_error)
 
     def _log_spawn_error(self, future: Any) -> None:
@@ -746,19 +773,22 @@ class CcxtConnector(ChannelEmitter):
             adl = info_float(raw, "adlQuantile")
         return int(adl) if adl is not None else None
 
-    async def _fill_leverage_settings(self, positions: list[Position]) -> None:
+    async def _fill_leverage_settings(self, positions: list[Position], ex: ccxt.pro.Exchange) -> None:
         """Fill ``leverage``/``max_notional`` from symbolConfig for positions the position
         payload left blank (Binance v3 carries neither — see ccxt_extract_leverage_settings).
 
         Best-effort: a failure leaves the fields None, exactly as before. Never overwrites a
         value the position payload did supply, so venues that do carry them are untouched.
+
+        ``ex`` is the calling snapshot's (bulk) exchange — the awaited fetch must run on
+        the loop the snapshot was spawned on.
         """
-        if not positions or not self._em.exchange.has.get("fetchLeverages"):
+        if not positions or not ex.has.get("fetchLeverages"):
             return
         if all(p.leverage is not None and p.max_notional is not None for p in positions):
             return
         try:
-            rows = await self._em.exchange.fetch_leverages()
+            rows = await ex.fetch_leverages()
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[{self.exchange_name}] fetch_leverages failed: {e}")
             return
@@ -1280,7 +1310,8 @@ class CcxtConnector(ChannelEmitter):
 
     def request_hist_deals(self, instrument: Instrument, since: dt_64) -> None:
         # Read the symbol off the instrument SYNCHRONOUSLY (see cancel_order).
-        self._spawn(self._hist_deals_async(instrument, instrument_to_ccxt_symbol(instrument), since))
+        # Bulk-class REST (recovery fetch, not latency-critical) -> bulk loop.
+        self._spawn_bulk(self._hist_deals_async(instrument, instrument_to_ccxt_symbol(instrument), since))
 
     async def _hist_deals_async(self, instrument: Instrument, symbol: str, since: dt_64) -> None:
         """Fetch trades since ``since`` and emit one DealEvent per trade.
@@ -1296,7 +1327,7 @@ class CcxtConnector(ChannelEmitter):
         since_ms = int(since.astype("datetime64[ms]").astype("int64"))
         logger.debug(f"[{self.exchange_name}] hist-deals: fetch_my_trades {symbol} since {since}")
         try:
-            raw_trades = await self._em.exchange.fetch_my_trades(symbol, since=since_ms)
+            raw_trades = await self._bulk_em.exchange.fetch_my_trades(symbol, since=since_ms)
         except NetworkError as e:
             logger.warning(f"[{self.exchange_name}] hist deals fetch for {symbol} since {since} failed: {e}")
             return
@@ -1397,7 +1428,7 @@ class CcxtConnector(ChannelEmitter):
             )
         )
 
-    async def _fetch_trigger_open_orders(self) -> list[dict]:
+    async def _fetch_trigger_open_orders(self, ex: ccxt.pro.Exchange) -> list[dict]:
         """Fetch untriggered stop/conditional ("algo") open orders.
 
         Binance USDⓂ serves these from a SEPARATE endpoint, disjoint from the regular
@@ -1405,9 +1436,12 @@ class CcxtConnector(ChannelEmitter):
         A venue with no such surface raises NotSupported/BadRequest → treated as "no
         trigger orders" ([]); transient errors propagate (the caller leaves order
         reconcile for the next tick rather than orphaning unseen stops).
+
+        ``ex`` is passed explicitly (the snapshot's bulk exchange) so the awaited call
+        runs on the same loop the caller was spawned on.
         """
         try:
-            return await self._em.exchange.fetch_open_orders(params={"trigger": True})
+            return await ex.fetch_open_orders(params={"trigger": True})
         except (ccxt.NotSupported, ccxt.BadRequest) as e:
             logger.debug(f"[{self.exchange_name}] snapshot: no trigger open-orders surface ({e}); regular only")
             return []
@@ -1449,15 +1483,20 @@ class CcxtConnector(ChannelEmitter):
         return open_orders
 
     def request_snapshot(self, include_orders: bool = True) -> None:
-        self._spawn(self._snapshot_async(include_orders))
+        # The snapshot's 4-way gather is the heaviest routine REST call — bulk loop.
+        self._spawn_bulk(self._snapshot_async(include_orders))
 
     async def _snapshot_async(self, include_orders: bool = True) -> None:
         """Fetch account state concurrently and emit a snapshot.
 
+        Runs on the bulk exchange/loop (quantkit#106): the 4-way gather is the heaviest
+        routine REST call and must not occupy the realtime loop that drives the account
+        WS stream and order submit/cancel.
+
         include_orders=True  -> open orders + algo/trigger orders + positions + balances (startup
         discovery + periodic sweep). include_orders=False -> positions + balances ONLY (steady
-        state): the open-orders / algo legs carry high REST weight and, sharing ccxt's throttle
-        with order placement, delay order sends by seconds — so steady snapshots skip them
+        state): the open-orders / algo legs carry high REST weight and, sharing the venue rate
+        budget with order placement, delay order sends by seconds — so steady snapshots skip them
         (open_orders=None -> reconcile leaves order state untouched; orders are tracked via the WS
         stream + the periodic full sweep).
 
@@ -1465,12 +1504,12 @@ class CcxtConnector(ChannelEmitter):
         ``return_exceptions=True`` keeps one failing fetch from sinking the others; a failed (or
         skipped) leg is left None so reconcile won't wipe state it didn't actually observe.
         """
-        ex = self._em.exchange
+        ex = self._bulk_em.exchange
         as_of: dt_64 = self._time.time()
         if include_orders:
             raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
                 ex.fetch_open_orders(),
-                self._fetch_trigger_open_orders(),
+                self._fetch_trigger_open_orders(ex),
                 ex.fetch_positions(),
                 ex.fetch_balance(),
                 return_exceptions=True,
@@ -1487,7 +1526,7 @@ class CcxtConnector(ChannelEmitter):
             logger.warning("[{}] snapshot: fetch_positions failed: {}", self.exchange_name, raw_positions)
         else:
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
-            await self._fill_leverage_settings(positions)
+            await self._fill_leverage_settings(positions, ex)
 
         balances: list[Balance] | None = None
         equity = available_margin = margin_ratio = withdrawable = None
@@ -1605,6 +1644,11 @@ class CcxtConnector(ChannelEmitter):
             self._run_sync(self._em.exchange.close(), timeout=10)
         except Exception as e:  # noqa: BLE001
             logger.warning(f"[{self.exchange_name}] Error during disconnect: {e}")
+        if self._bulk_em is not self._em:
+            try:
+                self._bulk_loop.run_sync(self._bulk_em.exchange.close(), timeout=10)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[{self.exchange_name}] Error closing bulk exchange during disconnect: {e}")
 
     def is_ws_ready(self) -> bool:
         return self._ws_ready

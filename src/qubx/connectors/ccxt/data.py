@@ -36,6 +36,7 @@ class CcxtDataProvider(IDataProvider):
         **kwargs,
     ):
         from qubx.connectors.ccxt.factory import get_ccxt_exchange_manager
+        from qubx.utils.misc import get_bulk_rest_loop
 
         settings = ctx.credentials.get_exchange_settings(ctx.exchange_name)
         self._exchange_manager = get_ccxt_exchange_manager(
@@ -46,11 +47,27 @@ class CcxtDataProvider(IDataProvider):
             loop=ctx.loop,
             **kwargs,
         )
+        # Second instance on the process-wide BulkRestLoop (quantkit#106): warmup fetches
+        # and get_ohlc history requests run here so their REST bursts can never starve the
+        # realtime loop's websocket keepalives. watch_* subscriptions stay on the realtime
+        # instance above. The bulk instance is independent and NOT auto-recreated — no
+        # start_monitoring(), no recreation callbacks; a failed bulk fetch surfaces to its
+        # caller (warmup logs/raises, get_ohlc raises to the strategy).
+        self._bulk_exchange_manager = get_ccxt_exchange_manager(
+            exchange=ctx.exchange_name,
+            use_testnet=settings.testnet,
+            health_monitor=ctx.health_monitor,
+            time_provider=ctx.time_provider,
+            loop=get_bulk_rest_loop().loop,
+            **kwargs,
+        )
         self.orderbook_limit = orderbook_limit
 
-        # Attach rate limiter to exchange manager (overrides CCXT's built-in throttle)
+        # Attach rate limiter to exchange manager (overrides CCXT's built-in throttle).
+        # The SAME limiter goes on both instances so the venue budget spans both loops.
         if ctx.rate_limiter is not None:
             self._exchange_manager.attach_rate_limiter(ctx.rate_limiter)
+            self._bulk_exchange_manager.attach_rate_limiter(ctx.rate_limiter)
 
         self.time_provider = ctx.time_provider
         self.channel = ctx.channel
@@ -78,11 +95,20 @@ class CcxtDataProvider(IDataProvider):
             exchange_manager=self._exchange_manager,
             exchange_id=self._exchange_id,
         )
+        # Separate handler instances bound to the bulk exchange: warmup() and
+        # get_historical_ohlc() coroutines await ccxt calls on whichever exchange the
+        # handler holds, so REST-only handlers get the bulk instance while the
+        # subscription (watch_*) handlers above keep the realtime one.
+        self._bulk_handler_factory = DataTypeHandlerFactory(
+            data_provider=self,
+            exchange_manager=self._bulk_exchange_manager,
+            exchange_id=self._exchange_id,
+        )
         self._warmup_service = WarmupService(
-            handler_factory=self._data_type_handler_factory,
+            handler_factory=self._bulk_handler_factory,
             channel=ctx.channel,
             exchange_id=self._exchange_id,
-            exchange_manager=self._exchange_manager,
+            exchange_manager=self._bulk_exchange_manager,
             warmup_timeout=warmup_timeout,
         )
         self._last_quotes = defaultdict(lambda: None)
@@ -96,6 +122,11 @@ class CcxtDataProvider(IDataProvider):
     def _loop(self) -> AsyncThreadLoop:
         """Get current AsyncThreadLoop for the exchange."""
         return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
+
+    @property
+    def _bulk_loop(self) -> AsyncThreadLoop:
+        """AsyncThreadLoop for the bulk exchange (the BulkRestLoop in live)."""
+        return AsyncThreadLoop(self._bulk_exchange_manager.exchange.asyncio_loop)
 
     @property
     def is_simulation(self) -> bool:
@@ -207,9 +238,13 @@ class CcxtDataProvider(IDataProvider):
         return self._last_quotes.get(instrument, None)
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
-        """Get historical OHLC data (delegated to OhlcDataHandler)."""
-        # Get OHLC handler from factory
-        ohlc_handler = self._data_type_handler_factory.get_handler("ohlc")
+        """Get historical OHLC data (delegated to OhlcDataHandler).
+
+        Runs on the bulk exchange/loop: this is strategy-triggered REST history
+        (ctx.ohlc with length), which must not occupy the realtime websocket loop.
+        """
+        # Get OHLC handler from the bulk factory (REST fetch -> bulk exchange)
+        ohlc_handler = self._bulk_handler_factory.get_handler("ohlc")
         if ohlc_handler is None:
             raise ValueError(f"{self._exchange_id}: OHLC handler not available")
 
@@ -221,7 +256,7 @@ class CcxtDataProvider(IDataProvider):
         async def _get_historical():
             return await ohlc_handler.get_historical_ohlc(instrument, timeframe, nbarsback)
 
-        return self._loop.submit(_get_historical()).result(60)
+        return self._bulk_loop.submit(_get_historical()).result(60)
 
     def start(self):
         # Eagerly load markets so is_instrument_listed() is authoritative before the
@@ -260,7 +295,7 @@ class CcxtDataProvider(IDataProvider):
                 except Exception as e:
                     logger.error(f"Error stopping subscription {subscription_type}: {e}")
 
-            # Stop ExchangeManager monitoring
+            # Stop ExchangeManager monitoring (the bulk manager never started monitoring)
             self._exchange_manager.stop_monitoring()
 
             # Close exchange connection
@@ -270,6 +305,12 @@ class CcxtDataProvider(IDataProvider):
                 future.result(5)
             else:
                 del self._exchange_manager
+
+            # Close the bulk exchange session (distinct instance on the BulkRestLoop)
+            if self._bulk_exchange_manager is not self._exchange_manager and hasattr(
+                self._bulk_exchange_manager.exchange, "close"
+            ):
+                self._bulk_loop.submit(self._bulk_exchange_manager.exchange.close()).result(5)  # type: ignore
 
             # Note: AsyncThreadLoop stop is handled by its own lifecycle
 

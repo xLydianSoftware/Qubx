@@ -82,3 +82,44 @@ def test_async_thread_loop_run_sync_and_submit():
         assert atl.submit(seven()).result(1) == 7
     finally:
         bel.stop()
+
+
+# --------------------------------------------------------------------------- #
+# BulkRestLoop singleton (quantkit#106)
+# --------------------------------------------------------------------------- #
+class TestBulkRestLoop:
+    def test_lazy_creation_and_singleton(self, monkeypatch):
+        """No loop exists until first call; repeated calls return the same running loop."""
+        from qubx.utils import misc
+
+        monkeypatch.setattr(misc, "_bulk_rest_loop", None)
+
+        first = misc.get_bulk_rest_loop()
+        assert isinstance(first, BackgroundEventLoop)
+        assert first.loop.is_running()
+        assert first._thread.name == "BulkRestLoop"
+        assert misc.get_bulk_rest_loop() is first
+
+    def test_distinct_from_caller_loops(self):
+        from qubx.utils.misc import get_bulk_rest_loop
+
+        bel = BackgroundEventLoop(name="not-the-bulk-loop")
+        try:
+            assert get_bulk_rest_loop().loop is not bel.loop
+        finally:
+            bel.stop()
+
+    def test_simulation_import_does_not_create_bulk_loop(self):
+        """Live-only: importing the backtester (simulation entry point) must not spin up
+        the BulkRestLoop — simulation never touches ccxt factories or loops. Run in a
+        subprocess so loops created by other tests in this process can't pollute it."""
+        import subprocess
+        import sys
+
+        code = (
+            "import qubx.backtester  # noqa: F401\n"
+            "from qubx.utils import misc\n"
+            "assert misc._bulk_rest_loop is None, 'backtester import created the BulkRestLoop'\n"
+        )
+        result = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True)
+        assert result.returncode == 0, result.stderr
