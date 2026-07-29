@@ -1,3 +1,4 @@
+from collections import defaultdict
 from unittest.mock import Mock, call
 
 import pytest
@@ -113,6 +114,38 @@ class TestSubscriptionStuff:
             call(DataType.ORDERBOOK, instruments, reset=True),
         ]
         self.mock_broker.subscribe.assert_has_calls(expected_calls, any_order=True)
+
+    def test_get_updated_subs_returns_canonically_sorted_order(self):
+        """Regression: commit() iterates _get_updated_subs() and, in the backtester,
+        whichever subscription type is processed LAST decides whether the instrument's
+        OME quote gets re-primed or wiped (BasicSimulatedExchange.on_subscribe evicts the
+        primed quote on every call; only OHLC-like data re-primes it, funding_payment can't).
+        Raw set()-union order is PYTHONHASHSEED-dependent, so the list must be sorted().
+        """
+        instrument = self._get_instrument("BTCUSDT")
+
+        # - order A: as frab would build it up (global ohlc sub, then global funding sub, ...)
+        self.manager._pending_global_subscriptions.add("ohlc(1h)")
+        self.manager._pending_global_subscriptions.add("funding_payment")
+        self.manager._pending_stream_subscriptions["orderbook"].add(instrument)
+        self.manager._pending_stream_unsubscriptions["trade"].add(instrument)
+        result_a = self.manager._get_updated_subs()
+
+        # - order B: same four type strings, rebuilt from scratch in reverse insertion order
+        self.manager._pending_global_subscriptions = set()
+        self.manager._pending_global_unsubscriptions = set()
+        self.manager._pending_stream_subscriptions = defaultdict(set)
+        self.manager._pending_stream_unsubscriptions = defaultdict(set)
+
+        self.manager._pending_stream_unsubscriptions["trade"].add(instrument)
+        self.manager._pending_stream_subscriptions["orderbook"].add(instrument)
+        self.manager._pending_global_subscriptions.add("funding_payment")
+        self.manager._pending_global_subscriptions.add("ohlc(1h)")
+        result_b = self.manager._get_updated_subs()
+
+        expected = ["funding_payment", "ohlc(1h)", "orderbook", "trade"]
+        assert result_a == expected
+        assert result_b == expected
 
     def test_ohlc_warmup(self):
         instruments = {self._get_instrument("BTCUSDT"), self._get_instrument("ETHUSDT")}
