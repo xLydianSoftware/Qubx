@@ -14,7 +14,7 @@ from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.misc import Stopwatch
-from qubx.utils.ntp import start_ntp_thread, time_now
+from qubx.utils.clock import start_clock_discipline, time_now
 from qubx.utils.time import to_timedelta
 
 dt_64 = np.datetime64
@@ -1738,14 +1738,16 @@ class DataType(StrEnum):
 
 
 class LiveTimeProvider(ITimeProvider):
+    """
+    Live wall clock. Monotonic by construction and continuously disciplined onto the host
+    clock — see `qubx.utils.clock` for why both properties are needed.
+    """
+
     def __init__(self):
-        self._start_ntp_thread()
+        start_clock_discipline()
 
     def time(self) -> dt_64:
         return time_now()
-
-    def _start_ntp_thread(self):
-        start_ntp_thread()
 
 
 @dataclass
