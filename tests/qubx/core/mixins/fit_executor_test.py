@@ -17,7 +17,7 @@ from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, S
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.fit_context import FitContext, UnclassifiedFitContextAccess
-from qubx.core.fit_executor import FitCycleState
+from qubx.core.fit_executor import FitCycleState, FitExecutorMode
 from qubx.core.interfaces import IStrategyContext, StrategyState
 from qubx.core.mixins.market import CachedMarketDataHolder
 from qubx.core.mixins.processing import ProcessingManager
@@ -973,6 +973,6 @@ class TestSimulationPurity:
         assert pm._fit_executor is not None
         assert pm._fit_executor_mode == "thread"
 
-    def test_config_default_is_inline(self):
-        assert LiveConfig.model_fields["fit_executor"].default == "inline"
+    def test_config_default_is_thread(self):
+        assert LiveConfig.model_fields["fit_executor"].default == FitExecutorMode.THREAD
         assert LiveConfig.model_fields["fit_soft_deadline_s"].default == pytest.approx(120.0)

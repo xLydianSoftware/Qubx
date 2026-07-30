@@ -41,7 +41,7 @@ from qubx.core.events import (
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
 from qubx.core.fit_context import FitContext
-from qubx.core.fit_executor import FIT_COMMIT_EVENT, FitCommitData, FitCycleState, SingleThreadWorker
+from qubx.core.fit_executor import FIT_COMMIT_EVENT, FitCommitData, FitCycleState, FitExecutorMode, SingleThreadWorker
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
 from qubx.core.interfaces import (
     IHealthMonitor,
@@ -146,7 +146,7 @@ class ProcessingManager(IProcessingManager):
     #   _fit_state with a per-instance token.
     _fit_state: FitCycleState = FitCycleState()
     _fit_executor: SingleThreadWorker | None = None
-    _fit_executor_mode: str = "inline"
+    _fit_executor_mode: FitExecutorMode = FitExecutorMode.INLINE
     _fit_soft_deadline_s: float = 120.0
     _warmup_finished_is_running: bool = False
     _fails_counter: int = 0
@@ -189,7 +189,7 @@ class ProcessingManager(IProcessingManager):
         delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
         data_throttler: InstrumentThrottler | None = None,
-        fit_executor: str = "inline",
+        fit_executor: FitExecutorMode = FitExecutorMode.THREAD,
         fit_soft_deadline_s: float = 120.0,
         fit_state: FitCycleState | None = None,
     ):
@@ -243,12 +243,18 @@ class ProcessingManager(IProcessingManager):
         self._custom_scheduled_methods = {}
         self._pending_no_quote_signals = {}
 
-        # - Threaded fit executor: live-only and dark by default (fit_executor="inline").
-        #   Simulation ALWAYS stays inline regardless of config — the executor is never
-        #   constructed there (backtests keep today's path exactly).
+        # - Threaded fit executor: live-only. Simulation ALWAYS stays inline regardless
+        #   of config — the executor is never constructed there (backtests keep today's
+        #   path exactly).
         self._fit_state = fit_state if fit_state is not None else FitCycleState()
-        self._fit_executor_mode = "thread" if (not is_simulation and fit_executor == "thread") else "inline"
-        self._fit_executor = SingleThreadWorker("StrategyFitThread") if self._fit_executor_mode == "thread" else None
+        self._fit_executor_mode = (
+            FitExecutorMode.THREAD
+            if (not is_simulation and fit_executor == FitExecutorMode.THREAD)
+            else FitExecutorMode.INLINE
+        )
+        self._fit_executor = (
+            SingleThreadWorker("StrategyFitThread") if self._fit_executor_mode == FitExecutorMode.THREAD else None
+        )
         self._fit_soft_deadline_s = fit_soft_deadline_s
 
         # - schedule daily delisting check at 23:30 (end of day)
@@ -530,7 +536,7 @@ class ProcessingManager(IProcessingManager):
         #   callbacks — the fit owns the thread, this is a re-entrancy guard. Thread
         #   mode DELIVERS instead: handlers run here on the ProcessorThread concurrently
         #   with the fit on the StrategyFitThread, and consult ctx.is_fitting.
-        if self._fit_is_running and self._fit_executor_mode != "thread":
+        if self._fit_is_running and self._fit_executor_mode != FitExecutorMode.THREAD:
             return False
 
         signals: list[Signal] = []
@@ -1166,7 +1172,7 @@ class ProcessingManager(IProcessingManager):
             return
         # Live thread mode hands the fit body to the StrategyFitThread. Simulation
         # (and inline mode, the default) takes today's path below, unchanged.
-        if not self._is_simulation and self._fit_executor_mode == "thread":
+        if not self._is_simulation and self._fit_executor_mode == FitExecutorMode.THREAD:
             self._submit_threaded_fit(data)
             return
         # The flag reset lives in an outer finally so no raise (finalize_ohlc or the health

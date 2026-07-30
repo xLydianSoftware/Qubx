@@ -19,6 +19,7 @@ Simulation never constructs a :class:`SingleThreadWorker` and never calls
 import threading
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import StrEnum
 from queue import Queue
 from threading import Thread
 
@@ -29,6 +30,13 @@ from qubx.core.basics import Signal
 # (None, FIT_COMMIT_EVENT, FitCommitData, False) tuple; dispatched to
 # ProcessingManager._handle_fit_commit via the auto-registered handler map.
 FIT_COMMIT_EVENT = "fit_commit"
+
+
+class FitExecutorMode(StrEnum):
+    """Where strategy.on_fit runs in live mode (simulation is always inline)."""
+
+    INLINE = "inline"
+    THREAD = "thread"
 
 
 @dataclass(frozen=True, slots=True)

@@ -37,7 +37,7 @@ from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.events import ChannelMessage
 from qubx.core.exceptions import QueueTimeout, ReadOnlyConnector, StrategyExceededMaxNumberOfRuntimeFailuresError
-from qubx.core.fit_executor import FitCycleState
+from qubx.core.fit_executor import FitCycleState, FitExecutorMode
 from qubx.core.helpers import (
     BasicScheduler,
     set_parameters_to_object,
@@ -170,7 +170,7 @@ class StrategyContext(IStrategyContext):
         rate_limiting_config: Any | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
         read_only: bool = False,
-        fit_executor: str = "inline",
+        fit_executor: FitExecutorMode = FitExecutorMode.THREAD,
         fit_soft_deadline_s: float = 120.0,
     ) -> None:
         self._read_only = read_only
