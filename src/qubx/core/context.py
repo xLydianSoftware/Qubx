@@ -83,7 +83,6 @@ from .mixins import (
     TradingManager,
     UniverseManager,
 )
-from .mixins.market import CachedMarketDataHolder
 
 DEFAULT_POSITION_TRACKER: Callable[[], PositionsTracker] = lambda: PositionsTracker(
     FixedSizer(1.0, amount_in_quote=False)
@@ -302,13 +301,6 @@ class StrategyContext(IStrategyContext):
             fit_soft_deadline_s=fit_soft_deadline_s,
             fit_state=self._fit_state,
         )
-
-        # - thread-mode fit executor (live only): arm the market-cache series lock so
-        #   ProcessorThread appends serialize against FitContext snapshot reads
-        if fit_executor == "thread" and not self._data_providers[0].is_simulation:
-            _cache = self._market_data_provider.get_market_data_cache()
-            if isinstance(_cache, CachedMarketDataHolder):
-                _cache.enable_concurrent_fit_reads()
 
         # Late-wire the processing manager into the account manager (the AM is built
         # before the PM exists) so its periodic ticks can register.

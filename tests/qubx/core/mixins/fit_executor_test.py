@@ -440,9 +440,9 @@ class TestDeferredMutationsAndSignals:
         pm._handle_fit(None, "fit", (None, T0))
         drain_until_committed(pm, channel)
 
-        # - reads went through the snapshot paths
-        mm.ohlc.assert_called_once_with(instrument, "1h", 100, snapshot=True)
-        mm.quote.assert_called_once_with(instrument, snapshot=True)
+        # - reads went through the snapshot-mode paths
+        mm._ohlc.assert_called_once_with(instrument, "1h", 100, snapshot=True)
+        mm._quote.assert_called_once_with(instrument, snapshot=True)
         # - the copy mutation never reached the real view
         assert "mutating-the-copy-is-safe" not in context.get_positions.return_value
         # - mutations applied atomically at the commit, on this thread
@@ -877,7 +877,6 @@ class TestCacheConcurrentReads:
         """Race test: ProcessorThread appends while the fit thread snapshots — no
         exception, and every snapshot is internally consistent."""
         holder = CachedMarketDataHolder("1Min")
-        holder.enable_concurrent_fit_reads()
         instrument = _mock_instrument()
         holder.init_ohlcv(instrument)
 
@@ -901,7 +900,7 @@ class TestCacheConcurrentReads:
         def reader():
             try:
                 for _ in range(300):
-                    snapshot = holder.get_ohlcv(instrument, snapshot=True)
+                    snapshot = holder.get_ohlcv_snapshot(instrument)
                     n = len(snapshot)
                     # - internal consistency of the snapshot across all sub-series
                     assert len(snapshot.close) == n
@@ -923,18 +922,17 @@ class TestCacheConcurrentReads:
 
     def test_snapshot_read_returns_clone_not_live_series(self):
         holder = CachedMarketDataHolder("1Min")
-        holder.enable_concurrent_fit_reads()
         instrument = _mock_instrument()
         holder.init_ohlcv(instrument)
         t0 = T0.astype("datetime64[ns]").astype(int)
         holder.update_by_bar(instrument, Bar(t0, 1.0, 2.0, 0.5, 1.5, volume=1.0, bought_volume=0.5))
 
         live = holder.get_ohlcv(instrument)
-        snapshot = holder.get_ohlcv(instrument, snapshot=True)
+        snapshot = holder.get_ohlcv_snapshot(instrument)
         assert snapshot is not live
         assert len(snapshot) == len(live)
 
-    def test_default_path_unchanged_when_not_enabled(self):
+    def test_live_read_path_unchanged(self):
         holder = CachedMarketDataHolder("1Min")
         instrument = _mock_instrument()
         holder.init_ohlcv(instrument)

@@ -1,6 +1,5 @@
 import threading
 from collections import defaultdict
-from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -31,9 +30,6 @@ INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE
 #   if current time is very close to bar's end
 MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER = 1.5
 
-# - reusable no-op context for the lock-free (simulation / inline-fit) append path
-_NO_LOCK = nullcontext()
-
 
 class CachedMarketDataHolder(IMarketDataCache):
     """
@@ -52,24 +48,13 @@ class CachedMarketDataHolder(IMarketDataCache):
         self._updates = dict()
         self._generic_series = defaultdict(dict)
         self._max_series_length = max_buffer_size
-        # Threaded fit: when armed, OHLCV appends take the per-holder lock so
-        # snapshot=True reads (taken by FitContext on the StrategyFitThread) see a
-        # consistent series. Disarmed (the default — simulation and inline mode) keeps
-        # today's zero-lock append semantics: a single bool check per append.
-        self._concurrent_reads_enabled = False
+        # Appends and the *_snapshot reads (FitContext on the StrategyFitThread)
+        # serialize on this lock so a threaded fit never sees a torn series. An
+        # uncontended RLock costs the same as a no-op context manager, so it is
+        # taken unconditionally — simulation just never contends on it.
         self._series_lock = threading.RLock()
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
-
-    def enable_concurrent_fit_reads(self) -> None:
-        """Arm the per-holder series lock for the threaded fit executor (live thread
-        mode only): OHLCV appends serialize against snapshot reads. Never called in
-        simulation/inline mode."""
-        self._concurrent_reads_enabled = True
-
-    def _append_lock(self):
-        # - single attribute check on the (hot) simulation/inline path
-        return self._series_lock if self._concurrent_reads_enabled else _NO_LOCK
 
     def update_default_timeframe(self, default_timeframe: str):
         self.default_timeframe = convert_tf_str_td64(default_timeframe)
@@ -126,16 +111,21 @@ class CachedMarketDataHolder(IMarketDataCache):
         instrument: Instrument,
         timeframe: str | td_64 | None = None,
         max_size: float | int = np.inf,
-        snapshot: bool = False,
     ) -> OHLCV:
-        if snapshot:
-            # - explicit snapshot path (FitContext on the StrategyFitThread): build/read
-            #   the series under the lock (appends take it too when armed) and hand out a
-            #   clone, so the caller's iteration can't race ProcessorThread appends. The
-            #   clone has no indicators attached — do not attach live indicators to it.
-            with self._series_lock:
-                return self._get_ohlcv_series(instrument, timeframe, max_size).clone()
         return self._get_ohlcv_series(instrument, timeframe, max_size)
+
+    def get_ohlcv_snapshot(
+        self,
+        instrument: Instrument,
+        timeframe: str | td_64 | None = None,
+        max_size: float | int = np.inf,
+    ) -> OHLCV:
+        """FitContext entrypoint (StrategyFitThread): build/read the series under the
+        lock and hand out a clone, so the caller's iteration can't race ProcessorThread
+        appends. The clone has no indicators attached — do not attach live indicators
+        to it."""
+        with self._series_lock:
+            return self._get_ohlcv_series(instrument, timeframe, max_size).clone()
 
     def _get_ohlcv_series(
         self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
@@ -229,9 +219,7 @@ class CachedMarketDataHolder(IMarketDataCache):
                 pass
 
     @SW.watch("CachedMarketDataHolder")
-    def update_by_bars(
-        self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar], snapshot: bool = False
-    ) -> OHLCV:
+    def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
         """
         Update or create OHLCV series with the provided historical bars.
 
@@ -242,15 +230,16 @@ class CachedMarketDataHolder(IMarketDataCache):
            - Adding older bars to the back of the series
            - Skipping bars that are already present
            - Adding newer bars to the front
-
-        With ``snapshot=True`` (FitContext fetch-merge path) the merge runs under the
-        series lock and a clone is returned instead of the live series.
         """
-        if snapshot:
-            with self._series_lock:
-                return self._update_by_bars(instrument, timeframe, bars).clone()
-        with self._append_lock():
+        with self._series_lock:
             return self._update_by_bars(instrument, timeframe, bars)
+
+    def update_by_bars_snapshot(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
+        """FitContext fetch-merge entrypoint (StrategyFitThread): the merge into the
+        shared series runs under the lock and a clone is returned instead of the live
+        series."""
+        with self._series_lock:
+            return self._update_by_bars(instrument, timeframe, bars).clone()
 
     def _update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
         if instrument not in self._ohlcvs:
@@ -284,7 +273,7 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_bar(self, instrument: Instrument, bar: Bar):
-        with self._append_lock():
+        with self._series_lock:
             self._update_by_bar(instrument, bar)
 
     def _update_by_bar(self, instrument: Instrument, bar: Bar):
@@ -326,7 +315,7 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
-        with self._append_lock():
+        with self._series_lock:
             self._updates[instrument] = quote
             series = self._ohlcvs.get(instrument)
             if series:
@@ -337,7 +326,7 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_trade(self, instrument: Instrument, trade: Trade):
-        with self._append_lock():
+        with self._series_lock:
             self._update_by_trade(instrument, trade)
 
     def _update_by_trade(self, instrument: Instrument, trade: Trade):
@@ -423,10 +412,18 @@ class MarketManager(IMarketManager):
         instrument: Instrument,
         timeframe: str | td_64 | None = None,
         length: int | None = None,
-        snapshot: bool = False,
+    ) -> OHLCV:
+        return self._ohlc(instrument, timeframe, length, snapshot=False)
+
+    def _ohlc(
+        self,
+        instrument: Instrument,
+        timeframe: str | td_64 | None,
+        length: int | None,
+        snapshot: bool,
     ) -> OHLCV:
         # snapshot=True (FitContext on the StrategyFitThread): all cache touches go
-        # through the locked snapshot paths and the returned series is a clone.
+        # through the holder's locked snapshot paths and the returned series is a clone.
         if timeframe is None:
             timeframe = timedelta_to_str(self._cache.default_timeframe)
         elif isinstance(timeframe, td_64):
@@ -434,7 +431,11 @@ class MarketManager(IMarketManager):
         elif isinstance(timeframe, (int, np.int64)):  # type: ignore
             timeframe = timedelta_to_str(timeframe)
 
-        rc = self._cache.get_ohlcv(instrument, timeframe, snapshot=snapshot)
+        rc = (
+            self._cache.get_ohlcv_snapshot(instrument, timeframe)
+            if snapshot
+            else self._cache.get_ohlcv(instrument, timeframe)
+        )
         _data_provider = self._get_data_provider(instrument.exchange)
 
         # - check if we need to fetch more data
@@ -459,7 +460,11 @@ class MarketManager(IMarketManager):
         # - send request for historical data
         if _need_history_request and length is not None:
             bars = _data_provider.get_ohlc(instrument, timeframe, length)
-            rc = self._cache.update_by_bars(instrument, timeframe, bars, snapshot=snapshot)
+            rc = (
+                self._cache.update_by_bars_snapshot(instrument, timeframe, bars)
+                if snapshot
+                else self._cache.update_by_bars(instrument, timeframe, bars)
+            )
         return rc
 
     def ohlc_pd(
@@ -468,10 +473,24 @@ class MarketManager(IMarketManager):
         timeframe: str | td_64 | None = None,
         length: int | None = None,
         consolidated: bool = True,
-        snapshot: bool = False,
     ) -> pd.DataFrame:
+        return self._ohlc_pd(instrument, timeframe, length, consolidated, snapshot=False)
+
+    def _ohlc_pd(
+        self,
+        instrument: Instrument,
+        timeframe: str | td_64 | None,
+        length: int | None,
+        consolidated: bool,
+        snapshot: bool,
+    ) -> pd.DataFrame:
+        if snapshot:
+            series = self._ohlc(instrument, timeframe, length, snapshot=True)
+        else:
+            # - route via the public ohlc so overrides/mocks of it stay effective
+            series = self.ohlc(instrument, timeframe, length)
         # Pass length directly to pd() - this avoids creating full DataFrame first
-        ohlc = self.ohlc(instrument, timeframe, length, snapshot=snapshot).pd(length=length)
+        ohlc = series.pd(length=length)
 
         if consolidated and not timeframe:
             timeframe = infer_series_frequency(ohlc[:20])
@@ -487,11 +506,18 @@ class MarketManager(IMarketManager):
         # No more redundant tail() operation needed since length was already applied
         return ohlc
 
-    def quote(self, instrument: Instrument, snapshot: bool = False) -> Quote | None:
+    def quote(self, instrument: Instrument) -> Quote | None:
+        return self._quote(instrument, snapshot=False)
+
+    def _quote(self, instrument: Instrument, snapshot: bool) -> Quote | None:
+        # snapshot=True: provider quotes are plain reads; only the no-quote OHLC
+        # fallback touches the cache, via the locked snapshot path.
         _data_provider = self._get_data_provider(instrument.exchange)
         quote = _data_provider.get_quote(instrument)
         if quote is None:
-            ohlcv = self._cache.get_ohlcv(instrument, snapshot=snapshot)
+            ohlcv = (
+                self._cache.get_ohlcv_snapshot(instrument) if snapshot else self._cache.get_ohlcv(instrument)
+            )
             if len(ohlcv) > 0:
                 last_bar = ohlcv[0]
                 quote = Quote(

@@ -9,7 +9,7 @@ members (see the classification blocks below):
   lists, services, thread-safe readers).
 - **copy-read** — delegated, but the live dict/list views come back as shallow
   copies (dict-size-changed guard), and OHLCV reads come back as locked clones via
-  the cache's explicit ``snapshot=True`` path.
+  the market manager's snapshot-mode read paths.
 - **recorded-mutation** — recorded on the :class:`FitCycleState` and replayed by the
   ProcessorThread when the FitCommit is applied (single-mutator invariant: the fit
   thread computes and records; every ctx mutation happens on the ProcessorThread).
@@ -111,7 +111,7 @@ class FitContext(ITimeProvider):
         self._context = context
         self._fit_state = fit_state
         # concrete MarketManager (always constructed by StrategyContext) — carries the
-        # explicit snapshot=True read paths for ohlc/ohlc_pd/quote
+        # snapshot-mode read impls (_ohlc/_ohlc_pd/_quote)
         self._market_manager = context._market_data_provider  # type: ignore[attr-defined]
         self._account_view = _FitAccountView(context.account)
 
@@ -214,17 +214,15 @@ class FitContext(ITimeProvider):
     def ohlc(self, instrument: Instrument, timeframe: Any = None, length: int | None = None):
         # - locked snapshot clone; a history fetch runs here on the data provider's normal
         #   loop and merges into the shared cache under the series lock
-        return self._market_manager.ohlc(instrument, timeframe, length, snapshot=True)
+        return self._market_manager._ohlc(instrument, timeframe, length, snapshot=True)
 
     def ohlc_pd(
         self, instrument: Instrument, timeframe: Any = None, length: int | None = None, consolidated: bool = True
     ):
-        return self._market_manager.ohlc_pd(instrument, timeframe, length, consolidated, snapshot=True)
+        return self._market_manager._ohlc_pd(instrument, timeframe, length, consolidated, snapshot=True)
 
     def quote(self, instrument: Instrument):
-        # - provider quotes are plain reads; only the no-quote OHLC fallback touches the
-        #   cache, via the snapshot path
-        return self._market_manager.quote(instrument, snapshot=True)
+        return self._market_manager._quote(instrument, snapshot=True)
 
     # ------------------------------------------------------------------
     # denied — no meaningful deferred semantics; fail loudly when called
