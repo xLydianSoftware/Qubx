@@ -553,7 +553,7 @@ class TestWarmupService:
     def test_execute_warmup_caps_concurrent_groups(
         self, handler_factory, mock_ctrl_channel, mock_exchange_manager, mock_instruments
     ):
-        """Throttle (quantkit#106): 10 warmup groups never exceed WARMUP_MAX_CONCURRENCY."""
+        """Throttle: 10 warmup groups never exceed WARMUP_MAX_CONCURRENCY."""
         import threading
         from unittest.mock import PropertyMock
 
