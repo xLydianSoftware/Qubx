@@ -37,6 +37,7 @@ from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.events import ChannelMessage
 from qubx.core.exceptions import QueueTimeout, ReadOnlyConnector, StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.fit_executor import FitCycleState
 from qubx.core.helpers import (
     BasicScheduler,
     set_parameters_to_object,
@@ -82,6 +83,7 @@ from .mixins import (
     TradingManager,
     UniverseManager,
 )
+from .mixins.market import CachedMarketDataHolder
 
 DEFAULT_POSITION_TRACKER: Callable[[], PositionsTracker] = lambda: PositionsTracker(
     FixedSizer(1.0, amount_in_quote=False)
@@ -169,6 +171,8 @@ class StrategyContext(IStrategyContext):
         rate_limiting_config: Any | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
         read_only: bool = False,
+        fit_executor: str = "inline",
+        fit_soft_deadline_s: float = 120.0,
     ) -> None:
         self._read_only = read_only
         self._account_manager = account_manager
@@ -221,6 +225,12 @@ class StrategyContext(IStrategyContext):
         __position_gathering = self.strategy.gatherer(self)
         if __position_gathering is None:
             __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
+
+        # Threaded fit: the shared token armed by the fit executor while a threaded
+        # fit is in flight. The context uses it ONLY for the stashed-ctx tripwires below
+        # (_assert_not_fit_thread) — the fit-thread policy itself lives in FitContext.
+        # Inert (a single None check) in simulation and inline mode.
+        self._fit_state = FitCycleState()
 
         self._subscription_manager = SubscriptionManager(
             time_provider=self._time_provider,
@@ -288,7 +298,17 @@ class StrategyContext(IStrategyContext):
             health_monitor=self._health_monitor,
             delisting_detector=self._delisting_detector,
             data_throttler=data_throttler,
+            fit_executor=fit_executor,
+            fit_soft_deadline_s=fit_soft_deadline_s,
+            fit_state=self._fit_state,
         )
+
+        # - thread-mode fit executor (live only): arm the market-cache series lock so
+        #   ProcessorThread appends serialize against FitContext snapshot reads
+        if fit_executor == "thread" and not self._data_providers[0].is_simulation:
+            _cache = self._market_data_provider.get_market_data_cache()
+            if isinstance(_cache, CachedMarketDataHolder):
+                _cache.enable_concurrent_fit_reads()
 
         # Late-wire the processing manager into the account manager (the AM is built
         # before the PM exists) so its periodic ticks can register.
@@ -811,16 +831,31 @@ class StrategyContext(IStrategyContext):
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         return self._trading_manager.get_min_size(instrument, amount)
 
+    def _assert_not_fit_thread(self, name: str) -> None:
+        """Tripwire: a stashed real-ctx reference used inside a threaded on_fit must
+        fail loudly instead of mutating ProcessorThread-owned state from the fit thread.
+        Free everywhere else — ``is_fit_thread`` is a single None check unless a threaded
+        fit is in flight, and the FitCommit replay runs on the ProcessorThread so it
+        passes."""
+        if self._fit_state.is_fit_thread():
+            raise RuntimeError(
+                f"ctx.{name}: ctx mutation from the fit thread outside FitContext — "
+                "use the ctx passed to on_fit"
+            )
+
     # :: IUniverseManager delegation ::
     def set_universe(
         self, instruments: list[Instrument], skip_callback: bool = False, if_has_position_then: RemovalPolicy = "close"
     ):
+        self._assert_not_fit_thread("set_universe")
         return self._universe_manager.set_universe(instruments, skip_callback, if_has_position_then)
 
     def add_instruments(self, instruments: list[Instrument]):
+        self._assert_not_fit_thread("add_instruments")
         return self._universe_manager.add_instruments(instruments)
 
     def remove_instruments(self, instruments: list[Instrument], if_has_position_then: RemovalPolicy = "close"):
+        self._assert_not_fit_thread("remove_instruments")
         return self._universe_manager.remove_instruments(instruments, if_has_position_then)
 
     def settle_position(self, instrument: Instrument) -> None:
@@ -849,9 +884,11 @@ class StrategyContext(IStrategyContext):
 
     # :: ISubscriptionManager delegation ::
     def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None):
+        self._assert_not_fit_thread("subscribe")
         return self._subscription_manager.subscribe(subscription_type, instruments)
 
     def unsubscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None):
+        self._assert_not_fit_thread("unsubscribe")
         return self._subscription_manager.unsubscribe(subscription_type, instruments)
 
     def has_subscription(self, instrument: Instrument, subscription_type: str):
@@ -887,6 +924,10 @@ class StrategyContext(IStrategyContext):
         return self._subscription_manager.commit()
 
     @property
+    def is_warming_up(self) -> bool:
+        return self._subscription_manager.is_warming_up
+
+    @property
     def auto_subscribe(self) -> bool:
         return self._subscription_manager.auto_subscribe
 
@@ -913,6 +954,10 @@ class StrategyContext(IStrategyContext):
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
 
+    @property
+    def is_fitting(self) -> bool:
+        return self._processing_manager.is_fitting
+
     def trigger_fit(self) -> None:
         return self._processing_manager.trigger_fit()
 
@@ -920,9 +965,11 @@ class StrategyContext(IStrategyContext):
         return self._processing_manager.get_active_targets()
 
     def emit_signal(self, signal: Signal | list[Signal]) -> None:
+        self._assert_not_fit_thread("emit_signal")
         return self._processing_manager.emit_signal(signal)
 
     def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
+        self._assert_not_fit_thread("schedule")
         return self._processing_manager.schedule(cron_schedule, method)
 
     def unschedule(self, event_id: str) -> bool:

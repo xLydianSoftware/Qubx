@@ -1,4 +1,6 @@
+import threading
 from collections import defaultdict
+from contextlib import nullcontext
 from typing import Any
 
 import numpy as np
@@ -29,6 +31,9 @@ INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE
 #   if current time is very close to bar's end
 MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER = 1.5
 
+# - reusable no-op context for the lock-free (simulation / inline-fit) append path
+_NO_LOCK = nullcontext()
+
 
 class CachedMarketDataHolder(IMarketDataCache):
     """
@@ -47,8 +52,24 @@ class CachedMarketDataHolder(IMarketDataCache):
         self._updates = dict()
         self._generic_series = defaultdict(dict)
         self._max_series_length = max_buffer_size
+        # Threaded fit: when armed, OHLCV appends take the per-holder lock so
+        # snapshot=True reads (taken by FitContext on the StrategyFitThread) see a
+        # consistent series. Disarmed (the default — simulation and inline mode) keeps
+        # today's zero-lock append semantics: a single bool check per append.
+        self._concurrent_reads_enabled = False
+        self._series_lock = threading.RLock()
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
+
+    def enable_concurrent_fit_reads(self) -> None:
+        """Arm the per-holder series lock for the threaded fit executor (live thread
+        mode only): OHLCV appends serialize against snapshot reads. Never called in
+        simulation/inline mode."""
+        self._concurrent_reads_enabled = True
+
+    def _append_lock(self):
+        # - single attribute check on the (hot) simulation/inline path
+        return self._series_lock if self._concurrent_reads_enabled else _NO_LOCK
 
     def update_default_timeframe(self, default_timeframe: str):
         self.default_timeframe = convert_tf_str_td64(default_timeframe)
@@ -101,6 +122,22 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def get_ohlcv(
+        self,
+        instrument: Instrument,
+        timeframe: str | td_64 | None = None,
+        max_size: float | int = np.inf,
+        snapshot: bool = False,
+    ) -> OHLCV:
+        if snapshot:
+            # - explicit snapshot path (FitContext on the StrategyFitThread): build/read
+            #   the series under the lock (appends take it too when armed) and hand out a
+            #   clone, so the caller's iteration can't race ProcessorThread appends. The
+            #   clone has no indicators attached — do not attach live indicators to it.
+            with self._series_lock:
+                return self._get_ohlcv_series(instrument, timeframe, max_size).clone()
+        return self._get_ohlcv_series(instrument, timeframe, max_size)
+
+    def _get_ohlcv_series(
         self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
     ) -> OHLCV:
         if timeframe is None:
@@ -192,7 +229,9 @@ class CachedMarketDataHolder(IMarketDataCache):
                 pass
 
     @SW.watch("CachedMarketDataHolder")
-    def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
+    def update_by_bars(
+        self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar], snapshot: bool = False
+    ) -> OHLCV:
         """
         Update or create OHLCV series with the provided historical bars.
 
@@ -203,7 +242,17 @@ class CachedMarketDataHolder(IMarketDataCache):
            - Adding older bars to the back of the series
            - Skipping bars that are already present
            - Adding newer bars to the front
+
+        With ``snapshot=True`` (FitContext fetch-merge path) the merge runs under the
+        series lock and a clone is returned instead of the live series.
         """
+        if snapshot:
+            with self._series_lock:
+                return self._update_by_bars(instrument, timeframe, bars).clone()
+        with self._append_lock():
+            return self._update_by_bars(instrument, timeframe, bars)
+
+    def _update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
         if instrument not in self._ohlcvs:
             self._ohlcvs[instrument] = {}
 
@@ -235,6 +284,10 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_bar(self, instrument: Instrument, bar: Bar):
+        with self._append_lock():
+            self._update_by_bar(instrument, bar)
+
+    def _update_by_bar(self, instrument: Instrument, bar: Bar):
         self._updates[instrument] = bar
 
         _last_bar = self._last_bar[instrument]
@@ -273,16 +326,21 @@ class CachedMarketDataHolder(IMarketDataCache):
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_quote(self, instrument: Instrument, quote: Quote):
-        self._updates[instrument] = quote
-        series = self._ohlcvs.get(instrument)
-        if series:
-            for ser in series.values():
-                if len(ser) > 0 and ser[0].time > quote.time:
-                    continue
-                ser.update(quote.time, quote.mid_price(), 0)
+        with self._append_lock():
+            self._updates[instrument] = quote
+            series = self._ohlcvs.get(instrument)
+            if series:
+                for ser in series.values():
+                    if len(ser) > 0 and ser[0].time > quote.time:
+                        continue
+                    ser.update(quote.time, quote.mid_price(), 0)
 
     @SW.watch("CachedMarketDataHolder")
     def update_by_trade(self, instrument: Instrument, trade: Trade):
+        with self._append_lock():
+            self._update_by_trade(instrument, trade)
+
+    def _update_by_trade(self, instrument: Instrument, trade: Trade):
         self._updates[instrument] = trade
         series = self._ohlcvs.get(instrument)
         if series:
@@ -360,7 +418,15 @@ class MarketManager(IMarketManager):
     def time(self) -> dt_64:
         return self._time_provider.time()
 
-    def ohlc(self, instrument: Instrument, timeframe: str | td_64 | None = None, length: int | None = None) -> OHLCV:
+    def ohlc(
+        self,
+        instrument: Instrument,
+        timeframe: str | td_64 | None = None,
+        length: int | None = None,
+        snapshot: bool = False,
+    ) -> OHLCV:
+        # snapshot=True (FitContext on the StrategyFitThread): all cache touches go
+        # through the locked snapshot paths and the returned series is a clone.
         if timeframe is None:
             timeframe = timedelta_to_str(self._cache.default_timeframe)
         elif isinstance(timeframe, td_64):
@@ -368,7 +434,7 @@ class MarketManager(IMarketManager):
         elif isinstance(timeframe, (int, np.int64)):  # type: ignore
             timeframe = timedelta_to_str(timeframe)
 
-        rc = self._cache.get_ohlcv(instrument, timeframe)
+        rc = self._cache.get_ohlcv(instrument, timeframe, snapshot=snapshot)
         _data_provider = self._get_data_provider(instrument.exchange)
 
         # - check if we need to fetch more data
@@ -393,7 +459,7 @@ class MarketManager(IMarketManager):
         # - send request for historical data
         if _need_history_request and length is not None:
             bars = _data_provider.get_ohlc(instrument, timeframe, length)
-            rc = self._cache.update_by_bars(instrument, timeframe, bars)
+            rc = self._cache.update_by_bars(instrument, timeframe, bars, snapshot=snapshot)
         return rc
 
     def ohlc_pd(
@@ -402,9 +468,10 @@ class MarketManager(IMarketManager):
         timeframe: str | td_64 | None = None,
         length: int | None = None,
         consolidated: bool = True,
+        snapshot: bool = False,
     ) -> pd.DataFrame:
         # Pass length directly to pd() - this avoids creating full DataFrame first
-        ohlc = self.ohlc(instrument, timeframe, length).pd(length=length)
+        ohlc = self.ohlc(instrument, timeframe, length, snapshot=snapshot).pd(length=length)
 
         if consolidated and not timeframe:
             timeframe = infer_series_frequency(ohlc[:20])
@@ -420,11 +487,11 @@ class MarketManager(IMarketManager):
         # No more redundant tail() operation needed since length was already applied
         return ohlc
 
-    def quote(self, instrument: Instrument) -> Quote | None:
+    def quote(self, instrument: Instrument, snapshot: bool = False) -> Quote | None:
         _data_provider = self._get_data_provider(instrument.exchange)
         quote = _data_provider.get_quote(instrument)
         if quote is None:
-            ohlcv = self._cache.get_ohlcv(instrument)
+            ohlcv = self._cache.get_ohlcv(instrument, snapshot=snapshot)
             if len(ohlcv) > 0:
                 last_bar = ohlcv[0]
                 quote = Quote(

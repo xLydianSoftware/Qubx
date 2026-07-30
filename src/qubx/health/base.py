@@ -85,6 +85,12 @@ class BaseHealthMonitor(IHealthMonitor):
         # Connection tracking (per exchange)
         self._is_connected_callbacks = {}  # dict[exchange, Callable[[], bool]]
 
+        # Generic named-gauge escape hatch (e.g. a fit-duration heartbeat and any future
+        # point-in-time health signal that doesn't warrant its own ledger). Last-write-wins
+        # per name; same cross-thread-write/emitter-thread-read split as other tracking dicts.
+        self._gauge_lock = threading.Lock()
+        self._gauges: dict[str, tuple[float, dict[str, str]]] = {}
+
         # Execution latency tracking (unchanged)
         self._execution_latency = defaultdict(lambda: DequeIndicator(buffer_size))
 
@@ -444,6 +450,13 @@ class BaseHealthMonitor(IHealthMonitor):
 
         return decorator
 
+    def record_gauge(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+        """Record/overwrite a single named gauge (last-write-wins), emitted on the next
+        `_emit()` pass. Generic escape hatch — prefer a dedicated ledger for anything
+        richer than "one current value per name"."""
+        with self._gauge_lock:
+            self._gauges[name] = (value, dict(tags) if tags else {})
+
     def _monitor_loop(self) -> None:
         while self._is_running:
             try:
@@ -503,6 +516,10 @@ class BaseHealthMonitor(IHealthMonitor):
     def _get_exchanges(self) -> list[str]:
         return list(set(ex for ex, _ in self._data_latency.keys()))
 
+    def _get_gauges(self) -> list[tuple[str, float, dict[str, str]]]:
+        with self._gauge_lock:
+            return [(name, value, tags) for name, (value, tags) in self._gauges.items()]
+
     def _emit(self) -> None:
         """Emit all metrics to the configured emitter."""
         if not self._emit_health or self._emitter is None:
@@ -517,6 +534,14 @@ class BaseHealthMonitor(IHealthMonitor):
         exchanges = self._get_exchanges()
         for exchange in exchanges:
             self._emit_exchange_latencies(exchange)
+
+        self._emit_gauges(current_time)
+
+    def _emit_gauges(self, current_time: dt_64) -> None:
+        """Emit the generic named-gauge escape hatch (e.g. `fit_duration_s`)."""
+        assert self._emitter is not None
+        for name, value, tags in self._get_gauges():
+            self._emitter.emit(name=name, value=value, tags={"type": "health", **tags}, timestamp=current_time)
 
     def _emit_exchange_latencies(self, exchange: str) -> None:
         current_time = self.time_provider.time()

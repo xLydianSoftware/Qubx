@@ -1024,9 +1024,11 @@ class IInstrumentServiceManager:
         newly-blacklisted instruments. Returns a summary dict."""
         ...
 
-    def enforce_at_fit(self) -> None:
+    def enforce_at_fit(self, ctx: "IStrategyContext | None" = None) -> None:
         """Fit-time enforcement: refresh the cached blacklist and force-close any held
-        blacklisted positions, without firing change callbacks. No-op for the Null service."""
+        blacklisted positions, without firing change callbacks. No-op for the Null service.
+        ``ctx`` overrides the bound context (the threaded fit executor passes its
+        FitContext proxy so the force-close is recorded instead of applied)."""
         ...
 
     def start(self) -> None:
@@ -1147,8 +1149,22 @@ class ISubscriptionManager:
     def commit(self) -> None:
         """
         Apply all pending changes.
+
+        In live mode a commit that needs warmup is DEFERRED: the warmup fetch runs on a
+        background thread and the subscription swap applies on the processing thread only
+        after the fetch completes (history must land in the cache before live bars start).
+        ``is_warming_up`` is True while such a deferred commit is in flight. Simulation
+        commits synchronously.
         """
         ...
+
+    @property
+    def is_warming_up(self) -> bool:
+        """
+        True while any deferred subscription commit (background warmup fetch + pending
+        swap) is in flight. Always False in simulation, where commits are synchronous.
+        """
+        return False
 
     @property
     def auto_subscribe(self) -> bool:
@@ -1264,6 +1280,15 @@ class IProcessingManager:
         Check if the strategy is fitted.
         """
         ...
+
+    @property
+    def is_fitting(self) -> bool:
+        """
+        True while strategy.on_fit is executing: for an inline fit, during the call;
+        for a threaded fit, from submission until the FitCommit has been applied.
+        Strategy handlers running concurrently with a threaded fit consult this flag.
+        """
+        return False
 
     def get_active_targets(self) -> dict[Instrument, TargetPosition]:
         """
@@ -1753,6 +1778,19 @@ class IHealthWriter(Protocol):
 
         Returns:
             Decorator function that times the decorated function.
+        """
+        ...
+
+    def record_gauge(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+        """
+        Record/overwrite a single named point-in-time gauge (last-write-wins), emitted on
+        the next periodic emission pass. Generic escape hatch for health signals that don't
+        fit an existing ledger rather than one bespoke tracking dict per new signal.
+
+        Args:
+            name: Metric name
+            value: Current value
+            tags: Optional extra tags (merged with the standard ``{"type": "health"}`` tag)
         """
         ...
 

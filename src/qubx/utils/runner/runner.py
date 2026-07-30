@@ -675,6 +675,8 @@ def create_strategy_context(
         rate_limiting_config=_rate_limiting_config,
         event_loop=loop,
         read_only=config.live.read_only,
+        fit_executor=config.live.fit_executor,
+        fit_soft_deadline_s=config.live.fit_soft_deadline_s,
     )
 
     # Set context for metric emitters to enable is_live tag and time access

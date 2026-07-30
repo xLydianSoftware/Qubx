@@ -1,16 +1,41 @@
 import pprint
 import threading
 import time
+import traceback
 from collections import defaultdict
+from dataclasses import dataclass, field
+from functools import partial
 from typing import Any
 
 from qubx import logger
 from qubx.core.basics import DataType, Instrument
 from qubx.core.exceptions import NotSupported
+from qubx.core.fit_executor import SingleThreadWorker
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager, ITimeProvider, StrategyState
 from qubx.utils.misc import synchronized
 
 from .utils import EXCHANGE_MAPPINGS
+
+# Channel d_type under which a deferred subscription swap rides the CtrlChannel as a
+# (None, SUBSCRIPTION_SWAP_EVENT, apply_callable, False) tuple; posted by the warmup
+# worker when its fetch completes, dispatched to ProcessingManager._handle_subscription_swap
+# and applied on the ProcessorThread.
+SUBSCRIPTION_SWAP_EVENT = "subscription_swap"
+
+
+@dataclass(frozen=True, slots=True)
+class _CommitPlan:
+    """Snapshot of the pending subscription operations taken by one commit().
+
+    The swap plan is fixed at commit time so subscribe()/unsubscribe() calls arriving
+    while a deferred (background-warmup) commit is in flight accumulate toward the NEXT
+    commit instead of mutating this one.
+    """
+
+    stream_subscriptions: dict[str, set[Instrument]] = field(default_factory=dict)
+    stream_unsubscriptions: dict[str, set[Instrument]] = field(default_factory=dict)
+    global_subscriptions: set[str] = field(default_factory=set)
+    global_unsubscriptions: set[str] = field(default_factory=set)
 
 
 class SubscriptionManager(ISubscriptionManager):
@@ -53,6 +78,19 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_stream_unsubscriptions = defaultdict(set)
         self._auto_subscribe = auto_subscribe
         self._monitor_interval_seconds = monitor_interval_seconds
+        self._is_simulation = all(data_provider.is_simulation for data_provider in data_providers)
+        # Live only: warmup fetches run on this worker so they never block the
+        # ProcessorThread; the swap of a deferred commit applies when its fetch is done.
+        # The thread itself starts lazily on the first deferred commit.
+        self._warmup_worker: SingleThreadWorker | None = (
+            None if self._is_simulation else SingleThreadWorker("WarmupThread")
+        )
+        # In-flight deferred commits: incremented at submit, decremented on the
+        # ProcessorThread once the commit's swap has been applied (a stopped channel at
+        # shutdown may strand it — harmless, the process is exiting). Read via
+        # is_warming_up from any thread, including the StrategyFitThread.
+        self._warmup_inflight = 0
+        self._warmup_inflight_lock = threading.Lock()
         self._init_connection_status_callbacks()
         self._init_subscription_monitoring()
 
@@ -64,24 +102,101 @@ class SubscriptionManager(ISubscriptionManager):
     def unsubscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None) -> None:
         self._unsubscribe(subscription_type, instruments)
 
+    @property
+    def is_warming_up(self) -> bool:
+        return self._warmup_inflight > 0
+
     @synchronized
     def commit(self) -> None:
+        """Apply the pending subscription operations. Always called on the ProcessorThread.
+
+        The plan (swap + warmup set) is snapshotted here; subsequent subscribe/unsubscribe
+        calls accumulate toward the next commit. Simulation (and any commit that needs no
+        warmup) runs synchronously — warmup fetch then swap, today's behavior. A live
+        commit that needs warmup DEFERS: the fetch runs on the WarmupThread so it never
+        blocks the ProcessorThread, and the swap applies only after the fetch completes
+        (see _warmup_and_post_swap for why that ordering is mandatory).
+        """
         if not self._has_operations_to_commit():
             return
 
-        # - warm up subscriptions
-        self._run_warmup()
+        plan = _CommitPlan(
+            stream_subscriptions={sub: set(instrs) for sub, instrs in self._pending_stream_subscriptions.items()},
+            stream_unsubscriptions={sub: set(instrs) for sub, instrs in self._pending_stream_unsubscriptions.items()},
+            global_subscriptions=set(self._pending_global_subscriptions),
+            global_unsubscriptions=set(self._pending_global_unsubscriptions),
+        )
+        self._pending_stream_subscriptions.clear()
+        self._pending_stream_unsubscriptions.clear()
+        self._pending_global_subscriptions.clear()
+        self._pending_global_unsubscriptions.clear()
 
-        # - update subscriptions
-        for _sub in self._get_updated_subs():
+        _warmups = self._collect_warmups(plan)
+
+        if self._warmup_worker is None or not _warmups:
+            # - simulation, or nothing to warm: synchronous warmup + swap (today's path)
+            self._run_warmup(_warmups)
+            self._apply_swap(plan)
+            return
+
+        with self._warmup_inflight_lock:
+            self._warmup_inflight += 1
+        self._warmup_worker.submit(partial(self._warmup_and_post_swap, _warmups, plan))
+
+    def _run_warmup(self, warmups: dict[IDataProvider, dict[tuple[str, Instrument], str]]) -> None:
+        for _data_provider, _configs in warmups.items():
+            _data_provider.warmup(_configs)
+
+    def _warmup_and_post_swap(
+        self, warmups: dict[IDataProvider, dict[tuple[str, Instrument], str]], plan: _CommitPlan
+    ) -> None:
+        """Deferred-commit body, runs on the WarmupThread.
+
+        warmup() blocks this thread until the fetched history has been SENT on the
+        channel (as is_historical events, destined for the market cache), then the swap
+        application is posted on the same channel. FIFO ordering therefore guarantees the
+        ProcessorThread lands all history in the cache BEFORE the swap subscribes the
+        added instruments — mandatory, because the OHLC series reject past-data updates:
+        once a live bar lands, older warmup bars would be silently dropped.
+
+        On warmup failure the swap still applies (ERROR-logged, same degradation as a
+        failed synchronous warmup today): the strategy trades the added instruments with
+        whatever history is present rather than never getting them.
+        """
+        try:
+            self._run_warmup(warmups)
+        except Exception as e:
+            logger.error(f"[SubscriptionManager] :: deferred warmup failed: {e}; applying the subscription swap anyway")
+            logger.opt(colors=False).error(traceback.format_exc())
+        finally:
+            self._data_providers[0].channel.send(
+                (None, SUBSCRIPTION_SWAP_EVENT, partial(self._apply_deferred_swap, plan), False)
+            )
+
+    def _apply_deferred_swap(self, plan: _CommitPlan) -> None:
+        """ProcessorThread-side application of a deferred commit's swap (posted by the
+        WarmupThread); error-isolated so a failing swap cannot kill the processing loop,
+        and always clears the in-flight marker."""
+        try:
+            self._apply_swap(plan)
+        except Exception as e:
+            logger.error(f"[SubscriptionManager] :: deferred subscription swap failed: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
+        finally:
+            with self._warmup_inflight_lock:
+                self._warmup_inflight -= 1
+
+    def _apply_swap(self, plan: _CommitPlan) -> None:
+        # - apply: the subscribe/unsubscribe swap (fast)
+        for _sub in self._get_updated_subs(plan):
             _current_sub_instruments = set(self.get_subscribed_instruments(_sub))
-            _removed_instruments = self._pending_stream_unsubscriptions.get(_sub, set())
-            _added_instruments = self._pending_stream_subscriptions.get(_sub, set())
+            _removed_instruments = plan.stream_unsubscriptions.get(_sub, set())
+            _added_instruments = plan.stream_subscriptions.get(_sub, set())
 
-            if _sub in self._pending_global_unsubscriptions:
+            if _sub in plan.global_unsubscriptions:
                 _removed_instruments.update(_current_sub_instruments)
 
-            if _sub in self._pending_global_subscriptions:
+            if _sub in plan.global_subscriptions:
                 _added_instruments.update(self.get_subscribed_instruments())
 
             # - subscribe collection
@@ -122,12 +237,6 @@ class SubscriptionManager(ISubscriptionManager):
             # Notify health monitor to cleanup unsubscribed data
             for instr in _removed_instruments:
                 self._health_monitor.unsubscribe(instr, _sub)
-
-        # - clean up pending subs and unsubs
-        self._pending_stream_subscriptions.clear()
-        self._pending_stream_unsubscriptions.clear()
-        self._pending_global_subscriptions.clear()
-        self._pending_global_unsubscriptions.clear()
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         _data_provider = self._get_data_provider(instrument.exchange)
@@ -210,12 +319,12 @@ class SubscriptionManager(ISubscriptionManager):
 
         self._pending_stream_unsubscriptions[subscription_type].update(instruments)
 
-    def _get_updated_subs(self) -> list[str]:
+    def _get_updated_subs(self, plan: _CommitPlan) -> list[str]:
         return list(
-            set(self._pending_stream_unsubscriptions.keys())
-            | set(self._pending_stream_subscriptions.keys())
-            | self._pending_global_subscriptions
-            | self._pending_global_unsubscriptions
+            set(plan.stream_unsubscriptions.keys())
+            | set(plan.stream_subscriptions.keys())
+            | plan.global_subscriptions
+            | plan.global_unsubscriptions
         )
 
     def _has_operations_to_commit(self) -> bool:
@@ -248,15 +357,18 @@ class SubscriptionManager(ISubscriptionManager):
                 }
             )
 
-    def _run_warmup(self) -> None:
+    def _collect_warmups(self, plan: _CommitPlan) -> dict[IDataProvider, dict[tuple[str, Instrument], str]]:
+        """Resolve this commit's full warmup set (pending pairs from subscribe() plus the
+        global-subscription expansion), partitioned per data provider. Consumes and clears
+        _pending_warmups; providers with nothing to warm are omitted."""
         # - handle warmup for global subscriptions
         for _data_provider in self._data_providers:
             _subscribed_instruments = set(_data_provider.get_subscribed_instruments())
             _new_instruments = (
-                set.union(*self._pending_stream_subscriptions.values()) if self._pending_stream_subscriptions else set()
+                set.union(*plan.stream_subscriptions.values()) if plan.stream_subscriptions else set()
             )
 
-            _subs_to_warm = set(self._pending_global_subscriptions)
+            _subs_to_warm = set(plan.global_subscriptions)
             if _new_instruments:
                 _subs_to_warm.update(self._sub_to_warmup.keys())
 
@@ -269,11 +381,14 @@ class SubscriptionManager(ISubscriptionManager):
                 for instr in _add_instruments:
                     self._pending_warmups[(sub, instr)] = _warmup_period
 
-            # TODO: think about appropriate handling of timeouts
+        # TODO: think about appropriate handling of timeouts
+        _warmups: dict[IDataProvider, dict[tuple[str, Instrument], str]] = {}
+        for _data_provider in self._data_providers:
             _warmup_configs = self._get_pending_warmups_for_exchange(_data_provider.exchange())
-            _data_provider.warmup(_warmup_configs)
-
+            if _warmup_configs:
+                _warmups[_data_provider] = _warmup_configs
         self._pending_warmups.clear()
+        return _warmups
 
     def _get_pending_warmups_for_exchange(self, exchange: str) -> dict[tuple[str, Instrument], str]:
         return {
@@ -295,8 +410,7 @@ class SubscriptionManager(ISubscriptionManager):
             )
 
     def _init_subscription_monitoring(self) -> None:
-        is_live = any(not data_provider.is_simulation for data_provider in self._data_providers)
-        if not is_live:
+        if self._is_simulation:
             return
         # - start monitoring thread only if there is at least one live data provider
         self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
