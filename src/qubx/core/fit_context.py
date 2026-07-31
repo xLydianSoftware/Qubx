@@ -268,7 +268,8 @@ class FitContext(ITimeProvider):
 
     def ohlc(self, instrument: Instrument, timeframe: Any = None, length: int | None = None):
         # - locked snapshot clone; a history fetch runs here on the data provider's normal
-        #   loop and merges into the shared cache under the series lock
+        #   loop and merges into the PRIVATE clone — the fit thread never writes shared
+        #   series content
         return self._market_manager._ohlc(instrument, timeframe, length, snapshot=True)
 
     def ohlc_pd(

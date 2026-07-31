@@ -245,13 +245,6 @@ class CachedMarketDataHolder(IMarketDataCache):
         with self._series_lock:
             return self._update_by_bars(instrument, timeframe, bars)
 
-    def update_by_bars_snapshot(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
-        """FitContext fetch-merge entrypoint (StrategyFitThread): the merge into the
-        shared series runs under the lock and a clone is returned instead of the live
-        series."""
-        with self._series_lock:
-            return self._update_by_bars(instrument, timeframe, bars).clone()
-
     def _update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV:
         if instrument not in self._ohlcvs:
             self._ohlcvs[instrument] = {}
@@ -471,11 +464,14 @@ class MarketManager(IMarketManager):
         # - send request for historical data
         if _need_history_request and length is not None:
             bars = _data_provider.get_ohlc(instrument, timeframe, length)
-            rc = (
-                self._cache.update_by_bars_snapshot(instrument, timeframe, bars)
-                if snapshot
-                else self._cache.update_by_bars(instrument, timeframe, bars)
-            )
+            if snapshot:
+                # - merge into the PRIVATE clone: the fit thread never writes shared
+                #   series content, so ProcessorThread-side live reads can't tear against
+                #   a fit-time fetch. Instruments the fit actually adds get their history
+                #   into the shared cache through the subscription warmup at the commit.
+                rc.update_by_bars(bars)
+            else:
+                rc = self._cache.update_by_bars(instrument, timeframe, bars)
         return rc
 
     def ohlc_pd(

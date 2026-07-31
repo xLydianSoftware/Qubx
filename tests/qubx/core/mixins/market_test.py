@@ -151,3 +151,32 @@ def test_ohlc_td64_timeframe_support(market_manager, mock_instrument):
 
     # Verify pd method was called on the OHLCV object
     mock_ohlcv.pd.assert_called()
+
+
+def test_snapshot_fetch_merges_into_clone_not_shared_cache(market_manager, mock_instrument):
+    """A fit-thread ohlc read that triggers a history fetch merges the fetched bars into
+    the returned PRIVATE clone; the shared live series stays untouched (single-writer:
+    only the ProcessorThread writes shared series content)."""
+    from qubx.core.series import Bar
+
+    market_manager._cache.update_default_timeframe("1m")
+    one_h = 3_600_000_000_000
+    t0 = pd.Timestamp("2023-01-01 00:00:00").value
+    bars = [Bar(t0 + i * one_h, 100.0 + i, 101.0 + i, 99.0 + i, 100.5 + i, volume=10.0) for i in range(5)]
+    dp = market_manager._data_providers[0]
+    dp.get_ohlc.return_value = bars
+
+    snapshot = market_manager._ohlc(mock_instrument, "1h", 5, snapshot=True)
+
+    dp.get_ohlc.assert_called_once_with(mock_instrument, "1h", 5)
+    assert len(snapshot) == 5
+    # - the shared live series was created empty by the locked lazy-create and stayed empty:
+    #   the fetched history lives only in the clone
+    live = market_manager._cache.get_ohlcv(mock_instrument, "1h")
+    assert snapshot is not live
+    assert len(live) == 0
+
+    # - the live (ProcessorThread) fetch path still merges into the shared cache
+    live_rc = market_manager._ohlc(mock_instrument, "1h", 5, snapshot=False)
+    assert live_rc is market_manager._cache.get_ohlcv(mock_instrument, "1h")
+    assert len(live_rc) == 5
