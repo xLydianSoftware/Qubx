@@ -705,11 +705,13 @@ class StrategyContext(IStrategyContext):
     # per-instrument venue-setting writes (IAccountConfigurator): the configured leverage and
     # margin mode reach the venue and honour read-only.
     def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        self._assert_not_fit_thread("set_max_instrument_leverage")
         if self._read_only:
             raise ReadOnlyConnector("account configuration is read-only — write rejected")
         return self._account_manager.set_max_instrument_leverage(instrument, leverage)
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
+        self._assert_not_fit_thread("set_margin_mode")
         if self._read_only:
             raise ReadOnlyConnector("account configuration is read-only — write rejected")
         return self._account_manager.set_margin_mode(instrument, mode)
@@ -772,37 +774,45 @@ class StrategyContext(IStrategyContext):
 
     # :: ITradingManager delegation ::
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):
+        self._assert_not_fit_thread("trade")
         # TODO: we need to generate target position and apply it in the processing manager
         # - one of the options is to have multiple entry levels in TargetPosition class
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
+        self._assert_not_fit_thread("submit_orders")
         return self._trading_manager.submit_orders(order_requests)
 
     def set_target_position(
         self, instrument: Instrument, target: float, price: float | None = None, **options
     ) -> Order:
+        self._assert_not_fit_thread("set_target_position")
         return self._trading_manager.set_target_position(instrument, target, price, **options)
 
     def set_target_leverage(
         self, instrument: Instrument, leverage: float, price: float | None = None, **options
     ) -> None:
+        self._assert_not_fit_thread("set_target_leverage")
         return self._trading_manager.set_target_leverage(instrument, leverage, price, **options)
 
     def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
+        self._assert_not_fit_thread("close_position")
         return self._trading_manager.close_position(instrument, without_signals)
 
     def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
+        self._assert_not_fit_thread("close_positions")
         return self._trading_manager.close_positions(market_type, without_signals)
 
     def cancel_order(
         self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
     ) -> bool:
         """Cancel a specific order synchronously."""
+        self._assert_not_fit_thread("cancel_order")
         return self._trading_manager.cancel_order(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument."""
+        self._assert_not_fit_thread("cancel_orders")
         return self._trading_manager.cancel_orders(instrument)
 
     def update_order(
@@ -816,6 +826,7 @@ class StrategyContext(IStrategyContext):
         """
         Update an existing limit order with new price and amount.
         """
+        self._assert_not_fit_thread("update_order")
         self._trading_manager.update_order(
             order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
         )
@@ -851,6 +862,7 @@ class StrategyContext(IStrategyContext):
         return self._universe_manager.remove_instruments(instruments, if_has_position_then)
 
     def settle_position(self, instrument: Instrument) -> None:
+        self._assert_not_fit_thread("settle_position")
         return self._universe_manager.settle_position(instrument)
 
     @property
@@ -893,6 +905,7 @@ class StrategyContext(IStrategyContext):
         return self._subscription_manager.get_base_subscription()
 
     def set_base_subscription(self, subscription_type: str):
+        self._assert_not_fit_thread("set_base_subscription")
         return self._subscription_manager.set_base_subscription(subscription_type)
 
     def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
@@ -902,6 +915,7 @@ class StrategyContext(IStrategyContext):
         return self._subscription_manager.get_warmup(subscription_type)
 
     def set_warmup(self, configs: dict[Any, str]):
+        self._assert_not_fit_thread("set_warmup")
         return self._subscription_manager.set_warmup(configs)
 
     def set_stale_data_detection(
@@ -913,6 +927,7 @@ class StrategyContext(IStrategyContext):
         return self.initializer.get_stale_data_detection_config()
 
     def commit(self):
+        self._assert_not_fit_thread("commit")
         return self._subscription_manager.commit()
 
     @property
@@ -935,9 +950,11 @@ class StrategyContext(IStrategyContext):
         return self._processing_manager.process_event(event)
 
     def set_fit_schedule(self, schedule: str):
+        self._assert_not_fit_thread("set_fit_schedule")
         return self._processing_manager.set_fit_schedule(schedule)
 
     def set_event_schedule(self, schedule: str):
+        self._assert_not_fit_thread("set_event_schedule")
         return self._processing_manager.set_event_schedule(schedule)
 
     def get_event_schedule(self, event_id: str) -> str | None:
@@ -965,19 +982,24 @@ class StrategyContext(IStrategyContext):
         return self._processing_manager.schedule(cron_schedule, method)
 
     def unschedule(self, event_id: str) -> bool:
+        self._assert_not_fit_thread("unschedule")
         return self._processing_manager.unschedule(event_id)
 
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
+        self._assert_not_fit_thread("delay")
         return self._processing_manager.delay(duration, method)
 
     # :: IWarmupStateSaver delegation ::
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
+        self._assert_not_fit_thread("set_warmup_positions")
         self._warmup_positions = positions
 
     def set_warmup_active_targets(self, active_targets: dict[Instrument, list[TargetPosition]]) -> None:
+        self._assert_not_fit_thread("set_warmup_active_targets")
         self._warmup_active_targets = active_targets
 
     def set_warmup_orders(self, orders: dict[Instrument, list[Order]]) -> None:
+        self._assert_not_fit_thread("set_warmup_orders")
         self._warmup_orders = orders
 
     def get_warmup_positions(self) -> dict[Instrument, Position]:
@@ -995,6 +1017,7 @@ class StrategyContext(IStrategyContext):
     # :: ITransferManager delegation methods ::
     @check_transfer_manager
     def transfer_funds(self, from_exchange: str, to_exchange: str, currency: str, amount: float) -> str:
+        self._assert_not_fit_thread("transfer_funds")
         assert self._transfer_manager is not None
         return self._transfer_manager.transfer_funds(from_exchange, to_exchange, currency, amount)
 

@@ -31,7 +31,7 @@ import uuid
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
-from qubx.core.basics import Instrument, ITimeProvider, Signal
+from qubx.core.basics import Instrument, ITimeProvider, Position, Signal
 from qubx.core.fit_executor import FitCycleState
 from qubx.core.helpers import process_schedule_spec
 
@@ -74,10 +74,13 @@ def _denied(name: str, hint: str = "") -> Callable[..., Any]:
 
 class _FitAccountView:
     """Fit-thread view of ``ctx.account`` (IAccountViewer): the live dict/list-returning
-    accessors return shallow copies; every other member is a read and passes through."""
+    accessors return shallow copies, the position accessors route through the
+    non-materializing peek (see FitContext.get_position); every other member is a read
+    and passes through."""
 
-    def __init__(self, account: Any) -> None:
+    def __init__(self, account: Any, peek_position: Callable[[Instrument], "Position | None"]) -> None:
         self._account = account
+        self._peek_position = peek_position
 
     def get_positions(self, exchange: str | None = None) -> dict:
         return dict(self._account.get_positions(exchange))
@@ -94,6 +97,22 @@ class _FitAccountView:
 
     def get_leverages(self, exchange: str | None = None) -> dict:
         return dict(self._account.get_leverages(exchange))
+
+    def get_position(self, instrument: Instrument) -> "Position | None":
+        return self._peek_position(instrument)
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return self._peek_position(instrument).leverage  # type: ignore[union-attr]
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        notional = self._peek_position(instrument).max_notional  # type: ignore[union-attr]
+        return notional if notional is not None else float("inf")
+
+    def get_margin_mode(self, instrument: Instrument) -> Any:
+        return self._peek_position(instrument).margin_mode  # type: ignore[union-attr]
+
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        return self._peek_position(instrument).adl_level  # type: ignore[union-attr]
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._account, name)
@@ -113,7 +132,43 @@ class FitContext(ITimeProvider):
         # concrete MarketManager (always constructed by StrategyContext) — carries the
         # snapshot-mode read impls (_ohlc/_ohlc_pd/_quote)
         self._market_manager = context._market_data_provider  # type: ignore[attr-defined]
-        self._account_view = _FitAccountView(context.account)
+        self._account_view = _FitAccountView(context.account, self._peek_position)
+
+    def _peek_position(self, instrument: Instrument) -> "Position | None":
+        """Non-materializing position read. The real ``get_position`` INSERTS an empty
+        Position into the live account dict for a never-traded instrument — a fit-thread
+        write racing the ProcessorThread's iteration of the same dict. Read the C-atomic
+        dict copy instead and hand out a detached empty Position (same consumer
+        semantics, never inserted)."""
+        if (pos := self._context.get_positions().get(instrument)) is not None:
+            return pos
+        if instrument.exchange not in self._context.exchanges:
+            return None
+        return Position(instrument=instrument)
+
+    def get_position(self, instrument: Instrument) -> "Position | None":
+        return self._peek_position(instrument)
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return self._peek_position(instrument).leverage  # type: ignore[union-attr]
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        notional = self._peek_position(instrument).max_notional  # type: ignore[union-attr]
+        return notional if notional is not None else float("inf")
+
+    def get_margin_mode(self, instrument: Instrument) -> Any:
+        return self._peek_position(instrument).margin_mode  # type: ignore[union-attr]
+
+    def get_adl_level(self, instrument: Instrument) -> int | None:
+        return self._peek_position(instrument).adl_level  # type: ignore[union-attr]
+
+    def is_trading_allowed(self, instrument: Instrument) -> bool:
+        """The real call EXECUTES a queued ``wait_for_change`` removal in place (order
+        cancels, position close, commit) — never from the fit thread. Answer membership
+        only; the ProcessorThread performs the removal on its own next call."""
+        _um = self._context._universe_manager  # type: ignore[attr-defined]
+        entry = _um._removal_queue.get(instrument)
+        return not (entry is not None and entry[0] == "wait_for_change")
 
     # ------------------------------------------------------------------
     # recorded mutations — recorded on FitCycleState, replayed at FitCommit
@@ -253,7 +308,10 @@ class FitContext(ITimeProvider):
     commit = _denied("commit", "pending operations are committed at the FitCommit")
     configure_stale_data_detection = _denied("configure_stale_data_detection")
     update_base_subscription = _denied("update_base_subscription", "framework-internal")
-    get_market_data_cache = _denied("get_market_data_cache", "use ctx.ohlc / ctx.get_cached_market_data")
+    get_market_data_cache = _denied("get_market_data_cache", "use ctx.ohlc")
+    # the live GenericSeries is appended to WITHOUT the series lock — not readable
+    # from the fit thread
+    get_cached_market_data = _denied("get_cached_market_data", "use ctx.ohlc or an aux reader")
     # framework lifecycle / plumbing
     start = _denied("start")
     stop = _denied("stop")
@@ -300,7 +358,6 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "persistence",
     # time & market data reads (ohlc/ohlc_pd/quote are copy-reads above)
     "time",
-    "get_cached_market_data",
     "get_aux_reader",
     "get_aux_data_storage",
     "get_instruments",
@@ -309,10 +366,11 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "instruments",
     "get_min_size",
     # account views returning scalars / single objects / fresh reports
+    # (get_position and its four derivatives are explicit non-materializing
+    # methods above — the real get_position writes into the live positions dict)
     "get_total_capital",
     "get_base_currency",
     "get_balance",
-    "get_position",
     "find_order_by_id",
     "find_order_by_client_id",
     "position_report",
@@ -320,10 +378,6 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "get_net_leverage",
     "get_gross_leverage",
     "get_fees_calculator",
-    "get_max_instrument_leverage",
-    "get_max_instrument_notional",
-    "get_margin_mode",
-    "get_adl_level",
     "get_available_margin",
     "get_total_initial_margin",
     "get_total_maint_margin",
@@ -338,7 +392,8 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "auto_subscribe",
     "get_event_schedule",
     "is_fitted",
-    "is_trading_allowed",
+    # (is_trading_allowed is an explicit method above — the real one can execute a
+    # queued removal in place)
     # blacklist reads
     "is_blacklisted",
     "filter_blacklisted",

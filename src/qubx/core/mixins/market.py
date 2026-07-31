@@ -69,10 +69,11 @@ class CachedMarketDataHolder(IMarketDataCache):
         self._last_bar.pop(instrument, None)
 
     def remove(self, instrument: Instrument) -> None:
-        self._ohlcvs.pop(instrument, None)
-        self._last_bar.pop(instrument, None)
-        self._updates.pop(instrument, None)
-        self._generic_series.pop(instrument, None)
+        with self._series_lock:
+            self._ohlcvs.pop(instrument, None)
+            self._last_bar.pop(instrument, None)
+            self._updates.pop(instrument, None)
+            self._generic_series.pop(instrument, None)
 
     def set_state_from(self, other: "IMarketDataCache", instruments: list[Instrument] | None = None) -> None:
         """
@@ -130,6 +131,16 @@ class CachedMarketDataHolder(IMarketDataCache):
     def _get_ohlcv_series(
         self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
     ) -> OHLCV:
+        with self._series_lock:
+            return self._get_ohlcv_series_unlocked(instrument, timeframe, max_size)
+
+    def _get_ohlcv_series_unlocked(
+        self, instrument: Instrument, timeframe: str | td_64 | None = None, max_size: float | int = np.inf
+    ) -> OHLCV:
+        # Locked wrapper above: this can lazily CREATE a series (dict insert + resample
+        # from the live basis), and it is reachable from the fit thread via internal
+        # real-ctx reads (e.g. get_min_size → quote → cache fallback) — an unlocked
+        # create would race the ProcessorThread's locked iteration of the same dicts.
         if timeframe is None:
             tf = self.default_timeframe
         elif isinstance(timeframe, str):

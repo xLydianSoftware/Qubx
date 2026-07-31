@@ -355,10 +355,14 @@ class TestWarmupService:
         mock_handler.warmup = AsyncMock()
         warmup_service._handler_factory.get_handler = MagicMock(return_value=mock_handler)
 
-        # Mock the submit method to simulate timeout
+        # Mock the submit method to simulate timeout, keeping the future for assertions
+        futures = []
+
         def submit_with_timeout(coro):
+            coro.close()  # avoid "coroutine was never awaited" warnings from the mock
             future = MagicMock()
             future.result = MagicMock(side_effect=TimeoutError("Warmup timed out"))
+            futures.append(future)
             return future
 
         mock_async_thread_loop.submit = submit_with_timeout
@@ -369,8 +373,11 @@ class TestWarmupService:
                 with pytest.raises(TimeoutError, match="Warmup timed out"):
                     warmup_service.execute_warmup(warmups)
 
-        # Should log timeout error
+        # Should log timeout error AND cancel the gather so abandoned warmup coroutines
+        # can't keep streaming stale history after the caller degrades to swap-anyway
         mock_logger.error.assert_called()
+        assert len(futures) == 1
+        futures[0].cancel.assert_called_once()
 
     def test_group_warmups_by_type_and_period(self, warmup_service, mock_instruments, mock_async_thread_loop):
         """Test that warmups are properly grouped by data type and period."""

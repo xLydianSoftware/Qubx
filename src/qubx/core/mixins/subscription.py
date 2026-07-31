@@ -133,12 +133,16 @@ class SubscriptionManager(ISubscriptionManager):
 
         _warmups = self._collect_warmups(plan)
 
-        if self._warmup_worker is None or not _warmups:
-            # - simulation, or nothing to warm: synchronous warmup + swap (today's path)
+        if self._warmup_worker is None or (not _warmups and not self.is_warming_up):
+            # - simulation, or nothing to warm AND no deferred commit in flight:
+            #   synchronous warmup + swap (today's path)
             self._run_warmup(_warmups)
             self._apply_swap(plan)
             return
 
+        # A no-warmup commit must still queue behind an in-flight deferred commit:
+        # applying it synchronously would let the OLDER deferred plan land afterwards and
+        # re-subscribe (current ∪ added − removed at apply time) what this one removed.
         with self._warmup_inflight_lock:
             self._warmup_inflight += 1
         self._warmup_worker.submit(partial(self._warmup_and_post_swap, _warmups, plan))

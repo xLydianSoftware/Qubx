@@ -95,12 +95,25 @@ class FitCycleState:
     def record(self, op: Callable[[], None]) -> None:
         """Record a deferred ctx mutation for ProcessorThread replay at the commit."""
         with self._lock:
+            self._assert_armed()
             self._ops.append(op)
 
     def buffer_signals(self, signals: list[Signal]) -> None:
         """Buffer fit-emitted signals; drained into the normal pipeline at the commit."""
         with self._lock:
+            self._assert_armed()
             self._signals.extend(signals)
+
+    def _assert_armed(self) -> None:
+        # A FitContext leaked out of its fit (e.g. `self._ctx = ctx` in on_fit, used from
+        # a later handler) would otherwise record silently — wiped by the next begin(),
+        # or injected into an unrelated fit's commit. Legitimate recording only ever
+        # happens on the fit worker thread while its fit is in flight.
+        if self._thread_ident is None or self._thread_ident != threading.get_ident():
+            raise RuntimeError(
+                "FitContext used outside its fit cycle — mutations are only recordable "
+                "on the fit thread while its fit runs; use the ctx passed to your handler"
+            )
 
 
 class SingleThreadWorker:

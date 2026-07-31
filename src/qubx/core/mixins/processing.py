@@ -1170,8 +1170,8 @@ class ProcessingManager(IProcessingManager):
         """
         if not self._is_ready():
             return
-        # Live thread mode hands the fit body to the StrategyFitThread. Simulation
-        # (and inline mode, the default) takes today's path below, unchanged.
+        # Live thread mode (the default) hands the fit body to the StrategyFitThread.
+        # Simulation — and live inline mode — takes the synchronous path below, unchanged.
         if not self._is_simulation and self._fit_executor_mode == FitExecutorMode.THREAD:
             self._submit_threaded_fit(data)
             return
@@ -1226,13 +1226,17 @@ class ProcessingManager(IProcessingManager):
         raise, framework raise) so the ``_fit_is_running`` gate can never be stranded —
         mirrors the inline path's outer-finally discipline.
         """
-        fit_ctx = FitContext(self._context, self._fit_state)
-        self._fit_state.begin(threading.get_ident())
         _t_start = time.monotonic()
-        _deadline_timer = threading.Timer(self._fit_soft_deadline_s, self._warn_fit_soft_deadline)
-        _deadline_timer.daemon = True
-        _deadline_timer.start()
+        _deadline_timer: threading.Timer | None = None
         try:
+            # Everything from here — including proxy construction and the timer start
+            # (Timer.start can raise "can't start new thread" under resource pressure) —
+            # is inside the try, so the finally's commit post can never be skipped.
+            fit_ctx = FitContext(self._context, self._fit_state)
+            self._fit_state.begin(threading.get_ident())
+            _deadline_timer = threading.Timer(self._fit_soft_deadline_s, self._warn_fit_soft_deadline)
+            _deadline_timer.daemon = True
+            _deadline_timer.start()
             with self._health_monitor("ctx.on_fit"):
                 try:
                     # - same pre-fit blacklist enforcement as the inline path; run against
@@ -1250,7 +1254,8 @@ class ProcessingManager(IProcessingManager):
                     )
                     logger.opt(colors=False).error(traceback.format_exc())
         finally:
-            _deadline_timer.cancel()
+            if _deadline_timer is not None:
+                _deadline_timer.cancel()
             _duration_s = time.monotonic() - _t_start
             try:
                 self._health_monitor.record_gauge("fit_duration_s", _duration_s)

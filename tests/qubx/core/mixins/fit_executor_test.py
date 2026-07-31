@@ -428,7 +428,8 @@ class TestDeferredMutationsAndSignals:
             _ = ctx.time()
             _ = ctx.ohlc(instrument, "1h", 100)
             _ = ctx.quote(instrument)
-            _ = ctx.get_cached_market_data(instrument, "trade")
+            with pytest.raises(NotImplementedError):
+                ctx.get_cached_market_data(instrument, "trade")  # live GenericSeries: denied
             positions = ctx.get_positions()
             positions["mutating-the-copy-is-safe"] = object()
             _ = ctx.get_active_targets()
@@ -536,6 +537,7 @@ class TestFitContextClassification:
         instrument = _mock_instrument()
         context.instruments = []
 
+        fit_ctx._fit_state.begin(threading.get_ident())  # recording requires an armed cycle
         fit_ctx.remove_instruments([instrument])
         fit_ctx.subscribe(DataType.TRADE, [instrument])
         fit_ctx.unsubscribe(DataType.TRADE, [instrument])
@@ -574,6 +576,8 @@ class TestStashedContextTripwires:
         ctx._universe_manager = MagicMock()
         ctx._subscription_manager = MagicMock()
         ctx._processing_manager = MagicMock()
+        ctx._trading_manager = MagicMock()
+        ctx._transfer_manager = MagicMock()
         return ctx
 
     def test_stashed_ctx_mutators_raise_from_fit_thread(self):
@@ -588,6 +592,30 @@ class TestStashedContextTripwires:
                 lambda: ctx.unsubscribe("trade"),
                 lambda: ctx.emit_signal(MagicMock()),
                 lambda: ctx.schedule("0 0 * * *", lambda c: None),
+                # full mutator surface — trading, venue config, plumbing, scheduling
+                lambda: ctx.trade(MagicMock(), 1.0),
+                lambda: ctx.submit_orders([]),
+                lambda: ctx.set_target_position(MagicMock(), 1.0),
+                lambda: ctx.set_target_leverage(MagicMock(), 1.0),
+                lambda: ctx.close_position(MagicMock()),
+                lambda: ctx.close_positions(),
+                lambda: ctx.cancel_order(order_id="x"),
+                lambda: ctx.cancel_orders(),
+                lambda: ctx.update_order(1.0, 1.0, order_id="x"),
+                lambda: ctx.settle_position(MagicMock()),
+                lambda: ctx.commit(),
+                lambda: ctx.set_warmup({}),
+                lambda: ctx.set_base_subscription("trade"),
+                lambda: ctx.set_fit_schedule("0 0 * * *"),
+                lambda: ctx.set_event_schedule("0 0 * * *"),
+                lambda: ctx.unschedule("x"),
+                lambda: ctx.delay("1m", lambda c: None),
+                lambda: ctx.set_margin_mode(MagicMock(), "cross"),
+                lambda: ctx.set_max_instrument_leverage(MagicMock(), 5.0),
+                lambda: ctx.transfer_funds("A", "B", "USDT", 1.0),
+                lambda: ctx.set_warmup_positions({}),
+                lambda: ctx.set_warmup_orders({}),
+                lambda: ctx.set_warmup_active_targets({}),
             ):
                 with pytest.raises(RuntimeError, match="outside FitContext"):
                     call()
@@ -595,6 +623,8 @@ class TestStashedContextTripwires:
             ctx._fit_state.end()
         ctx._universe_manager.set_universe.assert_not_called()
         ctx._processing_manager.emit_signal.assert_not_called()
+        ctx._trading_manager.trade.assert_not_called()
+        ctx._transfer_manager.transfer_funds.assert_not_called()
 
     def test_same_calls_pass_on_processor_thread_while_fit_runs(self):
         ctx = self._make_real_ctx_half_object()
@@ -617,6 +647,97 @@ class TestStashedContextTripwires:
         ctx = self._make_real_ctx_half_object()
         ctx.set_universe([])  # disarmed fit state: plain delegation
         ctx._universe_manager.set_universe.assert_called_once()
+
+
+class TestReviewFixes:
+    """Regression tests for the adversarial-review findings."""
+
+    def _make_fit_ctx(self, positions: dict | None = None, exchanges: list[str] | None = None):
+        context = MagicMock()
+        context.get_positions.return_value = positions if positions is not None else {}
+        context.exchanges = exchanges if exchanges is not None else ["BINANCE"]
+        return FitContext(context, FitCycleState()), context
+
+    def test_get_position_never_materializes_into_account_state(self):
+        instrument = _mock_instrument()
+        fit_ctx, context = self._make_fit_ctx(exchanges=[instrument.exchange])
+
+        pos = fit_ctx.get_position(instrument)
+        # - detached empty Position: same consumer semantics as the real materialization
+        assert pos is not None and pos.instrument is instrument
+        # - the real (inserting) get_position was never touched, on ctx nor on account
+        context.get_position.assert_not_called()
+        context.account.get_position.assert_not_called()
+        # - a second read hands out a fresh detached object — nothing was stored
+        assert fit_ctx.get_position(instrument) is not pos
+
+    def test_get_position_returns_live_position_when_present(self):
+        instrument = _mock_instrument()
+        live_pos = MagicMock()
+        fit_ctx, context = self._make_fit_ctx(positions={instrument: live_pos})
+        assert fit_ctx.get_position(instrument) is live_pos
+        context.get_position.assert_not_called()
+
+    def test_get_position_unknown_exchange_returns_none(self):
+        instrument = _mock_instrument()
+        fit_ctx, _ = self._make_fit_ctx(exchanges=["SOME_OTHER_EXCHANGE"])
+        assert fit_ctx.get_position(instrument) is None
+
+    def test_position_derivatives_read_from_peek(self):
+        instrument = _mock_instrument()
+        fit_ctx, context = self._make_fit_ctx(exchanges=[instrument.exchange])
+        assert fit_ctx.get_max_instrument_leverage(instrument) is None
+        assert fit_ctx.get_max_instrument_notional(instrument) == float("inf")
+        assert fit_ctx.get_margin_mode(instrument) is None
+        assert fit_ctx.get_adl_level(instrument) is None
+        context.get_position.assert_not_called()
+        # - the account view routes through the same peek
+        assert fit_ctx.account.get_max_instrument_notional(instrument) == float("inf")
+        context.account.get_position.assert_not_called()
+
+    def test_is_trading_allowed_answers_without_executing_removal(self):
+        instrument = _mock_instrument()
+        fit_ctx, context = self._make_fit_ctx()
+        context._universe_manager._removal_queue = {instrument: ("wait_for_change", False)}
+        assert fit_ctx.is_trading_allowed(instrument) is False
+        # - the real call would EXECUTE the queued removal (cancels/trades) — never invoked
+        context.is_trading_allowed.assert_not_called()
+
+        context._universe_manager._removal_queue = {}
+        assert fit_ctx.is_trading_allowed(instrument) is True
+        context._universe_manager._removal_queue = {instrument: ("close", False)}
+        assert fit_ctx.is_trading_allowed(instrument) is True
+
+    def test_record_outside_fit_cycle_raises(self):
+        state = FitCycleState()
+        state.begin(threading.get_ident())
+        state.end()
+        # - fit over: a leaked FitContext must fail loudly, not record into the void
+        with pytest.raises(RuntimeError, match="outside its fit cycle"):
+            state.record(lambda: None)
+        with pytest.raises(RuntimeError, match="outside its fit cycle"):
+            state.buffer_signals([MagicMock()])
+
+    def test_record_from_foreign_thread_while_armed_raises(self):
+        state = FitCycleState()
+        state.begin(threading.get_ident() + 1)  # some OTHER thread's fit is in flight
+        try:
+            with pytest.raises(RuntimeError, match="outside its fit cycle"):
+                state.record(lambda: None)
+        finally:
+            state.end()
+
+    def test_commit_posted_even_when_fitcontext_construction_raises(self, monkeypatch):
+        pm, context, channel = make_thread_pm()
+        monkeypatch.setattr(
+            "qubx.core.mixins.processing.FitContext",
+            MagicMock(side_effect=RuntimeError("boom at proxy construction")),
+        )
+        pm._handle_fit(None, "fit", (None, T0))
+        # - the pre-fit framework raise still posts the FitCommit: gate clears, bot keeps fitting
+        drain_until_committed(pm, channel)
+        assert pm._fit_is_running is False
+        pm._strategy.on_fit.assert_not_called()
 
 
 class TestCtxFlags:
@@ -725,6 +846,39 @@ class TestDeferredSubscriptionCommit:
         dp.subscribe.assert_called_once_with(DataType.TRADE, {instrument}, reset=True)
         assert sm.is_warming_up is False
         assert channel._queue.empty()
+
+    def test_no_warmup_commit_queues_behind_inflight_deferred_commit(self):
+        """A pure-removal commit must NOT jump ahead of an in-flight deferred commit:
+        applied synchronously, the older deferred plan would land afterwards and
+        re-subscribe (current ∪ added − removed at apply time) what the removal removed."""
+        sm, dp, channel = self._make_sm(is_simulation=False)
+        instrument = _mock_instrument()
+        sub = str(DataType.OHLC["1h"])
+        sm.set_warmup({sub: "30d"})
+
+        release = threading.Event()
+        dp.warmup.side_effect = lambda configs: release.wait(5.0)
+
+        sm.subscribe(sub, [instrument])
+        sm.commit()  # deferred: warmup in flight on the WarmupThread
+        assert sm.is_warming_up is True
+
+        sm.unsubscribe(sub, [instrument])
+        sm.commit()  # pure removal, no warmup — must still queue behind the first
+        dp.subscribe.assert_not_called()  # nothing applied synchronously
+
+        release.set()
+        # - both swaps ride the channel in submission order
+        apply_first = self._receive_swap(channel)
+        apply_first()
+        dp.subscribe.assert_called_once_with(sub, {instrument}, reset=True)
+
+        dp.get_subscribed_instruments.return_value = [instrument]
+        apply_second = self._receive_swap(channel)
+        apply_second()
+        # - the LAST intent (removal) wins: final swap unsubscribes the instrument
+        dp.subscribe.assert_called_with(sub, set(), reset=True)
+        assert sm.is_warming_up is False
 
     def test_live_commit_defers_swap_until_warmup_completes(self):
         sm, dp, channel = self._make_sm(is_simulation=False)
