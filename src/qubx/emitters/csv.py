@@ -17,7 +17,7 @@ from qubx import logger
 from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer
 from qubx.emitters.base import BaseMetricEmitter
-from qubx.utils.ntp import time_now
+from qubx.utils.clock import time_now
 
 
 class CSVMetricEmitter(BaseMetricEmitter):
@@ -79,7 +79,7 @@ class CSVMetricEmitter(BaseMetricEmitter):
             timestamp: Optional timestamp for the metric
         """
         try:
-            # Use NTP-synchronized time if no timestamp provided
+            # Use the monotonic, host-disciplined clock if no timestamp provided
             current_timestamp = timestamp if timestamp is not None else time_now()
 
             # Convert tags to string representation
