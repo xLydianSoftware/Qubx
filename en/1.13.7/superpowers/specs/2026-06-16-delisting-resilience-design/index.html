@@ -1,0 +1,1916 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Qubx - Quantitative Trading Framework">
+      
+      
+      
+        <link rel="canonical" href="https://xlydian.com/stable/superpowers/specs/2026-06-16-delisting-resilience-design/">
+      
+      
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.5">
+    
+    
+      
+        <title>Delisting resilience: don't crash or hold phantom positions on delisted instruments - Qubx</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.8608ea7d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../stylesheets/qx.extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#delisting-resilience-dont-crash-or-hold-phantom-positions-on-delisted-instruments" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Qubx" class="md-header__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Qubx
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Delisting resilience: don't crash or hold phantom positions on delisted instruments
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+
+<!-- Main navigation -->
+
+
+<div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Qubx" class="md-nav__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Qubx
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quick Start Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/configuration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Core Concepts
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Core Concepts
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/backtesting-framework/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtesting Framework
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/strategies/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategies
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/data-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/release-deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release & Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Backtesting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Backtesting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/simulations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Simulations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtest Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/scheduling/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Scheduling
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/performance-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Metrics
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Trading
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Trading
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/paper-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Paper Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/live-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Live Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/control-protocol/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Bot Control Protocol
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/risk-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Risk Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Analysis and Reporting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Analysis and Reporting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../analysis/visualization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Visualization
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../analysis/reporting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reporting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    API Reference
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            API Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/core-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Core API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/strategy-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategy API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/data-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Tutorials and Examples
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Tutorials and Examples
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/basic/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Basic
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/data-preparation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Preparation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/questdb-setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    QuestDB setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/signal-export/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Signal Export
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../connectors/creating-connectors/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Creating Connectors
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../connectors/rate-limiting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Rate Limiting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Development
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Development
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Development Setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/release/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release Process
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../about/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    About
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+        </div>
+    </div>
+</div>
+
+
+<!-- Table of contents -->
+<!-- 
+
+<div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      Problem
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#conceptual-model-two-distinct-states-do-not-conflate" class="md-nav__link">
+    <span class="md-ellipsis">
+      Conceptual model: two distinct states (do not conflate)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design" class="md-nav__link">
+    <span class="md-ellipsis">
+      Design
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-connector-capability-idataprovideris_instrument_listed" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Connector capability — IDataProvider.is_instrument_listed
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-market-gone-detection-reconciliation-on-universemanager" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. "Market gone" detection + reconciliation on UniverseManager
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+        </div>
+    </div>
+</div>
+ -->
+
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="delisting-resilience-dont-crash-or-hold-phantom-positions-on-delisted-instruments">Delisting resilience: don't crash or hold phantom positions on delisted instruments<a class="headerlink" href="#delisting-resilience-dont-crash-or-hold-phantom-positions-on-delisted-instruments" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-06-16
+<strong>Status:</strong> Design approved, pending spec review
+<strong>Repo:</strong> Qubx
+<strong>Branch:</strong> <code>feat/delisting-resilience</code></p>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>A live <code>okx.factors</code> bot crash-looped on restart and could not start. The
+warmup OHLC fetch raised:</p>
+<p><code>ccxt.base.errors.BadSymbol: okx does not have market symbol TON/USDT:USDT</code></p>
+<p>OKX had delisted the <code>TON-USDT-SWAP</code> perpetual (confirmed: the OKX public API
+returns <code>code 51001 "Instrument ID ... doesn't exist"</code> and lists no TON swap at
+all). The bot still held an open TON position. On restart:</p>
+<ol>
+<li><code>ctx.start()</code> force-adds every open position to the initial instrument set
+   (<code>core/context.py:378-380</code>), so the held-but-delisted TON instrument is
+   included in warmup.</li>
+<li><code>OhlcDataHandler.warmup()</code> (<code>connectors/ccxt/handlers/ohlc.py:80-126</code>) loops
+   over instruments calling <code>fetch_ohlcv</code> with <strong>no per-instrument error
+   handling</strong>, and <code>execute_all_warmups</code> does <code>asyncio.gather(...)</code> then
+   re-raises (<code>connectors/ccxt/warmup_service.py:111-116</code>). So one delisted
+   instrument aborts the entire warmup and the bot never starts.</li>
+</ol>
+<p>Two distinct failures: (a) warmup is not resilient to a missing market, and
+(b) the framework keeps a phantom position on an instrument that no longer
+trades, with no path to reconcile it (the normal removal path trades to flat,
+which is impossible on a gone market).</p>
+<p>The existing <code>DelistingDetector</code> (<code>core/detectors/delisting.py</code>) only handles a
+<strong>future</strong> <code>delist_date</code> within a look-ahead window. It does not cover
+"the market is already gone," and nothing consults the live exchange.</p>
+<h2 id="conceptual-model-two-distinct-states-do-not-conflate">Conceptual model: two distinct states (do not conflate)<a class="headerlink" href="#conceptual-model-two-distinct-states-do-not-conflate" title="Permanent link">&para;</a></h2>
+<p>The decision of what to do with a held position keys on <strong>tradeability — is the
+market physically there right now? — not on <code>delist_date</code>.</strong></p>
+<p><strong>A. Delisting <em>scheduled</em> (future <code>delist_date</code>, market still listed).</strong> The
+instrument is still physically tradeable; a position on it is real and
+legitimate. The correct exit is a <strong>trade to flat</strong>, which the existing
+<code>DelistingDetector</code> + <code>set_universe</code> removal + the 23:30 scheduled check already
+perform (remove from universe, <code>alter_positions</code> → close via order). This path
+is <strong>unchanged</strong> by this design, and such a position is <strong>never settled by us</strong> —
+zeroing it would silently discard a real, still-tradeable holding.</p>
+<p><strong>B. Delisting <em>already happened</em> (market gone from the exchange).</strong> You
+physically cannot hold a tradeable position anymore — the exchange has
+cash-settled it and there is no market to trade against. Only here is
+settle-in-place (<code>settle_position</code> — zero quantity, no trade) correct, because a
+closing order is impossible. This is the TON case and the new behavior here.</p>
+<table>
+<thead>
+<tr>
+<th>State</th>
+<th>Market listed?</th>
+<th><code>delist_date</code></th>
+<th>Position action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Scheduled delist</td>
+<td>yes</td>
+<td>future</td>
+<td>existing path: remove from universe, <strong>close via trade</strong></td>
+</tr>
+<tr>
+<td>Settlement overlap</td>
+<td>yes</td>
+<td>past</td>
+<td>prefer close via trade; <strong>don't settle</strong> (alert if stuck)</td>
+</tr>
+<tr>
+<td>Gone</td>
+<td><strong>no</strong></td>
+<td>any / past</td>
+<td>skip warmup/subscribe, <strong>settle in place</strong> (<code>settle_position</code>)</td>
+</tr>
+</tbody>
+</table>
+<p>The authoritative signal for state B is the <strong>live market-listing absence</strong>
+(<code>is_instrument_listed() == False</code>). A past <code>delist_date</code> is only a cheap
+first-pass hint to skip warmup/subscription; it never, on its own, authorizes
+the destructive settle (see §3).</p>
+<h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>A delisted instrument must never abort warmup or block startup.</li>
+<li>An instrument the exchange no longer lists must never be subscribed, warmed
+  up, or kept as a tradeable position.</li>
+<li>A held position on a delisted (already cash-settled) instrument is settled in
+  place (quantity 0, record retained) and reconciled to exchange truth, with an
+  operator alert.</li>
+<li>Detection is connector-agnostic at the Qubx core level; connectors supply
+  only the raw "is this listed?" fact.</li>
+<li>Backtests are completely unaffected.</li>
+</ul>
+<h2 id="non-goals">Non-goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Future-delist handling — the existing <code>DelistingDetector</code> stays as-is for
+  scheduled delistings.</li>
+<li>Broker-side listing checks (data side covers the crash and subscriptions).</li>
+<li>Retroactive cleanup of historical logs or PnL re-derivation (we trust the
+  live account-balance sync).</li>
+<li>A global config kill-switch — rejected as over-engineering; fail-open plus a
+  live-confirmed settle (§3) cover the false-positive risk.</li>
+</ul>
+<h2 id="design">Design<a class="headerlink" href="#design" title="Permanent link">&para;</a></h2>
+<p>Three layers; detection is expressed through a connector-agnostic interface and
+orchestrated by the <code>UniverseManager</code>, with each connector supplying only the
+raw listing fact.</p>
+<h3 id="1-connector-capability-idataprovideris_instrument_listed">1. Connector capability — <code>IDataProvider.is_instrument_listed</code><a class="headerlink" href="#1-connector-capability-idataprovideris_instrument_listed" title="Permanent link">&para;</a></h3>
+<p><code>python
+class IDataProvider:
+    def is_instrument_listed(self, instrument: Instrument) -&gt; bool:
+        """True if the instrument currently exists on the exchange.
+        Base default: True (unknown ⇒ assume listed; never wrongly drop)."""
+        return True</code></p>
+<ul>
+<li><strong>ccxt</strong> (<code>CcxtDataProvider</code>, <code>connectors/ccxt/data.py</code>): return <code>True</code> if
+  <code>self._exchange_manager.exchange.markets</code> is empty/not loaded (fail-open
+  against a load hiccup); otherwise
+  <code>instrument_to_ccxt_symbol(instrument) in exchange.markets</code>.</li>
+<li><strong>Simulator / backtester:</strong> inherits the base → always <code>True</code> → backtests
+  unaffected.</li>
+<li>Lives on <code>IDataProvider</code> only. Brokers are out of scope (YAGNI).</li>
+</ul>
+<h3 id="2-market-gone-detection-reconciliation-on-universemanager">2. "Market gone" detection + reconciliation on <code>UniverseManager</code><a class="headerlink" href="#2-market-gone-detection-reconciliation-on-universemanager" title="Permanent link">&para;</a></h3>
+<p>This handles <strong>only state B (market gone)</strong>. State A (future/scheduled
+delisting) is left entirely to the existing <code>filter_delistings</code> path, which
+still runs and still closes positions via trade.</p>
+<p>The authoritative "gone" signal is the <strong>live market-listing absence</strong>. A
+<strong>past</strong> <code>delist_date</code> is a cheap offline hint usable for <em>exclusion</em> (skip
+warmup/subscription), but a <strong>future</strong> <code>delist_date</code> is explicitly <em>not</em> gone.
+No standalone component, no callables threaded through signatures — the manager
+reaches its own dependencies.</p>
+<p>```python
+def _is_market_gone(self, instrument: Instrument) -&gt; bool:
+    """State B only: the market no longer exists / is untradeable.
+    A future delist_date (state A) is NOT gone."""
+    dp = self._data_provider_for(instrument)
+    if dp is not None:
+        return not dp.is_instrument_listed(instrument)   # authoritative
+    # No live signal (e.g. connector can't tell): fall back to metadata,
+    # but ONLY a past delist_date counts as gone — never a future one.
+    d = instrument.delist_date
+    return d is not None and to_timestamp(d) &lt;= self._time_provider.time()</p>
+<h1 id="excludes-gone-instruments-and-settles-held-positions-on-them-3-guard">Excludes gone instruments and settles held positions on them (§3 guard).<a class="headerlink" href="#excludes-gone-instruments-and-settles-held-positions-on-them-3-guard" title="Permanent link">&para;</a></h1>
+<h1 id="returns-the-kept-still-tradeable-instruments-runs-in-addition-to-the">Returns the KEPT (still-tradeable) instruments. Runs IN ADDITION to the<a class="headerlink" href="#returns-the-kept-still-tradeable-instruments-runs-in-addition-to-the" title="Permanent link">&para;</a></h1>
+<h1 id="existing-filter_delistings-state-a-not-instead-of-it">existing filter_delistings (state A), not instead of it.<a class="headerlink" href="#existing-filter_delistings-state-a-not-instead-of-it" title="Permanent link">&para;</a></h1>
+<p>def _drop_gone(self, instruments: list[Instrument]) -&gt; list[Instrument]:
+    gone = [i for i in instruments if self._is_market_gone(i)]
+    for i in gone:
+        self._settle_if_held(i)        # see §3 (live-confirmed settle only)
+    if gone:
+        self._notify_gone(gone)
+    gone_set = set(gone)
+    return [i for i in instruments if i not in gone_set]
+```</p>
+<ul>
+<li><code>_data_provider_for(instrument)</code> resolves the per-exchange <code>IDataProvider</code>
+  the manager already has access to via the context (<code>ctx._data_providers</code>).</li>
+<li><code>set_universe</code> calls <code>_drop_gone(...)</code> at the <strong>top, BEFORE</strong> the existing
+  <code>self._delisting_detector.filter_delistings(...)</code> (<code>core/mixins/universe.py:78</code>),
+  before <code>__do_add_instruments</code>/subscribe (<code>:90</code>, <code>:215</code>). <strong>Order matters:</strong>
+  <code>filter_delistings</code> removes anything with <code>delist_date &lt;= now + check_days</code>
+  (including already-past dates), so if it ran first it would strip a gone
+  instrument that <em>also</em> carries a <code>delist_date</code> before <code>_drop_gone</code> could settle
+  its held position (and on the empty-<code>prev_set</code> startup path the removal branch
+  wouldn't fire either) — leaving the phantom un-settled. Running <code>_drop_gone</code>
+  first settles the live-gone held position regardless of any <code>delist_date</code>.
+  <code>filter_delistings</code> keeps handling state A (remove → close via trade);
+  <code>_drop_gone</code> handles state
+  B (exclude → settle). One placement covers startup (<code>ctx.start()</code> →
+  <code>set_universe</code>) and every mid-run universe change.</li>
+<li>A held gone instrument is settled by <code>_drop_gone</code> even when it was never in
+  the prior universe (the restored-position startup case), since <code>_settle_if_held</code>
+  acts on the held position directly, not on <code>prev_set</code> membership.</li>
+<li><strong>Removal path also branches on "gone":</strong> <code>__do_remove_instruments</code>
+  (<code>core/mixins/universe.py:159</code>) currently closes positions via
+  <code>alter_positions</code> → trade. Add a guard: if <code>_is_market_gone(instr)</code>, settle in
+  place (§3) instead of trading — so the scheduled 23:30 delisting check and any
+  other removal can never attempt a trade on a vanished market.</li>
+</ul>
+<p>The existing <code>DelistingDetector</code> is <strong>unchanged</strong> — no <code>is_delisting</code> predicate
+is added; state B never routes through it.</p>
+<h3 id="3-settle-in-place-iaccountprocessorsettle_position">3. Settle-in-place — <code>IAccountProcessor.settle_position</code><a class="headerlink" href="#3-settle-in-place-iaccountprocessorsettle_position" title="Permanent link">&para;</a></h3>
+<p>The normal removal path (<code>UniverseManager.__do_remove_instruments</code> →
+<code>alter_positions</code> → trade to flat) is impossible on a gone market, and there's
+no public way to flatten a position without trading. Rather than delete the
+position record (which would lose realized PnL, average price, funding history),
+we <strong>zero the quantity in place</strong> so the record — and a normally-closed position
+— look identical (<code>is_open()</code> is <code>abs(quantity) &gt;= lot_size</code>, so qty 0 ⇒ closed).</p>
+<p>```python</p>
+<h1 id="corebasicspy-position">core/basics.py — Position<a class="headerlink" href="#corebasicspy-position" title="Permanent link">&para;</a></h1>
+<p>def flatten(self) -&gt; None:
+    """Mark the position flat WITHOUT trading: zero quantity and the derived
+    market values; keep r_pnl, average price, cumulative funding, etc.
+    Distinct from reset(), which also wipes r_pnl."""
+    self.quantity = 0.0
+    self.market_value = 0.0
+    self.market_value_funds = 0.0
+    self.pnl = self.r_pnl            # unrealized is 0 at qty 0</p>
+<h1 id="coreinterfacespy-iaccountprocessor">core/interfaces.py — IAccountProcessor<a class="headerlink" href="#coreinterfacespy-iaccountprocessor" title="Permanent link">&para;</a></h1>
+<p>def settle_position(self, instrument: Instrument) -&gt; None:
+    """Flatten a held position in place (no trade) for a delisted/settled
+    market the exchange has already cash-settled."""
+```</p>
+<p><code>_settle_if_held(instrument)</code>:
+- if no open position → just ensure it's unsubscribed / out of the universe;
+- if a position is held → <strong>settle only on a live-confirmed gone market.</strong>
+  Concretely, <code>settle_position</code> is allowed only when the per-exchange data
+  provider exists and reports the instrument <strong>absent from a loaded, non-empty
+  market list</strong> (<code>is_instrument_listed() == False</code> with markets loaded). In any
+  other case — a past <code>delist_date</code> but the market still lists it (settlement
+  overlap, where a reduce-only close may still be possible), no live signal
+  available, or markets empty/unloaded (fail-open) — we <strong>do not settle</strong>; we
+  <strong>emit a "needs manual review" alert</strong> and leave the position for the existing
+  close-via-trade path or an operator. We never flatten a position whose
+  delisting has not actually happened.
+  - <em>Optional hardening (not required for v1):</em> protect against a <em>partial</em>
+    market load by comparing the current market count against the connector's
+    last-known-good count and skipping the settle on a large unexpected drop.</p>
+<p>The settled position stays visible in <code>get_positions()</code> with qty 0 and its
+realized PnL / entry / funding intact — identical to a normally-closed position,
+so logs, metrics, and reporting are unaffected. Capital stays correct because
+the live account-balance sync is authoritative (the settled value is already in
+the quote-currency balance) and a qty-0 position contributes zero market value.</p>
+<h3 id="3b-eager-markets-load-before-the-first-set_universe">3b. Eager markets load before the first <code>set_universe</code><a class="headerlink" href="#3b-eager-markets-load-before-the-first-set_universe" title="Permanent link">&para;</a></h3>
+<p><code>_is_market_gone</code> is only authoritative if the connector's market list is
+loaded. The ccxt provider loads <code>exchange.markets</code> lazily (on first
+subscription), and in <strong>paper mode</strong> there is no live account processor to
+eager-load them — so at <code>ctx.start()</code> → <code>set_universe</code> the markets are empty,
+<code>is_instrument_listed</code> fail-opens to <code>True</code>, and a delisted held position is
+NOT settled (it slips into the live subscription and only fails there). This was
+found via a local restart reproduction; unit tests missed it because they mock
+<code>is_instrument_listed</code>.</p>
+<p>Fix: add a lifecycle <code>IDataProvider.start()</code> (base no-op; pairs with the
+existing <code>close()</code>). The ccxt impl synchronously loads markets
+(<code>self._loop.submit(exchange.load_markets()).result()</code>, wrapped so a transient
+failure logs and continues — fail-open preserved). <code>StrategyContext.start()</code>
+calls <code>data_provider.start()</code> for every provider <strong>before</strong> the initial
+<code>set_universe</code> (mirroring the existing <code>close()</code> shutdown loop). With markets
+loaded, <code>_drop_gone</code> settles the delisted position in place at startup and
+excludes it before any subscription.</p>
+<h3 id="4-connector-side-warmup-guard-the-actual-crash-fix">4. Connector-side warmup guard (the actual crash fix)<a class="headerlink" href="#4-connector-side-warmup-guard-the-actual-crash-fix" title="Permanent link">&para;</a></h3>
+<p>The warmup crash happens in the runner's warmup pass, <strong>before</strong> the live
+<code>UniverseManager</code> exists, so the manager cannot prevent it. The fix is local
+and connector-appropriate: in <code>OhlcDataHandler.warmup()</code>
+(<code>connectors/ccxt/handlers/ohlc.py</code>), per instrument:</p>
+<ul>
+<li>skip when <code>not self._data_provider.is_instrument_listed(instrument)</code>
+  (log a warning, continue);</li>
+<li>wrap the fetch in <code>try/except</code> catching <code>BadSymbol</code>/<code>NotSupported</code> (and
+  generally per-instrument failures) → log + continue, so no single instrument
+  can abort <code>asyncio.gather</code>.</li>
+</ul>
+<p>Other connectors mirror the same skip in their own warmup handlers.</p>
+<h3 id="responsibilities-split">Responsibilities split<a class="headerlink" href="#responsibilities-split" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Warmup robustness</strong> → connector guard (§4).</li>
+<li><strong>State A (scheduled delist, still listed)</strong> → existing <code>filter_delistings</code> +
+  removal path: remove from universe, <strong>close via trade</strong>. Unchanged.</li>
+<li><strong>State B (market gone) + phantom-position lifecycle</strong> → <code>UniverseManager</code>
+  (§2–3): exclude + settle in place (live-confirmed).</li>
+<li><strong>No runner changes, no new component, no callables, no global toggle.</strong></li>
+</ul>
+<h3 id="fail-safe-alerting">Fail-safe &amp; alerting<a class="headerlink" href="#fail-safe-alerting" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>Fail-open everywhere:</strong> if a connector can't produce a confident listed-set
+  (<code>is_instrument_listed</code> returns base <code>True</code>, or markets failed to load),
+  nothing is treated as gone. A market-load hiccup must never nuke the universe.</li>
+<li><strong>Forget only on a live-confirmed gone market (§3):</strong> the only destructive
+  step (settling a held position to qty 0) requires the live listing signal;
+  metadata alone, settlement overlap, or no signal ⇒ no settle, manual-review alert.</li>
+<li><strong>Alert:</strong> on any gone-drop,
+  <code>ctx.notifier.notify_message("[&lt;bot&gt;] Dropped delisted (gone) instruments: TONUSDT (...)", metadata=...)</code>
+  plus a WARN log; on a guarded skip, a "needs manual review" alert. Silent
+  drops are not acceptable for a prod trading bot.</li>
+</ul>
+<h2 id="why-no-restored-state-pre-filter-is-needed-verified">Why no restored-state pre-filter is needed (verified)<a class="headerlink" href="#why-no-restored-state-pre-filter-is-needed-verified" title="Permanent link">&para;</a></h2>
+<p><code>set_universe</code> is not the only subscription path, so this was checked directly:</p>
+<ol>
+<li><strong>Universe path</strong> (<code>set_universe</code>): the delisting filter runs at the top
+   (<code>core/mixins/universe.py:78</code>) before subscribe (<code>:90</code>/<code>:215</code>); a dropped
+   instrument never reaches <code>to_add</code> → never subscribed.</li>
+<li><strong>Account poller path</strong> (<code>connectors/ccxt/account.py</code>): <code>_update_subscriptions</code>
+   (<code>:312</code>) subscribes <code>_required_instruments</code>, which is populated <strong>only from
+   exchange-reported state</strong> — <code>_update_balance</code> (<code>:367</code>) and <code>_update_positions</code>
+   (<code>:379</code>). It is <em>not</em> populated by <code>attach_positions</code> (restore just fills the
+   <code>_positions</code> dict). For a genuinely delisted instrument the exchange no
+   longer reports it, so it never enters <code>_required_instruments</code>.</li>
+</ol>
+<p>Restored positions (<code>QUBX_RESTORE</code>) flow into <code>ctx.start()</code> →
+<code>_initial_instruments</code> (<code>core/context.py:378-380</code>) → <code>set_universe</code> (path 1,
+filtered) and do <strong>not</strong> feed the account's <code>_required_instruments</code>. So the
+restored phantom is filtered before subscription on the path that handles it,
+and the account path never sees it because the exchange doesn't report it.</p>
+<p>Residual case — metadata says delisted but the exchange <em>still</em> lists it (e.g. a
+near-future <code>delist_date</code> during settlement overlap): the account poller could
+briefly subscribe it, but (a) it isn't actually gone yet so a brief
+subscription is harmless, (b) <code>set_universe</code> removal unsubscribes it, and &copy; the
+<strong>live</strong> OHLC watch handler already has per-instrument try/except
+(<code>connectors/ccxt/handlers/ohlc.py:197+</code>). Only <em>warmup</em> lacked the guard, which
+§4 fixes.</p>
+<p>Conclusion: §2 (filter at top of <code>set_universe</code>) + §4 (warmup guard) cover
+subscription without a restored-state pre-filter.</p>
+<h2 id="behavior-walkthrough-the-ton-restart-scenario">Behavior walkthrough (the TON restart scenario)<a class="headerlink" href="#behavior-walkthrough-the-ton-restart-scenario" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Bot restarts with a held TON position; OKX no longer lists TON.</li>
+<li><strong>Warmup</strong>: §4 guard skips TON (not in <code>exchange.markets</code>), warms the other
+   instruments, logs a warning, completes — no crash.</li>
+<li><strong>Live start</strong>: <code>ctx.start()</code> builds <code>_initial_instruments</code> including the
+   restored TON position → <code>set_universe(...)</code>.</li>
+<li><code>_drop_gone</code> runs at the top: <code>_is_market_gone(TON)</code> is true because the live
+   data provider reports TON absent from <code>exchange.markets</code> (the <code>delist_date</code>
+   you added is corroborating but not required, and is not what authorizes the
+   settle). <code>_settle_if_held(TON)</code>: market is live-confirmed gone and markets are
+   loaded/non-empty → <code>settle_position</code> (qty 0, r_pnl kept) + unsubscribe.
+   Notifier alert: "Dropped delisted (gone) instruments: TONUSDT".</li>
+<li>TON is absent from <code>to_add</code> → never subscribed. The bot starts with the
+   remaining live positions; capital reflects the OKX-settled balance.</li>
+</ol>
+<p>Contrast — a <em>scheduled</em> (state A) delist, e.g. TON still listed with a
+<code>delist_date</code> 2 days out: <code>_is_market_gone</code> is <strong>false</strong> (still listed), so TON
+is never settled by us. The existing <code>filter_delistings</code>/removal path closes it via
+a normal trade when its window arrives.</p>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<ul>
+<li><strong>Unit</strong><ul>
+<li><code>UniverseManager._is_market_gone</code>: live signal authoritative (listed ⇒
+  not gone even with a past <code>delist_date</code>; not-listed ⇒ gone); no data
+  provider ⇒ fall back to metadata, where a <strong>past</strong> <code>delist_date</code> ⇒ gone but
+  a <strong>future</strong> <code>delist_date</code> ⇒ not gone; fail-open (markets empty) ⇒ not gone.</li>
+<li><strong>State A is never settled:</strong> an instrument still listed with a future
+  <code>delist_date</code> is not gone and routes through the existing close-via-trade
+  path, not <code>settle_position</code>.</li>
+<li>ccxt <code>is_instrument_listed</code> against a stubbed <code>exchange.markets</code>
+  (present / absent / empty-fail-open).</li>
+<li><code>Position.flatten</code> zeroes quantity and market values but preserves <code>r_pnl</code>
+  / average price (vs <code>reset()</code> which wipes <code>r_pnl</code>); <code>settle_position</code> calls
+  it without emitting a trade; <code>is_open()</code> is false afterward.</li>
+<li><code>_settle_if_held</code> guard: live-confirmed gone ⇒ settle; past <code>delist_date</code>
+  but still listed (settlement overlap) ⇒ no settle, "needs review" alert;
+  no data provider / empty markets ⇒ no settle, alert.</li>
+<li><code>__do_remove_instruments</code> gone-branch: removing a gone instrument settles
+  in place (no trade); removing a still-listed one trades to flat as before.</li>
+</ul>
+</li>
+<li><strong>Integration</strong><ul>
+<li>Warmup with one gone instrument in the set → completes, warms the rest,
+  logs the skip, no crash (direct regression for the TON incident).</li>
+<li>Restart with a restored gone position → instrument excluded, position
+  settled (qty 0, record kept), alert emitted, bot starts; never subscribed.</li>
+<li>Restart with a still-listed instrument carrying a future <code>delist_date</code> →
+  position retained and closed via the existing trade path; not settled by us.</li>
+</ul>
+</li>
+<li><strong>Backtest guard</strong><ul>
+<li>A sim run still warms/trades everything (<code>is_instrument_listed</code> no-ops).</li>
+</ul>
+</li>
+</ul>
+<h2 id="scope">Scope<a class="headerlink" href="#scope" title="Permanent link">&para;</a></h2>
+<p><strong>In:</strong> <code>IDataProvider.is_instrument_listed</code> (+ ccxt impl), <code>UniverseManager</code>
+state-B handling (<code>_is_market_gone</code>, <code>_drop_gone</code>, <code>_settle_if_held</code>,
+<code>_data_provider_for</code>, <code>_notify_gone</code>, and the <code>__do_remove_instruments</code>
+gone-branch), <code>Position.flatten</code> + <code>IAccountProcessor.settle_position</code>, ccxt
+warmup guard, alerting, tests.</p>
+<p><strong>Out:</strong> state-A / future-delist handling (existing <code>DelistingDetector</code> +
+close-via-trade path, unchanged), broker-side listing checks, restored-state
+pre-filter (shown unnecessary), global kill-switch toggle, PnL re-derivation,
+historical-log cleanup.</p>
+<h2 id="rollout">Rollout<a class="headerlink" href="#rollout" title="Permanent link">&para;</a></h2>
+<ol>
+<li>Implement + test on <code>feat/delisting-resilience</code>; PR to Qubx <code>dev</code>.</li>
+<li>Push to <code>dev</code> → CI publishes a new qubx version (conventional commits drive
+   the version bump).</li>
+<li>Bump factors' qubx pin to the new version; rebuild the strategy release.</li>
+<li>Update the <code>okx.factors</code> bot to the new release version and restart — TON is
+   skipped in warmup and settled at start; the bot comes up clean without a
+   manual state reset.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+
+<!-- Place this tag in your head or just before your close body tag. -->
+<script async defer src="https://buttons.github.io/buttons.js"></script>
+<script src="https://code.jquery.com/jquery-3.4.1.min.js"
+    integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
+
+
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["content.code.annotate", "search.share", "content.code.copy", "navigation.top", "navigation.footer"], "search": "../../../assets/javascripts/workers/search.f8cc74c7.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.f1b6f286.min.js"></script>
+      
+        <script src="../../../javascripts/config.js"></script>
+      
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
