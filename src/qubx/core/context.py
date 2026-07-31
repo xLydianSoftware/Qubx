@@ -37,6 +37,7 @@ from qubx.core.detectors import DelistingDetector
 from qubx.core.errors import BaseErrorEvent, ErrorLevel
 from qubx.core.events import ChannelMessage
 from qubx.core.exceptions import QueueTimeout, ReadOnlyConnector, StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.fit_executor import FitCycleState, FitExecutorMode
 from qubx.core.helpers import (
     BasicScheduler,
     set_parameters_to_object,
@@ -169,6 +170,8 @@ class StrategyContext(IStrategyContext):
         rate_limiting_config: Any | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
         read_only: bool = False,
+        fit_executor: FitExecutorMode = FitExecutorMode.THREAD,
+        fit_soft_deadline_s: float = 120.0,
     ) -> None:
         self._read_only = read_only
         self._account_manager = account_manager
@@ -221,6 +224,12 @@ class StrategyContext(IStrategyContext):
         __position_gathering = self.strategy.gatherer(self)
         if __position_gathering is None:
             __position_gathering = position_gathering if position_gathering is not None else SimplePositionGatherer()
+
+        # Threaded fit: the shared token armed by the fit executor while a threaded
+        # fit is in flight. The context uses it ONLY for the stashed-ctx tripwires below
+        # (_assert_not_fit_thread) — the fit-thread policy itself lives in FitContext.
+        # Inert (a single None check) in simulation and inline mode.
+        self._fit_state = FitCycleState()
 
         self._subscription_manager = SubscriptionManager(
             time_provider=self._time_provider,
@@ -288,6 +297,9 @@ class StrategyContext(IStrategyContext):
             health_monitor=self._health_monitor,
             delisting_detector=self._delisting_detector,
             data_throttler=data_throttler,
+            fit_executor=fit_executor,
+            fit_soft_deadline_s=fit_soft_deadline_s,
+            fit_state=self._fit_state,
         )
 
         # Late-wire the processing manager into the account manager (the AM is built
@@ -693,11 +705,13 @@ class StrategyContext(IStrategyContext):
     # per-instrument venue-setting writes (IAccountConfigurator): the configured leverage and
     # margin mode reach the venue and honour read-only.
     def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        self._assert_not_fit_thread("set_max_instrument_leverage")
         if self._read_only:
             raise ReadOnlyConnector("account configuration is read-only — write rejected")
         return self._account_manager.set_max_instrument_leverage(instrument, leverage)
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
+        self._assert_not_fit_thread("set_margin_mode")
         if self._read_only:
             raise ReadOnlyConnector("account configuration is read-only — write rejected")
         return self._account_manager.set_margin_mode(instrument, mode)
@@ -760,37 +774,45 @@ class StrategyContext(IStrategyContext):
 
     # :: ITradingManager delegation ::
     def trade(self, instrument: Instrument, amount: float, price: float | None = None, time_in_force="gtc", **options):
+        self._assert_not_fit_thread("trade")
         # TODO: we need to generate target position and apply it in the processing manager
         # - one of the options is to have multiple entry levels in TargetPosition class
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
+        self._assert_not_fit_thread("submit_orders")
         return self._trading_manager.submit_orders(order_requests)
 
     def set_target_position(
         self, instrument: Instrument, target: float, price: float | None = None, **options
     ) -> Order:
+        self._assert_not_fit_thread("set_target_position")
         return self._trading_manager.set_target_position(instrument, target, price, **options)
 
     def set_target_leverage(
         self, instrument: Instrument, leverage: float, price: float | None = None, **options
     ) -> None:
+        self._assert_not_fit_thread("set_target_leverage")
         return self._trading_manager.set_target_leverage(instrument, leverage, price, **options)
 
     def close_position(self, instrument: Instrument, without_signals: bool = False) -> None:
+        self._assert_not_fit_thread("close_position")
         return self._trading_manager.close_position(instrument, without_signals)
 
     def close_positions(self, market_type: MarketType | None = None, without_signals: bool = False) -> None:
+        self._assert_not_fit_thread("close_positions")
         return self._trading_manager.close_positions(market_type, without_signals)
 
     def cancel_order(
         self, order_id: str | None = None, client_order_id: str | None = None, exchange: str | None = None
     ) -> bool:
         """Cancel a specific order synchronously."""
+        self._assert_not_fit_thread("cancel_order")
         return self._trading_manager.cancel_order(order_id=order_id, client_order_id=client_order_id, exchange=exchange)
 
     def cancel_orders(self, instrument: Instrument | None = None) -> None:
         """Cancel all orders for an instrument."""
+        self._assert_not_fit_thread("cancel_orders")
         return self._trading_manager.cancel_orders(instrument)
 
     def update_order(
@@ -804,6 +826,7 @@ class StrategyContext(IStrategyContext):
         """
         Update an existing limit order with new price and amount.
         """
+        self._assert_not_fit_thread("update_order")
         self._trading_manager.update_order(
             order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
         )
@@ -811,19 +834,35 @@ class StrategyContext(IStrategyContext):
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         return self._trading_manager.get_min_size(instrument, amount)
 
+    def _assert_not_fit_thread(self, name: str) -> None:
+        """Tripwire: a stashed real-ctx reference used inside a threaded on_fit must
+        fail loudly instead of mutating ProcessorThread-owned state from the fit thread.
+        Free everywhere else — ``is_fit_thread`` is a single None check unless a threaded
+        fit is in flight, and the FitCommit replay runs on the ProcessorThread so it
+        passes."""
+        if self._fit_state.is_fit_thread():
+            raise RuntimeError(
+                f"ctx.{name}: ctx mutation from the fit thread outside FitContext — "
+                "use the ctx passed to on_fit"
+            )
+
     # :: IUniverseManager delegation ::
     def set_universe(
         self, instruments: list[Instrument], skip_callback: bool = False, if_has_position_then: RemovalPolicy = "close"
     ):
+        self._assert_not_fit_thread("set_universe")
         return self._universe_manager.set_universe(instruments, skip_callback, if_has_position_then)
 
     def add_instruments(self, instruments: list[Instrument]):
+        self._assert_not_fit_thread("add_instruments")
         return self._universe_manager.add_instruments(instruments)
 
     def remove_instruments(self, instruments: list[Instrument], if_has_position_then: RemovalPolicy = "close"):
+        self._assert_not_fit_thread("remove_instruments")
         return self._universe_manager.remove_instruments(instruments, if_has_position_then)
 
     def settle_position(self, instrument: Instrument) -> None:
+        self._assert_not_fit_thread("settle_position")
         return self._universe_manager.settle_position(instrument)
 
     @property
@@ -849,9 +888,11 @@ class StrategyContext(IStrategyContext):
 
     # :: ISubscriptionManager delegation ::
     def subscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None):
+        self._assert_not_fit_thread("subscribe")
         return self._subscription_manager.subscribe(subscription_type, instruments)
 
     def unsubscribe(self, subscription_type: str, instruments: list[Instrument] | Instrument | None = None):
+        self._assert_not_fit_thread("unsubscribe")
         return self._subscription_manager.unsubscribe(subscription_type, instruments)
 
     def has_subscription(self, instrument: Instrument, subscription_type: str):
@@ -864,6 +905,7 @@ class StrategyContext(IStrategyContext):
         return self._subscription_manager.get_base_subscription()
 
     def set_base_subscription(self, subscription_type: str):
+        self._assert_not_fit_thread("set_base_subscription")
         return self._subscription_manager.set_base_subscription(subscription_type)
 
     def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
@@ -873,6 +915,7 @@ class StrategyContext(IStrategyContext):
         return self._subscription_manager.get_warmup(subscription_type)
 
     def set_warmup(self, configs: dict[Any, str]):
+        self._assert_not_fit_thread("set_warmup")
         return self._subscription_manager.set_warmup(configs)
 
     def set_stale_data_detection(
@@ -884,7 +927,12 @@ class StrategyContext(IStrategyContext):
         return self.initializer.get_stale_data_detection_config()
 
     def commit(self):
+        self._assert_not_fit_thread("commit")
         return self._subscription_manager.commit()
+
+    @property
+    def is_warming_up(self) -> bool:
+        return self._subscription_manager.is_warming_up
 
     @property
     def auto_subscribe(self) -> bool:
@@ -902,9 +950,11 @@ class StrategyContext(IStrategyContext):
         return self._processing_manager.process_event(event)
 
     def set_fit_schedule(self, schedule: str):
+        self._assert_not_fit_thread("set_fit_schedule")
         return self._processing_manager.set_fit_schedule(schedule)
 
     def set_event_schedule(self, schedule: str):
+        self._assert_not_fit_thread("set_event_schedule")
         return self._processing_manager.set_event_schedule(schedule)
 
     def get_event_schedule(self, event_id: str) -> str | None:
@@ -913,6 +963,10 @@ class StrategyContext(IStrategyContext):
     def is_fitted(self) -> bool:
         return self._processing_manager.is_fitted()
 
+    @property
+    def is_fitting(self) -> bool:
+        return self._processing_manager.is_fitting
+
     def trigger_fit(self) -> None:
         return self._processing_manager.trigger_fit()
 
@@ -920,25 +974,32 @@ class StrategyContext(IStrategyContext):
         return self._processing_manager.get_active_targets()
 
     def emit_signal(self, signal: Signal | list[Signal]) -> None:
+        self._assert_not_fit_thread("emit_signal")
         return self._processing_manager.emit_signal(signal)
 
     def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
+        self._assert_not_fit_thread("schedule")
         return self._processing_manager.schedule(cron_schedule, method)
 
     def unschedule(self, event_id: str) -> bool:
+        self._assert_not_fit_thread("unschedule")
         return self._processing_manager.unschedule(event_id)
 
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
+        self._assert_not_fit_thread("delay")
         return self._processing_manager.delay(duration, method)
 
     # :: IWarmupStateSaver delegation ::
     def set_warmup_positions(self, positions: dict[Instrument, Position]) -> None:
+        self._assert_not_fit_thread("set_warmup_positions")
         self._warmup_positions = positions
 
     def set_warmup_active_targets(self, active_targets: dict[Instrument, list[TargetPosition]]) -> None:
+        self._assert_not_fit_thread("set_warmup_active_targets")
         self._warmup_active_targets = active_targets
 
     def set_warmup_orders(self, orders: dict[Instrument, list[Order]]) -> None:
+        self._assert_not_fit_thread("set_warmup_orders")
         self._warmup_orders = orders
 
     def get_warmup_positions(self) -> dict[Instrument, Position]:
@@ -956,6 +1017,7 @@ class StrategyContext(IStrategyContext):
     # :: ITransferManager delegation methods ::
     @check_transfer_manager
     def transfer_funds(self, from_exchange: str, to_exchange: str, currency: str, amount: float) -> str:
+        self._assert_not_fit_thread("transfer_funds")
         assert self._transfer_manager is not None
         return self._transfer_manager.transfer_funds(from_exchange, to_exchange, currency, amount)
 

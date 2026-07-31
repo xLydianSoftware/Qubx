@@ -6,7 +6,7 @@ import pytest
 from qubx.core.basics import DataType, Instrument
 from qubx.core.interfaces import StrategyState
 from qubx.core.lookups import lookup
-from qubx.core.mixins.subscription import SubscriptionManager
+from qubx.core.mixins.subscription import SubscriptionManager, _CommitPlan
 from qubx.health.dummy import DummyHealthMonitor
 
 
@@ -115,6 +115,16 @@ class TestSubscriptionStuff:
         ]
         self.mock_broker.subscribe.assert_has_calls(expected_calls, any_order=True)
 
+    def _snapshot_plan(self) -> _CommitPlan:
+        """Snapshot the pending state into a plan exactly the way commit() does."""
+        m = self.manager
+        return _CommitPlan(
+            stream_subscriptions={s: set(i) for s, i in m._pending_stream_subscriptions.items()},
+            stream_unsubscriptions={s: set(i) for s, i in m._pending_stream_unsubscriptions.items()},
+            global_subscriptions=set(m._pending_global_subscriptions),
+            global_unsubscriptions=set(m._pending_global_unsubscriptions),
+        )
+
     def test_get_updated_subs_returns_canonically_sorted_order(self):
         """Regression: commit() iterates _get_updated_subs() and, in the backtester,
         whichever subscription type is processed LAST decides whether the instrument's
@@ -129,7 +139,7 @@ class TestSubscriptionStuff:
         self.manager._pending_global_subscriptions.add("funding_payment")
         self.manager._pending_stream_subscriptions["orderbook"].add(instrument)
         self.manager._pending_stream_unsubscriptions["trade"].add(instrument)
-        result_a = self.manager._get_updated_subs()
+        result_a = self.manager._get_updated_subs(self._snapshot_plan())
 
         # - order B: same four type strings, rebuilt from scratch in reverse insertion order
         self.manager._pending_global_subscriptions = set()
@@ -141,7 +151,7 @@ class TestSubscriptionStuff:
         self.manager._pending_stream_subscriptions["orderbook"].add(instrument)
         self.manager._pending_global_subscriptions.add("funding_payment")
         self.manager._pending_global_subscriptions.add("ohlc(1h)")
-        result_b = self.manager._get_updated_subs()
+        result_b = self.manager._get_updated_subs(self._snapshot_plan())
 
         expected = ["funding_payment", "ohlc(1h)", "orderbook", "trade"]
         assert result_a == expected

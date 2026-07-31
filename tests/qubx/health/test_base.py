@@ -9,6 +9,7 @@ import pytest
 from qubx.core.basics import CtrlChannel, Instrument, dt_64
 from qubx.core.interfaces import IMetricEmitter, ITimeProvider, LatencyMetrics
 from qubx.core.lookups import lookup
+from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.health.base import BaseHealthMonitor
 from qubx.health.dummy import DummyHealthMonitor
 
@@ -778,3 +779,49 @@ class TestBaseHealthMonitor:
         assert (instrument1, event_type1) not in monitor._active_subscriptions
         assert (instrument1, event_type2) in monitor._active_subscriptions
         assert (instrument2, event_type1) in monitor._active_subscriptions
+
+
+class TestGenericGauge:
+    """record_gauge — a small generic escape hatch (the FitExecutor fit-duration gauge is
+    the first consumer) for point-in-time health signals that don't warrant their own
+    ledger."""
+
+    def test_record_and_emit_gauge(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        monitor.record_gauge("fit_duration_s", 12.5)
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="fit_duration_s")
+        assert len(df) == 1
+        assert df.iloc[0]["value"] == pytest.approx(12.5)
+
+    def test_gauge_is_last_write_wins(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        monitor.record_gauge("fit_duration_s", 1.0)
+        monitor.record_gauge("fit_duration_s", 2.0)
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="fit_duration_s")
+        assert len(df) == 1
+        assert df.iloc[0]["value"] == pytest.approx(2.0)
+
+    def test_gauge_tags_are_merged_with_health_type(self) -> None:
+        time_provider = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+
+        monitor.record_gauge("custom_gauge", 3.0, tags={"exchange": "BINANCE.UM"})
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="custom_gauge")
+        assert len(df) == 1
+        assert df.iloc[0]["exchange"] == "BINANCE.UM"
+
+    def test_dummy_monitor_record_gauge_is_noop(self) -> None:
+        DummyHealthMonitor().record_gauge("x", 1.0)  # must not raise

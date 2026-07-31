@@ -1,6 +1,8 @@
 import asyncio
 import concurrent.futures
 import inspect
+import threading
+import time
 import traceback
 import uuid
 from collections import defaultdict
@@ -38,6 +40,8 @@ from qubx.core.events import (
     OrderUpdateRejectedEvent,
 )
 from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.fit_context import FitContext
+from qubx.core.fit_executor import FIT_COMMIT_EVENT, FitCommitData, FitCycleState, FitExecutorMode, SingleThreadWorker
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
 from qubx.core.interfaces import (
     IHealthMonitor,
@@ -132,7 +136,18 @@ class ProcessingManager(IProcessingManager):
     # Same-thread re-entrancy guards: on_fit/on_warmup_finished run inline on the processing
     # thread and may pump events that re-enter the trigger tail before is_on_fit_called /
     # is_on_warmup_finished_called flip (set only after the callback returns).
+    # With fit_executor="thread" the fit gate extends from re-entrancy guard to concurrency
+    # guard: it stays True from submission until the FitCommit is applied — but in thread
+    # mode it only drops overlapping fit TRIGGERS; strategy callbacks are delivered
+    # concurrently with the running fit (handlers consult ctx.is_fitting).
     _fit_is_running: bool = False
+    # - Threaded fit executor state. Class-level defaults keep half-constructed test
+    #   objects (ProcessingManager.__new__) on the inline path; __init__ always overrides
+    #   _fit_state with a per-instance token.
+    _fit_state: FitCycleState = FitCycleState()
+    _fit_executor: SingleThreadWorker | None = None
+    _fit_executor_mode: FitExecutorMode = FitExecutorMode.INLINE
+    _fit_soft_deadline_s: float = 120.0
     _warmup_finished_is_running: bool = False
     _fails_counter: int = 0
     _is_simulation: bool
@@ -174,6 +189,9 @@ class ProcessingManager(IProcessingManager):
         delisting_detector: DelistingDetector,
         exporter: ITradeDataExport | None = None,
         data_throttler: InstrumentThrottler | None = None,
+        fit_executor: FitExecutorMode = FitExecutorMode.THREAD,
+        fit_soft_deadline_s: float = 120.0,
+        fit_state: FitCycleState | None = None,
     ):
         validate_account_callback_signatures(strategy)
         self._context = context
@@ -225,16 +243,35 @@ class ProcessingManager(IProcessingManager):
         self._custom_scheduled_methods = {}
         self._pending_no_quote_signals = {}
 
+        # - Threaded fit executor: live-only. Simulation ALWAYS stays inline regardless
+        #   of config — the executor is never constructed there (backtests keep today's
+        #   path exactly).
+        self._fit_state = fit_state if fit_state is not None else FitCycleState()
+        self._fit_executor_mode = (
+            FitExecutorMode.THREAD
+            if (not is_simulation and fit_executor == FitExecutorMode.THREAD)
+            else FitExecutorMode.INLINE
+        )
+        self._fit_executor = (
+            SingleThreadWorker("StrategyFitThread") if self._fit_executor_mode == FitExecutorMode.THREAD else None
+        )
+        self._fit_soft_deadline_s = fit_soft_deadline_s
+
         # - schedule daily delisting check at 23:30 (end of day)
         self._scheduler.schedule_event("30 23 * * *", "delisting_check")
 
     def set_fit_schedule(self, schedule: str) -> None:
-        logger.info(f"Setting fit schedule to {schedule}")
         rule = process_schedule_spec(schedule)
         if rule.get("type") != "cron":
             raise ValueError("Only cron type is supported for fit schedule")
+        self._apply_fit_schedule(rule["schedule"], schedule)
+
+    def _apply_fit_schedule(self, cron_schedule: str, original_spec: str) -> None:
+        # - seam shared with FitContext.set_fit_schedule (validated + recorded on the fit
+        #   thread, applied here at the FitCommit)
+        logger.info(f"Setting fit schedule to {original_spec}")
         self._scheduler.unschedule_event("fit")
-        self._scheduler.schedule_event(rule["schedule"], "fit")
+        self._scheduler.schedule_event(cron_schedule, "fit")
 
     def set_event_schedule(self, schedule: str) -> None:
         logger.info(f"Setting event schedule to {schedule}")
@@ -269,13 +306,17 @@ class ProcessingManager(IProcessingManager):
         # Generate unique event ID for this custom schedule
         event_id = f"custom_schedule_{str(uuid.uuid4()).replace('-', '_')}"
 
+        self._register_schedule(event_id, rule["schedule"], method)
+        return event_id
+
+    def _register_schedule(self, event_id: str, cron_schedule: str, method: Callable) -> None:
+        # - seam shared with FitContext.schedule (validated + recorded on the fit thread
+        #   with a pre-generated event id, applied here at the FitCommit)
         # Store the method reference
         self._custom_scheduled_methods[event_id] = method
 
         # Schedule the event
-        self._scheduler.schedule_event(rule["schedule"], event_id)
-
-        return event_id
+        self._scheduler.schedule_event(cron_schedule, event_id)
 
     def unschedule(self, event_id: str) -> bool:
         return self._scheduler.unschedule_event(event_id)
@@ -294,13 +335,17 @@ class ProcessingManager(IProcessingManager):
         # Generate unique event ID
         event_id = f"delay_{str(uuid.uuid4()).replace('-', '_')}"
 
+        self._register_delay(event_id, duration, method)
+        return event_id
+
+    def _register_delay(self, event_id: str, duration: str, method: Callable) -> None:
+        # - seam shared with FitContext.delay (recorded on the fit thread with a
+        #   pre-generated event id, applied here at the FitCommit)
         # Store the method reference
         self._custom_scheduled_methods[event_id] = method
 
         # Schedule the delayed event
         self._scheduler.delay(duration, event_id)
-
-        return event_id
 
     def trigger_fit(self) -> None:
         """Run on_fit once, on demand. Schedules a one-off event that invokes the
@@ -411,6 +456,12 @@ class ProcessingManager(IProcessingManager):
     def is_fitted(self) -> bool:
         return self._context._strategy_state.is_on_fit_called
 
+    @property
+    def is_fitting(self) -> bool:
+        # - inline: True during the inline on_fit call; thread: True from submission
+        #   until the FitCommit is applied (surfaced to strategies as ctx.is_fitting)
+        return self._fit_is_running
+
     def __process_data(self, instrument: Instrument, d_type: str, data: Any, is_historical: bool) -> bool:
         if (
             not is_historical
@@ -477,8 +528,15 @@ class ProcessingManager(IProcessingManager):
         ):
             return False
 
-        # - if strategy still fitting - skip on_event call
-        if self._fit_is_running or self._warmup_finished_is_running:
+        # - warmup-finished still running (inline): skip on_event call
+        if self._warmup_finished_is_running:
+            return False
+
+        # - strategy still fitting: inline mode (and simulation) skips the strategy
+        #   callbacks — the fit owns the thread, this is a re-entrancy guard. Thread
+        #   mode DELIVERS instead: handlers run here on the ProcessorThread concurrently
+        #   with the fit on the StrategyFitThread, and consult ctx.is_fitting.
+        if self._fit_is_running and self._fit_executor_mode != FitExecutorMode.THREAD:
             return False
 
         signals: list[Signal] = []
@@ -1112,6 +1170,11 @@ class ProcessingManager(IProcessingManager):
         """
         if not self._is_ready():
             return
+        # Live thread mode (the default) hands the fit body to the StrategyFitThread.
+        # Simulation — and live inline mode — takes the synchronous path below, unchanged.
+        if not self._is_simulation and self._fit_executor_mode == FitExecutorMode.THREAD:
+            self._submit_threaded_fit(data)
+            return
         # The flag reset lives in an outer finally so no raise (finalize_ohlc or the health
         # monitor) can strand it True — a stranded flag silently disables the strategy
         # forever; on a raise is_on_fit_called stays False, so the next tick retries the fit.
@@ -1124,6 +1187,127 @@ class ProcessingManager(IProcessingManager):
             self.__invoke_on_fit()
         finally:
             self._fit_is_running = False
+
+    def _submit_threaded_fit(self, data: tuple[dt_64 | None, dt_64]) -> None:
+        """Thread-mode fit (live only): submit the fit body to the single-thread
+        fit worker and return immediately, so the ProcessorThread keeps draining the
+        channel (order/account applies, market-cache updates, AM ticks, schedules)
+        while the fit computes.
+
+        ``_fit_is_running`` extends from re-entrancy guard to concurrency guard: it stays
+        True from submission until the FitCommit is applied, dropping overlapping fit
+        triggers. Unlike the inline path it does NOT gate strategy callbacks — events are
+        delivered concurrently with the running fit (handlers consult ctx.is_fitting).
+        """
+        if self._fit_is_running:
+            logger.warning(f"[{self._strategy_name}] :: on_fit trigger dropped — previous fit is still running")
+            return
+        assert self._fit_executor is not None  # constructed with the "thread" mode
+        # - the commit rides the same channel the ProcessorThread drains
+        channel = self._context._data_providers[0].channel
+        self._fit_is_running = True
+        try:
+            # - cache finalization mutates ctx state: keep it on the ProcessorThread (fast)
+            self._cache.finalize_ohlc_for_instruments(data[1], self._context.instruments)
+            self._fit_executor.submit(lambda: self._run_fit_off_thread(channel))
+        except Exception:
+            # - nothing was submitted, so no commit will ever clear the gate — mirror the
+            #   inline outer-finally discipline here
+            self._fit_is_running = False
+            raise
+
+    def _run_fit_off_thread(self, channel: Any) -> None:
+        """Fit body on the StrategyFitThread: computes and RECORDS, never mutates ctx.
+
+        The strategy receives a FitContext proxy, which centralizes the fit-thread
+        concurrency policy: mutations (set_universe/subscribe/schedule/emit_signal/...)
+        are recorded on the fit-cycle state, live views come back as copies, unclassified
+        access fails loudly. The FitCommit is posted in the finally on EVERY path (success, strategy
+        raise, framework raise) so the ``_fit_is_running`` gate can never be stranded —
+        mirrors the inline path's outer-finally discipline.
+        """
+        _t_start = time.monotonic()
+        _deadline_timer: threading.Timer | None = None
+        try:
+            # Everything from here — including proxy construction and the timer start
+            # (Timer.start can raise "can't start new thread" under resource pressure) —
+            # is inside the try, so the finally's commit post can never be skipped.
+            fit_ctx = FitContext(self._context, self._fit_state)
+            self._fit_state.begin(threading.get_ident())
+            _deadline_timer = threading.Timer(self._fit_soft_deadline_s, self._warn_fit_soft_deadline)
+            _deadline_timer.daemon = True
+            _deadline_timer.start()
+            with self._health_monitor("ctx.on_fit"):
+                try:
+                    # - same pre-fit blacklist enforcement as the inline path; run against
+                    #   the proxy, so its force-close (remove_instruments) is recorded and
+                    #   committed with everything else.
+                    self._context._instrument_service_manager.enforce_at_fit(fit_ctx)
+                    logger.debug(
+                        f"[<y>{self.__class__.__name__}</y>] :: Invoking <g>{self._strategy_name}</g> on_fit (threaded)"
+                    )
+                    self._strategy.on_fit(fit_ctx)  # type: ignore[arg-type]
+                    logger.debug(f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> is fitted")
+                except Exception as strat_error:
+                    logger.error(
+                        f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_fit raised an exception: {strat_error}"
+                    )
+                    logger.opt(colors=False).error(traceback.format_exc())
+        finally:
+            if _deadline_timer is not None:
+                _deadline_timer.cancel()
+            _duration_s = time.monotonic() - _t_start
+            try:
+                self._health_monitor.record_gauge("fit_duration_s", _duration_s)
+            except Exception:
+                logger.exception("failed to record fit_duration_s gauge")
+            _ops, _signals = self._fit_state.end()
+            channel.send((None, FIT_COMMIT_EVENT, FitCommitData(ops=_ops, signals=_signals, duration_s=_duration_s), False))
+
+    def _warn_fit_soft_deadline(self) -> None:
+        logger.warning(
+            f"[{self._strategy_name}] :: on_fit still running after {self._fit_soft_deadline_s:.0f}s soft deadline — "
+            "event processing continues; universe/signal changes apply when the fit returns"
+        )
+
+    def _handle_fit_commit(self, instrument: Instrument | None, event_type: str, commit: FitCommitData) -> None:
+        """ProcessorThread-side atomic application of a threaded fit's outcome
+        (single-mutator invariant: the fit thread only recorded; every ctx mutation
+        happens here).
+
+        Order: replay the deferred ops (on_universe_change fires inside the replay, on
+        this thread, exactly like the inline path; a universe change's warmup is deferred
+        by the subscription commit to its background worker, so the replay stays fast and
+        the added instruments go live only after their history landed), commit any
+        remaining deferred subscriptions, then — in a finally so no replay failure can
+        strand the gate — drain fit-emitted signals into the normal pipeline, set
+        is_on_fit_called and clear _fit_is_running. Returning None hands control to
+        _run_strategy_pipeline, which processes the drained signals immediately.
+        """
+        try:
+            for op in commit.ops:
+                try:
+                    op()
+                except Exception as op_error:
+                    logger.error(f"[{self.__class__.__name__}] :: deferred fit operation failed: {op_error}")
+                    logger.opt(colors=False).error(traceback.format_exc())
+            try:
+                self._subscription_manager.commit()  # apply pending operations (mirrors __invoke_on_fit)
+            except Exception as commit_error:
+                logger.error(f"[{self.__class__.__name__}] :: post-fit subscription commit failed: {commit_error}")
+                logger.opt(colors=False).error(traceback.format_exc())
+        finally:
+            if commit.signals:
+                self._emitted_signals.extend(commit.signals)
+            self._context._strategy_state.is_on_fit_called = True
+            self._fit_is_running = False
+
+    def _handle_subscription_swap(self, instrument: Instrument | None, event_type: str, apply_swap: Callable) -> None:
+        """Apply a deferred subscription commit's swap on the ProcessorThread. Posted by
+        the SubscriptionManager's warmup worker once its fetch completed — behind the
+        fetched history on the channel, so the cache holds the history before the added
+        instruments' live streams start. The callable is error-isolated by its owner."""
+        apply_swap()
 
     def _handle_delisting_check(
         self, instrument: Instrument | None, event_type: str, data: tuple[dt_64 | None, dt_64]

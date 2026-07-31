@@ -43,6 +43,9 @@ class DummyHealthMonitor(IHealthMonitor):
 
         return decorator
 
+    def record_gauge(self, name: str, value: float, tags: dict[str, str] | None = None) -> None:
+        pass
+
     def is_connected(self, exchange: str) -> bool:
         return True
 

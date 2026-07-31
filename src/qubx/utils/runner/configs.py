@@ -5,6 +5,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from qubx.core.fit_executor import FitExecutorMode
 from qubx.core.interfaces import IStrategy
 
 
@@ -217,6 +218,16 @@ class LiveConfig(StrictBaseModel):
     state: StatePersistenceConfig | None = None
     rate_limiting: RateLimitingConfig | None = None
     account_manager: AccountManagerConfig = Field(default_factory=AccountManagerConfig)
+    # Where strategy.on_fit runs in live mode. "thread" (default) hands the fit body
+    # to a dedicated StrategyFitThread; deferred ctx mutations are applied atomically
+    # on the ProcessorThread at fit end. "inline" is the legacy behavior — the fit
+    # blocks the ProcessorThread and no strategy callback fires while it runs.
+    # CONTRACT: with "thread" your handlers (on_market_data/on_event/...) keep firing
+    # CONCURRENTLY with your running on_fit — consult ctx.is_fitting in handlers that
+    # must not overlap a fit. Simulation always runs inline regardless of this setting.
+    fit_executor: FitExecutorMode = FitExecutorMode.THREAD
+    # WARNING logged when a fit runs longer than this (no abort — visibility only).
+    fit_soft_deadline_s: float = 120.0
 
 
 class SimulationConfig(StrictBaseModel):

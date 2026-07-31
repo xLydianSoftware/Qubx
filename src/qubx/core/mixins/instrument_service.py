@@ -49,25 +49,35 @@ class InstrumentServiceManager(IInstrumentServiceManager):
             "force_closed_instruments": [str(i) for i in closed],
         }
 
-    def _force_close_held_blacklisted(self) -> list[Instrument]:
+    def _force_close_held_blacklisted(self, ctx: IStrategyContext | None = None) -> list[Instrument]:
         """Force-close every currently-held position whose instrument is blacklisted.
         Idempotent and full-set (not the change delta), so already-blacklisted holdings
         are closed too. Reduce-only by construction (closes to 0), so it is allowed by the
-        trade-layer blacklist gate. No-op for the Null service (is_blacklisted is False)."""
-        positions = self._context.get_positions()
+        trade-layer blacklist gate. No-op for the Null service (is_blacklisted is False).
+
+        ``ctx`` overrides the bound context (threaded fit passes the FitContext proxy, so
+        the close is recorded and applied at the FitCommit instead of mutating from the
+        fit thread)."""
+        _ctx = ctx if ctx is not None else self._context
+        positions = _ctx.get_positions()
         held = [i for i, p in positions.items() if p.quantity != 0 and self._service.is_blacklisted(i)]
         if held:
-            self._context.remove_instruments(held, if_has_position_then="close")
+            _ctx.remove_instruments(held, if_has_position_then="close")
         return held
 
-    def enforce_at_fit(self) -> None:
+    def enforce_at_fit(self, ctx: IStrategyContext | None = None) -> None:
         """Fit-time enforcement: refresh the cached blacklist AND force-close any held
         blacklisted positions, WITHOUT firing change callbacks (the fit is already
         running; firing re-fit callbacks here would loop). Called immediately before
         `on_fit` so the rebalance selects over current data and never holds a blacklisted
-        instrument. No-op for the Null service."""
-        self._service.refresh(self._context.instruments)
-        self._force_close_held_blacklisted()
+        instrument. No-op for the Null service.
+
+        ``ctx`` overrides the bound context: the threaded fit executor passes the
+        FitContext proxy so reads are copies and the force-close is recorded for the
+        FitCommit instead of mutating from the fit thread."""
+        _ctx = ctx if ctx is not None else self._context
+        self._service.refresh(_ctx.instruments)
+        self._force_close_held_blacklisted(_ctx)
 
     def start(self) -> None:
         """Framework-automatic refresh wiring (non-Null only). Runs in the context's

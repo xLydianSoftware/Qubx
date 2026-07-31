@@ -19,6 +19,14 @@ from .handlers import DataTypeHandlerFactory
 class WarmupService:
     """Service responsible for warming up historical data using data type handlers."""
 
+    # Throttle: warmup shares the event loop with the venue websockets and their
+    # keepalives — an unthrottled burst of warmup groups can occupy the loop long
+    # enough for keepalives to lapse and streams to die silently (2026-07-29
+    # incident). Cap concurrent groups and force a scheduling gap after each so
+    # keepalive tasks always get the loop.
+    WARMUP_MAX_CONCURRENCY: int = 3
+    WARMUP_YIELD_S: float = 0.05
+
     def __init__(
         self,
         handler_factory: DataTypeHandlerFactory,
@@ -106,16 +114,30 @@ class WarmupService:
                     )
                 )
 
-        # Execute all warmup tasks concurrently
+        # Execute all warmup tasks with bounded concurrency (see class docnote)
         if warmup_tasks:
+            semaphore = asyncio.Semaphore(self.WARMUP_MAX_CONCURRENCY)
+
+            async def throttled(task):
+                async with semaphore:
+                    try:
+                        return await task
+                    finally:
+                        await asyncio.sleep(self.WARMUP_YIELD_S)
 
             async def execute_all_warmups():
-                await asyncio.gather(*warmup_tasks)
+                await asyncio.gather(*(throttled(task) for task in warmup_tasks))
 
+            _future = self._async_loop.submit(execute_all_warmups())
             try:
-                self._async_loop.submit(execute_all_warmups()).result(self._warmup_timeout)
+                _future.result(self._warmup_timeout)
                 logger.info(f"<yellow>{self._exchange_id}</yellow> Warmup completed successfully")
             except Exception as e:
+                # Cancel the gather on timeout/failure: abandoned warmup coroutines would
+                # keep streaming historical bars AFTER the caller degrades and applies the
+                # subscription swap — those late bars land behind live data and are
+                # silently rejected by the OHLC past-data guard.
+                _future.cancel()
                 logger.error(f"<yellow>{self._exchange_id}</yellow> Warmup failed: {e}")
                 raise
         else:

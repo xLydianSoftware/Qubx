@@ -189,13 +189,17 @@ class AccountState:
             return venue.equity
         base = self._balances.get(self.base_currency)
         cash = base.total if base is not None else 0.0
-        return cash + sum(p.market_value_funds for p in self._positions.values())
+        # list() is a C-atomic snapshot: these aggregates are read from other threads
+        # (fit thread, control server) while the ProcessorThread inserts positions —
+        # a bare generator over the live dict can raise "dict changed size during
+        # iteration". Same pattern for every _positions iteration below.
+        return cash + sum(p.market_value_funds for p in list(self._positions.values()))
 
     def total_initial_margin(self) -> float:
-        return sum(p.initial_margin for p in self._positions.values())
+        return sum(p.initial_margin for p in list(self._positions.values()))
 
     def total_maint_margin(self) -> float:
-        return sum(p.maint_margin for p in self._positions.values())
+        return sum(p.maint_margin for p in list(self._positions.values()))
 
     def available_margin(self) -> float:
         venue = self._venue_figures
@@ -229,13 +233,13 @@ class AccountState:
         capital = self.total_capital()
         if capital <= 0:
             return 0.0
-        return sum(_notional(p) for p in self._positions.values()) / capital
+        return sum(_notional(p) for p in list(self._positions.values())) / capital
 
     def gross_leverage(self) -> float:
         capital = self.total_capital()
         if capital <= 0:
             return 0.0
-        return sum(abs(_notional(p)) for p in self._positions.values()) / capital
+        return sum(abs(_notional(p)) for p in list(self._positions.values())) / capital
 
     def conversion_rate(self, instrument: Instrument) -> float:
         del instrument  # TODO(account-mgmt): convert settle/quote -> base_currency via marks
