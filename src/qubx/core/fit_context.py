@@ -280,6 +280,11 @@ class FitContext(ITimeProvider):
     def quote(self, instrument: Instrument):
         return self._market_manager._quote(instrument, snapshot=True)
 
+    def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> Any:
+        # - locked clone: the live series is appended to by the ProcessorThread, so the
+        #   fit reads a detached copy (no indicators attached — don't attach any to it)
+        return self._market_manager._get_cached_market_data(instrument, sub_type, snapshot=True)
+
     # ------------------------------------------------------------------
     # denied — no meaningful deferred semantics; fail loudly when called
     # ------------------------------------------------------------------
@@ -310,9 +315,6 @@ class FitContext(ITimeProvider):
     configure_stale_data_detection = _denied("configure_stale_data_detection")
     update_base_subscription = _denied("update_base_subscription", "framework-internal")
     get_market_data_cache = _denied("get_market_data_cache", "use ctx.ohlc")
-    # the live GenericSeries is appended to WITHOUT the series lock — not readable
-    # from the fit thread
-    get_cached_market_data = _denied("get_cached_market_data", "use ctx.ohlc or an aux reader")
     # framework lifecycle / plumbing
     start = _denied("start")
     stop = _denied("stop")

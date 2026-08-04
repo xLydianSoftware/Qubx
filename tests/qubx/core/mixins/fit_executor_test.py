@@ -13,13 +13,13 @@ from unittest.mock import ANY, MagicMock
 import numpy as np
 import pytest
 
-from qubx.core.basics import CtrlChannel, DataType, Instrument, ITimeProvider, Signal
+from qubx.core.basics import CtrlChannel, DataType, FundingPayment, Instrument, ITimeProvider, Signal
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.fit_context import FitContext, UnclassifiedFitContextAccess
 from qubx.core.fit_executor import FitCycleState, FitExecutorMode
 from qubx.core.interfaces import IStrategyContext, StrategyState
-from qubx.core.mixins.market import CachedMarketDataHolder
+from qubx.core.mixins.market import CachedMarketDataHolder, MarketManager
 from qubx.core.mixins.processing import ProcessingManager
 from qubx.core.mixins.subscription import SUBSCRIPTION_SWAP_EVENT, SubscriptionManager
 from qubx.core.mixins.universe import UniverseManager
@@ -428,8 +428,7 @@ class TestDeferredMutationsAndSignals:
             _ = ctx.time()
             _ = ctx.ohlc(instrument, "1h", 100)
             _ = ctx.quote(instrument)
-            with pytest.raises(NotImplementedError):
-                ctx.get_cached_market_data(instrument, "trade")  # live GenericSeries: denied
+            _ = ctx.get_cached_market_data(instrument, "trade")  # detached snapshot clone
             positions = ctx.get_positions()
             positions["mutating-the-copy-is-safe"] = object()
             _ = ctx.get_active_targets()
@@ -444,6 +443,7 @@ class TestDeferredMutationsAndSignals:
         # - reads went through the snapshot-mode paths
         mm._ohlc.assert_called_once_with(instrument, "1h", 100, snapshot=True)
         mm._quote.assert_called_once_with(instrument, snapshot=True)
+        mm._get_cached_market_data.assert_called_once_with(instrument, "trade", snapshot=True)
         # - the copy mutation never reached the real view
         assert "mutating-the-copy-is-safe" not in context.get_positions.return_value
         # - mutations applied atomically at the commit, on this thread
@@ -1130,3 +1130,33 @@ class TestSimulationPurity:
     def test_config_default_is_thread(self):
         assert LiveConfig.model_fields["fit_executor"].default == FitExecutorMode.THREAD
         assert LiveConfig.model_fields["fit_soft_deadline_s"].default == pytest.approx(120.0)
+
+
+class TestFitContextCachedMarketData:
+    """The fit reads cached non-OHLC data (frab reads funding payments this way) — it must
+    get a detached snapshot rather than the live series the ProcessorThread appends to."""
+
+    def _fit_context_over(self, cache: CachedMarketDataHolder) -> FitContext:
+        # - real MarketManager (bypassing its heavy __init__) so the read goes through the
+        #   same _get_cached_market_data seam the fit uses, not a mock of it
+        market_manager = MarketManager.__new__(MarketManager)
+        market_manager._cache = cache
+        context = MagicMock()
+        context._market_data_provider = market_manager
+        return FitContext(context, FitCycleState())
+
+    def test_the_fit_reads_a_detached_copy_carrying_the_stored_records(self):
+        instrument = _mock_instrument()
+        cache = CachedMarketDataHolder(default_timeframe="1h")
+        t0 = np.datetime64("2023-01-01T10:00:00", "ns").astype(np.int64)
+        cache.update(instrument, DataType.FUNDING_PAYMENT, FundingPayment(t0, 0.0001, 8))
+        fit_ctx = self._fit_context_over(cache)
+
+        series = fit_ctx.get_cached_market_data(instrument, DataType.FUNDING_PAYMENT)
+        cache.update(instrument, DataType.FUNDING_PAYMENT, FundingPayment(t0 + 8 * 3_600_000_000_000, 0.0002, 8))
+
+        # - the stored object survives the clone: GenericSeries overrides _add_new_item to
+        #   keep the record, the base TimeSeries would coerce it to a double
+        assert series[0].funding_rate == pytest.approx(0.0001)
+        # - and the copy is detached from the series the ProcessorThread keeps appending to
+        assert len(series) == 1
