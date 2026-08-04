@@ -212,6 +212,8 @@ class StrategyContext(IStrategyContext):
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
+        # - the monitor writes degradations into the context's status (queue backlog today)
+        self._health_monitor.set_status(self._status)
         self._state_persistence = state_persistence or DummyStatePersistence()
         self._state_snapshot_interval = state_snapshot_interval
         self._rate_limiting_config = rate_limiting_config

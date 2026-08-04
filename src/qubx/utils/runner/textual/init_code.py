@@ -214,6 +214,19 @@ def _account_summary():
         pass
     return summary
 
+def _context_status():
+    \"\"\"Context status (normal/degraded) and the degradations currently held.\"\"\"
+    try:
+        st = ctx.status
+        return {{
+            "status": str(st.status),
+            "degradations": [
+                {{"reason": str(d.reason), "scope": d.scope, "message": d.message}} for d in st.degradations
+            ],
+        }}
+    except Exception:
+        return None
+
 def emit_dashboard(all=True, debug=False):
     \"\"\"Publish unified dashboard data via custom MIME for Textual to capture.\"\"\"
     try:
@@ -222,6 +235,7 @@ def emit_dashboard(all=True, debug=False):
             "orders": _orders_as_records(),
             "quotes": _quotes_as_records(),
             "account_summary": _account_summary(),
+            "context_status": _context_status(),
         }}
 
         # Let strategy inject custom data

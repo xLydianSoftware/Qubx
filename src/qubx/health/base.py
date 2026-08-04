@@ -9,9 +9,11 @@ import numpy as np
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64, td_64
 from qubx.core.interfaces import IHealthMonitor, IMetricEmitter, ITimeProvider, LatencyMetrics
+from qubx.core.status import ContextStatus, DegradeReason, QubxStatus
 from qubx.core.utils import recognize_timeframe
 from qubx.utils import convert_tf_str_td64
 from qubx.utils.collections import DequeFloat64, DequeIndicator
+from qubx.utils.time import timedelta_to_str
 
 STALE_THRESHOLDS = {
     "quote": "10min",
@@ -40,6 +42,7 @@ class BaseHealthMonitor(IHealthMonitor):
         monitor_interval: str = "1s",
         buffer_size: int = 1000,
         emit_health: bool = True,
+        queue_degrade_window: str = "5Min",
     ):
         """Initialize the health metrics monitor.
 
@@ -64,6 +67,15 @@ class BaseHealthMonitor(IHealthMonitor):
         # Convert queue monitor interval to seconds
         self._monitor_interval_ns = recognize_timeframe(monitor_interval)
         self._monitor_interval_s = self._monitor_interval_ns / 1_000_000_000  # Convert to seconds for sleep
+
+        # Queue-backlog detection: the context degrades when no sample has been empty for
+        # queue_degrade_window. Equivalent to "every minute in the window had a non-zero
+        # minimum", evaluated continuously instead of in minute buckets. Floor is 0 — a
+        # healthy queue empties constantly, so no level threshold is needed.
+        self._queue_degrade_window = convert_tf_str_td64(queue_degrade_window) if queue_degrade_window else None
+        self._last_drain_time: dt_64 | None = None
+        self._queue_degraded = False  # - the monitor's own edge tracker: status is written only on transitions
+        self._status: ContextStatus | None = None
 
         # Initialize metrics storage
         self._queue_size = DequeFloat64(buffer_size)  # Store last 1000 queue size measurements
@@ -226,6 +238,49 @@ class BaseHealthMonitor(IHealthMonitor):
     def set_is_connected(self, exchange: str, is_connected: Callable[[], bool]) -> None:
         """Set the connection status callback for an exchange."""
         self._is_connected_callbacks[exchange] = is_connected
+
+    def set_status(self, status: ContextStatus) -> None:
+        """Wire the context's status so the monitor can report degradations. Until this is
+        called the checks run but write nowhere (simulation never wires it)."""
+        self._status = status
+
+    def check_queue_drain(self, size: int) -> None:
+        """
+        One queue-size observation: an empty queue clears the backlog degradation and
+        restarts the window, a non-empty one degrades once the window has passed.
+        """
+        if self._queue_degrade_window is None or self._status is None:
+            return
+
+        now = self.time_provider.time()
+
+        if size <= 0:
+            self._last_drain_time = now
+            if self._queue_degraded:
+                self._queue_degraded = False
+                logger.info("[health] event queue drained — internal_queue_overflow cleared")
+                self._status.clear(DegradeReason.INTERNAL_QUEUE_OVERFLOW)
+            return
+
+        if self._queue_degraded:  # - already flagged: nothing to write until it drains
+            return
+
+        if self._last_drain_time is None:  # - never seen empty: start the window here
+            self._last_drain_time = now
+            return
+
+        if (undrained := now - self._last_drain_time) < self._queue_degrade_window:
+            return
+
+        self._queue_degraded = True
+        for_str = timedelta_to_str(undrained)
+        logger.warning(
+            f"[health] event queue has not been empty for {for_str} (size={size}) — "
+            "context DEGRADED (internal_queue_overflow)"
+        )
+        self._status.add(
+            DegradeReason.INTERNAL_QUEUE_OVERFLOW, now, message=f"queue size {size}, no drain for {for_str}"
+        )
 
     def set_event_queue_size(self, size: int) -> None:
         self._queue_size.push_back(float(size))
@@ -464,6 +519,7 @@ class BaseHealthMonitor(IHealthMonitor):
                 if self._channel is not None:
                     current_size = self._channel._queue.qsize()
                     self.set_event_queue_size(current_size)
+                    self.check_queue_drain(current_size)
 
                 # Perform cleanup of old order requests
                 self._cleanup_old_order_requests()
@@ -530,12 +586,32 @@ class BaseHealthMonitor(IHealthMonitor):
         self._emitter.emit(
             name="queue_size", value=self.get_queue_size(), tags={"type": "health"}, timestamp=current_time
         )
+        self._emit_context_status(current_time)
 
         exchanges = self._get_exchanges()
         for exchange in exchanges:
             self._emit_exchange_latencies(exchange)
 
         self._emit_gauges(current_time)
+
+    def _emit_context_status(self, current_time: dt_64) -> None:
+        """0/1 alongside queue_size so a degradation is visible in the same series, plus one
+        row per held degradation (only while degraded, so cardinality stays flat)."""
+        if self._status is None:
+            return
+        assert self._emitter is not None
+        info = self._status.info
+        degraded = info.status is not QubxStatus.NORMAL
+        self._emitter.emit(
+            name="context_status", value=float(degraded), tags={"type": "health"}, timestamp=current_time
+        )
+        for d in info.degradations:
+            self._emitter.emit(
+                name="context_degradation",
+                value=1.0,
+                tags={"type": "health", "reason": str(d.reason), "scope": d.scope or ""},
+                timestamp=current_time,
+            )
 
     def _emit_gauges(self, current_time: dt_64) -> None:
         """Emit the generic named-gauge escape hatch (e.g. `fit_duration_s`)."""

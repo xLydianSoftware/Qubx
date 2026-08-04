@@ -49,7 +49,7 @@ from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import ChannelMessage
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
-from qubx.core.status import QubxStatusInfo
+from qubx.core.status import ContextStatus, QubxStatusInfo
 from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
@@ -1773,6 +1773,10 @@ class IHealthWriter(Protocol):
         Args:
             size: Current size of the event queue
         """
+        ...
+
+    def set_status(self, status: "ContextStatus") -> None:
+        """Wire the context's status object so the monitor can report degradations."""
         ...
 
     def set_is_connected(self, exchange: str, is_connected: Callable[[], bool]) -> None:

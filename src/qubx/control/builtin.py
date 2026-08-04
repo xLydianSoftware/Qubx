@@ -5,7 +5,7 @@ from typing import Callable
 
 import pandas as pd
 
-from qubx.core.basics import Instrument, MarketType, Signal
+from qubx.core.basics import DataType, Instrument, MarketType, Signal
 from qubx.core.interfaces import IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.utils.time import to_timedelta, to_timestamp
@@ -112,7 +112,9 @@ def _settle_position(ctx: IStrategyContext, symbol: str, exchange: str | None = 
     return ActionResult(status="ok", data={"settled": str(instr)})
 
 
-def _set_universe(ctx: IStrategyContext, symbols: list[str], exchange: str | None = None, if_has_position: str = "close", **kwargs) -> ActionResult:
+def _set_universe(
+    ctx: IStrategyContext, symbols: list[str], exchange: str | None = None, if_has_position: str = "close", **kwargs
+) -> ActionResult:
     instruments = []
     errors = []
     for s in symbols:
@@ -567,12 +569,34 @@ def _get_health(ctx: IStrategyContext, **kwargs) -> ActionResult:
     for exch in exchanges:
         connected[exch] = health.is_connected(exch)
         latencies[exch] = {k: _rms(v) for k, v in health.get_data_latencies(exch).items()}
+
+    # - arrival rate summed over the instruments of each (exchange, event type); per-instrument
+    #   would be hundreds of rows on a wide universe, useless on a terminal
+    rates: dict[str, dict[str, float]] = defaultdict(lambda: defaultdict(float))
+    counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
+    for instr in ctx.instruments:
+        for sub in ctx.get_subscriptions(instr):
+            event_type = DataType.from_str(sub)[0]
+            rates[instr.exchange][event_type] += health.get_event_frequency(instr, event_type)
+            counts[instr.exchange][event_type] += 1
+    frequency = {
+        exch: {et: {"events_per_sec": round(rate, 2), "instruments": counts[exch][et]} for et, rate in by_type.items()}
+        for exch, by_type in rates.items()
+    }
+
+    info = ctx.status
     return ActionResult(
         status="ok",
         data={
+            "context_status": str(info.status),
+            "degradations": [
+                {"reason": str(d.reason), "scope": d.scope, "since": str(d.since), "message": d.message}
+                for d in info.degradations
+            ],
             "connected": connected,
             "queue_size": health.get_queue_size(),
             "data_latencies_ms": latencies,
+            "event_frequency": frequency,
         },
     )
 
@@ -1005,7 +1029,7 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
     "get_health": (
         ActionDef(
             name="get_health",
-            description="Get health metrics: connectivity, queue size, data latencies",
+            description="Get health metrics: context status, connectivity, queue size, data latencies, event rates",
             category="diagnostics",
             read_only=True,
         ),
