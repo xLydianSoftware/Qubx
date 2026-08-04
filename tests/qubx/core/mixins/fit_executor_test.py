@@ -1160,3 +1160,103 @@ class TestFitContextCachedMarketData:
         assert series[0].funding_rate == pytest.approx(0.0001)
         # - and the copy is detached from the series the ProcessorThread keeps appending to
         assert len(series) == 1
+
+
+class TestFitCloneDestruction:
+    """Clones handed to the fit are emptied when it returns: a clone (or an indicator
+    attached to one) that outlives its fit serves data frozen at fit time, silently. After
+    destruction it raises instead."""
+
+    def _cache_with_bars(self, instrument, n: int = 10) -> CachedMarketDataHolder:
+        cache = CachedMarketDataHolder(default_timeframe="1h")
+        t0 = np.datetime64("2023-01-01T00:00:00", "ns").astype(np.int64)
+        hour = 3_600_000_000_000
+        cache.update_by_bars(
+            instrument,
+            "1h",
+            [
+                Bar(time=t0 + i * hour, open=100.0 + i, high=101.0 + i, low=99.0 + i, close=100.0 + i, volume=1.0)
+                for i in range(n)
+            ],
+        )
+        return cache
+
+    def _fit_ctx_over(self, cache: CachedMarketDataHolder) -> FitContext:
+        market_manager = MarketManager.__new__(MarketManager)
+        market_manager._cache = cache
+        provider = MagicMock(is_simulation=False)
+        # - _ohlc compares now against the newest bar to decide on a history fetch
+        provider.time_provider.time.return_value = np.datetime64("2023-01-01T09:00:00", "ns")
+        market_manager._get_data_provider = MagicMock(return_value=provider)
+        context = MagicMock()
+        context._market_data_provider = market_manager
+        return FitContext(context, FitCycleState())
+
+    def test_an_indicator_attached_during_the_fit_raises_after_it_returns(self):
+        from qubx.ta.indicators import sma
+
+        instrument = _mock_instrument()
+        cache = self._cache_with_bars(instrument)
+        fit_ctx = self._fit_ctx_over(cache)
+
+        ohlc = fit_ctx.ohlc(instrument, "1h", None)
+        stashed = sma(ohlc.close, 3)
+        assert stashed[0] == pytest.approx(108.0)  # - valid while the fit runs
+
+        fit_ctx.destroy_clones()
+
+        with pytest.raises(IndexError):
+            _ = stashed[0]
+        assert len(ohlc) == 0
+
+    def test_a_stashed_generic_series_is_emptied_too(self):
+        instrument = _mock_instrument()
+        cache = CachedMarketDataHolder(default_timeframe="1h")
+        t0 = np.datetime64("2023-01-01T10:00:00", "ns").astype(np.int64)
+        cache.update(instrument, DataType.FUNDING_PAYMENT, FundingPayment(t0, 0.0001, 8))
+        fit_ctx = self._fit_ctx_over(cache)
+
+        stashed = fit_ctx.get_cached_market_data(instrument, DataType.FUNDING_PAYMENT)
+        assert len(stashed) == 1
+
+        fit_ctx.destroy_clones()
+
+        assert len(stashed) == 0
+
+    def test_the_live_series_and_its_indicators_are_untouched(self):
+        from qubx.ta.indicators import sma
+
+        instrument = _mock_instrument()
+        cache = self._cache_with_bars(instrument)
+        live = cache.get_ohlcv(instrument, "1h")
+        live_sma = sma(live.close, 3)
+        fit_ctx = self._fit_ctx_over(cache)
+
+        fit_ctx.ohlc(instrument, "1h", None)
+        fit_ctx.destroy_clones()
+
+        # - the ProcessorThread's own series must survive its fit untouched
+        assert len(live) == 10
+        assert live_sma[0] == pytest.approx(108.0)
+        assert len(cache.get_ohlcv(instrument, "1h")) == 10
+
+    def test_the_fit_lifecycle_destroys_what_the_body_kept(self):
+        """End-to-end through _handle_fit: whatever the body stashed is dead once the
+        FitCommit lands, without the strategy doing anything."""
+        pm, context, channel = make_thread_pm()
+        instrument = _mock_instrument()
+        cache = self._cache_with_bars(instrument)
+        market_manager = MarketManager.__new__(MarketManager)
+        market_manager._cache = cache
+        provider = MagicMock(is_simulation=False)
+        provider.time_provider.time.return_value = np.datetime64("2023-01-01T09:00:00", "ns")
+        market_manager._get_data_provider = MagicMock(return_value=provider)
+        context._market_data_provider = market_manager
+        kept: dict[str, object] = {}
+
+        pm._strategy.on_fit.side_effect = lambda ctx: kept.update(ohlc=ctx.ohlc(instrument, "1h", None))
+        pm._handle_fit(None, "fit", (None, T0))
+        drain_until_committed(pm, channel)
+
+        assert len(kept["ohlc"]) == 0  # type: ignore[arg-type]
+        assert len(cache.get_ohlcv(instrument, "1h")) == 10  # - the live series is untouched

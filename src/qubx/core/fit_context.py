@@ -31,9 +31,11 @@ import uuid
 from functools import partial
 from typing import TYPE_CHECKING, Any, Callable, Literal
 
+from qubx import logger
 from qubx.core.basics import Instrument, ITimeProvider, Position, Signal
 from qubx.core.fit_executor import FitCycleState
 from qubx.core.helpers import process_schedule_spec
+from qubx.core.series import OHLCV, TimeSeries
 
 if TYPE_CHECKING:
     from qubx.core.basics import OrderOrigin
@@ -118,6 +120,22 @@ class _FitAccountView:
         return getattr(self._account, name)
 
 
+def _clear_series(series: TimeSeries) -> int:
+    """Empty a fit-thread clone in place, with everything hanging off it: attached
+    indicators (which hold their OWN values — clearing the parent alone leaves them
+    serving frozen numbers) and, for an OHLCV, each child column. Returns how many
+    indicators were cleared."""
+    cleared = 0
+    for indicator in series.get_indicators().values():
+        cleared += 1 + _clear_series(indicator)
+    if isinstance(series, OHLCV):
+        for column in series.columns.values():
+            cleared += _clear_series(column)
+    series.times.clear()
+    series.values.clear()
+    return cleared
+
+
 class FitContext(ITimeProvider):
     """Proxy over the real StrategyContext for the StrategyFitThread (see module doc).
 
@@ -133,6 +151,8 @@ class FitContext(ITimeProvider):
         # snapshot-mode read impls (_ohlc/_ohlc_pd/_quote)
         self._market_manager = context._market_data_provider  # type: ignore[attr-defined]
         self._account_view = _FitAccountView(context.account, self._peek_position)
+        # - every live-linked clone handed out, emptied when the fit returns
+        self._clones: list[TimeSeries] = []
 
     def _peek_position(self, instrument: Instrument) -> "Position | None":
         """Non-materializing position read. The real ``get_position`` INSERTS an empty
@@ -270,7 +290,9 @@ class FitContext(ITimeProvider):
         # - locked snapshot clone; a history fetch runs here on the data provider's normal
         #   loop and merges into the PRIVATE clone — the fit thread never writes shared
         #   series content
-        return self._market_manager._ohlc(instrument, timeframe, length, snapshot=True)
+        series = self._market_manager._ohlc(instrument, timeframe, length, snapshot=True)
+        self._clones.append(series)
+        return series
 
     def ohlc_pd(
         self, instrument: Instrument, timeframe: Any = None, length: int | None = None, consolidated: bool = True
@@ -283,7 +305,29 @@ class FitContext(ITimeProvider):
     def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> Any:
         # - locked clone: the live series is appended to by the ProcessorThread, so the
         #   fit reads a detached copy (no indicators attached — don't attach any to it)
-        return self._market_manager._get_cached_market_data(instrument, sub_type, snapshot=True)
+        series = self._market_manager._get_cached_market_data(instrument, sub_type, snapshot=True)
+        self._clones.append(series)
+        return series
+
+    def destroy_clones(self) -> None:
+        """Empty every clone this fit was handed, once the fit body has returned.
+
+        A clone that outlives its fit is frozen at fit time and says nothing about it: a
+        stashed series keeps serving that snapshot, and an indicator attached to one keeps
+        computing correct-looking values that never advance. Emptying them turns both into
+        an IndexError at first use instead. Note ``len()`` on a cleared series is 0, not an
+        error, so length-guarded code stays quiet — hence the warning below.
+        """
+        cleared = 0
+        for series in self._clones:
+            cleared += _clear_series(series)
+        self._clones.clear()
+        if cleared:
+            logger.warning(
+                f"[FitContext] :: discarded {cleared} indicator(s) attached to a ctx read inside on_fit — "
+                "they would never have updated. Attach in on_start or on_universe_change instead, "
+                "or re-derive the expression in on_event."
+            )
 
     # ------------------------------------------------------------------
     # denied — no meaningful deferred semantics; fail loudly when called
