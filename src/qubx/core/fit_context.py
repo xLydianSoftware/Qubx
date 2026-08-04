@@ -353,6 +353,7 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "is_warming_up",
     "is_running",
     "state",
+    "status",
     "exchanges",
     # services (thread-safe by contract)
     "emitter",
