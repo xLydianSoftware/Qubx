@@ -137,6 +137,9 @@ def test_update_order_rejects_zero_amount(trading_manager):
     with pytest.raises(ValueError, match="sign"):
         trading_manager.update_order(price=1.0, amount=0.0, client_order_id="cid_1", exchange="BINANCE.UM")
 
+    trading_manager._exchange_to_connector["BINANCE.UM"].update_order.assert_not_called()
+    trading_manager._exchange_to_connector["BINANCE.UM"].cancel_order.assert_not_called()
+
 
 def test_update_order_partially_filled_routes_to_cancel(trading_manager):
     # BUY order with a partial fill — must route through cancel+replace, never native amend.

@@ -418,7 +418,23 @@ class TradingManager(ITradingManager):
                 filled_at_request=order.filled_quantity,
             )
             self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
-            self._get_connector(instrument.exchange).cancel_order(order)
+            try:
+                self._get_connector(instrument.exchange).cancel_order(order)
+            except Exception as e:
+                # Same contract as the native amend path: revert to truth — the cancel
+                # never reached the venue, the order is still alive, so the just-armed
+                # intent must not survive (else the order is stuck PENDING_UPDATE, and
+                # the re-entrancy no-op above silently swallows every later update_order).
+                self._account_manager.clear_replace_intent(instrument.exchange, cid)
+                self._context.process_event(
+                    OrderUpdateRejectedEvent(
+                        instrument=instrument,
+                        client_order_id=cid,
+                        venue_order_id=order.venue_order_id,
+                        reason=f"replace cancel failed before reaching venue: {e}",
+                    )
+                )
+                raise
             return
 
         self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)

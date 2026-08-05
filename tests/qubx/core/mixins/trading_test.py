@@ -679,6 +679,27 @@ class TestTradingManagerCancelUpdateFailure:
         assert event.client_order_id == order.client_order_id
         assert "venue unreachable" in event.reason
 
+    def test_replace_cancel_sync_raise_reverts_order_and_clears_intent(self, failure_setup, mock_connector):
+        """A partially-filled update_order routes to cancel+replace (order.filled_quantity >
+        0). If the internal cancel_order raises synchronously (never reached the venue), the
+        just-armed ReplaceIntent must not survive — otherwise the order is stuck PENDING_UPDATE
+        forever (the re-entrancy guard silently no-ops every later update_order call)."""
+        tm, am, context, order = failure_setup
+        order.record_fill(0.03, 50_000.0)  # filled > 0 -> replace routing
+        mock_connector.cancel_order.side_effect = ConnectionError("venue unreachable")
+
+        with pytest.raises(ConnectionError):
+            tm.update_order(price=51_000.0, amount=0.1, client_order_id=order.client_order_id)
+
+        assert am.get_order(order.client_order_id).status is OrderStatus.ACCEPTED  # reverted, not stuck PENDING_UPDATE
+        assert am._states[order.instrument.exchange].get_replace_intent(order.client_order_id) is None
+        mock_connector.update_order.assert_not_called()  # never falls back to native amend
+
+        (event,) = context.routed_events
+        assert isinstance(event, OrderUpdateRejectedEvent)
+        assert event.client_order_id == order.client_order_id
+        assert "venue unreachable" in event.reason
+
 
 class TestTradingManagerUpdateOrderGuards:
     """update_order pre-connector guards: terminal misuse raises, in-flight update no-ops."""

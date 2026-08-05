@@ -199,6 +199,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         )
         self._states[exchange].arm_replace_intent(cid, intent)
 
+    def clear_replace_intent(self, exchange: str, cid: str) -> ReplaceIntent | None:
+        return self._states[exchange].clear_replace_intent(cid)
+
     def remove_order(self, exchange: str, cid: str) -> None:
         self._states[exchange].remove_order(cid)
 
