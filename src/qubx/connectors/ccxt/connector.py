@@ -513,7 +513,10 @@ class CcxtConnector(ChannelEmitter):
                 cid = cid or response.get("clientOrderId")
             filled = response.get("filled")
             if filled is not None:
-                venue_filled_quantity = float(filled)
+                try:
+                    venue_filled_quantity = float(filled)
+                except (TypeError, ValueError):
+                    venue_filled_quantity = None
         self.send(
             OrderCanceledEvent(
                 instrument=instrument,

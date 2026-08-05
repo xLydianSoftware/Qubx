@@ -163,8 +163,8 @@ def test_cancel_event_venue_filled_quantity_defaults_to_none():
 
 
 def test_cancel_event_accepts_venue_filled_quantity_without_breaking_reducer():
-    # The reducer doesn't consume this field until Task 4's terminal interception; here it
-    # only has to accept the new kwarg and cancel as before.
+    # The reducer does not consume this field yet; here it only has to accept the new
+    # kwarg and cancel as before.
     state = _state()
     _order(state, status=OrderStatus.ACCEPTED, venue_id="B")
     r = apply(

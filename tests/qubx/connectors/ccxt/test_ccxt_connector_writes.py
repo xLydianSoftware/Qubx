@@ -406,6 +406,25 @@ async def test_cancel_response_with_filled_sets_venue_filled_quantity() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cancel_response_with_non_numeric_filled_still_emits_canceled() -> None:
+    # A present-but-non-numeric 'filled' must not blow up float() inside the _spawn-fired
+    # coroutine (that would silently drop the whole OrderCanceledEvent send) -- it degrades
+    # to None instead.
+    exchange = Mock()
+    exchange.cancel_order = AsyncMock(
+        return_value={"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1", "filled": "garbage"}
+    )
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.cancel_order(_order(venue_order_id="VENUE123"))
+    await _drive(conn)
+
+    assert isinstance(sent[0], OrderCanceledEvent)
+    assert sent[0].venue_filled_quantity is None
+
+
+@pytest.mark.asyncio
 async def test_cancel_stop_order_uses_trigger_surface() -> None:
     # A STOP order lives on the venue's conditional/algo surface; the cancel must pass
     # params={'trigger': True} (driven by order.type), else Binance answers -2011 and the
