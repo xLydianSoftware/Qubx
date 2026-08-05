@@ -898,3 +898,45 @@ def test_canceled_superseded_oid_ignored_even_with_armed_intent():
     assert r.is_empty()
     assert state.get_active_order("c1").status is OrderStatus.PENDING_UPDATE
     assert state.get_replace_intent("c1").filled_at_cancel is None  # untouched — guard fired first
+
+
+def test_canceled_superseded_oid_ignored_after_replacement_is_live():
+    # Full replace-flow regression (distinct from the HL cancel+recreate-modify scenario
+    # above, which never involves a ReplaceIntent): the internal cancel of oid A acks and
+    # is suppressed, _execute clears the intent and resubmits under the same cloid — its
+    # synthetic OrderUpdatedEvent carries no venue id, so the order still reads oid A at
+    # that point — then the venue's accept for the NEW order lands, moving it to oid B. A
+    # late CANCELED for the now-superseded oid A must still be dropped and must not
+    # terminalize the now-live replacement.
+    state = _state()
+    order = _order(state, status=OrderStatus.PARTIALLY_FILLED, venue_id="A")
+    order.record_fill(3.0, 1.0)
+    state.arm_replace_intent(
+        "c1", ReplaceIntent(desired_remaining=7.0, price=1.01, filled_at_request=3.0, armed_at=T0)
+    )
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+
+    # internal cancel of oid A acks -> suppressed (order stays PENDING_UPDATE, intent stamped)
+    apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="A"), T1)
+    assert state.get_replace_intent("c1").filled_at_cancel == 3.0
+
+    # _execute: clear the intent, then the resubmit's synthetic update (no venue id yet)
+    state.clear_replace_intent("c1")
+    apply(
+        state,
+        OrderUpdatedEvent(instrument=None, client_order_id="c1", venue_order_id=None, new_price=1.01, new_quantity=6.5),
+        T1,
+    )
+    assert state.get_order("c1").status is OrderStatus.PARTIALLY_FILLED  # reverted out of PENDING_UPDATE
+    assert state.get_order("c1").venue_order_id == "A"  # not yet moved — awaiting the new order's ack
+
+    # the venue confirms the resubmitted order under a NEW oid B
+    apply(state, OrderAcceptedEvent(instrument=None, client_order_id="c1", venue_order_id="B", accepted_at=T1), T1)
+    assert state.get_order("c1").venue_order_id == "B"
+
+    # the OLD order's late CANCELED (oid A) must not touch the now-live replacement
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="A"), T1)
+
+    assert r.is_empty()
+    assert state.get_order("c1").status is OrderStatus.PARTIALLY_FILLED
+    assert state.get_order("c1").venue_order_id == "B"

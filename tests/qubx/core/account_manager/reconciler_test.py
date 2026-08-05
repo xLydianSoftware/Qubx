@@ -854,3 +854,48 @@ def test_on_event_decision_does_not_mutate_state():
     assert intent is not None
     assert intent.filled_at_cancel == 3.5
     assert st.get_order("c1").status == OrderStatus.PENDING_UPDATE  # untouched
+
+
+# --------------------------------------------------------------------------- #
+# Stale replace-intent expiry — an intent whose internal cancel never acked
+# (filled_at_cancel unset) ages past REPLACE_INTENT_MAX_AGE: clear + warn + RequestStatus
+# only. The cancel's venue outcome is unknown at that point, so expiry must never
+# terminalize the order itself — RequestStatus resolves it to venue truth.
+# --------------------------------------------------------------------------- #
+
+
+def test_on_tick_expires_stale_unacked_replace_intent():
+    st = _armed_state(filled_at_cancel=None)  # cancel ack never arrived
+    rec = _reconciler()
+
+    actions = rec.on_tick(st, _passed_seconds(T0, 30))
+
+    assert st.get_replace_intent("c1") is None  # cleared
+    status_actions = [a for a in actions if isinstance(a, RequestStatus)]
+    assert status_actions == [RequestStatus(cid="c1", venue_id="v_c1", instrument=_inst())]
+    # expiry itself must not terminalize — only a subsequent status/event resolves it
+    assert st.get_active_order("c1").status is OrderStatus.PENDING_UPDATE
+
+
+def test_on_tick_leaves_fresh_replace_intent_armed():
+    st = _armed_state(filled_at_cancel=None)
+    rec = _reconciler()
+
+    actions = rec.on_tick(st, _passed_seconds(T0, 29))  # just under the 30s bar
+
+    assert st.get_replace_intent("c1") is not None
+    assert not any(isinstance(a, RequestStatus) for a in actions)
+
+
+def test_on_tick_does_not_expire_intent_with_acked_cancel():
+    # filled_at_cancel set means the cancel ack DID arrive; the decide+_execute path
+    # consumes such intents synchronously within the same apply call, so this should
+    # never persist across a tick in practice — the sweep only targets the unacked case
+    # and must leave an acked one alone regardless.
+    st = _armed_state(filled_at_cancel=3.5)
+    rec = _reconciler()
+
+    actions = rec.on_tick(st, _passed_seconds(T0, 30))
+
+    assert st.get_replace_intent("c1") is not None
+    assert not any(isinstance(a, RequestStatus) for a in actions)

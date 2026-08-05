@@ -51,6 +51,11 @@ _log = area_logger("reconciler")
 # re-fetched deals are deduped by trade_id and realize-only-guarded anyway.
 HIST_DEALS_LOOKBACK = np.timedelta64(2, "s")
 
+# A replace intent whose internal cancel never acked (filled_at_cancel unset) this long after
+# arming: the cancel's venue outcome is unknown, so the periodic sweep clears it and refetches
+# status rather than assuming either side.
+REPLACE_INTENT_MAX_AGE = np.timedelta64(30, "s")
+
 
 @dataclass(frozen=True)
 class RequestStatus:
@@ -419,7 +424,31 @@ class Reconciler:
                 self._last_full_snapshot[state.exchange] = now
             _log.debug(f"[{state.exchange}] reconcile: snapshot due -> RequestSnapshot(include_orders={full_sweep})")
             actions.append(RequestSnapshot(state.exchange, include_orders=full_sweep))
+        actions += self._sweep_expired_replace_intents(state, now)
         return actions + self._dispatch(Tick(), state, now)
+
+    def _sweep_expired_replace_intents(self, state: AccountState, now: np.datetime64) -> list[Action]:
+        # - a replace intent's internal cancel that never acked (filled_at_cancel unset — an
+        #   acked one is consumed synchronously by _decide_replace/_execute in the same apply
+        #   call, so it can't persist to a later tick). Its venue outcome is unknown: clear +
+        #   refetch status rather than assume it. Never AbandonReplace here — that would route a
+        #   terminal cancel and fabricate an outcome nobody confirmed; RequestStatus lets venue
+        #   truth resolve it (order still live -> reverts out of PENDING_UPDATE via the normal
+        #   accepted/updated path; order gone -> a real terminal event lands and, with no intent
+        #   armed anymore, terminalizes truthfully).
+        actions: list[Action] = []
+        for cid, intent in state.replace_intents().items():
+            if intent.filled_at_cancel is not None or now - intent.armed_at < REPLACE_INTENT_MAX_AGE:  # type: ignore
+                continue
+            state.clear_replace_intent(cid)
+            _log.warning(
+                f"[{state.exchange}] replace intent <y>{cid}</y> expired after "
+                f"{REPLACE_INTENT_MAX_AGE} with no cancel ack -> cleared, refetching status"
+            )
+            order = state.get_order(cid)
+            if order is not None:
+                actions.append(RequestStatus(cid=cid, venue_id=order.venue_order_id, instrument=order.instrument))
+        return actions
 
     def on_snapshot(
         self,
