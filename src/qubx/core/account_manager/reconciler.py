@@ -29,12 +29,13 @@ from qubx.core.account_manager.diffs import (
     PositionFieldMismatch,
     PositionSizeMismatch,
 )
-from qubx.core.account_manager.state import AccountState, VenueAccountFigures
+from qubx.core.account_manager.state import AccountState, ReplaceIntent, VenueAccountFigures
 from qubx.core.account_manager.state_machine import can_transition
 from qubx.core.basics import EXTERNAL_CID_PREFIX, Instrument, Order, OrderOrigin, OrderStatus, Position
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
+    OrderCanceledEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
 )
@@ -57,6 +58,19 @@ class RequestStatus:
     cid: str
     venue_id: str | None
     instrument: Instrument
+
+
+@dataclass(frozen=True)
+class SubmitReplacement:
+    # - the post-cancel residual of an armed replace intent is still executable: submit it
+    cid: str
+
+
+@dataclass(frozen=True)
+class AbandonReplace:
+    # - the post-cancel residual is not executable (too small/negative) or the order is gone
+    cid: str
+    reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -83,7 +97,15 @@ class RouteEvent:
     event: object
 
 
-Action = RequestStatus | RequestSnapshot | RequestHistDeals | RouteEvent | OrderPartiallyFilledEvent
+Action = (
+    RequestStatus
+    | RequestSnapshot
+    | RequestHistDeals
+    | RouteEvent
+    | OrderPartiallyFilledEvent
+    | SubmitReplacement
+    | AbandonReplace
+)
 
 
 class Tick:
@@ -639,8 +661,27 @@ class Reconciler:
         return None
 
     def on_event(self, state: AccountState, event: object, now: np.datetime64) -> list[Action]:
+        if isinstance(event, OrderCanceledEvent) and event.client_order_id is not None:
+            intent = state.get_replace_intent(event.client_order_id)
+            # filled_at_cancel is only stamped by the reducer's suppressed-cancel branch — a
+            # None here means this cancel was NOT suppressed (superseded-oid drop / already
+            # terminal), so the replace decision must not fire.
+            if intent is not None and intent.filled_at_cancel is not None:
+                return self._decide_replace(state, event.client_order_id, intent)
+
         inp = DealIn(event) if isinstance(event, DealEvent) else OrderIn(event)
         return self._dispatch(inp, state, now, only=self._keys_of(event))
+
+    @staticmethod
+    def _decide_replace(state: AccountState, cid: str, intent: ReplaceIntent) -> list[Action]:
+        # Read-only: the intent stays ARMED here — clearing it is the executing side's job.
+        order = state.get_order(cid)
+        raced = max(0.0, intent.filled_at_cancel - intent.filled_at_request)  # type: ignore[operator]
+        residual = intent.desired_remaining - raced
+        min_size = order.instrument.min_size if order is not None else 0.0
+        if order is None or residual <= 0.0 or residual < min_size:
+            return [AbandonReplace(cid, reason=f"residual {residual} below min {min_size}")]
+        return [SubmitReplacement(cid)]
 
     def _spawn(self, task: Task) -> None:
         if task.key in self._tasks:  # one task per key — duplicate ignored

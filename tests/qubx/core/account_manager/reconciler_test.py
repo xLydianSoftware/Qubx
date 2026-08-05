@@ -17,13 +17,15 @@ from qubx.core.account_manager import reducer
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
     HIST_DEALS_LOOKBACK,
+    AbandonReplace,
     Reconciler,
     RequestHistDeals,
     RequestSnapshot,
     RequestStatus,
     RouteEvent,
+    SubmitReplacement,
 )
-from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state import AccountState, ReplaceIntent
 from qubx.core.basics import Balance, Deal, Instrument, Order, OrderOrigin, OrderSide, OrderStatus, OrderType, Position
 from qubx.core.events import (
     AccountSnapshot,
@@ -731,3 +733,124 @@ def test_first_snapshot_is_full_then_light_then_full_after_sweep():
 
     # once the full-sweep interval elapses, the next due request is FULL again (WS-drop backstop)
     assert RequestSnapshot(ex, include_orders=True) in rec.on_tick(st, _passed_seconds(T0, 300))
+
+
+# --------------------------------------------------------------------------- #
+# Replace decision — SubmitReplacement / AbandonReplace on a suppressed cancel.
+#
+# The reducer suppresses a canceled event that arrives for an armed replace intent: it
+# stamps intent.filled_at_cancel and leaves the intent ARMED (order stays PENDING_UPDATE,
+# not terminalized) — then the SAME event is routed to on_event, which is where the
+# residual-vs-abandon decision under test here happens.
+# --------------------------------------------------------------------------- #
+
+
+def _armed_state(
+    cid: str = "c1",
+    *,
+    desired_remaining: float = 7.0,
+    filled_at_request: float = 3.0,
+    filled_at_cancel: float | None = 3.5,
+    status: OrderStatus = OrderStatus.PENDING_UPDATE,
+) -> AccountState:
+    st = _local(_order(cid, status=status, filled=filled_at_request))
+    st.arm_replace_intent(
+        cid,
+        ReplaceIntent(
+            desired_remaining=desired_remaining,
+            price=None,
+            filled_at_request=filled_at_request,
+            armed_at=T0,
+            filled_at_cancel=filled_at_cancel,
+        ),
+    )
+    return st
+
+
+def _canceled(cid: str = "c1") -> OrderCanceledEvent:
+    return OrderCanceledEvent(instrument=_inst(), client_order_id=cid, venue_order_id=f"v_{cid}")
+
+
+def test_on_event_canceled_with_intent_submits_replacement():
+    # desired 7.0, filled_at_request 3.0, filled_at_cancel 3.5 -> raced 0.5 -> residual 6.5
+    st = _armed_state(desired_remaining=7.0, filled_at_request=3.0, filled_at_cancel=3.5)
+    rec = _reconciler()
+
+    actions = rec.on_event(st, _canceled(), T0)
+
+    assert actions == [SubmitReplacement(cid="c1")]
+
+
+def test_on_event_residual_below_min_abandons():
+    # desired 1.0005, filled_at_request 3.0, filled_at_cancel 4.0 -> raced 1.0 -> residual 0.0005,
+    # positive but below BTCUSDT's min_size (0.001)
+    st = _armed_state(desired_remaining=1.0005, filled_at_request=3.0, filled_at_cancel=4.0)
+    rec = _reconciler()
+
+    actions = rec.on_event(st, _canceled(), T0)
+
+    assert len(actions) == 1
+    assert isinstance(actions[0], AbandonReplace)
+    assert actions[0].cid == "c1"
+
+
+def test_on_event_residual_non_positive_abandons():
+    # desired 1.0, filled_at_request 3.0, filled_at_cancel 4.5 -> raced 1.5 -> residual -0.5
+    st = _armed_state(desired_remaining=1.0, filled_at_request=3.0, filled_at_cancel=4.5)
+    rec = _reconciler()
+
+    actions = rec.on_event(st, _canceled(), T0)
+
+    assert len(actions) == 1
+    assert isinstance(actions[0], AbandonReplace)
+    assert actions[0].cid == "c1"
+
+
+def test_on_event_replace_decision_with_missing_order_abandons():
+    # armed intent for a cid with no local order (defensive: order can't be resolved)
+    st = _local()
+    st.arm_replace_intent(
+        "c1",
+        ReplaceIntent(desired_remaining=7.0, price=None, filled_at_request=3.0, armed_at=T0, filled_at_cancel=3.5),
+    )
+    rec = _reconciler()
+
+    actions = rec.on_event(st, _canceled(), T0)
+
+    assert len(actions) == 1
+    assert isinstance(actions[0], AbandonReplace)
+
+
+def test_on_event_canceled_without_intent_unchanged():
+    # no armed intent -> falls through to pre-existing OrderCanceledEvent dispatch (no tasks
+    # registered here, so no actions) -> SubmitReplacement/AbandonReplace must never appear
+    st = _local(_order("c1"))
+    rec = _reconciler()
+
+    actions = rec.on_event(st, _canceled(), T0)
+
+    assert actions == []
+
+
+def test_on_event_canceled_with_unsuppressed_intent_does_not_decide():
+    # intent armed but filled_at_cancel is None -> the reducer did NOT suppress this cancel
+    # (superseded-oid drop / already-terminal order) -> the decision branch must not fire
+    st = _armed_state(filled_at_cancel=None)
+    rec = _reconciler()
+
+    actions = rec.on_event(st, _canceled(), T0)
+
+    assert not any(isinstance(a, (SubmitReplacement, AbandonReplace)) for a in actions)
+
+
+def test_on_event_decision_does_not_mutate_state():
+    st = _armed_state(desired_remaining=7.0, filled_at_request=3.0, filled_at_cancel=3.5)
+    rec = _reconciler()
+
+    rec.on_event(st, _canceled(), T0)
+
+    # the decision reads the intent but leaves it armed — clearing is a later task's job
+    intent = st.get_replace_intent("c1")
+    assert intent is not None
+    assert intent.filled_at_cancel == 3.5
+    assert st.get_order("c1").status == OrderStatus.PENDING_UPDATE  # untouched
