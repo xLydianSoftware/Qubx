@@ -106,17 +106,37 @@ def test_reprice_unfilled_limit_keeps_remaining_truthful_through_sim(sim):
     assert order is not None
     assert order.price == pytest.approx(30800.0)
     remaining = order.quantity - order.filled_quantity
-    assert remaining == pytest.approx(0.3)
+    assert remaining == 0.3
     assert remaining >= 0.0
 
-    # 3. Move the market down through the new price -> the REAL OME fills the BUY.
+    # OME book truth, not the AM's request-echo (OrderUpdatedEvent carries the local
+    # price param verbatim — connector.py:159-167 — so a venue-side reprice that
+    # silently no-ops would still leave the AM order reporting the requested price).
+    # The resting order must actually have moved price levels in the book.
+    book = conn._ome._ome[instr].bids
+    assert 30800.0 in book, book
+    assert 31000.0 not in book, book
+
+    # 3. Intermediate quote sitting BETWEEN the old (31000) and new (30800) levels:
+    # crosses the old level but not the new one. A reprice that updated the AM's
+    # local copy but left the OME order resting at 31000 would fill here; a real
+    # venue-side reprice must not.
+    conn.process_market_data(instr, time.feed(Q("2020-01-01 10:00:30", 30900.0, 30901.0)))
+    order = am.find_order_by_client_id(order.client_order_id)
+    assert order is not None
+    assert order.filled_quantity == 0.0
+    position = am.get_position(instr)
+    assert position is not None
+    assert position.quantity == 0.0
+
+    # 4. Move the market down through the new price -> the REAL OME fills the BUY.
     conn.process_market_data(instr, time.feed(Q("2020-01-01 10:01", 30700.0, 30701.0)))
 
     order = am.find_order_by_client_id(order.client_order_id)
     assert order is not None
-    assert order.filled_quantity == pytest.approx(0.3)
-    assert order.quantity - order.filled_quantity == pytest.approx(0.0)
+    assert order.filled_quantity == 0.3
+    assert order.quantity - order.filled_quantity == 0.0
 
     position = am.get_position(instr)
     assert position is not None
-    assert position.quantity == pytest.approx(0.3)
+    assert position.quantity == 0.3
