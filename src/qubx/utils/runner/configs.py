@@ -151,6 +151,11 @@ class HealthConfig(StrictBaseModel):
     emit_interval: str = "10s"
     monitor_interval: str = "1s"
     buffer_size: int = 5000
+    # - degrade the context when the event queue has not been empty for this long.
+    #   Measured on a two-exchange quote feed: a healthy queue is exactly 0 in ~75% of
+    #   1Hz samples and never went a whole minute without emptying; observed backlogs ran
+    #   4-5 minutes. Empty string disables the check.
+    queue_degrade_window: str = "5Min"
 
 
 class DataTypeThrottleConfig(StrictBaseModel):

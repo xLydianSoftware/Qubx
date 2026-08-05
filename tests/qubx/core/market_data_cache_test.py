@@ -1,7 +1,9 @@
+import threading
+
 import numpy as np
 import pytest
 
-from qubx.core.basics import DataType, Instrument, MarketType, td_64
+from qubx.core.basics import DataType, FundingPayment, Instrument, MarketType, td_64
 from qubx.core.mixins.market import CachedMarketDataHolder
 from qubx.core.series import OHLCV, Bar, GenericSeries, IndicatorGeneric, Quote, Trade
 
@@ -365,3 +367,60 @@ def test_remove_clears_generic_series(cache_holder, mock_instrument):
     # - after remove, get_data returns a fresh empty series
     new_series = cache_holder.get_data(mock_instrument, DataType.TRADE)
     assert len(new_series) == 0
+
+
+def test_data_snapshot_is_detached_from_the_live_series(cache_holder, mock_instrument):
+    """
+    A snapshot handed to the fit thread must not grow when the ProcessorThread keeps
+    appending — the fit iterates it without holding the lock.
+    """
+    t0 = np.datetime64("2023-01-01T10:00:00", "ns").astype(np.int64)
+    cache_holder.update(mock_instrument, DataType.FUNDING_PAYMENT, FundingPayment(t0, 0.0001, 8))
+
+    snapshot = cache_holder.get_data_snapshot(mock_instrument, DataType.FUNDING_PAYMENT)
+    cache_holder.update(
+        mock_instrument, DataType.FUNDING_PAYMENT, FundingPayment(t0 + 8 * 3_600_000_000_000, 0.0002, 8)
+    )
+
+    assert len(snapshot) == 1
+    assert len(cache_holder.get_data(mock_instrument, DataType.FUNDING_PAYMENT)) == 2
+
+
+def test_snapshots_stay_readable_while_another_thread_appends(cache_holder, mock_instrument):
+    """
+    The fit-thread read path against a live feed: snapshots taken while updates land must
+    never surface a torn series (short read, index error, out-of-order times).
+    """
+    t0 = np.datetime64("2023-01-01T10:00:00", "ns").astype(np.int64)
+    step = 60_000_000_000
+    n_writes = 3000
+    failures: list[Exception] = []
+    stop = threading.Event()
+
+    def _write() -> None:
+        try:
+            for i in range(n_writes):
+                cache_holder.update(
+                    mock_instrument, DataType.TRADE, Trade(time=t0 + i * step, price=100.0 + i, size=1.0, side=1)
+                )
+        finally:
+            stop.set()
+
+    def _read() -> None:
+        while not stop.is_set():
+            try:
+                snap = cache_holder.get_data_snapshot(mock_instrument, DataType.TRADE)
+                times = [snap[i].time for i in range(len(snap))]
+                assert times == sorted(times, reverse=True), "series times out of order"
+            except Exception as e:  # noqa: BLE001 — the reader must never see a torn series
+                failures.append(e)
+                return
+
+    writer, reader = threading.Thread(target=_write), threading.Thread(target=_read)
+    reader.start()
+    writer.start()
+    writer.join()
+    reader.join()
+
+    assert not failures, f"reader saw a torn series: {failures[0]!r}"
+    assert len(cache_holder.get_data(mock_instrument, DataType.TRADE)) == n_writes

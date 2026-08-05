@@ -9,6 +9,7 @@ import pytest
 from qubx.core.basics import CtrlChannel, Instrument, dt_64
 from qubx.core.interfaces import IMetricEmitter, ITimeProvider, LatencyMetrics
 from qubx.core.lookups import lookup
+from qubx.core.status import ContextStatus, DegradeReason, QubxStatus
 from qubx.emitters.inmemory import InMemoryMetricEmitter
 from qubx.health.base import BaseHealthMonitor
 from qubx.health.dummy import DummyHealthMonitor
@@ -825,3 +826,102 @@ class TestGenericGauge:
 
     def test_dummy_monitor_record_gauge_is_noop(self) -> None:
         DummyHealthMonitor().record_gauge("x", 1.0)  # must not raise
+
+
+class TestQueueDrainDetector:
+    """The queue-backlog reason: DEGRADED when the event queue has not drained for the
+    configured window, back to NORMAL on the first drained sample. Floor is 0 — measured:
+    a healthy queue is exactly empty ~75% of 1Hz samples."""
+
+    def _monitor(self, window: str = "5Min") -> tuple[BaseHealthMonitor, ContextStatus, MockTimeProvider]:
+        tp = MockTimeProvider()
+        monitor = BaseHealthMonitor(tp, queue_degrade_window=window)
+        status = ContextStatus()
+        monitor.set_status(status)
+        return monitor, status, tp
+
+    def test_a_draining_queue_never_degrades(self) -> None:
+        monitor, status, tp = self._monitor()
+        for size in (0, 900, 4000, 0, 12000, 0):
+            monitor.check_queue_drain(size)
+            tp.advance(timedelta(minutes=2))
+
+        assert status.info.status is QubxStatus.NORMAL
+
+    def test_degrades_once_the_window_passes_with_no_drain(self) -> None:
+        monitor, status, tp = self._monitor(window="5Min")
+        monitor.check_queue_drain(0)
+
+        tp.advance(timedelta(minutes=4))
+        monitor.check_queue_drain(500)
+        assert status.info.status is QubxStatus.NORMAL, "must not fire before the window"
+
+        tp.advance(timedelta(minutes=2))
+        monitor.check_queue_drain(900)
+
+        info = status.info
+        assert info.status is QubxStatus.DEGRADED
+        assert info.degradations[0].reason is DegradeReason.INTERNAL_QUEUE_OVERFLOW
+        assert info.degradations[0].scope is None
+
+    def test_a_single_drained_sample_restores_normal(self) -> None:
+        monitor, status, tp = self._monitor(window="5Min")
+        monitor.check_queue_drain(0)
+        tp.advance(timedelta(minutes=6))
+        monitor.check_queue_drain(900)
+        assert status.info.status is QubxStatus.DEGRADED
+
+        monitor.check_queue_drain(0)
+
+        assert status.info.status is QubxStatus.NORMAL
+        assert status.info.degradations == ()
+
+    def test_the_window_is_measured_from_the_last_drain(self) -> None:
+        monitor, status, tp = self._monitor(window="5Min")
+        monitor.check_queue_drain(0)
+        tp.advance(timedelta(minutes=4))
+        monitor.check_queue_drain(0)  # - drained again, clock restarts here
+        tp.advance(timedelta(minutes=4))
+
+        monitor.check_queue_drain(700)
+
+        assert status.info.status is QubxStatus.NORMAL
+
+    def test_degraded_since_stays_at_the_first_breach(self) -> None:
+        monitor, status, tp = self._monitor(window="5Min")
+        monitor.check_queue_drain(0)
+        tp.advance(timedelta(minutes=6))
+        monitor.check_queue_drain(900)
+        since = status.info.degradations[0].since
+
+        message = status.info.degradations[0].message
+
+        tp.advance(timedelta(minutes=3))
+        monitor.check_queue_drain(20000)
+
+        # - still one degradation, untouched: nothing is written to the status while it holds
+        assert len(status.info.degradations) == 1
+        assert status.info.degradations[0].since == since
+        assert status.info.degradations[0].message == message
+
+    def test_the_status_is_emitted_next_to_queue_size(self) -> None:
+        tp = MockTimeProvider()
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(tp, emitter=emitter, queue_degrade_window="5Min")
+        status = ContextStatus()
+        monitor.set_status(status)
+
+        monitor.set_event_queue_size(0)
+        monitor.check_queue_drain(0)
+        monitor._emit()
+        assert emitter.get_dataframe(metric_name="context_status")["value"].iloc[-1] == 0.0
+
+        tp.advance(timedelta(minutes=6))
+        monitor.set_event_queue_size(900)
+        monitor.check_queue_drain(900)
+        monitor._emit()
+
+        assert emitter.get_dataframe(metric_name="context_status")["value"].iloc[-1] == 1.0
+        assert not emitter.get_dataframe(metric_name="context_degradation").empty, (
+            "a degradation row must accompany the flag"
+        )

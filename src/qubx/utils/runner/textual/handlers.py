@@ -68,6 +68,7 @@ class KernelEventHandler:
                 self.orders_table.update_orders(orders)
                 self.quotes_table.update_quotes(quotes)
                 self.account_summary.update_summary(account_summary)
+                self.account_summary.update_status(payload.get("context_status"))
             except Exception as e:
                 logger.error(f"Dashboard update error: {e}")
                 self.output.write(f"Dashboard update failed: {e}")

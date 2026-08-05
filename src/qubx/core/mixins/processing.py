@@ -1228,6 +1228,7 @@ class ProcessingManager(IProcessingManager):
         """
         _t_start = time.monotonic()
         _deadline_timer: threading.Timer | None = None
+        fit_ctx: FitContext | None = None
         try:
             # Everything from here — including proxy construction and the timer start
             # (Timer.start can raise "can't start new thread" under resource pressure) —
@@ -1256,6 +1257,13 @@ class ProcessingManager(IProcessingManager):
         finally:
             if _deadline_timer is not None:
                 _deadline_timer.cancel()
+            if fit_ctx is not None:
+                # - the clones the fit read are frozen at fit time; empty them so a stashed
+                #   series (or an indicator attached to one) fails instead of serving them
+                try:
+                    fit_ctx.destroy_clones()
+                except Exception:
+                    logger.exception("failed to destroy fit-thread clones")
             _duration_s = time.monotonic() - _t_start
             try:
                 self._health_monitor.record_gauge("fit_duration_s", _duration_s)

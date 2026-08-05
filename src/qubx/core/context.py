@@ -69,6 +69,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.mixins.instrument_service import InstrumentServiceManager
+from qubx.core.status import ContextStatus, QubxStatusInfo
 from qubx.data.storage import IStorage
 from qubx.gathering.simplest import SimplePositionGatherer
 from qubx.health import DummyHealthMonitor
@@ -136,6 +137,9 @@ class StrategyContext(IStrategyContext):
     _command_queue: Queue | None = None
     _control_executor: ActionExecutor | None = None
 
+    # - context status (normal / degraded)
+    _status: ContextStatus
+
     # Shutdown handling
     _is_stopping: bool = False
     _stop_lock: Lock
@@ -202,11 +206,14 @@ class StrategyContext(IStrategyContext):
         self._exporter = exporter
         self._notifier = notifier if notifier is not None else IStrategyNotifier()
         self._strategy_state = strategy_state if strategy_state is not None else StrategyState()
+        self._status = ContextStatus()
         self._strategy_name = strategy_name if strategy_name is not None else strategy.__class__.__name__
         self._restored_state = restored_state
 
         self._health_monitor = health_monitor or DummyHealthMonitor()
         self.health = self._health_monitor
+        # - the monitor writes degradations into the context's status (queue backlog today)
+        self._health_monitor.set_status(self._status)
         self._state_persistence = state_persistence or DummyStatePersistence()
         self._state_snapshot_interval = state_snapshot_interval
         self._rate_limiting_config = rate_limiting_config
@@ -605,6 +612,10 @@ class StrategyContext(IStrategyContext):
         return self._thread_data_loop is not None and self._thread_data_loop.is_alive()
 
     @property
+    def status(self) -> QubxStatusInfo:
+        return self._status.info
+
+    @property
     def is_simulation(self) -> bool:
         return self._data_providers[0].is_simulation
 
@@ -842,8 +853,7 @@ class StrategyContext(IStrategyContext):
         passes."""
         if self._fit_state.is_fit_thread():
             raise RuntimeError(
-                f"ctx.{name}: ctx mutation from the fit thread outside FitContext — "
-                "use the ctx passed to on_fit"
+                f"ctx.{name}: ctx mutation from the fit thread outside FitContext — use the ctx passed to on_fit"
             )
 
     # :: IUniverseManager delegation ::

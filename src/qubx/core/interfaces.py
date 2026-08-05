@@ -49,6 +49,7 @@ from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import ChannelMessage
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
+from qubx.core.status import ContextStatus, QubxStatusInfo
 from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
@@ -679,6 +680,11 @@ class IMarketDataCache:
     ) -> OHLCV: ...
 
     def get_data(self, instrument: Instrument, event_type: str) -> GenericSeries: ...
+
+    def get_data_snapshot(self, instrument: Instrument, event_type: str) -> GenericSeries:
+        """Detached clone of the generic series, read under the series lock — the read
+        path for anything off the ProcessorThread."""
+        ...
 
     def update_by_bars(self, instrument: Instrument, timeframe: str | td_64, bars: list[Bar]) -> OHLCV: ...
 
@@ -1444,6 +1450,16 @@ class IStrategyContext(
         """Get the strategy state."""
         return StrategyState(**self._strategy_state.__dict__)
 
+    @property
+    def status(self) -> QubxStatusInfo:
+        """Whether the framework can trade normally right now, and if not, why.
+
+        NORMAL unless something degraded the context (event-queue backlog, exchange
+        maintenance); the returned snapshot lists every degradation currently held.
+        Always NORMAL in simulation unless a test sets it deliberately.
+        """
+        ...
+
     def is_running(self) -> bool:
         """Check if the strategy context is running."""
         return False
@@ -1757,6 +1773,10 @@ class IHealthWriter(Protocol):
         Args:
             size: Current size of the event queue
         """
+        ...
+
+    def set_status(self, status: "ContextStatus") -> None:
+        """Wire the context's status object so the monitor can report degradations."""
         ...
 
     def set_is_connected(self, exchange: str, is_connected: Callable[[], bool]) -> None:

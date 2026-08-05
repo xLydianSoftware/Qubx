@@ -1,5 +1,5 @@
-import threading
 from collections import defaultdict
+from threading import RLock
 from typing import Any
 
 import numpy as np
@@ -42,17 +42,19 @@ class CachedMarketDataHolder(IMarketDataCache):
     _generic_series: dict[Instrument, dict[str, GenericSeries]]
     _max_series_length: int
 
+    # Appends and the *_snapshot reads (FitContext on the StrategyFitThread)
+    # serialize on this lock so a threaded fit never sees a torn series. An
+    # uncontended RLock costs the same as a no-op context manager, so it is
+    # taken unconditionally — simulation just never contends on it.
+    _series_lock: RLock
+
     def __init__(self, default_timeframe: str | None = None, max_buffer_size: int = 10_000) -> None:
         self._ohlcvs = dict()
         self._last_bar = defaultdict(lambda: None)
         self._updates = dict()
         self._generic_series = defaultdict(dict)
         self._max_series_length = max_buffer_size
-        # Appends and the *_snapshot reads (FitContext on the StrategyFitThread)
-        # serialize on this lock so a threaded fit never sees a torn series. An
-        # uncontended RLock costs the same as a no-op context manager, so it is
-        # taken unconditionally — simulation just never contends on it.
-        self._series_lock = threading.RLock()
+        self._series_lock = RLock()
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
 
@@ -206,12 +208,25 @@ class CachedMarketDataHolder(IMarketDataCache):
             )
         return _instr_series[event_type]
 
+    def get_data_snapshot(self, instrument: Instrument, event_type: str) -> GenericSeries:
+        """
+        FitContext entrypoint (StrategyFitThread): build/read the series under the
+        lock and hand out a clone, so the caller's iteration can't race ProcessorThread
+        appends. The clone has no indicators attached — do not attach live indicators
+        to it.
+        """
+        with self._series_lock:
+            return self.get_data(instrument, event_type).clone()
+
     def update(self, instrument: Instrument, event_type: str, data: Any, update_ohlc: bool = False) -> None:
         # - update GenericSeries for non-OHLC data (supports indicator attachment)
         if event_type != DataType.OHLC:
-            _series = self.get_data(instrument, event_type)
-            if not (_series.times and time_as_nsec(data.time) < _series.times[0]):
-                _series.update(data)
+            # - same lock as the OHLCV paths: get_data can lazily insert, and the append
+            #   must not tear a concurrent get_data_snapshot on the fit thread
+            with self._series_lock:
+                _series = self.get_data(instrument, event_type)
+                if not (_series.times and time_as_nsec(data.time) < _series.times[0]):
+                    _series.update(data)
 
         if not update_ohlc:
             return
@@ -522,9 +537,7 @@ class MarketManager(IMarketManager):
         _data_provider = self._get_data_provider(instrument.exchange)
         quote = _data_provider.get_quote(instrument)
         if quote is None:
-            ohlcv = (
-                self._cache.get_ohlcv_snapshot(instrument) if snapshot else self._cache.get_ohlcv(instrument)
-            )
+            ohlcv = self._cache.get_ohlcv_snapshot(instrument) if snapshot else self._cache.get_ohlcv(instrument)
             if len(ohlcv) > 0:
                 last_bar = ohlcv[0]
                 quote = Quote(
@@ -537,7 +550,17 @@ class MarketManager(IMarketManager):
         return quote
 
     def get_cached_market_data(self, instrument: Instrument, sub_type: str) -> GenericSeries:
-        return self._cache.get_data(instrument, sub_type)
+        return self._get_cached_market_data(instrument, sub_type, snapshot=False)
+
+    def _get_cached_market_data(self, instrument: Instrument, sub_type: str, snapshot: bool) -> GenericSeries:
+        # snapshot=True (FitContext on the StrategyFitThread): locked clone, detached from
+        # the series the ProcessorThread appends to. No history fetch on either path —
+        # unlike _ohlc, the non-snapshot read is a plain cache read too.
+        return (
+            self._cache.get_data_snapshot(instrument, sub_type)
+            if snapshot
+            else self._cache.get_data(instrument, sub_type)
+        )
 
     def get_aux_reader(self, exchange: str, mtype: str) -> IReader:
         _rd_key = (exchange.upper(), mtype.upper())

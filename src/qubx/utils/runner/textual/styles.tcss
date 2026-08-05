@@ -35,6 +35,13 @@ Header {
     color: $foreground;
 }
 
+#account-summary-status {
+    height: auto;
+    width: auto;
+    padding: 0 2 0 0;
+    text-align: right;
+}
+
 #account-summary-clock {
     height: auto;
     width: auto;

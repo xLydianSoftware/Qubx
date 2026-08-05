@@ -2,6 +2,7 @@ from typing import Callable
 
 from qubx.core.basics import Instrument, dt_64, td_64
 from qubx.core.interfaces import IHealthMonitor, LatencyMetrics
+from qubx.core.status import ContextStatus
 
 
 class DummyHealthMonitor(IHealthMonitor):
@@ -32,6 +33,9 @@ class DummyHealthMonitor(IHealthMonitor):
         pass
 
     def set_event_queue_size(self, size: int) -> None:
+        pass
+
+    def set_status(self, status: ContextStatus) -> None:
         pass
 
     def set_is_connected(self, exchange: str, is_connected: Callable[[], bool]) -> None:
