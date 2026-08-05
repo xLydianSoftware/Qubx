@@ -250,6 +250,17 @@ def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.dat
     if order is None or order.status.is_terminal or _is_superseded_oid_cancel(order, event):
         return ApplyResult()
 
+    intent = state.get_replace_intent(order.client_order_id)
+    if intent is not None:
+        # Internal cancel of a replace orchestration: not a terminal for the strategy —
+        # the same-cid replacement is about to be submitted. Record the venue's
+        # authoritative final fill so the residual is computed from truth (fills that
+        # raced the cancel are included).
+        intent.filled_at_cancel = (
+            event.venue_filled_quantity if event.venue_filled_quantity is not None else order.filled_quantity
+        )
+        return ApplyResult()
+
     order = transition(state, order.client_order_id, OrderStatus.CANCELED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.CANCELED)
 
@@ -375,6 +386,10 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
     order = _resolve_or_materialize(state, event, now)
     if order is None or order.status.is_terminal:
         return ApplyResult()
+    # A fill wins the race against an in-flight replace's internal cancel: the order
+    # settles for real, so the armed intent (which would otherwise suppress a later
+    # CANCELED) no longer applies. No-op if none is armed.
+    state.clear_replace_intent(order.client_order_id)
     if event.venue_order_id is not None:
         state.set_venue_id(order.client_order_id, event.venue_order_id)
     # fill is None on split-stream venues (the deal arrives separately via DealEvent):
@@ -501,7 +516,16 @@ def _revert_from_pending(
 
 def _handle_cancel_rejected(state: AccountState, event: OrderCancelRejectedEvent, now: np.datetime64) -> ApplyResult:
     order = _active_order_for(state, event)
-    if order is None or order.status != OrderStatus.PENDING_CANCEL:
+    if order is None:
+        return ApplyResult()
+    if order.status is OrderStatus.PENDING_UPDATE and state.get_replace_intent(order.client_order_id) is not None:
+        # The venue rejected the replace orchestration's internal cancel, arriving
+        # asynchronously as an event (the synchronous failure-to-submit path is handled
+        # in trading.py before this ever reaches the venue). The order is still alive
+        # under the old terms — clear the intent and revert to truth.
+        state.clear_replace_intent(order.client_order_id)
+        return _revert_from_pending(state, order, OrderChange.UPDATE_REJECTED, now, update_time=event.last_update_time)
+    if order.status != OrderStatus.PENDING_CANCEL:
         return ApplyResult()
     return _revert_from_pending(state, order, OrderChange.CANCEL_REJECTED, now, update_time=event.last_update_time)
 

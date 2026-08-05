@@ -12,7 +12,7 @@ import numpy as np
 import pytest
 
 from qubx.core.account_manager import reducer
-from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state import AccountState, ReplaceIntent
 from qubx.core.basics import (
     Balance,
     Deal,
@@ -800,3 +800,101 @@ def test_event_venue_ts_stamps_order_last_update_time():
     )
     assert r.order is not None
     assert r.order.last_update_time == venue_ts  # venue ts, not T1
+
+
+# --------------------------------------------------------------------------- #
+# 4.6 — replace-intent interception (internal cancel of a cancel+replace)
+# --------------------------------------------------------------------------- #
+
+
+def _armed_pending_update(desired_remaining: float = 7.0, filled_at_request: float = 3.0) -> tuple[AccountState, Order]:
+    state = _state()
+    order = _order(state, status=OrderStatus.PARTIALLY_FILLED, venue_id="V1")
+    order.record_fill(filled_at_request, 1.0)
+    state.arm_replace_intent(
+        "c1", ReplaceIntent(desired_remaining=desired_remaining, price=1.01, filled_at_request=filled_at_request, armed_at=T0)
+    )
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+    return state, order
+
+
+def test_canceled_with_armed_intent_is_suppressed():
+    state, order = _armed_pending_update()
+
+    r = apply(
+        state,
+        OrderCanceledEvent(
+            instrument=None, client_order_id="c1", venue_order_id="V1", venue_filled_quantity=3.5
+        ),
+        T1,
+    )
+
+    assert r.is_empty()  # no strategy callback
+    assert state.get_active_order("c1").status is OrderStatus.PENDING_UPDATE  # NOT terminal
+    assert state.get_replace_intent("c1").filled_at_cancel == 3.5
+
+
+def test_canceled_without_venue_fill_figure_falls_back_to_record():
+    state, order = _armed_pending_update()
+
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="V1"), T1)
+
+    assert r.is_empty()
+    assert state.get_active_order("c1").status is OrderStatus.PENDING_UPDATE
+    assert state.get_replace_intent("c1").filled_at_cancel == order.filled_quantity == 3.0
+
+
+def test_filled_terminal_clears_intent_and_flows():
+    state, order = _armed_pending_update()
+
+    r = apply(
+        state,
+        OrderFilledEvent(instrument=BTC, client_order_id="c1", venue_order_id="V1", fill=_fill("t1", 4.0, 1.01)),
+        T1,
+    )
+
+    assert state.get_replace_intent("c1") is None
+    assert not r.is_empty()
+    assert r.order is not None and r.order.status is OrderStatus.FILLED
+    assert r.order_change is OrderChange.FILLED
+
+
+def test_cancel_rejected_with_intent_reverts_to_truth():
+    state, order = _armed_pending_update()
+
+    r = apply(state, OrderCancelRejectedEvent(instrument=None, client_order_id="c1", reason="too late"), T1)
+
+    assert state.get_replace_intent("c1") is None
+    assert r.order is not None and r.order.status is OrderStatus.PARTIALLY_FILLED  # reverted to pre-pending
+    assert r.order_change is OrderChange.UPDATE_REJECTED
+
+
+def test_cancel_rejected_without_intent_still_needs_pending_cancel():
+    # No armed intent: the PENDING_UPDATE branch must not swallow this — falls through
+    # to the existing PENDING_CANCEL-only gate, which then no-ops.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+    r = apply(state, OrderCancelRejectedEvent(instrument=None, client_order_id="c1", reason="x"), T1)
+    assert r.is_empty()
+    assert state.get_active_order("c1").status is OrderStatus.PENDING_UPDATE  # untouched
+
+
+def test_canceled_superseded_oid_ignored_even_with_armed_intent():
+    # The superseded-oid guard must still win FIRST: a stale cancel for a replaced venue
+    # id is dropped even while an intent is armed for this cid.
+    state = _state()
+    order = _order(state, status=OrderStatus.PARTIALLY_FILLED, venue_id="A")
+    order.record_fill(3.0, 1.0)
+    state.arm_replace_intent(
+        "c1", ReplaceIntent(desired_remaining=7.0, price=1.01, filled_at_request=3.0, armed_at=T0)
+    )
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+    # the order moves to a new venue id (e.g. HL-style cancel+recreate ack) while pending
+    state.set_venue_id("c1", "B")
+
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="A"), T1)
+
+    assert r.is_empty()
+    assert state.get_active_order("c1").status is OrderStatus.PENDING_UPDATE
+    assert state.get_replace_intent("c1").filled_at_cancel is None  # untouched — guard fired first
