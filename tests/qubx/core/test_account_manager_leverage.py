@@ -227,12 +227,12 @@ def test_venue_settings_neutral_when_not_reported():
 # ---- per-instrument venue settings: write side ------------------------------ #
 
 
-def test_set_max_instrument_leverage_routes_to_connector():
+def test_set_instrument_leverage_routes_to_connector():
     am = _am()
     inst = _instrument("BTCUSDT")
-    am._connectors["binance"].set_max_instrument_leverage.return_value = True
-    assert am.set_max_instrument_leverage(inst, 7.0) is True
-    am._connectors["binance"].set_max_instrument_leverage.assert_called_once_with(inst, 7.0)
+    am._connectors["binance"].set_instrument_leverage.return_value = True
+    assert am.set_instrument_leverage(inst, 7.0) is True
+    am._connectors["binance"].set_instrument_leverage.assert_called_once_with(inst, 7.0)
 
 
 def test_set_margin_mode_routes_to_connector():
@@ -246,4 +246,41 @@ def test_set_margin_mode_routes_to_connector():
 def test_set_leverage_unmanaged_exchange_returns_false():
     am = _am(exchanges=("binance",))
     inst = _instrument("BTCUSDT", exchange="bybit")  # no connector for bybit
-    assert am.set_max_instrument_leverage(inst, 7.0) is False
+    assert am.set_instrument_leverage(inst, 7.0) is False
+
+
+def test_set_instrument_leverages_dispatches_one_batch_per_exchange() -> None:
+    """A wide universe spans venues: each connector must get ONE call with its own
+    instruments, not one call per instrument."""
+    from unittest.mock import Mock
+
+    from qubx.core.account_manager.manager import AccountManager
+
+    binance_a, binance_b = _instrument("BTCUSDT", "BINANCE.UM"), _instrument("ETHUSDT", "BINANCE.UM")
+    okx = _instrument("BTCUSDT", "OKX")
+    binance_conn, okx_conn = Mock(), Mock()
+    binance_conn.set_instrument_leverages.return_value = {binance_a: True, binance_b: False}
+    okx_conn.set_instrument_leverages.return_value = {okx: True}
+
+    am = AccountManager.__new__(AccountManager)
+    am._connectors = {"BINANCE.UM": binance_conn, "OKX": okx_conn}
+
+    result = am.set_instrument_leverages({binance_a: 5.0, okx: 3.0, binance_b: 5.0})
+
+    assert result == {binance_a: True, binance_b: False, okx: True}
+    binance_conn.set_instrument_leverages.assert_called_once_with({binance_a: 5.0, binance_b: 5.0})
+    okx_conn.set_instrument_leverages.assert_called_once_with({okx: 3.0})
+
+
+def test_set_instrument_leverages_reports_false_for_an_unknown_exchange() -> None:
+    from unittest.mock import Mock
+
+    from qubx.core.account_manager.manager import AccountManager
+
+    known, unknown = _instrument("BTCUSDT", "BINANCE.UM"), _instrument("BTCUSDT", "KRAKEN.F")
+    conn = Mock()
+    conn.set_instrument_leverages.return_value = {known: True}
+    am = AccountManager.__new__(AccountManager)
+    am._connectors = {"BINANCE.UM": conn}
+
+    assert am.set_instrument_leverages({known: 5.0, unknown: 2.0}) == {known: True, unknown: False}

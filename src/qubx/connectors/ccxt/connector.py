@@ -84,8 +84,8 @@ from .utils import (
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
     ccxt_convert_positions,
-    ccxt_extract_leverage_settings,
     ccxt_extract_deals_from_exec,
+    ccxt_extract_leverage_settings,
     ccxt_find_instrument,
     info_float,
     instrument_to_ccxt_symbol,
@@ -660,7 +660,7 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Leverage / margin
     # ------------------------------------------------------------------ #
-    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
             self._run_sync(self._em.exchange.set_leverage(leverage, symbol))
@@ -668,6 +668,37 @@ class CcxtConnector(ChannelEmitter):
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] Failed to set leverage {leverage} for {instrument.symbol}: {e}")
             return False
+
+    def set_instrument_leverages(self, leverages: dict[Instrument, float]) -> dict[Instrument, bool]:
+        """All the set_leverage calls in flight together instead of one blocking round trip
+        each: the caller is the ProcessorThread, and a 100-instrument universe at ~500ms a
+        call blocked event processing for ~50s. ccxt's own throttle still paces the sends,
+        so the win is the overlapped waits, not unbounded concurrency."""
+        if not leverages:
+            return {}
+        instruments = list(leverages)
+
+        async def _apply() -> list[Any]:
+            return await asyncio.gather(
+                *(self._em.exchange.set_leverage(leverages[i], instrument_to_ccxt_symbol(i)) for i in instruments),
+                return_exceptions=True,
+            )
+
+        try:
+            outcomes = self._run_sync(_apply())
+        except Exception as e:  # noqa: BLE001 — the batch itself failed; report all as refused
+            logger.error(f"[{self.exchange_name}] set_instrument_leverages failed: {type(e).__name__}: {e}")
+            return dict.fromkeys(instruments, False)
+
+        result: dict[Instrument, bool] = {}
+        for instrument, outcome in zip(instruments, outcomes):
+            if isinstance(outcome, BaseException):
+                logger.error(
+                    f"[{self.exchange_name}] Failed to set leverage {leverages[instrument]} "
+                    f"for {instrument.symbol}: {type(outcome).__name__}: {outcome}"
+                )
+            result[instrument] = not isinstance(outcome, BaseException)
+        return result
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         try:

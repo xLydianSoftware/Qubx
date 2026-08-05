@@ -602,7 +602,7 @@ def test_make_client_id_adds_prefix() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# (8) set_max_instrument_leverage / set_margin_mode call ccxt + return bool
+# (8) set_instrument_leverage / set_margin_mode call ccxt + return bool
 # --------------------------------------------------------------------------- #
 def test_set_leverage_calls_ccxt_returns_true() -> None:
     exchange = Mock()
@@ -610,7 +610,7 @@ def test_set_leverage_calls_ccxt_returns_true() -> None:
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
-    ok = conn.set_max_instrument_leverage(_instrument(), 5.0)
+    ok = conn.set_instrument_leverage(_instrument(), 5.0)
     assert ok is True
     exchange.set_leverage.assert_awaited_once_with(5.0, "BTC/USDT:USDT")
 
@@ -621,7 +621,7 @@ def test_set_leverage_returns_false_on_error() -> None:
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
-    assert conn.set_max_instrument_leverage(_instrument(), 5.0) is False
+    assert conn.set_instrument_leverage(_instrument(), 5.0) is False
 
 
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:
@@ -696,3 +696,58 @@ def test_reads_none_inf_when_no_position() -> None:
     assert conn.get_max_instrument_notional(_instrument()) == float("inf")
     assert conn.get_margin_mode(_instrument()) is None
     assert conn.get_adl_level(_instrument()) is None
+
+
+# --------------------------------------------------------------------------- #
+# (8b) set_instrument_leverages issues the venue calls concurrently
+# --------------------------------------------------------------------------- #
+def _instrument_named(symbol: str) -> Instrument:
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SWAP,
+        exchange="BINANCE.UM",
+        base=symbol[:-4],
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol=symbol,
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+    )
+
+
+def test_set_leverages_issues_every_call_in_one_round_trip() -> None:
+    """The sequential path blocked the ProcessorThread for one venue round trip PER
+    instrument — ~50s over a 100-instrument universe. The batch submits them all to the
+    exchange loop together, so the waits overlap."""
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    a, b = _instrument_named("BTCUSDT"), _instrument_named("ETHUSDT")
+
+    result = conn.set_instrument_leverages({a: 5.0, b: 3.0})
+
+    assert result == {a: True, b: True}
+    assert exchange.set_leverage.await_count == 2
+    # - one submission to the loop for the whole batch, not one per instrument
+    assert conn._run_sync.call_count == 1
+
+
+def test_set_leverages_reports_per_instrument_failures() -> None:
+    exchange = Mock()
+    a, b = _instrument_named("BTCUSDT"), _instrument_named("ETHUSDT")
+
+    async def _set(leverage, symbol):
+        if symbol.startswith("ETH"):
+            raise ccxt.ExchangeError("nope")
+        return {}
+
+    exchange.set_leverage = AsyncMock(side_effect=_set)
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    result = conn.set_instrument_leverages({a: 5.0, b: 3.0})
+
+    # - one venue refusal must not sink the rest of the batch
+    assert result == {a: True, b: False}

@@ -502,12 +502,21 @@ class IAccountConfigurator:
     margin mode.
     """
 
-    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
         """Set the configured leverage for this instrument on the exchange.
         The venue enforces it as per-symbol cap.
 
         Returns:
             bool: True if the venue accepted the change, False otherwise.
+        """
+        ...
+
+    def set_instrument_leverages(self, leverages: dict[Instrument, float]) -> dict[Instrument, bool]:
+        """Set the configured leverage for several instruments at once.
+
+        Prefer this over calling set_instrument_leverage in a loop: the single-instrument
+        call blocks for a venue round trip, so a wide universe stalls the caller for tens of
+        seconds. Returns which instruments the venue accepted.
         """
         ...
 

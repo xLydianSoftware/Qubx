@@ -717,11 +717,17 @@ class StrategyContext(IStrategyContext):
 
     # per-instrument venue-setting writes (IAccountConfigurator): the configured leverage and
     # margin mode reach the venue and honour read-only.
-    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
-        self._assert_not_fit_thread("set_max_instrument_leverage")
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+        self._assert_not_fit_thread("set_instrument_leverage")
         if self._read_only:
             raise ReadOnlyConnector("account configuration is read-only — write rejected")
-        return self._account_manager.set_max_instrument_leverage(instrument, leverage)
+        return self._account_manager.set_instrument_leverage(instrument, leverage)
+
+    def set_instrument_leverages(self, leverages: dict[Instrument, float]) -> dict[Instrument, bool]:
+        self._assert_not_fit_thread("set_instrument_leverages")
+        if self._read_only:
+            raise ReadOnlyConnector("account configuration is read-only — write rejected")
+        return self._account_manager.set_instrument_leverages(leverages)
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         self._assert_not_fit_thread("set_margin_mode")

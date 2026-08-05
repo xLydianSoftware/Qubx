@@ -611,7 +611,7 @@ class TestStashedContextTripwires:
                 lambda: ctx.unschedule("x"),
                 lambda: ctx.delay("1m", lambda c: None),
                 lambda: ctx.set_margin_mode(MagicMock(), "cross"),
-                lambda: ctx.set_max_instrument_leverage(MagicMock(), 5.0),
+                lambda: ctx.set_instrument_leverage(MagicMock(), 5.0),
                 lambda: ctx.transfer_funds("A", "B", "USDT", 1.0),
                 lambda: ctx.set_warmup_positions({}),
                 lambda: ctx.set_warmup_orders({}),
