@@ -250,16 +250,29 @@ def _handle_canceled(state: AccountState, event: OrderCanceledEvent, now: np.dat
     if order is None or order.status.is_terminal or _is_superseded_oid_cancel(order, event):
         return ApplyResult()
 
+    if event.venue_order_id is not None and state.is_superseded_oid(order.client_order_id, event.venue_order_id):
+        # A replacement already superseded this venue id, but the order still carries it (the
+        # replacement's accept hasn't re-keyed yet) so _is_superseded_oid_cancel can't see it.
+        # Connectors emitting two terminals per cancel (REST ack + WS) land the second one here.
+        return ApplyResult()
+
     intent = state.get_replace_intent(order.client_order_id)
-    if intent is not None:
+    if intent is not None and order.status is OrderStatus.PENDING_UPDATE:
         # Internal cancel of a replace orchestration: not a terminal for the strategy —
         # the same-cid replacement is about to be submitted. Record the venue's
         # authoritative final fill so the residual is computed from truth (fills that
-        # raced the cancel are included).
+        # raced the cancel are included), and the id it killed so a duplicate terminal
+        # for that id can be dropped once the replacement is live.
         intent.filled_at_cancel = (
             event.venue_filled_quantity if event.venue_filled_quantity is not None else order.filled_quantity
         )
+        intent.canceled_venue_oid = event.venue_order_id or order.venue_order_id
         return ApplyResult()
+    if intent is not None:
+        # An intent is armed but the order is no longer PENDING_UPDATE — a strategy cancel
+        # (PENDING_CANCEL) won the window. That cancel is the truth; suppressing it would
+        # resurrect an order the caller explicitly killed.
+        state.clear_replace_intent(order.client_order_id)
 
     order = transition(state, order.client_order_id, OrderStatus.CANCELED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.CANCELED)
@@ -271,6 +284,7 @@ def _handle_lost(state: AccountState, event: OrderLostEvent, now: np.datetime64)
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
+    state.clear_replace_intent(order.client_order_id)  # terminal ends the orchestration
     order = transition(state, order.client_order_id, OrderStatus.LOST, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.LOST)
 
@@ -279,6 +293,7 @@ def _handle_expired(state: AccountState, event: OrderExpiredEvent, now: np.datet
     order = _resolve(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
+    state.clear_replace_intent(order.client_order_id)  # terminal ends the orchestration
     order = transition(state, order.client_order_id, OrderStatus.EXPIRED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.EXPIRED)
 
@@ -287,6 +302,7 @@ def _handle_rejected(state: AccountState, event: OrderRejectedEvent, now: np.dat
     order = _active_order_for(state, event)
     if order is None or order.status.is_terminal:
         return ApplyResult()
+    state.clear_replace_intent(order.client_order_id)  # terminal ends the orchestration
     order.rejected_reason = event.reason
     order.error_code = event.code
     order = transition(state, order.client_order_id, OrderStatus.REJECTED, now, update_time=event.last_update_time)

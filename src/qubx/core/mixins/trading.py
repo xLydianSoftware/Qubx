@@ -335,6 +335,10 @@ class TradingManager(ITradingManager):
             client_id=cid,
             event_time=self._context.time(),
         )
+        # An explicit cancel of a mid-replace order wins over the orchestration: the reducer
+        # gates suppression on PENDING_UPDATE, this drops the intent outright so nothing can
+        # resurrect the order as a replacement.
+        self._account_manager.clear_replace_intent(order.instrument.exchange, cid)
         self._account_manager.transition_order(order.instrument.exchange, cid, OrderStatus.PENDING_CANCEL)
         try:
             self._get_connector(order.instrument.exchange).cancel_order(order)
@@ -410,6 +414,9 @@ class TradingManager(ITradingManager):
 
         cid = order.client_order_id
         if order.filled_quantity > 0:
+            # Arm only once the transition holds — a raise here (illegal source status) would
+            # otherwise leak an intent no cancel will ever clear.
+            self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
             self._account_manager.arm_replace_intent(
                 instrument.exchange,
                 cid,
@@ -417,7 +424,6 @@ class TradingManager(ITradingManager):
                 price=adjusted_price,
                 filled_at_request=order.filled_quantity,
             )
-            self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
             try:
                 self._get_connector(instrument.exchange).cancel_order(order)
             except Exception as e:

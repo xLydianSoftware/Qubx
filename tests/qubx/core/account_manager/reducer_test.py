@@ -940,3 +940,26 @@ def test_canceled_superseded_oid_ignored_after_replacement_is_live():
     assert r.is_empty()
     assert state.get_order("c1").status is OrderStatus.PARTIALLY_FILLED
     assert state.get_order("c1").venue_order_id == "B"
+
+
+@pytest.mark.parametrize(
+    "event, terminal",
+    [
+        (OrderExpiredEvent(instrument=BTC, client_order_id="c1"), OrderStatus.EXPIRED),
+        (OrderRejectedEvent(instrument=BTC, client_order_id="c1", reason="nope"), OrderStatus.REJECTED),
+        (OrderLostEvent(instrument=BTC, client_order_id="c1"), OrderStatus.LOST),
+    ],
+    ids=["expired", "rejected", "lost"],
+)
+def test_terminal_event_clears_armed_replace_intent(event, terminal):
+    # Any terminal ends the replace orchestration: a surviving intent would suppress a later
+    # cancel for a dead order and keep a stale entry in the table forever.
+    state = _state()
+    _order(state, status=OrderStatus.PARTIALLY_FILLED)
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+    state.arm_replace_intent("c1", ReplaceIntent(0.5, 100.0, 0.5, T0))
+
+    apply(state, event, T1)
+
+    assert _present(state.get_order("c1")).status is terminal
+    assert state.get_replace_intent("c1") is None

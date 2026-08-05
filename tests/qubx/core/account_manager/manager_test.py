@@ -414,3 +414,77 @@ def test_apply_order_canceled_with_armed_intent_submits_replacement_end_to_end(m
     assert order.quantity == pytest.approx(3.5 + 6.5)
     assert order.status is not None and not order.status.is_terminal
     assert state.get_replace_intent(order.client_order_id) is None
+
+
+def test_duplicate_cancel_terminal_does_not_terminalize_live_replacement(manager_with_order):
+    # The ccxt connector emits TWO cancel terminals per cancel (REST ack + WS stream). The first
+    # is consumed by the intent's suppression; the second resolves by cid onto an order whose
+    # venue id has not re-keyed yet, so the superseded-oid guard alone cannot see it is stale —
+    # without the per-cid superseded-oid marker it terminalizes an order that is LIVE at the venue.
+    mgr, state, order, connector = manager_with_order
+    cid = order.client_order_id
+    state.set_venue_id(cid, "v_old")
+    state.arm_replace_intent(cid, ReplaceIntent(6.5, 1.02, 3.5, NOW))
+    cancel = OrderCanceledEvent(instrument=None, client_order_id=cid, venue_order_id="v_old", venue_filled_quantity=3.5)
+
+    mgr.apply(cancel)  # REST ack: suppressed -> replacement submitted under the same cid
+    connector.submit_order.assert_called_once()
+    assert not _present(order.status).is_terminal
+
+    mgr.apply(cancel)  # WS duplicate of the SAME terminal, replacement's accept not landed yet
+    assert not _present(order.status).is_terminal
+    connector.submit_order.assert_called_once()  # no second submit either
+
+    # the replacement's accept lands under a NEW venue id -> re-key
+    mgr.apply(OrderAcceptedEvent(instrument=None, client_order_id=cid, venue_order_id="v_new", accepted_at=T1))
+    assert order.venue_order_id == "v_new"
+
+    mgr.apply(cancel)  # third stale cancel for the superseded id
+    assert not _present(order.status).is_terminal
+
+
+def test_strategy_cancel_during_replace_window_terminalizes_truthfully(manager_with_order):
+    # cancel_order on a PENDING_UPDATE order is legal (-> PENDING_CANCEL). The suppression must
+    # key off the status, not merely the armed intent: otherwise the strategy's explicit cancel
+    # is swallowed and the replacement resurrects an order the strategy killed.
+    mgr, state, order, connector = manager_with_order
+    cid = order.client_order_id
+    state.arm_replace_intent(cid, ReplaceIntent(6.5, 1.02, 3.5, NOW))
+    mgr.transition_order(EX, cid, OrderStatus.PENDING_CANCEL)  # strategy cancel during the window
+
+    mgr.apply(OrderCanceledEvent(instrument=None, client_order_id=cid, venue_filled_quantity=3.5))
+
+    assert order.status is OrderStatus.CANCELED  # truth, not a suppressed resurrection
+    assert state.get_replace_intent(cid) is None
+    connector.submit_order.assert_not_called()
+
+
+def test_execute_submit_replacement_routes_lag_compensated_quantity(manager_with_order):
+    # The venue's cancel ack counted fills whose WS deals have not booked locally yet. The
+    # submit is the residual, but the ROUTED quantity must compensate for the local lag so the
+    # reducer's splice lands on filled_at_cancel + residual — otherwise remaining stays
+    # permanently understated once the raced deal books.
+    mgr, state, order, connector = manager_with_order  # local filled 3.5
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 1.01, 3.0, NOW, filled_at_cancel=4.5))
+
+    mgr._execute(state, [SubmitReplacement(order.client_order_id)])
+
+    req = connector.submit_order.call_args.args[0]
+    assert req.quantity == pytest.approx(5.5)  # residual 7.0 - raced 1.5 — what the venue gets
+    assert order.quantity == pytest.approx(4.5 + 5.5)  # splice lands on filled_at_cancel + residual
+
+
+def test_reconcile_tick_expiry_reverts_the_stuck_pending_update_order(manager_with_order):
+    # Clearing the intent alone leaves the order in PENDING_UPDATE with no event able to move
+    # it (an accepted status reply refuses to wipe pending, _reconcile_order skips pending), so
+    # every later update_order silently no-ops. The sweep must revert it to venue-recognisable
+    # truth: alive under the old terms.
+    mgr, state, order, connector = manager_with_order
+    cid = order.client_order_id
+    state.arm_replace_intent(cid, ReplaceIntent(6.5, 1.02, 3.5, T0))  # armed 60s before the AM clock
+
+    mgr._execute(state, mgr._reconcilers[EX].on_tick(state, T1))
+
+    assert state.get_replace_intent(cid) is None
+    assert order.status is OrderStatus.PARTIALLY_FILLED  # pre-pending truth, not stuck pending
+    connector.request_order_status.assert_called_once()

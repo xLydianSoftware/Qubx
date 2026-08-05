@@ -51,6 +51,9 @@ class ReplaceIntent:
     filled_at_request: float
     armed_at: np.datetime64
     filled_at_cancel: float | None = None
+    # venue id the suppressed cancel killed — carried to the superseded-oid marker so the
+    # connector's SECOND cancel terminal (REST ack + WS stream) can't kill the replacement
+    canceled_venue_oid: str | None = None
 
 
 def _notional(position: Position) -> float:
@@ -79,6 +82,7 @@ class AccountState:
         "_balance_push_as_of",
         "_position_reconcile_as_of",
         "_replace_intents",
+        "_superseded_oids",
     )
 
     def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
@@ -127,6 +131,10 @@ class AccountState:
         # cid -> armed ReplaceIntent while a partially-filled update_order is routed
         # through cancel+replace; absent otherwise. See ReplaceIntent for the lifecycle.
         self._replace_intents: dict[str, ReplaceIntent] = {}
+        # cid -> venue id a submitted replacement superseded. A cancel terminal addressed to
+        # that id is dead news, even while the order still carries it (the replacement's accept
+        # hasn't re-keyed yet) — which is exactly when _is_superseded_oid_cancel can't tell.
+        self._superseded_oids: dict[str, str] = {}
 
     def __repr__(self) -> str:
         return (
@@ -313,6 +321,7 @@ class AccountState:
 
         if new_status.is_terminal:
             self._pending_evict_index[cid] = now
+            self._superseded_oids.pop(cid, None)
         else:
             self._pending_evict_index.pop(cid, None)
 
@@ -332,6 +341,10 @@ class AccountState:
             self._venue_id_index.pop(order.venue_order_id, None)
         order.venue_order_id = venue_order_id
         self._venue_id_index[venue_order_id] = cid
+        if self._superseded_oids.get(cid) not in (None, venue_order_id):
+            # re-keyed past the superseded id: _is_superseded_oid_cancel covers it from here.
+            # A re-key BACK to the superseded id (a late deal for the dead order) keeps the marker.
+            self._superseded_oids.pop(cid, None)
 
     def apply_fill(self, cid: str, fill: Deal, now: np.datetime64, *, update_time: np.datetime64 | None = None) -> bool:
         """Apply a fill, deduped by trade id. Returns True if newly applied, False if duplicate."""
@@ -362,6 +375,12 @@ class AccountState:
     def clear_replace_intent(self, cid: str) -> ReplaceIntent | None:
         return self._replace_intents.pop(cid, None)
 
+    def mark_superseded_oid(self, cid: str, venue_order_id: str) -> None:
+        self._superseded_oids[cid] = venue_order_id
+
+    def is_superseded_oid(self, cid: str, venue_order_id: str) -> bool:
+        return self._superseded_oids.get(cid) == venue_order_id
+
     def remove_order(self, cid: str) -> None:
         # Drop an order from state entirely (e.g. a submit that raised before reaching the
         # venue) — distinct from evict_to_history, which retains it in the ring buffer.
@@ -374,6 +393,7 @@ class AccountState:
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
+        self._superseded_oids.pop(cid, None)
 
     def evict_to_history(self, cid: str) -> None:
         """Evict a terminal order from active state into the history ring buffer,
@@ -389,6 +409,7 @@ class AccountState:
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
+        self._superseded_oids.pop(cid, None)
         self._terminal_history.append(order)
 
     def prune_terminal_orders(self, now: np.datetime64, retention: np.timedelta64) -> None:

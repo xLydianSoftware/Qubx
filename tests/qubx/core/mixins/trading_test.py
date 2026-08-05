@@ -6,7 +6,13 @@ import pytest
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus, Position
 from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
-from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound, ReadOnlyConnector
+from qubx.core.exceptions import (
+    InvalidOrderSize,
+    InvalidOrderTransition,
+    OrderAlreadyTerminal,
+    OrderNotFound,
+    ReadOnlyConnector,
+)
 from qubx.core.interfaces import IStrategyContext, ITimeProvider
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
@@ -699,6 +705,34 @@ class TestTradingManagerCancelUpdateFailure:
         assert isinstance(event, OrderUpdateRejectedEvent)
         assert event.client_order_id == order.client_order_id
         assert "venue unreachable" in event.reason
+
+    def test_cancel_order_during_the_replace_window_clears_the_intent(self, failure_setup, mock_connector):
+        """An explicit strategy cancel of a mid-replace order is legal and must win: leaving the
+        intent armed would suppress the cancel's ack and resurrect the order as a replacement."""
+        tm, am, context, order = failure_setup
+        state = am._states[order.instrument.exchange]
+        order.record_fill(0.03, 50_000.0)  # filled > 0 -> replace routing
+        tm.update_order(price=51_000.0, amount=0.1, client_order_id=order.client_order_id)
+        assert state.get_replace_intent(order.client_order_id) is not None
+
+        assert tm.cancel_order(client_order_id=order.client_order_id) is True
+
+        assert state.get_replace_intent(order.client_order_id) is None
+        assert am.get_order(order.client_order_id).status is OrderStatus.PENDING_CANCEL
+
+    def test_replace_intent_not_armed_when_the_pending_transition_raises(self, failure_setup, mock_connector):
+        """Arming before the PENDING_UPDATE transition leaks the intent when the transition is
+        illegal (PENDING_CANCEL -> PENDING_UPDATE): no cancel is ever sent, so nothing clears it."""
+        tm, am, context, order = failure_setup
+        state = am._states[order.instrument.exchange]
+        order.record_fill(0.03, 50_000.0)
+        am.transition_order(order.instrument.exchange, order.client_order_id, OrderStatus.PENDING_CANCEL)
+
+        with pytest.raises(InvalidOrderTransition):
+            tm.update_order(price=51_000.0, amount=0.1, client_order_id=order.client_order_id)
+
+        assert state.get_replace_intent(order.client_order_id) is None
+        mock_connector.cancel_order.assert_not_called()
 
 
 class TestTradingManagerUpdateOrderGuards:

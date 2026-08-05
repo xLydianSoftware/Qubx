@@ -380,11 +380,21 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                                     )
                                 )
                             continue
+                        if intent.canceled_venue_oid is not None:
+                            # The replacement is live under the same cid: the id the cancel killed
+                            # is dead news. Marked only after a successful submit — the failure
+                            # branch above still has to surface a cancel for that very id.
+                            state.mark_superseded_oid(cid, intent.canceled_venue_oid)
                         # Splice + strategy notification via the normal reducer path (idempotent
                         # with Task 1's rule: quantity = filled + residual). Submit FIRST, then
                         # route — the strategy's UPDATED callback must observe the intent already
                         # cleared (see RouteEvent above: process_event is a synchronous re-entry
                         # into apply()).
+                        # The reducer splices against LOCAL filled_quantity, which lags when the
+                        # cancel ack counted fills whose deals haven't booked yet — compensate so
+                        # the splice lands on filled_at_cancel + residual either way (the lagging
+                        # deal still dedupes by trade id when it arrives).
+                        route_quantity = residual + max(0.0, (intent.filled_at_cancel or 0.0) - order.filled_quantity)
                         if self._pm is not None:
                             self._pm.process_event(
                                 OrderUpdatedEvent(
@@ -392,7 +402,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                                     client_order_id=cid,
                                     venue_order_id=None,
                                     new_price=intent.price,
-                                    new_quantity=residual,
+                                    new_quantity=route_quantity,
                                 )
                             )
                         else:
