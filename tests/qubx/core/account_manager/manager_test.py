@@ -329,6 +329,40 @@ def test_execute_submit_replacement_sends_unsigned_quantity_for_sell(manager_wit
     assert req.side == OrderSide.SELL
 
 
+def test_execute_submit_replacement_restamps_reduce_only_and_post_only(manager_with_order):
+    # Pin manager.py's options re-stamping: reduceOnly/post_only come from the order record
+    # (the source of truth), not blindly copied — a stale "reduce_only" alias in order.options
+    # must not survive, but unrelated options do.
+    mgr, state, order, connector = manager_with_order
+    order.reduce_only = True
+    order.post_only = True
+    order.options = {"reduce_only": False, "some_venue_key": "keep-me"}
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 1.01, 3.0, NOW, filled_at_cancel=3.5))
+    mgr._execute(state, [SubmitReplacement(order.client_order_id)])
+
+    req = connector.submit_order.call_args.args[0]
+    assert req.options["reduceOnly"] is True
+    assert req.options["post_only"] is True
+    assert "reduce_only" not in req.options  # stale alias dropped, not the stale value
+    assert req.options["some_venue_key"] == "keep-me"  # unrelated options carried forward
+
+
+def test_execute_submit_replacement_submit_failure_surfaces_cancel(manager_with_order):
+    # A synchronous connector.submit_order raise means nothing is live at the venue (the OLD
+    # order's cancel already succeeded — precondition for this decision to fire), so the truth
+    # is CANCELED, not a stuck PENDING_UPDATE. No OrderUpdatedEvent must be routed, and the
+    # exception must not escape _execute.
+    mgr, state, order, connector = manager_with_order
+    connector.submit_order.side_effect = RuntimeError("boom")
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 1.01, 3.0, NOW, filled_at_cancel=3.5))
+
+    mgr._execute(state, [SubmitReplacement(order.client_order_id)])  # must not raise
+
+    assert state.get_replace_intent(order.client_order_id) is None  # cleared exactly once
+    assert order.status is OrderStatus.CANCELED  # truth surfaced, not a false PENDING_UPDATE
+    assert order.quantity == 10.0  # unspliced: the failed submit never routed UPDATED
+
+
 def test_execute_abandon_replace_reports_canceled_truth(manager_with_order):
     mgr, state, order, connector = manager_with_order
     state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 3.0, 3.0, NOW, filled_at_cancel=9.9))

@@ -359,7 +359,27 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                             client_id=cid,
                             options=options,
                         )
-                        connector.submit_order(request)
+                        try:
+                            connector.submit_order(request)
+                        except Exception:
+                            # By this point the venue-side cancel of the OLD order already
+                            # succeeded (that's the precondition for this decision to fire) —
+                            # so a failed resubmit leaves nothing live at the venue. Surface
+                            # that truth (mirrors trade()'s remove_order-and-reraise and
+                            # update_order's clear+route on a synchronous submit failure)
+                            # instead of leaving the order stuck at a false PENDING_UPDATE.
+                            logger.exception(
+                                f"[{state.exchange}] SubmitReplacement submit failed for {cid}; surfacing cancel"
+                            )
+                            if self._pm is not None:
+                                self._pm.process_event(
+                                    OrderCanceledEvent(
+                                        instrument=None,
+                                        client_order_id=cid,
+                                        venue_order_id=order.venue_order_id,
+                                    )
+                                )
+                            continue
                         # Splice + strategy notification via the normal reducer path (idempotent
                         # with Task 1's rule: quantity = filled + residual). Submit FIRST, then
                         # route — the strategy's UPDATED callback must observe the intent already
