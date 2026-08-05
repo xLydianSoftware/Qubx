@@ -368,6 +368,7 @@ class FitContext(ITimeProvider):
     set_warmup_positions = _denied("set_warmup_positions", "framework-internal")
     set_warmup_orders = _denied("set_warmup_orders", "framework-internal")
     set_warmup_active_targets = _denied("set_warmup_active_targets", "framework-internal")
+    set_reduce_only_when_degraded = _denied("set_reduce_only_when_degraded", "an on_init-time setting")
     initializer = property(_denied("initializer", "an on_init-time object"))
 
     # ------------------------------------------------------------------

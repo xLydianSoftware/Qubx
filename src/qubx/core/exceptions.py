@@ -56,6 +56,17 @@ class ReadOnlyConnector(Exception):
     pass
 
 
+class QubxDegradedState(BaseError):
+    """
+    The context is degraded (stale data, venue unavailable) and the order would open or
+    increase a position. Only exposure-reducing orders are accepted in this state.
+    """
+
+    def __init__(self, message: str, degradations: tuple = ()):
+        super().__init__(message)
+        self.degradations = degradations
+
+
 class StrategyExceededMaxNumberOfRuntimeFailuresError(Exception):
     pass
 

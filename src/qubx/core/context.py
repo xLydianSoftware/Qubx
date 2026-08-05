@@ -352,6 +352,8 @@ class StrategyContext(IStrategyContext):
         self._instrument_service_manager.set_callbacks(self.initializer.get_instrument_service_callbacks())
         self._instrument_service_manager.start()
 
+        self._trading_manager.set_reduce_only_when_degraded(self.initializer.get_reduce_only_when_degraded())
+
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
         self._processing_manager.configure_stale_data_detection(*stale_data_config)

@@ -49,7 +49,7 @@ from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import ChannelMessage
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
-from qubx.core.status import ContextStatus, QubxStatusInfo
+from qubx.core.status import NORMAL_STATUS, ContextStatus, QubxStatusInfo
 from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
@@ -930,6 +930,11 @@ class ITradingManager:
         """
         ...
 
+    def set_reduce_only_when_degraded(self, enabled: bool) -> None:
+        """While the context is degraded, refuse orders that would open or increase a
+        position (QubxDegradedState). Applied from the initializer once on_init has run."""
+        ...
+
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         """Get the minimum size for an instrument.
 
@@ -1452,13 +1457,14 @@ class IStrategyContext(
 
     @property
     def status(self) -> QubxStatusInfo:
-        """Whether the framework can trade normally right now, and if not, why.
+        """
+        Whether the framework can trade normally right now, and if not, why.
 
-        NORMAL unless something degraded the context (event-queue backlog, exchange
-        maintenance); the returned snapshot lists every degradation currently held.
+        NORMAL unless something degraded the context (event-queue backlog, exchange maintenance);
+        the returned snapshot lists every degradation currently held.
         Always NORMAL in simulation unless a test sets it deliberately.
         """
-        ...
+        return NORMAL_STATUS
 
     def is_running(self) -> bool:
         """Check if the strategy context is running."""
@@ -2347,6 +2353,19 @@ class IStrategyInitializer:
         self,
     ) -> list[Callable[["IStrategyContext", list["Instrument"], list["Instrument"]], None]]:
         """Return registered instrument-service-change callbacks, in registration order."""
+        ...
+
+    def set_reduce_only_when_degraded(self, enabled: bool) -> None:
+        """
+        While the context is degraded, refuse orders that would open or increase a position
+        (QubxDegradedState). Position-reducing orders are always allowed. Off by default.
+        """
+        ...
+
+    def get_reduce_only_when_degraded(self) -> bool:
+        """
+        Whether exposure-increasing orders are refused while the context is degraded.
+        """
         ...
 
     def set_stale_data_detection(
