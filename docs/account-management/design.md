@@ -396,12 +396,15 @@ working order. Rather than adding a per-venue amend adapter to paper over the di
 `update_order` routes a partially-filled order through a framework-side cancel+replace: arm a
 `ReplaceIntent`, transition to `PENDING_UPDATE`, call `connector.cancel_order`. The connector
 never sees an amend call in this case — only the `cancel_order`/`submit_order` primitives every
-venue already has. The replacement resubmits under the **same client_order_id**, so a caller
+venue already has. The `filled == 0` check is inherently racy: a fill can land between the local
+check and the venue applying the amend, and the dialects then diverge on that one order after
+all. The window is bounded (one round trip) and self-corrects — the venue's amend ack carries
+the figures the next reconcile compares against. The replacement resubmits under the **same client_order_id**, so a caller
 watching one cid (e.g. a quantkit maker-taker slot) sees one continuously-live order, not a
 cancel+accept pair.
 
 **The intent lifecycle** (`ReplaceIntent` in `AccountState`, keyed by cid — `desired_remaining`,
-`price`, `filled_at_request`, `armed_at`, `filled_at_cancel`):
+`price`, `filled_at_request`, `armed_at`, `filled_at_cancel`, `canceled_venue_oid`):
 
 1. `update_order` arms the intent and fires `cancel_order`. A synchronous failure here (the
    cancel never reached the venue) clears the intent immediately and reverts via a synthetic
@@ -417,7 +420,12 @@ cancel+accept pair.
      pre-pending status with `OrderChange.UPDATE_REJECTED` — the order is still alive under the
      old terms.
    - A `FILLED` beats the cancel (order settles for real before the ack) and clears the intent
-     unconditionally — the fill is the truth now, no replacement is submitted.
+     unconditionally — the fill is the truth now, no replacement is submitted. Every other
+     terminal (`EXPIRED`/`REJECTED`/`LOST`) clears it the same way.
+   - A strategy `cancel_order` during the window is legal and wins: it clears the intent up front
+     and moves the order to `PENDING_CANCEL`. Suppression is gated on the order being
+     `PENDING_UPDATE`, not merely on an armed intent, so an explicit cancel can never be
+     swallowed and turned into a resurrection.
 3. The reconciler (`on_event`) turns a suppressed cancel into a decision. Residual (all
    magnitudes): `residual = desired_remaining − max(0, filled_at_cancel − filled_at_request)` —
    the "raced" term backs out fills that landed between the request and the cancel ack, since
@@ -428,15 +436,34 @@ cancel+accept pair.
    submits the residual under the same cid (order fields mirrored from the original —
    `TradingManager.trade`'s `OrderRequest` construction, not reinvented), then routes an
    `OrderUpdatedEvent` so the reducer splices `quantity = filled + residual` and the strategy's
-   `UPDATED` callback observes the intent already cleared. `AbandonReplace` clears the intent and
-   routes an `OrderCanceledEvent` — the truthful terminal the suppressed cancel deferred.
-5. **Expiry.** A suppressed cancel whose ack never determined `filled_at_cancel` within
-   `REPLACE_INTENT_MAX_AGE` (30s) has an unknown venue outcome — the periodic sweep clears the
-   intent and issues `RequestStatus` to refetch truth. It never fabricates `AbandonReplace` here:
-   an unconfirmed cancel is not a confirmed cancel, and routing a terminal nobody observed would
-   trade one fiction for another. The existing `_is_superseded_oid_cancel` guard still applies
-   underneath this flow — a late `OrderCanceledEvent` for the pre-replace venue id is dropped
-   whether or not a replace is in flight.
+   `UPDATED` callback observes the intent already cleared. The routed `new_quantity` is
+   lag-compensated (`residual + max(0, filled_at_cancel − order.filled_quantity)`): the reducer
+   splices against *local* `filled_quantity`, so when the cancel ack counted raced fills whose
+   deals haven't booked yet, the uncompensated splice would understate remaining permanently once
+   they do. The venue still receives the plain `residual`, and the lagging deal dedupes by trade
+   id when it lands. `AbandonReplace` clears the intent and routes an `OrderCanceledEvent` — the
+   truthful terminal the suppressed cancel deferred.
+5. **Expiry.** An intent still armed `REPLACE_INTENT_MAX_AGE` (30s) after arming — cancel never
+   acked, or acked but never decided — has an undecidable outcome. The periodic sweep clears it,
+   routes a synthetic `OrderUpdateRejectedEvent` (so the order reverts out of `PENDING_UPDATE`
+   via `pre_pending`, i.e. presumed alive under the old terms) and issues `RequestStatus` to
+   refetch truth. The revert is not optional bookkeeping: a live order's status reply is an
+   `OrderAcceptedEvent`, which deliberately refuses to wipe `PENDING_*`, and `_reconcile_order`
+   skips pending orders — without the synthetic reject the order sits in `PENDING_UPDATE`
+   forever and every later `update_order` silently no-ops on the re-entrancy guard. If the cancel
+   *did* go through, the `RequestStatus` reply's terminal now terminalizes truthfully, since no
+   intent is left to suppress it. The sweep never fabricates `AbandonReplace`: an unconfirmed
+   cancel is not a confirmed cancel, and routing a terminal nobody observed would trade one
+   fiction for another.
+6. **Duplicate cancel terminals.** A connector may emit two terminals per cancel (the ccxt one
+   does: REST ack + WS stream). The first is consumed by the suppression above; the second
+   arrives once the replacement is already live under the same cid and — until the replacement's
+   accept re-keys the venue id — resolves onto an order still carrying the *old* id, where
+   `_is_superseded_oid_cancel` cannot tell it is stale. On a successful replacement submit
+   `_execute` therefore records the killed id as a per-cid superseded-oid marker in
+   `AccountState`; a `CANCELED` matching that marker is dropped. The marker is cleared when the
+   venue id re-keys past it (`_is_superseded_oid_cancel` covers it from there) and on any
+   terminal transition.
 
 **Failure contract — truth over fiction.** Every branch below degrades to a state the venue would
 recognize; none reports an order alive that isn't, or dead that isn't.
@@ -448,8 +475,10 @@ recognize; none reports an order alive that isn't, or dead that isn't.
 | Fill races the cancel to FILLED | Intent cleared, order FILLED (no replacement) |
 | Post-cancel residual below min size | `AbandonReplace` → truthful `OrderCanceledEvent` |
 | Replacement `submit_order` raises | Truthful `OrderCanceledEvent` (the old order is already gone at the venue; nothing live to report otherwise) |
-| Cancel ack never arrives within 30s | Intent cleared, `RequestStatus` refetch — never a fabricated terminal |
+| Strategy cancels during the replace window | Intent cleared, cancel ack terminalizes truthfully, no replacement |
+| Intent unresolved for 30s (no ack, or acked-but-undecided) | Intent cleared, synthetic `OrderUpdateRejectedEvent` reverts to pre-pending, `RequestStatus` refetch — never a fabricated terminal |
 | Stale cancel for a superseded venue id | Dropped by `_is_superseded_oid_cancel`, independent of any intent |
+| Second cancel terminal for the id the replacement superseded | Dropped by the per-cid superseded-oid marker (fires before the venue id re-keys) |
 
 **Sim.** The backtester connector exercises the same account-manager path — the `filled == 0`
 native-amend leg is pinned by an integration test through the real OME (book state, not the
