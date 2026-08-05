@@ -34,6 +34,7 @@ from qubx.core.events import (
     OrderCanceledEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
+    OrderUpdateRejectedEvent,
 )
 from qubx.core.lookups import lookup
 
@@ -887,15 +888,49 @@ def test_on_tick_leaves_fresh_replace_intent_armed():
     assert not any(isinstance(a, RequestStatus) for a in actions)
 
 
-def test_on_tick_does_not_expire_intent_with_acked_cancel():
-    # filled_at_cancel set means the cancel ack DID arrive; the decide+_execute path
-    # consumes such intents synchronously within the same apply call, so this should
-    # never persist across a tick in practice — the sweep only targets the unacked case
-    # and must leave an acked one alone regardless.
+def test_on_tick_expires_stamped_but_undecided_intent():
+    # filled_at_cancel set means the cancel ack arrived; the decide+_execute path normally
+    # consumes such an intent synchronously in the same apply call. If it is still armed a
+    # max-age later the decision never fired (e.g. a venue-id-only cancel that failed to
+    # resolve), and a stamped-but-undecided intent is exactly as stale as an unacked one.
     st = _armed_state(filled_at_cancel=3.5)
     rec = _reconciler()
 
     actions = rec.on_tick(st, _passed_seconds(T0, 30))
 
-    assert st.get_replace_intent("c1") is not None
-    assert not any(isinstance(a, RequestStatus) for a in actions)
+    assert st.get_replace_intent("c1") is None
+    assert RequestStatus(cid="c1", venue_id="v_c1", instrument=_inst()) in actions
+
+
+def test_on_tick_expiry_routes_synthetic_reject_to_recover_the_order():
+    # A live order's status reply is an OrderAcceptedEvent, which refuses to wipe PENDING_*,
+    # and _reconcile_order skips pending orders — so clearing the intent alone leaves the order
+    # stuck in PENDING_UPDATE forever (every later update_order silently no-ops). The sweep must
+    # also revert it via the synthetic-reject path.
+    st = _armed_state(filled_at_cancel=None)
+    rec = _reconciler()
+
+    actions = rec.on_tick(st, _passed_seconds(T0, 30))
+
+    routed = [a.event for a in actions if isinstance(a, RouteEvent)]
+    assert len(routed) == 1
+    reject = routed[0]
+    assert isinstance(reject, OrderUpdateRejectedEvent)
+    assert reject.client_order_id == "c1"
+    assert reject.venue_order_id == "v_c1"
+    # the revert must precede the status refetch so a late terminal lands on a settled status
+    assert actions.index(RouteEvent(reject)) < actions.index(
+        RequestStatus(cid="c1", venue_id="v_c1", instrument=_inst())
+    )
+
+
+def test_on_event_venue_id_only_cancel_still_decides():
+    # The reducer stamps the intent via _resolve (cid OR venue id), so a cancel carrying only a
+    # venue id arms the decision — the gate must resolve the order the same way, or the intent
+    # is stamped but never decided and leaks until the sweep.
+    st = _armed_state(desired_remaining=7.0, filled_at_request=3.0, filled_at_cancel=3.5)
+    rec = _reconciler()
+
+    actions = rec.on_event(st, OrderCanceledEvent(instrument=_inst(), client_order_id=None, venue_order_id="v_c1"), T0)
+
+    assert actions == [SubmitReplacement(cid="c1")]

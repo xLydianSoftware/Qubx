@@ -38,6 +38,7 @@ from qubx.core.events import (
     OrderCanceledEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
+    OrderUpdateRejectedEvent,
 )
 from qubx.utils.time import to_timedelta
 
@@ -51,9 +52,9 @@ _log = area_logger("reconciler")
 # re-fetched deals are deduped by trade_id and realize-only-guarded anyway.
 HIST_DEALS_LOOKBACK = np.timedelta64(2, "s")
 
-# A replace intent whose internal cancel never acked (filled_at_cancel unset) this long after
-# arming: the cancel's venue outcome is unknown, so the periodic sweep clears it and refetches
-# status rather than assuming either side.
+# A replace intent still armed this long after arming (cancel never acked, or acked but never
+# decided): the outcome is unknown, so the periodic sweep clears it, reverts the order out of
+# PENDING_UPDATE and refetches status rather than assuming either side.
 REPLACE_INTENT_MAX_AGE = np.timedelta64(30, "s")
 
 
@@ -428,25 +429,38 @@ class Reconciler:
         return actions + self._dispatch(Tick(), state, now)
 
     def _sweep_expired_replace_intents(self, state: AccountState, now: np.datetime64) -> list[Action]:
-        # - a replace intent's internal cancel that never acked (filled_at_cancel unset — an
-        #   acked one is consumed synchronously by _decide_replace/_execute in the same apply
-        #   call, so it can't persist to a later tick). Its venue outcome is unknown: clear +
-        #   refetch status rather than assume it. Never AbandonReplace here — that would route a
-        #   terminal cancel and fabricate an outcome nobody confirmed; RequestStatus lets venue
-        #   truth resolve it (order still live -> reverts out of PENDING_UPDATE via the normal
-        #   accepted/updated path; order gone -> a real terminal event lands and, with no intent
-        #   armed anymore, terminalizes truthfully).
+        # - a replace intent still armed a max-age after arming is stale whichever field it holds:
+        #   an unacked cancel (filled_at_cancel unset) has an unknown venue outcome, and a stamped
+        #   one whose decision never fired is equally undecidable. Never AbandonReplace here —
+        #   that would route a terminal cancel and fabricate an outcome nobody confirmed.
+        # - clearing the intent alone would strand the order: a live order's status reply is an
+        #   OrderAcceptedEvent, which deliberately refuses to wipe PENDING_*, and _reconcile_order
+        #   skips pending orders — so it would sit in PENDING_UPDATE forever and every later
+        #   update_order would silently no-op on the re-entrancy guard. The synthetic reject
+        #   reverts it to the pre-pending truth (alive under the old terms), and RequestStatus
+        #   then resolves the venue's actual verdict: if the cancel did go through, the reply's
+        #   terminal now terminalizes truthfully with no intent left to suppress it.
         actions: list[Action] = []
         for cid, intent in state.replace_intents().items():
-            if intent.filled_at_cancel is not None or now - intent.armed_at < REPLACE_INTENT_MAX_AGE:  # type: ignore
+            if now - intent.armed_at < REPLACE_INTENT_MAX_AGE:  # type: ignore
                 continue
             state.clear_replace_intent(cid)
             _log.warning(
                 f"[{state.exchange}] replace intent <y>{cid}</y> expired after "
-                f"{REPLACE_INTENT_MAX_AGE} with no cancel ack -> cleared, refetching status"
+                f"{REPLACE_INTENT_MAX_AGE} unresolved -> cleared, reverting and refetching status"
             )
             order = state.get_order(cid)
             if order is not None:
+                actions.append(
+                    RouteEvent(
+                        OrderUpdateRejectedEvent(
+                            instrument=None,
+                            client_order_id=cid,
+                            venue_order_id=order.venue_order_id,
+                            reason="replace intent expired; outcome unknown",
+                        )
+                    )
+                )
                 actions.append(RequestStatus(cid=cid, venue_id=order.venue_order_id, instrument=order.instrument))
         return actions
 
@@ -690,20 +704,35 @@ class Reconciler:
         return None
 
     def on_event(self, state: AccountState, event: object, now: np.datetime64) -> list[Action]:
-        if isinstance(event, OrderCanceledEvent) and event.client_order_id is not None:
-            intent = state.get_replace_intent(event.client_order_id)
+        if isinstance(event, OrderCanceledEvent) and (cid := self._resolved_cid(state, event)) is not None:
+            intent = state.get_replace_intent(cid)
             # filled_at_cancel is only stamped by the reducer's suppressed-cancel branch — a
             # None here means this cancel was NOT suppressed (superseded-oid drop / already
             # terminal), so the replace decision must not fire.
             if intent is not None and intent.filled_at_cancel is not None:
-                return self._decide_replace(state, event.client_order_id, intent)
+                return self._decide_replace(state, cid, intent)
 
         inp = DealIn(event) if isinstance(event, DealEvent) else OrderIn(event)
         return self._dispatch(inp, state, now, only=self._keys_of(event))
 
     @staticmethod
+    def _resolved_cid(state: AccountState, event: OrderCanceledEvent) -> str | None:
+        # Mirrors the reducer's _resolve (cid first, then venue id) so the decision keys off the
+        # SAME order the reducer stamped — a venue-id-only cancel must decide, not leak. Falls
+        # back to the event's own cid when nothing resolves, so an intent for a vanished order
+        # still reaches _decide_replace's defensive abandon.
+        if (order := state.get_order(event.client_order_id)) is None and event.venue_order_id is not None:
+            order = state.get_order_by_venue_id(event.venue_order_id)
+        return order.client_order_id if order is not None else event.client_order_id
+
+    @staticmethod
     def _decide_replace(state: AccountState, cid: str, intent: ReplaceIntent) -> list[Action]:
         # Read-only: the intent stays ARMED here — clearing it is the executing side's job.
+        # The gate is min_size only, not TradingManager._get_min_size (no min_notional / lot
+        # rules): a residual that clears min_size but not min_notional is submitted and the venue
+        # rejects it (order terminalizes REJECTED — truth), while one this gate abandons routes
+        # the cancel the suppression deferred (also truth). Both failure modes degrade truthfully,
+        # so the cheaper gate stays here rather than duplicating the sizing rules.
         order = state.get_order(cid)
         raced = max(0.0, intent.filled_at_cancel - intent.filled_at_request)  # type: ignore[operator]
         residual = intent.desired_remaining - raced
