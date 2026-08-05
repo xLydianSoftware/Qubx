@@ -28,6 +28,7 @@ and its "Rejection boundary" subsection):
 
 import asyncio
 import math
+import threading
 import time
 from asyncio.exceptions import CancelledError
 from collections.abc import Coroutine
@@ -748,9 +749,7 @@ class CcxtConnector(ChannelEmitter):
                 return (None, None)
             symbol = instrument_to_ccxt_symbol(instrument)
             rows = self._run_sync(self._em.exchange.fetch_leverages([symbol]))
-            settings = ccxt_extract_leverage_settings(
-                list(rows.values()) if isinstance(rows, dict) else rows
-            )
+            settings = ccxt_extract_leverage_settings(list(rows.values()) if isinstance(rows, dict) else rows)
             return settings.get(symbol, (None, None))
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] fetch leverage settings for {instrument.symbol}: {e}")
@@ -1373,18 +1372,20 @@ class CcxtConnector(ChannelEmitter):
         # call here would sink the whole snapshot).
         if isinstance(raw_orders, BaseException):
             logger.warning(
-                "[{}] snapshot: fetch_open_orders failed: {}: {}",
+                "[{}] snapshot: fetch_open_orders failed: {}: {} [{}]",
                 self.exchange_name,
                 type(raw_orders).__name__,
                 raw_orders,
+                self._loop_tag(),
             )
             return None
         if isinstance(raw_trigger_orders, BaseException):
             logger.warning(
-                "[{}] snapshot: fetch_open_orders(trigger) failed: {}: {}; skipping order reconcile this tick",
+                "[{}] snapshot: fetch_open_orders(trigger) failed: {}: {} [{}]; skipping order reconcile this tick",
                 self.exchange_name,
                 type(raw_trigger_orders).__name__,
                 raw_trigger_orders,
+                self._loop_tag(),
             )
             return None
         open_orders: list[Order] = []
@@ -1402,6 +1403,19 @@ class CcxtConnector(ChannelEmitter):
                 seen.add(key)
             open_orders.append(order)
         return open_orders
+
+    def _loop_tag(self) -> str:
+        """Which loop and thread this call is actually running on, next to the loop the
+        ccxt exchange was built on. Several loops coexist in one process (one per ccxt
+        exchange manager, the control server's, one per CcxtStorage); a call reaching the
+        exchange from a foreign loop is how an fd ends up registered twice
+        ("File descriptor N is used by transport ...")."""
+        try:
+            running = id(asyncio.get_running_loop())
+        except RuntimeError:
+            running = 0
+        own = id(getattr(self._em.exchange, "asyncio_loop", None))
+        return f"loop=0x{running:x} exchange_loop=0x{own:x}{' FOREIGN' if running != own else ''} thread={threading.current_thread().name}"
 
     def request_snapshot(self, include_orders: bool = True) -> None:
         self._spawn(self._snapshot_async(include_orders))
@@ -1440,10 +1454,11 @@ class CcxtConnector(ChannelEmitter):
         positions: list[Position] | None = None
         if isinstance(raw_positions, BaseException):
             logger.warning(
-                "[{}] snapshot: fetch_positions failed: {}: {}",
+                "[{}] snapshot: fetch_positions failed: {}: {} [{}]",
                 self.exchange_name,
                 type(raw_positions).__name__,
                 raw_positions,
+                self._loop_tag(),
             )
         else:
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
@@ -1453,10 +1468,11 @@ class CcxtConnector(ChannelEmitter):
         equity = available_margin = margin_ratio = withdrawable = None
         if isinstance(raw_balance, BaseException):
             logger.warning(
-                "[{}] snapshot: fetch_balance failed: {}: {}",
+                "[{}] snapshot: fetch_balance failed: {}: {} [{}]",
                 self.exchange_name,
                 type(raw_balance).__name__,
                 raw_balance,
+                self._loop_tag(),
             )
         else:
             balances = self._convert_balances(raw_balance)
