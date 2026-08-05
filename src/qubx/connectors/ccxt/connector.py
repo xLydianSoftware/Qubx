@@ -1372,12 +1372,18 @@ class CcxtConnector(ChannelEmitter):
         # loguru's colorizer rejects when it appears in the format string — a raised log
         # call here would sink the whole snapshot).
         if isinstance(raw_orders, BaseException):
-            logger.warning("[{}] snapshot: fetch_open_orders failed: {}", self.exchange_name, raw_orders)
+            logger.warning(
+                "[{}] snapshot: fetch_open_orders failed: {}: {}",
+                self.exchange_name,
+                type(raw_orders).__name__,
+                raw_orders,
+            )
             return None
         if isinstance(raw_trigger_orders, BaseException):
             logger.warning(
-                "[{}] snapshot: fetch_open_orders(trigger) failed: {}; skipping order reconcile this tick",
+                "[{}] snapshot: fetch_open_orders(trigger) failed: {}: {}; skipping order reconcile this tick",
                 self.exchange_name,
+                type(raw_trigger_orders).__name__,
                 raw_trigger_orders,
             )
             return None
@@ -1433,7 +1439,12 @@ class CcxtConnector(ChannelEmitter):
 
         positions: list[Position] | None = None
         if isinstance(raw_positions, BaseException):
-            logger.warning("[{}] snapshot: fetch_positions failed: {}", self.exchange_name, raw_positions)
+            logger.warning(
+                "[{}] snapshot: fetch_positions failed: {}: {}",
+                self.exchange_name,
+                type(raw_positions).__name__,
+                raw_positions,
+            )
         else:
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
@@ -1441,7 +1452,12 @@ class CcxtConnector(ChannelEmitter):
         balances: list[Balance] | None = None
         equity = available_margin = margin_ratio = withdrawable = None
         if isinstance(raw_balance, BaseException):
-            logger.warning("[{}] snapshot: fetch_balance failed: {}", self.exchange_name, raw_balance)
+            logger.warning(
+                "[{}] snapshot: fetch_balance failed: {}: {}",
+                self.exchange_name,
+                type(raw_balance).__name__,
+                raw_balance,
+            )
         else:
             balances = self._convert_balances(raw_balance)
             equity, available_margin, margin_ratio, withdrawable = self._extract_venue_figures(raw_balance)
