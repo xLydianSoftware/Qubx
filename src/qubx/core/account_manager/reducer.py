@@ -470,7 +470,11 @@ def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datet
     if event.new_price is not None:
         order.price = event.new_price
     if event.new_quantity is not None:
-        order.quantity = event.new_quantity
+        # new_quantity is the desired REMAINING. quantity's invariant is
+        # total-including-filled, so splice the cumulative fills back in —
+        # otherwise remaining (quantity - filled) goes negative after the
+        # first amend of a partially-filled order.
+        order.quantity = order.filled_quantity + event.new_quantity
     order.last_update_time = event.last_update_time if event.last_update_time is not None else now
     if order.status == OrderStatus.PENDING_UPDATE:
         target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED

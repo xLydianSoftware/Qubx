@@ -9,6 +9,7 @@ a kw-only snapshot_grace (threaded once via the local apply wrapper below).
 from typing import TypeVar
 
 import numpy as np
+import pytest
 
 from qubx.core.account_manager import reducer
 from qubx.core.account_manager.state import AccountState
@@ -70,12 +71,18 @@ def _fill(trade_id: str = "t1", amount: float = 0.5, price: float = 100.0) -> De
     return Deal(trade_id=trade_id, order_id="v1", time=T0, amount=amount, price=price, aggressive=True)
 
 
-def _order(state: AccountState, cid: str = "c1", status: OrderStatus = OrderStatus.SUBMITTED, venue_id=None) -> Order:
+def _order(
+    state: AccountState,
+    cid: str = "c1",
+    status: OrderStatus = OrderStatus.SUBMITTED,
+    venue_id=None,
+    quantity: float = 1.0,
+) -> Order:
     order = Order(
         client_order_id=cid,
         type=OrderType.LIMIT,
         instrument=BTC,
-        quantity=1.0,
+        quantity=quantity,
         side=OrderSide.BUY,
         time_in_force="gtc",
         status=status,
@@ -638,6 +645,34 @@ def test_update_on_non_pending_applies_params_without_status_change():
     assert r.order.status is OrderStatus.ACCEPTED  # unchanged
     assert r.order.price == 120.0
     assert r.order_change is OrderChange.UPDATED  # fires on_order despite no status change
+
+
+def test_updated_after_partial_fill_keeps_remaining_positive():
+    # ACE 2026-08-05 regression: amend of a partially-filled order must not produce
+    # quantity < filled_quantity (negative remaining). new_quantity is the desired
+    # REMAINING; quantity's invariant is total-including-filled.
+    state = _state()
+    order = _order(state, status=OrderStatus.ACCEPTED, quantity=1344.92)
+    order.record_fill(764.0, 0.0719)
+
+    apply(
+        state,
+        OrderUpdatedEvent(
+            instrument=None,
+            client_order_id="c1",
+            venue_order_id="new-vid",
+            new_price=0.072,
+            new_quantity=580.92,
+        ),
+        T1,
+    )
+
+    assert order.quantity == pytest.approx(764.0 + 580.92)  # total incl. filled
+    assert order.quantity - order.filled_quantity == pytest.approx(580.92)  # remaining = what was sent
+
+    # more fills arrive on the replacement — remaining must NEVER go negative
+    order.record_fill(292.78, 0.0722)
+    assert order.quantity - order.filled_quantity >= 0
 
 
 def test_cancel_rejected_reverts_to_pre_pending():
