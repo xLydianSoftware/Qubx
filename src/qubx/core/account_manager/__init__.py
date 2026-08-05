@@ -18,7 +18,7 @@ surface as the event-typed apply path it implements.
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.manager import AccountManager, SimulatedAccountManager
 from qubx.core.account_manager.reducer import ApplyResult
-from qubx.core.account_manager.state import AccountState, VenueAccountFigures
+from qubx.core.account_manager.state import AccountState, ReplaceIntent, VenueAccountFigures
 from qubx.core.account_manager.state_machine import (
     TRANSITIONS,
     can_transition,
@@ -65,6 +65,7 @@ __all__ = [
     "SimulatedAccountManager",
     "AccountManagerConfig",
     "ApplyResult",
+    "ReplaceIntent",
     "VenueAccountFigures",
     "TRANSITIONS",
     "can_transition",

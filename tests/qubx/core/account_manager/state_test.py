@@ -13,7 +13,7 @@ from typing import TypeVar
 import numpy as np
 import pytest
 
-from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state import AccountState, ReplaceIntent
 from qubx.core.basics import (
     Balance,
     Deal,
@@ -489,3 +489,41 @@ def test_snapshot_balance_no_push_uses_as_of_without_ratchet():
     # identical balance at a later poll -> NOT ratcheted forward
     state.apply_balance_snapshot(Balance(exchange="binance", currency="USDT", total=50.0, free=50.0), T2)
     assert state.get_balance("USDT").last_update_time == T1
+
+
+# --------------------------------------------------------------------------- #
+# replace-intent table
+# --------------------------------------------------------------------------- #
+
+
+def test_replace_intent_arm_get_clear():
+    state = AccountState("TEST", "USDT")
+    intent = ReplaceIntent(
+        desired_remaining=7.0, price=1.01, filled_at_request=3.0, armed_at=np.datetime64("2026-08-05T16:05:20", "ns")
+    )
+    state.arm_replace_intent("cid-1", intent)
+    assert state.get_replace_intent("cid-1") is intent
+    assert state.clear_replace_intent("cid-1") is intent
+    assert state.get_replace_intent("cid-1") is None
+    assert state.clear_replace_intent("cid-1") is None  # idempotent
+
+
+def test_replace_intent_get_and_clear_unknown_cid_is_none():
+    state = AccountState("TEST", "USDT")
+    assert state.get_replace_intent("no-such-cid") is None
+    assert state.clear_replace_intent("no-such-cid") is None
+
+
+def test_replace_intents_returns_readonly_view():
+    state = AccountState("TEST", "USDT")
+    intent = ReplaceIntent(desired_remaining=7.0, price=1.01, filled_at_request=3.0, armed_at=T1)
+    state.arm_replace_intent("cid-1", intent)
+    view = state.replace_intents()
+    assert view == {"cid-1": intent}
+    view.clear()
+    assert state.get_replace_intent("cid-1") is intent  # mutating the view didn't touch internal state
+
+
+def test_replace_intent_filled_at_cancel_defaults_none():
+    intent = ReplaceIntent(desired_remaining=7.0, price=1.01, filled_at_request=3.0, armed_at=T1)
+    assert intent.filled_at_cancel is None

@@ -39,6 +39,20 @@ class VenueAccountFigures:
     withdrawable: float | None = None
 
 
+@dataclass
+class ReplaceIntent:
+    """Armed when a partially-filled order's update is routed through cancel+replace
+    instead of native amend. Tracks what the replacement should submit, and — once the
+    internal cancel acks — how much filled while the cancel was in flight, so the
+    residual sent to the venue reflects reality rather than a stale request-time figure."""
+
+    desired_remaining: float
+    price: float | None
+    filled_at_request: float
+    armed_at: np.datetime64
+    filled_at_cancel: float | None = None
+
+
 def _notional(position: Position) -> float:
     # NaN for an unmarked position -> 0.0, so one unmarked position can't poison aggregates
     n = position.notional_value
@@ -64,6 +78,7 @@ class AccountState:
         "_applied_funding_buckets",
         "_balance_push_as_of",
         "_position_reconcile_as_of",
+        "_replace_intents",
     )
 
     def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
@@ -109,6 +124,9 @@ class AccountState:
         # - watermark: snapshot reconciled the size up to this venue time; a deal at/under it is
         #   already in that size → reducer records but doesn't re-book it
         self._position_reconcile_as_of: dict[Instrument, np.datetime64] = {}
+        # cid -> armed ReplaceIntent while a partially-filled update_order is routed
+        # through cancel+replace; absent otherwise. See ReplaceIntent for the lifecycle.
+        self._replace_intents: dict[str, ReplaceIntent] = {}
 
     def __repr__(self) -> str:
         return (
@@ -161,6 +179,13 @@ class AccountState:
 
     def get_pre_pending(self, cid: str) -> OrderStatus | None:
         return self._pre_pending_status.get(cid)
+
+    def get_replace_intent(self, cid: str) -> ReplaceIntent | None:
+        return self._replace_intents.get(cid)
+
+    def replace_intents(self) -> dict[str, ReplaceIntent]:
+        """Read-only view for the expiry sweep — a defensive copy, like get_orders."""
+        return dict(self._replace_intents)
 
     def get_last_snapshot_as_of(self) -> np.datetime64 | None:
         return self._last_snapshot_as_of
@@ -330,6 +355,12 @@ class AccountState:
         calls this when a snapshot already counted the execution, so any later
         re-delivery on any path dedups via apply_fill."""
         self._seen_trade_ids.setdefault(cid, set()).add(trade_id)
+
+    def arm_replace_intent(self, cid: str, intent: ReplaceIntent) -> None:
+        self._replace_intents[cid] = intent
+
+    def clear_replace_intent(self, cid: str) -> ReplaceIntent | None:
+        return self._replace_intents.pop(cid, None)
 
     def remove_order(self, cid: str) -> None:
         # Drop an order from state entirely (e.g. a submit that raised before reaching the

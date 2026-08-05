@@ -23,7 +23,7 @@ from qubx.core.account_manager.reconciler import (
     RouteEvent,
 )
 from qubx.core.account_manager.reducer import ApplyResult
-from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.state import AccountState, ReplaceIntent
 from qubx.core.basics import (
     ZERO_COSTS,
     Balance,
@@ -185,6 +185,19 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
         reducer.transition(self._states[exchange], cid, new_status, self._time.time())
+
+    def arm_replace_intent(
+        self, exchange: str, cid: str, *, desired_remaining: float, price: float | None, filled_at_request: float
+    ) -> None:
+        """Arm the cancel+replace orchestration for a partially-filled `update_order`
+        (TradingManager routing) — stamps `armed_at` from the AM clock."""
+        intent = ReplaceIntent(
+            desired_remaining=desired_remaining,
+            price=price,
+            filled_at_request=filled_at_request,
+            armed_at=self._time.time(),
+        )
+        self._states[exchange].arm_replace_intent(cid, intent)
 
     def remove_order(self, exchange: str, cid: str) -> None:
         self._states[exchange].remove_order(cid)

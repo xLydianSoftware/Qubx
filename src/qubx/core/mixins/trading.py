@@ -370,10 +370,18 @@ class TradingManager(ITradingManager):
     ) -> None:
         """Update an existing limit order with new price and amount.
 
+        `amount` is the desired signed REMAINING quantity to keep working (its sign
+        must match the order's side) — not a delta and not the original order size.
+
         Raises OrderAlreadyTerminal on a settled order (updating a settled order is
         meaningful misuse); a no-op while a previous update is still in flight.
         A synchronous connector failure reverts the order to its pre-pending status
         (via a synthetic OrderUpdateRejectedEvent) and re-raises to the caller.
+
+        Once the order has any fill, venue amend dialects disagree on what a resize
+        means (HL: replace-size; Binance/Gate: new-total with executedQty kept), so
+        this routes through the framework's cancel+replace orchestration instead of
+        a native amend — the connector only ever sees `cancel_order` in that case.
         """
         self._ensure_writable()
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
@@ -386,16 +394,36 @@ class TradingManager(ITradingManager):
         if order.status is OrderStatus.PENDING_UPDATE:
             return
 
+        if amount == 0 or (amount > 0) != (order.side == OrderSide.BUY):
+            raise ValueError(
+                f"update_order amount {amount} sign does not match order side {order.side} "
+                f"for {order.client_order_id} — amount is the desired signed remaining"
+            )
+
         instrument = order.instrument
-        amount = self._adjust_size(instrument, amount)
+        # amount keeps its sign (needed by _adjust_price's rounding direction below) —
+        # size_adj is the rounded absolute magnitude to send.
+        size_adj = self._adjust_size(instrument, amount)
         adjusted_price = self._adjust_price(instrument, price, amount)
         if adjusted_price is None:
             raise ValueError(f"Price adjustment failed for {instrument.symbol}")
 
         cid = order.client_order_id
+        if order.filled_quantity > 0:
+            self._account_manager.arm_replace_intent(
+                instrument.exchange,
+                cid,
+                desired_remaining=size_adj,
+                price=adjusted_price,
+                filled_at_request=order.filled_quantity,
+            )
+            self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
+            self._get_connector(instrument.exchange).cancel_order(order)
+            return
+
         self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
         try:
-            self._get_connector(instrument.exchange).update_order(order, price=adjusted_price, quantity=abs(amount))
+            self._get_connector(instrument.exchange).update_order(order, price=adjusted_price, quantity=size_adj)
         except Exception as e:
             # Same contract as cancel_order: synthetic reject through the PM reverts
             # PENDING_UPDATE via pre_pending, then the original exception re-raises.

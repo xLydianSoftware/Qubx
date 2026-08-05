@@ -3,12 +3,18 @@ from unittest.mock import Mock
 import pandas as pd
 import pytest
 
-from qubx.core.basics import OrderStatus, Position
+from qubx.core.basics import OrderSide, OrderStatus, Position
 from qubx.core.mixins.trading import TradingManager
 from qubx.health.dummy import DummyHealthMonitor
 
 
-def _order(order_id="exchange_order_1", client_order_id="cid_1", status=OrderStatus.ACCEPTED):
+def _order(
+    order_id="exchange_order_1",
+    client_order_id="cid_1",
+    status=OrderStatus.ACCEPTED,
+    side=OrderSide.BUY,
+    filled_quantity=0.0,
+):
     instrument = Mock()
     instrument.exchange = "BINANCE.UM"
     instrument.symbol = "BTCUSDT"
@@ -24,6 +30,8 @@ def _order(order_id="exchange_order_1", client_order_id="cid_1", status=OrderSta
     order.venue_order_id = order_id
     order.instrument = instrument
     order.status = status
+    order.side = side
+    order.filled_quantity = filled_quantity
     return order
 
 
@@ -106,3 +114,62 @@ def test_update_order_requires_exactly_one_identifier(trading_manager):
         trading_manager.update_order(
             order_id="o1", client_order_id="c1", price=123.0, amount=1.0, exchange="BINANCE.UM"
         )
+
+
+def test_update_order_rejects_sign_mismatch(trading_manager):
+    # BUY order, filled 0 — a negative amount doesn't match the order side.
+    order = _order(client_order_id="cid_1", side=OrderSide.BUY, filled_quantity=0.0)
+    trading_manager._account_manager.find_order_by_client_id.return_value = order
+    trading_manager._account_manager.find_order_by_id.return_value = None
+
+    with pytest.raises(ValueError, match="sign"):
+        trading_manager.update_order(price=1.0, amount=-5.0, client_order_id="cid_1", exchange="BINANCE.UM")
+
+    trading_manager._exchange_to_connector["BINANCE.UM"].update_order.assert_not_called()
+    trading_manager._exchange_to_connector["BINANCE.UM"].cancel_order.assert_not_called()
+
+
+def test_update_order_rejects_zero_amount(trading_manager):
+    order = _order(client_order_id="cid_1", side=OrderSide.BUY, filled_quantity=0.0)
+    trading_manager._account_manager.find_order_by_client_id.return_value = order
+    trading_manager._account_manager.find_order_by_id.return_value = None
+
+    with pytest.raises(ValueError, match="sign"):
+        trading_manager.update_order(price=1.0, amount=0.0, client_order_id="cid_1", exchange="BINANCE.UM")
+
+
+def test_update_order_partially_filled_routes_to_cancel(trading_manager):
+    # BUY order with a partial fill — must route through cancel+replace, never native amend.
+    order = _order(client_order_id="cid_1", side=OrderSide.BUY, filled_quantity=3.0)
+    trading_manager._account_manager.find_order_by_client_id.return_value = order
+    trading_manager._account_manager.find_order_by_id.return_value = None
+    trading_manager._account_manager.transition_order.side_effect = lambda exchange, cid, status: setattr(
+        order, "status", status
+    )
+
+    trading_manager.update_order(price=1.01, amount=7.0, client_order_id="cid_1", exchange="BINANCE.UM")
+
+    connector = trading_manager._exchange_to_connector["BINANCE.UM"]
+    connector.update_order.assert_not_called()  # NO native amend
+    connector.cancel_order.assert_called_once_with(order)  # replace path starts with cancel
+
+    trading_manager._account_manager.arm_replace_intent.assert_called_once_with(
+        "BINANCE.UM", "cid_1", desired_remaining=7.0, price=1.01, filled_at_request=3.0
+    )
+    trading_manager._account_manager.transition_order.assert_called_once_with(
+        "BINANCE.UM", "cid_1", OrderStatus.PENDING_UPDATE
+    )
+    assert order.status is OrderStatus.PENDING_UPDATE
+
+
+def test_update_order_unfilled_uses_native_amend(trading_manager):
+    order = _order(client_order_id="cid_1", side=OrderSide.BUY, filled_quantity=0.0)
+    trading_manager._account_manager.find_order_by_client_id.return_value = order
+    trading_manager._account_manager.find_order_by_id.return_value = None
+
+    trading_manager.update_order(price=1.01, amount=10.0, client_order_id="cid_1", exchange="BINANCE.UM")
+
+    connector = trading_manager._exchange_to_connector["BINANCE.UM"]
+    connector.update_order.assert_called_once_with(order, price=1.01, quantity=10.0)
+    connector.cancel_order.assert_not_called()
+    trading_manager._account_manager.arm_replace_intent.assert_not_called()
