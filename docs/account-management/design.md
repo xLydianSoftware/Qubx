@@ -369,6 +369,96 @@ contract.
 Read-only connectors keep the read surface alive (account events + snapshots flow);
 write methods raise.
 
+## Order updates and the replace orchestration
+
+`TradingManager.update_order(price, amount)`'s `amount` is the desired **signed remaining**
+quantity to keep working — not a delta, not the original order size (its sign must match
+`order.side`; a mismatch raises `ValueError`). This is the one existing caller's contract
+(quantkit passes `signed_remaining`) and it is what makes the routing rule below possible: the
+handler always knows "how much should still be working" independent of how much has already
+filled.
+
+**The `Order.quantity` invariant.** `quantity` (unsigned, side carried separately) always means
+**total including everything ever filled on this client order id** — at every status, on every
+venue. An amend ack's `new_quantity` is the remaining figure, so the reducer (`_handle_updated`)
+splices it back onto the cumulative fill rather than overwriting: `order.quantity =
+order.filled_quantity + event.new_quantity`. Overwriting instead of splicing is the class of bug
+this exists to close off: `remaining = quantity − filled` goes negative the moment a second fill
+lands after an amend, and every consumer reading `remaining` (position sizing, replacement slots)
+inherits the fiction. `order.quantity =` has exactly two legal assignment sites in the codebase:
+initial construction and this splice.
+
+**The routing rule.** Native venue amend is used only when `filled_quantity == 0` — the one case
+where every venue dialect agrees on what a resize means. Once any fill exists, dialects diverge:
+Hyperliquid's modify takes the new *remaining* size, Binance/Gate's amend takes the new *total*
+with `executedQty` preserved — sending "remaining" to the latter silently double-shrinks the
+working order. Rather than adding a per-venue amend adapter to paper over the difference,
+`update_order` routes a partially-filled order through a framework-side cancel+replace: arm a
+`ReplaceIntent`, transition to `PENDING_UPDATE`, call `connector.cancel_order`. The connector
+never sees an amend call in this case — only the `cancel_order`/`submit_order` primitives every
+venue already has. The replacement resubmits under the **same client_order_id**, so a caller
+watching one cid (e.g. a quantkit maker-taker slot) sees one continuously-live order, not a
+cancel+accept pair.
+
+**The intent lifecycle** (`ReplaceIntent` in `AccountState`, keyed by cid — `desired_remaining`,
+`price`, `filled_at_request`, `armed_at`, `filled_at_cancel`):
+
+1. `update_order` arms the intent and fires `cancel_order`. A synchronous failure here (the
+   cancel never reached the venue) clears the intent immediately and reverts via a synthetic
+   `OrderUpdateRejectedEvent` — the same pre-pending revert the plain cancel/update rejection
+   path uses — then re-raises.
+2. The venue's cancel ack arrives as the normal `OrderCanceledEvent`. With an intent armed, the
+   reducer **suppresses** it: no terminal transition, no strategy callback (`ApplyResult()`
+   empty), order stays `PENDING_UPDATE`. It stamps `intent.filled_at_cancel` from the event's
+   `venue_filled_quantity` when the venue reports one on the cancel response (ccxt: Binance
+   futures `executedQty` → unified `filled`), else falls back to the locally-tracked
+   `filled_quantity` — fills that raced the cancel must count either way.
+   - A cancel *rejection* instead (the venue won't cancel) clears the intent and reverts to the
+     pre-pending status with `OrderChange.UPDATE_REJECTED` — the order is still alive under the
+     old terms.
+   - A `FILLED` beats the cancel (order settles for real before the ack) and clears the intent
+     unconditionally — the fill is the truth now, no replacement is submitted.
+3. The reconciler (`on_event`) turns a suppressed cancel into a decision. Residual (all
+   magnitudes): `residual = desired_remaining − max(0, filled_at_cancel − filled_at_request)` —
+   the "raced" term backs out fills that landed between the request and the cancel ack, since
+   `desired_remaining` was computed against the *request-time* fill level. `residual` executable
+   (positive, ≥ instrument min size) → `SubmitReplacement(cid)`; otherwise → `AbandonReplace(cid,
+   reason)`.
+4. `_execute` performs the I/O, **submit before route**: `SubmitReplacement` clears the intent,
+   submits the residual under the same cid (order fields mirrored from the original —
+   `TradingManager.trade`'s `OrderRequest` construction, not reinvented), then routes an
+   `OrderUpdatedEvent` so the reducer splices `quantity = filled + residual` and the strategy's
+   `UPDATED` callback observes the intent already cleared. `AbandonReplace` clears the intent and
+   routes an `OrderCanceledEvent` — the truthful terminal the suppressed cancel deferred.
+5. **Expiry.** A suppressed cancel whose ack never determined `filled_at_cancel` within
+   `REPLACE_INTENT_MAX_AGE` (30s) has an unknown venue outcome — the periodic sweep clears the
+   intent and issues `RequestStatus` to refetch truth. It never fabricates `AbandonReplace` here:
+   an unconfirmed cancel is not a confirmed cancel, and routing a terminal nobody observed would
+   trade one fiction for another. The existing `_is_superseded_oid_cancel` guard still applies
+   underneath this flow — a late `OrderCanceledEvent` for the pre-replace venue id is dropped
+   whether or not a replace is in flight.
+
+**Failure contract — truth over fiction.** Every branch below degrades to a state the venue would
+recognize; none reports an order alive that isn't, or dead that isn't.
+
+| Failure point | Outcome |
+|---|---|
+| Sync `cancel_order` raise (never reached venue) | Intent cleared, synthetic `OrderUpdateRejectedEvent`, pre-pending revert, re-raise |
+| Async cancel rejected by venue | Intent cleared, pre-pending revert, `UPDATE_REJECTED` |
+| Fill races the cancel to FILLED | Intent cleared, order FILLED (no replacement) |
+| Post-cancel residual below min size | `AbandonReplace` → truthful `OrderCanceledEvent` |
+| Replacement `submit_order` raises | Truthful `OrderCanceledEvent` (the old order is already gone at the venue; nothing live to report otherwise) |
+| Cancel ack never arrives within 30s | Intent cleared, `RequestStatus` refetch — never a fabricated terminal |
+| Stale cancel for a superseded venue id | Dropped by `_is_superseded_oid_cancel`, independent of any intent |
+
+**Sim.** The backtester connector exercises the same account-manager path — the `filled == 0`
+native-amend leg is pinned by an integration test through the real OME (book state, not the
+request echo). The `filled > 0` replace leg is covered at the account-manager level (the
+reconciler/`_execute` chain, intent table) but not through a genuine partial fill in sim: the
+OME's matching model fills an order's full remaining quantity atomically in one `Deal`, so a
+resting order can't be left partially filled by a market move. Partial-fill replace realism is
+therefore a venue e2e concern, not a sim one, until the OME gains size-aware matching.
+
 ## Runtimes & wiring
 
 - **Live:** runner builds connectors via the registry, the AM (with per-exchange base
