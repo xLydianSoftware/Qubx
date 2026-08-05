@@ -157,6 +157,24 @@ def test_cancel_with_matching_venue_id_transitions_to_terminal():
     assert r.order is not None and r.order.status is OrderStatus.CANCELED
 
 
+def test_cancel_event_venue_filled_quantity_defaults_to_none():
+    event = OrderCanceledEvent(instrument=None, client_order_id="c1")
+    assert event.venue_filled_quantity is None
+
+
+def test_cancel_event_accepts_venue_filled_quantity_without_breaking_reducer():
+    # The reducer doesn't consume this field until Task 4's terminal interception; here it
+    # only has to accept the new kwarg and cancel as before.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="B")
+    r = apply(
+        state,
+        OrderCanceledEvent(instrument=None, client_order_id="c1", venue_order_id="B", venue_filled_quantity=3.5),
+        T1,
+    )
+    assert r.order is not None and r.order.status is OrderStatus.CANCELED
+
+
 def test_cancel_of_superseded_oid_after_modify_is_ignored():
     # A cancel-and-replace modify (HL): the modify cancels the OLD oid A but emits its CANCELED
     # carrying the SAME cloid as the now-live replacement, which already moved to a NEW oid B.

@@ -384,6 +384,25 @@ async def test_cancel_by_venue_id_emits_canceled() -> None:
     exchange.cancel_order.assert_awaited_once_with("VENUE123", "BTC/USDT:USDT")
     assert isinstance(sent[0], OrderCanceledEvent)
     assert sent[0].venue_order_id == "VENUE123"
+    assert sent[0].venue_filled_quantity is None
+
+
+@pytest.mark.asyncio
+async def test_cancel_response_with_filled_sets_venue_filled_quantity() -> None:
+    # Binance futures cancel responses carry executedQty -> ccxt unified 'filled'; the
+    # replace orchestration needs this as the authoritative post-cancel fill figure.
+    exchange = Mock()
+    exchange.cancel_order = AsyncMock(
+        return_value={"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1", "filled": 3.5}
+    )
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.cancel_order(_order(venue_order_id="VENUE123"))
+    await _drive(conn)
+
+    assert isinstance(sent[0], OrderCanceledEvent)
+    assert sent[0].venue_filled_quantity == 3.5
 
 
 @pytest.mark.asyncio

@@ -505,15 +505,21 @@ class CcxtConnector(ChannelEmitter):
         instrument: Instrument | None = None
         cid = client_order_id
         vid = venue_order_id
-        if isinstance(response, dict) and response.get("id") is not None:
-            # ccxt echoes the order; recover ids from it when we lack them.
-            vid = vid or str(response.get("id"))
-            cid = cid or response.get("clientOrderId")
+        venue_filled_quantity: float | None = None
+        if isinstance(response, dict):
+            if response.get("id") is not None:
+                # ccxt echoes the order; recover ids from it when we lack them.
+                vid = vid or str(response.get("id"))
+                cid = cid or response.get("clientOrderId")
+            filled = response.get("filled")
+            if filled is not None:
+                venue_filled_quantity = float(filled)
         self.send(
             OrderCanceledEvent(
                 instrument=instrument,
                 client_order_id=cid,
                 venue_order_id=vid,
+                venue_filled_quantity=venue_filled_quantity,
             )
         )
 

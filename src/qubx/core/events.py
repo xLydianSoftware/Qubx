@@ -109,7 +109,10 @@ class DealEvent(OrderEvent):
 
 @msg
 class OrderCanceledEvent(OrderEvent):
-    pass
+    # The venue's final fill figure on the terminal cancel report, when reported (e.g.
+    # Binance futures cancel responses carry executedQty -> ccxt unified 'filled'). The
+    # replace orchestration uses this as the authoritative post-cancel residual input.
+    venue_filled_quantity: float | None = None
 
 
 @msg
