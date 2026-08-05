@@ -9,9 +9,11 @@ from typing import TypeVar
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from qubx.core.account_manager.manager import AccountManager
-from qubx.core.account_manager.state import AccountState
+from qubx.core.account_manager.reconciler import AbandonReplace, ResolveMissingOrder, SubmitReplacement
+from qubx.core.account_manager.state import AccountState, ReplaceIntent
 from qubx.core.basics import (
     Balance,
     Deal,
@@ -36,6 +38,7 @@ from qubx.core.series import Quote
 
 T0 = np.datetime64("2026-05-28T00:00:00", "ns")
 T1 = np.datetime64("2026-05-28T00:01:00", "ns")
+NOW = np.datetime64("2026-05-28T00:02:00", "ns")
 
 _btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
 assert _btc is not None
@@ -262,3 +265,118 @@ def test_execute_request_status_for_unknown_order_is_noop():
     am = _am()
     am._execute(am.get_state(EX), [RequestStatus(cid="nope", venue_id=None, instrument=BTC)])
     am._connectors[EX].request_order_status.assert_not_called()
+
+
+# --------------------------------------------------------------------------- #
+# Task 7 — _execute performs the same-cid replacement or the truthful abandon
+# --------------------------------------------------------------------------- #
+
+
+class _SyncPM:
+    """Routes process_event straight back into AM.apply — mirrors ProcessingManager's
+    _dispatch_account without pulling in the whole processing stack, so tests can drive
+    the real re-entrant apply()->_execute()->process_event()->apply() chain."""
+
+    def __init__(self, am: AccountManager):
+        self._am = am
+
+    def process_event(self, event) -> None:
+        self._am.apply(event)
+
+
+@pytest.fixture
+def manager_with_order():
+    """A manager with a real (non-mock) routing PM and one BUY 10, filled 3.5,
+    PENDING_UPDATE order — mirrors the state trading.py's update_order leaves behind
+    after arming a replace intent and sending the internal cancel."""
+    am = _am()
+    state = am.get_state(EX)
+    order = _order(status=OrderStatus.PARTIALLY_FILLED)
+    order.quantity = 10.0
+    order.filled_quantity = 3.5
+    state.add_order(order)
+    am.transition_order(EX, order.client_order_id, OrderStatus.PENDING_UPDATE)
+    am._pm = _SyncPM(am)
+    connector = am._connectors[EX]
+    return am, state, order, connector
+
+
+def test_execute_submit_replacement_splices_and_submits(manager_with_order):
+    mgr, state, order, connector = manager_with_order  # BUY 10, filled 3.5, PENDING_UPDATE
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 1.01, 3.0, NOW, filled_at_cancel=3.5))
+    mgr._execute(state, [SubmitReplacement(order.client_order_id)])
+
+    req = connector.submit_order.call_args.args[0]
+    assert req.client_id == order.client_order_id  # same-cid splice
+    assert req.quantity == pytest.approx(6.5)  # residual 7.0 - 0.5, signed BUY
+    assert req.price == 1.01
+    assert order.quantity == pytest.approx(3.5 + 6.5)  # invariant restored
+    assert state.get_replace_intent(order.client_order_id) is None
+    assert order.status is not None and not order.status.is_terminal
+
+
+def test_execute_submit_replacement_sends_unsigned_quantity_for_sell(manager_with_order):
+    # OrderRequest.quantity must stay UNSIGNED (side conveys direction, exactly like
+    # ccxt's create_order(amount, side) and TradingManager.trade's size_adj) — a signed
+    # negative amount for a SELL replacement would misdirect or be rejected at the venue.
+    mgr, state, order, connector = manager_with_order
+    order.side = OrderSide.SELL
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 1.01, 3.0, NOW, filled_at_cancel=3.5))
+    mgr._execute(state, [SubmitReplacement(order.client_order_id)])
+
+    req = connector.submit_order.call_args.args[0]
+    assert req.quantity == pytest.approx(6.5)  # unsigned, never negative
+    assert req.side == OrderSide.SELL
+
+
+def test_execute_abandon_replace_reports_canceled_truth(manager_with_order):
+    mgr, state, order, connector = manager_with_order
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 3.0, 3.0, NOW, filled_at_cancel=9.9))
+    mgr._execute(state, [AbandonReplace(order.client_order_id, "residual below min")])
+    assert state.get_replace_intent(order.client_order_id) is None
+    assert order.status is OrderStatus.CANCELED  # truth surfaced via routed event
+
+
+def test_execute_submit_replacement_without_pm_still_submits_and_clears(manager_with_order):
+    # No processing manager wired: submit + clear must still happen, only the route is skipped.
+    mgr, state, order, connector = manager_with_order
+    mgr._pm = None
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 1.01, 3.0, NOW, filled_at_cancel=3.5))
+    mgr._execute(state, [SubmitReplacement(order.client_order_id)])
+
+    connector.submit_order.assert_called_once()
+    assert state.get_replace_intent(order.client_order_id) is None
+    assert order.quantity == 10.0  # unspliced: no routed UPDATED without a pm
+
+
+def test_execute_submit_replacement_resolves_pending_missing_order_watcher(manager_with_order):
+    # MANDATORY EXTRA (Task 6 review note): a REST snapshot landing during the internal-cancel
+    # window can spawn a ResolveMissingOrder watcher for the mid-replace cid. The routed
+    # OrderUpdatedEvent must resolve it via rec.on_event's normal OrderIn fallthrough, or the
+    # watcher would retry to a spurious OrderLostEvent later.
+    mgr, state, order, connector = manager_with_order
+    rec = mgr._reconcilers[EX]
+    rec._spawn(ResolveMissingOrder(order, NOW, wait=np.timedelta64(2, "s"), max_retries=3))
+    assert rec.active_keys() == {order.client_order_id}
+
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(7.0, 1.01, 3.0, NOW, filled_at_cancel=3.5))
+    mgr._execute(state, [SubmitReplacement(order.client_order_id)])
+
+    assert rec.active_keys() == set()  # watcher resolved — no spurious retries/LOST
+
+
+def test_apply_order_canceled_with_armed_intent_submits_replacement_end_to_end(manager_with_order):
+    # End-to-end: drive apply() with a real suppressed-cancel event and let the reducer ->
+    # reconciler -> _execute chain run for real (no direct _execute call).
+    mgr, state, order, connector = manager_with_order
+    state.arm_replace_intent(order.client_order_id, ReplaceIntent(6.5, 1.02, 3.5, NOW))
+
+    mgr.apply(OrderCanceledEvent(instrument=None, client_order_id=order.client_order_id, venue_order_id=None))
+
+    req = connector.submit_order.call_args.args[0]
+    assert req.client_id == order.client_order_id
+    assert req.quantity == pytest.approx(6.5)
+    # splice happens via the routed OrderUpdatedEvent hitting _handle_updated
+    assert order.quantity == pytest.approx(3.5 + 6.5)
+    assert order.status is not None and not order.status.is_terminal
+    assert state.get_replace_intent(order.client_order_id) is None

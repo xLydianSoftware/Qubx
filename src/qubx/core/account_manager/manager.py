@@ -16,11 +16,13 @@ from qubx.core.account_manager import reducer
 from qubx.core.account_manager.config import AccountManagerConfig
 from qubx.core.account_manager.diffs import Differ
 from qubx.core.account_manager.reconciler import (
+    AbandonReplace,
     Reconciler,
     RequestHistDeals,
     RequestSnapshot,
     RequestStatus,
     RouteEvent,
+    SubmitReplacement,
 )
 from qubx.core.account_manager.reducer import ApplyResult
 from qubx.core.account_manager.state import AccountState, ReplaceIntent
@@ -32,6 +34,7 @@ from qubx.core.basics import (
     ITimeProvider,
     Order,
     OrderOrigin,
+    OrderRequest,
     OrderStatus,
     Position,
     TransactionCostsCalculator,
@@ -42,7 +45,9 @@ from qubx.core.events import (
     AccountSnapshotEvent,
     BalanceUpdateEvent,
     FundingPaymentEvent,
+    OrderCanceledEvent,
     OrderEvent,
+    OrderUpdatedEvent,
 )
 from qubx.core.interfaces import IAccountConfigurator, IAccountViewer, IProcessingManager
 from qubx.utils.time import timedelta_to_crontab
@@ -320,6 +325,80 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                                 f"<y>{instrument.symbol}</y> since {since} -> connector.request_hist_deals"
                             )
                             connector.request_hist_deals(instrument, since)
+
+                    case SubmitReplacement(cid=cid):
+                        order = state.get_order(cid)
+                        intent = state.clear_replace_intent(cid)
+                        if order is None or intent is None or connector is None:
+                            logger.warning(
+                                f"[{state.exchange}] SubmitReplacement dropped "
+                                f"(order/intent/connector missing): {cid}"
+                            )
+                            continue
+                        raced = max(0.0, (intent.filled_at_cancel or 0.0) - intent.filled_at_request)
+                        # residual is unsigned (desired_remaining is already abs, per
+                        # TradingManager._adjust_size) and > 0 — the reconciler's
+                        # _decide_replace only emits SubmitReplacement past that gate.
+                        # Mirror TradingManager.trade's OrderRequest construction (trading.py
+                        # ~158-176): quantity is UNSIGNED (side carries direction, exactly like
+                        # ccxt's create_order(amount, side)) — do not sign it here. Same-cid
+                        # resubmit; options carried forward but reduce_only/post_only re-stamped
+                        # from the order record (the source of truth).
+                        residual = intent.desired_remaining - raced
+                        options = dict(order.options)
+                        options.pop("reduce_only", None)
+                        options["reduceOnly"] = order.reduce_only
+                        options["post_only"] = order.post_only
+                        request = OrderRequest(
+                            instrument=order.instrument,
+                            quantity=residual,
+                            price=intent.price,
+                            order_type=order.type,
+                            side=order.side,
+                            time_in_force=order.time_in_force,
+                            client_id=cid,
+                            options=options,
+                        )
+                        connector.submit_order(request)
+                        # Splice + strategy notification via the normal reducer path (idempotent
+                        # with Task 1's rule: quantity = filled + residual). Submit FIRST, then
+                        # route — the strategy's UPDATED callback must observe the intent already
+                        # cleared (see RouteEvent above: process_event is a synchronous re-entry
+                        # into apply()).
+                        if self._pm is not None:
+                            self._pm.process_event(
+                                OrderUpdatedEvent(
+                                    instrument=None,
+                                    client_order_id=cid,
+                                    venue_order_id=None,
+                                    new_price=intent.price,
+                                    new_quantity=residual,
+                                )
+                            )
+                        else:
+                            logger.warning(
+                                f"[{state.exchange}] no processing manager wired; {cid} "
+                                "replacement submitted but not routed"
+                            )
+
+                    case AbandonReplace(cid=cid, reason=reason):
+                        order = state.get_order(cid)
+                        state.clear_replace_intent(cid)
+                        logger.warning(f"[{state.exchange}] replace abandoned for {cid}: {reason}")
+                        if order is None:
+                            continue
+                        if self._pm is not None:
+                            self._pm.process_event(
+                                OrderCanceledEvent(
+                                    instrument=None,
+                                    client_order_id=cid,
+                                    venue_order_id=order.venue_order_id,
+                                )
+                            )
+                        else:
+                            logger.warning(
+                                f"[{state.exchange}] no processing manager wired; {cid} abandon not routed"
+                            )
 
                     case _:
                         logger.warning(f"[{state.exchange}] unknown reconcile action: {action!r}")
