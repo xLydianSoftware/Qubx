@@ -381,9 +381,9 @@ class TradingManager(ITradingManager):
         A synchronous connector failure reverts the order to its pre-pending status
         (via a synthetic OrderUpdateRejectedEvent) and re-raises to the caller.
         """
+        self._ensure_writable()
         if price is None and quantity is None:
             raise ValueError("update_order requires price and/or quantity")
-        self._ensure_writable()
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         order = self._resolve_order(order_id, client_order_id)
         if order is None:
@@ -402,7 +402,7 @@ class TradingManager(ITradingManager):
         if quantity is not None:
             if quantity <= 0:
                 raise ValueError(f"update_order quantity must be positive, got {quantity}")
-            quantity = abs(self._adjust_size(instrument, side_sign * quantity))
+            quantity = self._adjust_size(instrument, side_sign * quantity)
             if quantity <= order.filled_quantity:
                 raise ValueError(
                     f"update_order total {quantity} <= filled {order.filled_quantity} for "

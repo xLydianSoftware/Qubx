@@ -656,6 +656,8 @@ class CcxtConnector(ChannelEmitter):
         # (thread the order's side/type/tif + original price/qty) is straightforward — but it's
         # deferred to the recreate follow-up. Until then, reject without touching the live order.
         # TODO(account-mgmt): wire the recreate from the passed Order.
+        # TODO(account-mgmt): this path is itself a REPLACEMENT — when wired, size the recreate
+        # at total - filled, not the total-dialect `quantity` (wire_amount) it currently receives.
         raise ccxt.NotSupported("cancel+recreate update is not yet wired for editOrder-less venues")
 
     def _emit_update_rejected(self, client_order_id: str | None, venue_order_id: str | None, error: Exception) -> None:
