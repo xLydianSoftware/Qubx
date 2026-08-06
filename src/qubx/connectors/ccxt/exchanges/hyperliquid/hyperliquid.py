@@ -3,7 +3,7 @@ from typing import Any, Dict, List, Optional
 
 import ccxt.pro as cxp
 from ccxt.async_support.base.ws.client import Client
-from ccxt.base.errors import ExchangeError, InvalidOrder
+from ccxt.base.errors import ExchangeError, InvalidOrder, NotSupported
 
 from qubx import logger
 
@@ -20,9 +20,21 @@ class HyperliquidEnhanced(CcxtFuturePatchMixin, cxp.hyperliquid):
     Mixin class to enhance Hyperliquid with OHLCV parsing and funding rate subscriptions
     """
 
+    # HL modify is a cancel+replace at the matching engine: the amend amount is the
+    # replacement order's size (= desired remaining), NOT the new total. The qubx ccxt
+    # connector subtracts filled before hitting the wire when it sees this marker.
+    AMEND_QUANTITY_DIALECT = "replacement"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._funding_rate_adapter: Optional[PollingToWebSocketAdapter] = None
+
+    async def edit_order_with_client_order_id(
+        self, clientOrderId, symbol, type, side, amount=None, price=None, params={}
+    ):
+        # HL modify addresses the order by venue oid; there is no cloid-amend endpoint.
+        # Upstream's base fallback would call edit_order('') and crash in parse_to_int('').
+        raise NotSupported("hyperliquid: modify requires the venue order id (order not acked yet)")
 
     def parse_ohlcv(self, ohlcv, market=None):
         """

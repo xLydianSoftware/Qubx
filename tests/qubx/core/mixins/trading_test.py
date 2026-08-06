@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import numpy as np
 import pandas as pd
@@ -200,7 +200,7 @@ class TestReadOnlyGate:
 
     def test_update_order_blocked(self, read_only_trading_manager):
         with pytest.raises(ReadOnlyConnector):
-            read_only_trading_manager.update_order(price=1.0, amount=1.0, client_order_id="x")
+            read_only_trading_manager.update_order(price=1.0, quantity=1.0, client_order_id="x")
 
 
 class TestTradingManagerClosePosition:
@@ -437,16 +437,28 @@ class TestTradingManagerClosePositions:
         trading_manager.close_position.assert_any_call(ada_future, False)
 
 
-def _live_order(order_id="test_order_123"):
-    """A resolvable, non-terminal order living on BINANCE.UM."""
-    instrument = Mock()
-    instrument.exchange = "BINANCE.UM"
-    order = Mock()
-    order.client_order_id = "qubx_BTCUSDT_1"
-    order.venue_order_id = order_id
-    order.instrument = instrument
-    order.status = OrderStatus.ACCEPTED
-    return order
+def _live_order(order_id="test_order_123", side="BUY"):
+    """A resolvable, non-terminal order living on BINANCE.UM.
+
+    Real Order + real Instrument (not Mock): the update_order contract touches
+    order.side/quantity/filled_quantity and real instrument rounding, none of which
+    a bare Mock can satisfy without raising on comparisons.
+    """
+    instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+    assert instrument is not None
+    return Order(
+        client_order_id="qubx_BTCUSDT_1",
+        venue_order_id=order_id,
+        origin=OrderOrigin.FRAMEWORK,
+        type="LIMIT",
+        instrument=instrument,
+        submitted_at=pd.Timestamp("2023-01-01").asm8,
+        quantity=0.1,
+        price=50_000.0,
+        side=side,
+        status=OrderStatus.ACCEPTED,
+        time_in_force="gtc",
+    )
 
 
 class TestTradingManagerTradeOrderShape:
@@ -679,7 +691,7 @@ class TestTradingManagerCancelUpdateFailure:
         mock_connector.update_order.side_effect = ConnectionError("venue unreachable")
 
         with pytest.raises(ConnectionError):
-            tm.update_order(price=51_000.0, amount=0.1, client_order_id=order.client_order_id)
+            tm.update_order(price=51_000.0, quantity=0.1, client_order_id=order.client_order_id)
 
         assert am.get_order(order.client_order_id).status is OrderStatus.ACCEPTED
         (event,) = context.routed_events
@@ -697,7 +709,7 @@ class TestTradingManagerUpdateOrderGuards:
         mock_account.find_order_by_id.return_value = order
 
         with pytest.raises(OrderAlreadyTerminal):
-            trading_manager.update_order(price=51_000.0, amount=0.1, order_id="test_order_123")
+            trading_manager.update_order(price=51_000.0, quantity=0.1, order_id="test_order_123")
 
         mock_connector.update_order.assert_not_called()
         mock_account.transition_order.assert_not_called()
@@ -707,10 +719,98 @@ class TestTradingManagerUpdateOrderGuards:
         order.status = OrderStatus.PENDING_UPDATE
         mock_account.find_order_by_id.return_value = order
 
-        assert trading_manager.update_order(price=51_000.0, amount=0.1, order_id="test_order_123") is None
+        assert trading_manager.update_order(price=51_000.0, quantity=0.1, order_id="test_order_123") is None
 
         mock_connector.update_order.assert_not_called()
         mock_account.transition_order.assert_not_called()
+
+
+class TestTradingManagerUpdateOrderContract:
+    """Total-quantity contract: quantity is the order's new TOTAL including filled,
+    unsigned; at least one of price/quantity is required; a total at or below the
+    already-filled quantity raises (Binance/Gate silently CANCEL in that case)."""
+
+    def test_both_none_raises_connector_not_called(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+
+        with pytest.raises(ValueError, match="price and/or quantity"):
+            trading_manager.update_order(order_id="test_order_123")
+
+        mock_connector.update_order.assert_not_called()
+        mock_account.transition_order.assert_not_called()
+
+    def test_non_positive_quantity_raises(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+
+        with pytest.raises(ValueError, match="positive"):
+            trading_manager.update_order(quantity=0.0, order_id="test_order_123")
+
+        mock_connector.update_order.assert_not_called()
+
+    def test_total_at_or_below_filled_raises(self, trading_manager, mock_connector, mock_account):
+        # Order for 0.1, already filled 0.06: a new total of 0.05 (< filled) is a
+        # silent venue cancel in disguise — must raise, never reach the connector.
+        order = _live_order()
+        order.filled_quantity = 0.06
+        mock_account.find_order_by_id.return_value = order
+        mock_account.get_position.return_value = None  # flat: skip position-reducing math
+
+        with pytest.raises(ValueError, match="filled"):
+            trading_manager.update_order(quantity=0.05, order_id="test_order_123")
+        with pytest.raises(ValueError, match="filled"):
+            trading_manager.update_order(quantity=0.06, order_id="test_order_123")  # == filled: that's a cancel
+
+        mock_connector.update_order.assert_not_called()
+
+    def test_price_only_passes_none_quantity(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+
+        trading_manager.update_order(price=51_000.0, order_id="test_order_123")
+
+        mock_connector.update_order.assert_called_once()
+        _, kwargs = mock_connector.update_order.call_args
+        assert kwargs["quantity"] is None
+        assert kwargs["price"] is not None
+
+    def test_quantity_only_passes_none_price(self, trading_manager, mock_connector, mock_account):
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+        mock_account.get_position.return_value = None  # flat: skip position-reducing math
+
+        trading_manager.update_order(quantity=0.2, order_id="test_order_123")
+
+        mock_connector.update_order.assert_called_once()
+        _, kwargs = mock_connector.update_order.call_args
+        assert kwargs["price"] is None
+        assert kwargs["quantity"] == pytest.approx(0.2)
+
+    def test_old_amount_kwarg_is_a_loud_typeerror(self, trading_manager, mock_account):
+        # Deployment-coupling tripwire: an old caller using amount= must fail loudly,
+        # never silently reinterpret (spec: "Deployment coupling").
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+
+        with pytest.raises(TypeError):
+            trading_manager.update_order(price=51_000.0, amount=0.1, order_id="test_order_123")
+
+    def test_sell_update_derives_signed_size_adjust_hint(self, trading_manager, mock_connector, mock_account):
+        # _adjust_size's reducing-order detection (_is_position_reducing) needs a SIGNED
+        # amount matching order direction. quantity is unsigned at the public API, so the
+        # implementation must derive the sign from order.side before calling _adjust_size
+        # — same as it already does for _adjust_price.
+        order = _live_order(side="SELL")
+        mock_account.find_order_by_id.return_value = order
+        mock_account.get_position.return_value = None  # flat: skip position-reducing math
+
+        with patch.object(trading_manager, "_adjust_size", wraps=trading_manager._adjust_size) as spy:
+            trading_manager.update_order(quantity=0.2, order_id="test_order_123")
+
+        spy.assert_called_once()
+        _, called_amount = spy.call_args.args
+        assert called_amount < 0
 
 
 class TestAdjustSizeMinNotional:

@@ -24,6 +24,9 @@ def _order(order_id="exchange_order_1", client_order_id="cid_1", status=OrderSta
     order.venue_order_id = order_id
     order.instrument = instrument
     order.status = status
+    order.filled_quantity = 0.0
+    order.side = "BUY"
+    order.quantity = 1.0
     return order
 
 
@@ -89,7 +92,7 @@ def test_update_order_routes_client_order_id(trading_manager):
     trading_manager._account_manager.find_order_by_client_id.return_value = order
     trading_manager._account_manager.find_order_by_id.return_value = None
 
-    trading_manager.update_order(client_order_id="cid_1", price=123.0, amount=1.0, exchange="BINANCE.UM")
+    trading_manager.update_order(client_order_id="cid_1", price=123.0, quantity=1.0, exchange="BINANCE.UM")
 
     trading_manager._account_manager.transition_order.assert_called_once_with(
         "BINANCE.UM", "cid_1", OrderStatus.PENDING_UPDATE
@@ -101,8 +104,8 @@ def test_update_order_routes_client_order_id(trading_manager):
 
 def test_update_order_requires_exactly_one_identifier(trading_manager):
     with pytest.raises(ValueError):
-        trading_manager.update_order(price=123.0, amount=1.0, exchange="BINANCE.UM")
+        trading_manager.update_order(price=123.0, quantity=1.0, exchange="BINANCE.UM")
     with pytest.raises(ValueError):
         trading_manager.update_order(
-            order_id="o1", client_order_id="c1", price=123.0, amount=1.0, exchange="BINANCE.UM"
+            order_id="o1", client_order_id="c1", price=123.0, quantity=1.0, exchange="BINANCE.UM"
         )

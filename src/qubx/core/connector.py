@@ -49,6 +49,10 @@ class IConnector(Protocol):
     # AM routes by either.
     def cancel_order(self, order: Order) -> None: ...
 
+    # ``quantity`` is the order's new TOTAL size including everything already filled;
+    # None means unchanged. Connectors translate this to their venue's amend dialect on the
+    # wire (e.g. HL's "replacement" dialect wants total - filled), but MUST echo the
+    # requested total (or None) back in OrderUpdatedEvent.new_quantity — never the wire figure.
     def update_order(self, order: Order, *, price: float | None = None, quantity: float | None = None) -> None: ...
 
     def request_order_status(self, order: Order) -> None: ...

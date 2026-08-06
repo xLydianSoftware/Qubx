@@ -524,6 +524,20 @@ class CcxtConnector(ChannelEmitter):
     def update_order(self, order: Order, *, price: float | None = None, quantity: float | None = None) -> None:
         # Read venue-call fields off the Order SYNCHRONOUSLY (see cancel_order); editOrder
         # needs side/type too, so pass them straight through.
+        # The framework speaks TOTAL quantity (incl. filled); translate to the venue's
+        # amend dialect here. "replacement" (declared on the exchange subclass): the venue
+        # modify is a cancel+replace and its amount is the replacement's size = remaining.
+        wire_price = price if price is not None else order.price
+        total = quantity if quantity is not None else order.quantity
+        if getattr(self._em.exchange, "AMEND_QUANTITY_DIALECT", "total") == "replacement":
+            wire_amount = total - order.filled_quantity
+        else:
+            wire_amount = total
+        if wire_amount <= 0:
+            raise ValueError(
+                f"update_order for {order.client_order_id}: effective amend amount "
+                f"{wire_amount} <= 0 (total {total}, filled {order.filled_quantity})"
+            )
         self._spawn(
             self._update_async(
                 order.client_order_id,
@@ -531,6 +545,8 @@ class CcxtConnector(ChannelEmitter):
                 instrument_to_ccxt_symbol(order.instrument),
                 order.side.lower(),
                 order.type.lower(),
+                wire_price,
+                wire_amount,
                 price,
                 quantity,
             )
@@ -543,8 +559,10 @@ class CcxtConnector(ChannelEmitter):
         symbol: str,
         side: str,
         order_type: str,
-        price: float | None,
-        quantity: float | None,
+        wire_price: float | None,
+        wire_amount: float | None,
+        requested_price: float | None,
+        requested_total: float | None,
     ) -> None:
         """Direct editOrder where the venue supports it, else cancel+recreate.
 
@@ -557,9 +575,11 @@ class CcxtConnector(ChannelEmitter):
         vid = venue_order_id
         try:
             if self._em.exchange.has.get("editOrder", False):
-                r = await self._edit_order_direct(client_order_id, vid, symbol, side, order_type, price, quantity)
+                r = await self._edit_order_direct(
+                    client_order_id, vid, symbol, side, order_type, wire_price, wire_amount
+                )
             else:
-                r = await self._update_via_cancel_recreate(client_order_id, venue_order_id, price, quantity)
+                r = await self._update_via_cancel_recreate(client_order_id, venue_order_id, wire_price, wire_amount)
         except _VENUE_VERDICT_ERRORS as e:
             # Venue verdict — must precede the bare NetworkError catch (see _submit_async).
             self._emit_update_rejected(client_order_id, venue_order_id, e)
@@ -579,13 +599,22 @@ class CcxtConnector(ChannelEmitter):
         # resolves it from its own cached order by client_order_id (or venue id).
         if isinstance(r, dict) and r.get("id") is not None:
             vid = vid or str(r.get("id"))
+        if isinstance(r, dict) and r.get("status") == "canceled":
+            # Binance/Gate amend to a total at/below executedQty CANCELS the order
+            # (documented, no error). Surface the truth: this is a cancel, not an update.
+            logger.warning(
+                f"[{self.exchange_name}] edit of {client_order_id} was a silent venue cancel "
+                f"(amend total at/below executed) — emitting cancel"
+            )
+            self._emit_canceled_from_response(client_order_id, vid, r)
+            return
         self.send(
             OrderUpdatedEvent(
                 instrument=None,
                 client_order_id=client_order_id,
                 venue_order_id=vid,  # str | None — never coerce to "" (AM would index a bogus id)
-                new_price=price,
-                new_quantity=quantity,
+                new_price=requested_price,
+                new_quantity=requested_total,
             )
         )
 
@@ -628,6 +657,8 @@ class CcxtConnector(ChannelEmitter):
         # (thread the order's side/type/tif + original price/qty) is straightforward — but it's
         # deferred to the recreate follow-up. Until then, reject without touching the live order.
         # TODO(account-mgmt): wire the recreate from the passed Order.
+        # TODO(account-mgmt): this path is itself a REPLACEMENT — when wired, size the recreate
+        # at total - filled, not the total-dialect `quantity` (wire_amount) it currently receives.
         raise ccxt.NotSupported("cancel+recreate update is not yet wired for editOrder-less venues")
 
     def _emit_update_rejected(self, client_order_id: str | None, venue_order_id: str | None, error: Exception) -> None:

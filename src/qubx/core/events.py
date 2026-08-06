@@ -129,6 +129,7 @@ class OrderLostEvent(OrderEvent):
 @msg
 class OrderUpdatedEvent(OrderEvent):
     new_price: float | None
+    # requested new TOTAL quantity incl. filled; None = unchanged. Never a venue-dialect wire figure.
     new_quantity: float | None
 
 

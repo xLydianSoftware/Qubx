@@ -439,3 +439,70 @@ Sanctioned departures, detailed in the sections above:
   slippage-priced market orders and order-response enrichment — was dropped in the
   cutover; HL live trading regresses to the generic ccxt path until reimplemented as a
   `CcxtConnector` subclass.
+
+## Order updates: total-quantity contract and amend dialects
+
+`update_order(price=None, quantity=None, ...)` — at least one set, else `ValueError`.
+`quantity` is unsigned and always the order's new **TOTAL, including everything already
+filled**; the old signed-remaining convention is dropped (the order already knows its
+side, so sign carried no information). `quantity <= order.filled_quantity` raises
+`ValueError`: on Binance and Gate a shrink-to-or-below-filled is a **documented silent
+cancel**, not a resize, so it must be requested as one (`quantity == filled` is
+`cancel_order`, not an update). `quantity is None` leaves size untouched — `_adjust_size`
+only runs when a quantity is given.
+
+**Dialect table** — no venue-neutral amend exists; each connector owns translating the
+framework's total to its wire dialect, in both directions:
+
+| Venue | Native amend | Wire quantity means | Below-filled behavior |
+|---|---|---|---|
+| Binance UM (`PUT /fapi/v1/order`) | atomic modify, orderId kept | new **total**, `executedQty` preserved | silent cancel (documented) |
+| Gate futures (`PUT /futures/{settle}/orders/{id}`) | atomic modify | new **total** "including filled part" (documented) | silent cancel (documented) |
+| Hyperliquid (`modify` action) | cancel+replace at the matching engine, new oid, cloid kept | size of the **replacement** (= desired remaining; fills restart at 0) | not documented |
+
+Exchanges declare their dialect via `AMEND_QUANTITY_DIALECT` on the ccxt subclass.
+Binance/Gate default to total (passed through verbatim — ccxt already sends it
+unmodified). HL-dialect subclasses get `venue_amount = total - order.filled_quantity` on
+the way out; on the way back, `OrderUpdatedEvent.new_quantity` always echoes the
+**requested total** (or `None`), never a venue-dialect figure — connectors never leak
+their wire dialect into the event stream. The framework isn't traded through ccxt-HL
+today, but the dialect map exists so the public path doesn't ship an oversize landmine.
+On the ccxt-HL path specifically, an amend keeps addressing the OLD venue oid — there is
+no re-key from the modify response — so ccxt-HL amend is size-correct but identity-stale;
+order identity after amend is only handled by the exchanges-repo plugin.
+
+After a successful `editOrder`, the connector inspects the response status: if the venue
+reports CANCELED (the Binance/Gate response to an in-flight fill overtaking the new
+total), it emits a truthful cancel event instead of `OrderUpdatedEvent` — the silent
+cancel becomes a visible one.
+
+**Reducer clamp invariant:** on update-ack, `quantity = new_quantity if new_quantity is
+not None else unchanged`. If the result would be `< filled_quantity` (only reachable via
+a race or a buggy connector), the reducer logs an error and clamps `quantity =
+filled_quantity` (remaining 0) rather than propagating a negative remaining; the periodic
+snapshot/status refetch reconciles afterward. This closes the 2026-08-05 ACE incident,
+where an HL amend ack overwrote `Order.quantity` with a remaining-dialect figure while
+`filled_quantity` stayed cumulative, driving `remaining = quantity - filled` negative.
+`quantity >= filled` now holds unconditionally post-reduce, with a regression test.
+
+**Accepted races** (documented, not defended against):
+
+- **Total-dialect venues (Binance/Gate):** an in-flight fill shrinks the effective
+  remaining below what the caller computed → venue under-works or (fill overtakes the
+  total) silently cancels. Both outcomes are truthful: fills are fills, and the silent
+  cancel is detected and reported as a cancel. No corrupted bookkeeping is possible.
+- **Replacement-dialect venues (HL):** an in-flight fill between reading
+  `filled_quantity` and the venue processing the modify oversizes the replacement by that
+  δ. Bounded by one round trip; identical to today's live behavior; quantkit's settle
+  trim self-corrects the overshoot. Eliminating it needs a framework cancel+replace that
+  reads the cancel-ack's final fill before sizing — the PR #367 orchestration this design
+  rejects as not worth its complexity.
+- **Pre-existing, now guarded:** after an HL modify the venue counts the replacement's
+  fills from zero, so a snapshot that wins the venue-newer race used to clobber cumulative
+  `filled_quantity` with that lower figure. Under total semantics an un-guarded clobber
+  doesn't just lose history — it OVER-states `remaining` (`total − filled`), feeding an
+  over-sized next amend. `_apply_order_snapshot` now adopts `filled_quantity`
+  monotonically (never decreases it), closing that hole. The residual is cosmetic:
+  `OrderQuantityMismatch` diff noise against the venue's own post-modify figures until
+  venue-id-aware adoption (`filled_base` offset — separate snapshot-semantics design)
+  lands; still deferred.

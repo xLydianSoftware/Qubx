@@ -622,8 +622,12 @@ class Reconciler:
             state.transition_order(local.client_order_id, snap.status, snap.last_update_time)
         else:
             local.last_update_time = snap.last_update_time
-        local.filled_quantity = snap.filled_quantity
-        local.avg_fill_price = snap.avg_fill_price
+        # - monotonic adoption only (mirrors Order.record_fill's contract): replacement-dialect
+        #   venues (e.g. HL modify) restart fills at 0 under the same cid — a LOWER snapshot
+        #   figure is the replacement's counter, not a rollback, and must not clobber real fills.
+        if snap.filled_quantity > local.filled_quantity:
+            local.filled_quantity = snap.filled_quantity
+            local.avg_fill_price = snap.avg_fill_price
 
     @staticmethod
     def _fill_event(order: Order) -> Action | None:

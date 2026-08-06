@@ -925,13 +925,14 @@ class ITradingManager:
 
     def update_order(
         self,
-        price: float,
-        amount: float,
+        price: float | None = None,
+        quantity: float | None = None,
         order_id: str | None = None,
         client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> None:
-        """Update an existing limit order with new price and amount.
+        """Update a live limit order's price and/or total quantity (total includes filled;
+        None = unchanged; at least one required).
 
         Exactly one identifier must be provided:
         - order_id: Exchange/server order id
