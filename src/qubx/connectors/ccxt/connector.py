@@ -598,6 +598,15 @@ class CcxtConnector(ChannelEmitter):
         # resolves it from its own cached order by client_order_id (or venue id).
         if isinstance(r, dict) and r.get("id") is not None:
             vid = vid or str(r.get("id"))
+        if isinstance(r, dict) and r.get("status") == "canceled":
+            # Binance/Gate amend to a total at/below executedQty CANCELS the order
+            # (documented, no error). Surface the truth: this is a cancel, not an update.
+            logger.warning(
+                f"[{self.exchange_name}] edit of {client_order_id} was a silent venue cancel "
+                f"(amend total at/below executed) — emitting cancel"
+            )
+            self._emit_canceled_from_response(client_order_id, vid, r)
+            return
         self.send(
             OrderUpdatedEvent(
                 instrument=None,

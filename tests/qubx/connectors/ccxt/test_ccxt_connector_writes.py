@@ -681,6 +681,25 @@ async def test_update_quantity_only_resolves_price_from_order() -> None:
     assert ev.new_quantity == 3.0
 
 
+@pytest.mark.asyncio
+async def test_update_silent_cancel_response_emits_canceled_not_updated() -> None:
+    # Binance/Gate documented behavior: an amend whose total lands at/below executedQty
+    # CANCELS the order (no reject). Racing fills can trigger this despite the mixin
+    # pre-check — the connector must surface the truth as a cancel, not an update-ack.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    del exchange.AMEND_QUANTITY_DIALECT
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123", "status": "canceled"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.update_order(_order(venue_order_id="VENUE123"), price=102.0, quantity=2.0)
+    await _drive(conn)
+
+    assert len(sent) == 1
+    assert isinstance(sent[0], OrderCanceledEvent)
+    assert sent[0].venue_order_id == "VENUE123"
+
+
 def test_update_replacement_dialect_zero_remaining_raises_synchronously() -> None:
     # A fully-filled order under the replacement dialect translates to a <= 0 wire
     # amount, which is meaningless to send — raise synchronously (no venue call spawned)
