@@ -9,7 +9,13 @@ from qubx.connectors.ccxt.exchanges import EXCHANGE_ALIASES, READER_CAPABILITIES
 
 
 def run(coro):
-    return asyncio.run(coro)
+    # NOT asyncio.run: that clears the thread's current event loop on exit, breaking
+    # later tests in the same worker that rely on asyncio.get_event_loop()
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 class TestGateioRegistration:
