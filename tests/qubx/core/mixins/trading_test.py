@@ -1,4 +1,4 @@
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pandas as pd
 import pytest
@@ -429,7 +429,7 @@ class TestTradingManagerClosePositions:
         trading_manager.close_position.assert_any_call(ada_future, False)
 
 
-def _live_order(order_id="test_order_123"):
+def _live_order(order_id="test_order_123", side="BUY"):
     """A resolvable, non-terminal order living on BINANCE.UM.
 
     Real Order + real Instrument (not Mock): the update_order contract touches
@@ -447,7 +447,7 @@ def _live_order(order_id="test_order_123"):
         submitted_at=pd.Timestamp("2023-01-01").asm8,
         quantity=0.1,
         price=50_000.0,
-        side="BUY",
+        side=side,
         status=OrderStatus.ACCEPTED,
         time_in_force="gtc",
     )
@@ -787,6 +787,22 @@ class TestTradingManagerUpdateOrderContract:
 
         with pytest.raises(TypeError):
             trading_manager.update_order(price=51_000.0, amount=0.1, order_id="test_order_123")
+
+    def test_sell_update_derives_signed_size_adjust_hint(self, trading_manager, mock_connector, mock_account):
+        # _adjust_size's reducing-order detection (_is_position_reducing) needs a SIGNED
+        # amount matching order direction. quantity is unsigned at the public API, so the
+        # implementation must derive the sign from order.side before calling _adjust_size
+        # — same as it already does for _adjust_price.
+        order = _live_order(side="SELL")
+        mock_account.find_order_by_id.return_value = order
+        mock_account.get_position.return_value = None  # flat: skip position-reducing math
+
+        with patch.object(trading_manager, "_adjust_size", wraps=trading_manager._adjust_size) as spy:
+            trading_manager.update_order(quantity=0.2, order_id="test_order_123")
+
+        spy.assert_called_once()
+        _, called_amount = spy.call_args.args
+        assert called_amount < 0
 
 
 class TestAdjustSizeMinNotional:

@@ -395,10 +395,14 @@ class TradingManager(ITradingManager):
             return
 
         instrument = order.instrument
+        # _adjust_size/_adjust_price use the amount's sign as a direction hint (reducing-order
+        # detection, rounding direction); quantity is unsigned at the public API, so derive the
+        # sign from the order's side once and reuse it for both.
+        side_sign = 1.0 if order.side == "BUY" else -1.0
         if quantity is not None:
             if quantity <= 0:
                 raise ValueError(f"update_order quantity must be positive, got {quantity}")
-            quantity = abs(self._adjust_size(instrument, quantity))
+            quantity = abs(self._adjust_size(instrument, side_sign * quantity))
             if quantity <= order.filled_quantity:
                 raise ValueError(
                     f"update_order total {quantity} <= filled {order.filled_quantity} for "
@@ -408,9 +412,6 @@ class TradingManager(ITradingManager):
 
         adjusted_price: float | None = None
         if price is not None:
-            # _adjust_price uses the amount's sign as the rounding-direction hint;
-            # quantity is unsigned now, so derive the sign from the order's side.
-            side_sign = 1.0 if order.side == "BUY" else -1.0
             adjusted_price = self._adjust_price(instrument, price, side_sign * (quantity or order.quantity))
             if adjusted_price is None:
                 raise ValueError(f"Price adjustment failed for {instrument.symbol}")
