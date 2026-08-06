@@ -467,6 +467,9 @@ the way out; on the way back, `OrderUpdatedEvent.new_quantity` always echoes the
 **requested total** (or `None`), never a venue-dialect figure — connectors never leak
 their wire dialect into the event stream. The framework isn't traded through ccxt-HL
 today, but the dialect map exists so the public path doesn't ship an oversize landmine.
+On the ccxt-HL path specifically, an amend keeps addressing the OLD venue oid — there is
+no re-key from the modify response — so ccxt-HL amend is size-correct but identity-stale;
+order identity after amend is only handled by the exchanges-repo plugin.
 
 After a successful `editOrder`, the connector inspects the response status: if the venue
 reports CANCELED (the Binance/Gate response to an in-flight fill overtaking the new
@@ -494,7 +497,12 @@ where an HL amend ack overwrote `Order.quantity` with a remaining-dialect figure
   trim self-corrects the overshoot. Eliminating it needs a framework cancel+replace that
   reads the cancel-ack's final fill before sizing — the PR #367 orchestration this design
   rejects as not worth its complexity.
-- **Pre-existing, unchanged:** after an HL modify the venue counts the replacement's
-  fills from zero, so a snapshot that wins the venue-newer race can clobber cumulative
-  `filled_quantity` (needs a `filled_base` offset / venue-id-aware adoption — separate
-  snapshot-semantics design).
+- **Pre-existing, now guarded:** after an HL modify the venue counts the replacement's
+  fills from zero, so a snapshot that wins the venue-newer race used to clobber cumulative
+  `filled_quantity` with that lower figure. Under total semantics an un-guarded clobber
+  doesn't just lose history — it OVER-states `remaining` (`total − filled`), feeding an
+  over-sized next amend. `_apply_order_snapshot` now adopts `filled_quantity`
+  monotonically (never decreases it), closing that hole. The residual is cosmetic:
+  `OrderQuantityMismatch` diff noise against the venue's own post-modify figures until
+  venue-id-aware adoption (`filled_base` offset — separate snapshot-semantics design)
+  lands; still deferred.

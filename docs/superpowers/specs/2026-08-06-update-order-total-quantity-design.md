@@ -145,9 +145,14 @@ assert price-only calls.
   identical to today's live behavior; quantkit's settle trim self-corrects the overshoot. The only
   way to eliminate it is a framework cancel+replace that reads the cancel-ack's final fill before
   sizing — exactly the PR #367 orchestration this design rejects as not worth its complexity.
-- **Pre-existing, unchanged:** after an HL modify the venue counts the replacement's fills from
-  zero, so a snapshot that wins the venue-newer race can clobber cumulative `filled_quantity`
-  (needs a `filled_base` offset / venue-id-aware adoption — separate snapshot-semantics design).
+- **Pre-existing, now guarded:** after an HL modify the venue counts the replacement's fills from
+  zero, so a snapshot that wins the venue-newer race used to clobber cumulative `filled_quantity`
+  with that lower figure. Under total semantics an un-guarded clobber doesn't just lose history —
+  it OVER-states `remaining` (`total − filled`), feeding an over-sized next amend. `_apply_order_snapshot`
+  now adopts `filled_quantity` monotonically (never decreases it), closing that hole. The residual is
+  cosmetic: `OrderQuantityMismatch` diff noise against the venue's own post-modify figures until
+  venue-id-aware adoption (`filled_base` offset — separate snapshot-semantics design) lands; still
+  deferred.
 
 ## Salvaged from PR #367
 
