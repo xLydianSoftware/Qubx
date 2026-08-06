@@ -319,6 +319,61 @@ def test_status_resolved():
     assert isinstance(a[0].event, OrderPartiallyFilledEvent) and a[0].event.client_order_id == "order1"  # type: ignore
 
 
+def test_snapshot_does_not_decrease_filled_after_replacement_amend():
+    # A replacement-dialect amend (e.g. HL modify) restarts venue-side fills at 0 under the
+    # same cid. A snapshot reporting a LOWER filled figure is that restart, not a rollback —
+    # adopting it verbatim would over-state remaining and over-size the next amend (F1).
+    rec = _reconciler()
+    st = _local(_order("order1", status=OrderStatus.PARTIALLY_FILLED, quantity=2.0, filled=0.4))
+
+    rec.on_snapshot(
+        st,
+        _origin(
+            as_of=_passed_seconds(T0, 5),
+            open_orders=[
+                _order(
+                    "order1",
+                    status=OrderStatus.ACCEPTED,
+                    quantity=2.0,
+                    filled=0.0,
+                    last_update_time=_passed_seconds(T0, 4),  # newer VENUE ts than local
+                )
+            ],
+        ),
+        _passed_seconds(T0, 5),
+    )
+
+    o = st.get_order("order1")
+    assert o.filled_quantity == 0.4  # type: ignore # monotonic — the lower snapshot figure is dropped
+
+
+def test_snapshot_still_adopts_a_genuinely_higher_filled():
+    # The monotonic guard must not block real progress: a snapshot reporting MORE filled than
+    # local (a missed fill) is still adopted.
+    rec = _reconciler()
+    st = _local(_order("order1", status=OrderStatus.PARTIALLY_FILLED, quantity=2.0, filled=0.4))
+
+    rec.on_snapshot(
+        st,
+        _origin(
+            as_of=_passed_seconds(T0, 5),
+            open_orders=[
+                _order(
+                    "order1",
+                    status=OrderStatus.PARTIALLY_FILLED,
+                    quantity=2.0,
+                    filled=0.6,
+                    last_update_time=_passed_seconds(T0, 4),
+                )
+            ],
+        ),
+        _passed_seconds(T0, 5),
+    )
+
+    o = st.get_order("order1")
+    assert o.filled_quantity == 0.6  # type: ignore
+
+
 def test_snapshot_does_not_wipe_pending_cancel_marker():
     D_ON()
     # our cancel is in flight (PENDING_CANCEL). A snapshot poll still showing the order live

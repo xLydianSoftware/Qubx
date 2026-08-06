@@ -3,17 +3,23 @@ Base classes and mixins for CCXT exchange implementations.
 """
 
 import asyncio
+from typing import Literal
 
 
 class CcxtFuturePatchMixin:
     """
     Mixin class that patches CCXT Future.race to prevent InvalidStateError race conditions.
-    
+
     This fix should be applied to all CCXT exchange classes to prevent race conditions
     that can occur when multiple futures complete simultaneously and try to set the
     result on an already-done future.
     """
-    
+
+    # Amend-quantity wire dialect for update_order; the connector's translation lives at
+    # CcxtConnector.update_order (getattr(..., "total") default). Override per exchange
+    # (see HyperliquidEnhanced) when the venue's amend size means "remaining", not "total".
+    AMEND_QUANTITY_DIALECT: Literal["total", "replacement"] = "total"
+
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # Patch the Future.race method to prevent InvalidStateError

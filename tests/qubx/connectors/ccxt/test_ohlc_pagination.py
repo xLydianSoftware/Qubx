@@ -15,6 +15,15 @@ from qubx.connectors.ccxt.handlers.ohlc import OhlcDataHandler
 from qubx.core.basics import Instrument, MarketType
 
 
+def run(coro):
+    # private loop — never depends on, or disturbs, the thread's current-loop slot
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
 def _make_instrument() -> Instrument:
     return Instrument(
         symbol="BTCUSDT",
@@ -78,9 +87,7 @@ class TestOhlcPagination:
 
         exchange_manager.exchange.fetch_ohlcv = AsyncMock(side_effect=mock_fetch_ohlcv)
 
-        bars = asyncio.get_event_loop().run_until_complete(
-            handler.get_historical_ohlc(instrument, "1h", requested_bars)
-        )
+        bars = run(handler.get_historical_ohlc(instrument, "1h", requested_bars))
 
         assert len(bars) >= requested_bars
         # Should have made ~5 calls (500 / 100)
@@ -105,9 +112,7 @@ class TestOhlcPagination:
 
         exchange_manager.exchange.fetch_ohlcv = AsyncMock(side_effect=mock_fetch_ohlcv)
 
-        bars = asyncio.get_event_loop().run_until_complete(
-            handler.get_historical_ohlc(instrument, "1h", requested_bars)
-        )
+        bars = run(handler.get_historical_ohlc(instrument, "1h", requested_bars))
 
         assert len(bars) >= requested_bars
         assert call_count >= 2  # 2000 / 1000
@@ -132,9 +137,7 @@ class TestOhlcPagination:
 
         exchange_manager.exchange.fetch_ohlcv = AsyncMock(side_effect=mock_fetch_ohlcv)
 
-        bars = asyncio.get_event_loop().run_until_complete(
-            handler.get_historical_ohlc(instrument, "1h", 1000)
-        )
+        bars = run(handler.get_historical_ohlc(instrument, "1h", 1000))
 
         assert len(bars) == 100  # 2 pages * 50
         assert call_count == 3  # 2 successful + 1 empty
@@ -148,9 +151,7 @@ class TestOhlcPagination:
         same_bar = [[1_000_000_000, 50000.0, 50100.0, 49900.0, 50050.0, 100.0]]
         exchange_manager.exchange.fetch_ohlcv = AsyncMock(return_value=same_bar)
 
-        bars = asyncio.get_event_loop().run_until_complete(
-            handler.get_historical_ohlc(instrument, "1h", 100)
-        )
+        bars = run(handler.get_historical_ohlc(instrument, "1h", 100))
 
         assert len(bars) == 1  # Only 1 unique bar
 
@@ -172,9 +173,7 @@ class TestOhlcPagination:
 
         exchange_manager.exchange.fetch_ohlcv = AsyncMock(side_effect=mock_fetch_ohlcv)
 
-        bars = asyncio.get_event_loop().run_until_complete(
-            handler.get_historical_ohlc(instrument, "1h", 30)
-        )
+        bars = run(handler.get_historical_ohlc(instrument, "1h", 30))
 
         # With 10 bars per page and 1 overlap, need ~4 pages for 30 unique bars
         assert len(bars) >= 30

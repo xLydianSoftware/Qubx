@@ -88,3 +88,18 @@ class GateioFutures(CcxtFuturePatchMixin, cxp.gate):
             else:
                 await self._funding_rate_adapter.stop()
                 self._funding_rate_adapter = None
+
+    def edit_order_request(self, id, symbol, type, side, amount=None, price=None, params={}):
+        """ccxt's base edit_order_with_client_order_id routes here with id='' and the
+        cid in params, but upstream gate has no cid substitution for amends (unlike its
+        fetch_order/cancel_order builders): it sends order_id='' in the URL path plus a
+        stray ``clientOrderId`` body key the amend endpoint doesn't define. Mirror
+        fetch_order_request's documented 't-' substitution.
+        """
+        clientOrderId = self.safe_string_2(params, "clientOrderId", "text")
+        if not id and clientOrderId is not None:
+            params = self.omit(params, ["clientOrderId", "text"])
+            if clientOrderId[0] != "t":
+                clientOrderId = "t-" + clientOrderId
+            id = clientOrderId
+        return super().edit_order_request(id, symbol, type, side, amount, price, params)

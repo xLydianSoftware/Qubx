@@ -592,6 +592,134 @@ async def test_update_cancel_recreate_path_rejects_without_touching_live_order()
     assert isinstance(sent[0], OrderUpdateRejectedEvent)
 
 
+@pytest.mark.asyncio
+async def test_update_replacement_dialect_sends_total_minus_filled() -> None:
+    # Hyperliquid-style modify is a venue-side cancel+replace: the amend amount is the
+    # REPLACEMENT order's size (remaining), while the framework speaks totals. The
+    # connector must translate on the wire and still echo the requested TOTAL on the ack.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.AMEND_QUANTITY_DIALECT = "replacement"
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    order = _order(venue_order_id="VENUE123")
+    order.quantity = 2.0
+    order.filled_quantity = 0.4
+    conn.update_order(order, price=102.0, quantity=2.0)
+    await _drive(conn)
+
+    _, kwargs = exchange.edit_order.await_args
+    assert kwargs["amount"] == pytest.approx(1.6)  # total - filled on the wire
+    ev = sent[0]
+    assert isinstance(ev, OrderUpdatedEvent)
+    assert ev.new_quantity == 2.0  # requested TOTAL on the event
+
+
+@pytest.mark.asyncio
+async def test_update_total_dialect_passes_total_verbatim() -> None:
+    # Binance/Gate amend quantity IS the new total (executedQty preserved): passthrough.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    del exchange.AMEND_QUANTITY_DIALECT  # plain Mock auto-creates attrs; ensure absent
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    order = _order(venue_order_id="VENUE123")
+    order.quantity = 2.0
+    order.filled_quantity = 0.4
+    conn.update_order(order, price=102.0, quantity=2.0)
+    await _drive(conn)
+
+    _, kwargs = exchange.edit_order.await_args
+    assert kwargs["amount"] == pytest.approx(2.0)
+    assert sent[0].new_quantity == 2.0
+
+
+@pytest.mark.asyncio
+async def test_update_price_only_resolves_quantity_from_order_and_echoes_none() -> None:
+    # Binance requires both quantity and price on modify — a price-only update sends the
+    # order's current total on the wire but the ack event says "quantity unchanged".
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    del exchange.AMEND_QUANTITY_DIALECT
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    order = _order(venue_order_id="VENUE123")
+    order.quantity = 2.0
+    conn.update_order(order, price=102.0)
+    await _drive(conn)
+
+    _, kwargs = exchange.edit_order.await_args
+    assert kwargs["amount"] == pytest.approx(2.0)  # resolved from the order
+    assert kwargs["price"] == 102.0
+    ev = sent[0]
+    assert isinstance(ev, OrderUpdatedEvent)
+    assert ev.new_price == 102.0
+    assert ev.new_quantity is None  # unchanged — reducer keeps its total
+
+
+@pytest.mark.asyncio
+async def test_update_quantity_only_resolves_price_from_order() -> None:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    del exchange.AMEND_QUANTITY_DIALECT
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    order = _order(venue_order_id="VENUE123")
+    order.quantity = 2.0
+    conn.update_order(order, quantity=3.0)
+    await _drive(conn)
+
+    _, kwargs = exchange.edit_order.await_args
+    assert kwargs["amount"] == pytest.approx(3.0)
+    assert kwargs["price"] == order.price  # resolved from the order
+    ev = sent[0]
+    assert ev.new_price is None
+    assert ev.new_quantity == 3.0
+
+
+@pytest.mark.asyncio
+async def test_update_silent_cancel_response_emits_canceled_not_updated() -> None:
+    # Binance/Gate documented behavior: an amend whose total lands at/below executedQty
+    # CANCELS the order (no reject). Racing fills can trigger this despite the mixin
+    # pre-check — the connector must surface the truth as a cancel, not an update-ack.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    del exchange.AMEND_QUANTITY_DIALECT
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123", "status": "canceled"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.update_order(_order(venue_order_id="VENUE123"), price=102.0, quantity=2.0)
+    await _drive(conn)
+
+    assert len(sent) == 1
+    assert isinstance(sent[0], OrderCanceledEvent)
+    assert sent[0].venue_order_id == "VENUE123"
+
+
+def test_update_replacement_dialect_zero_remaining_raises_synchronously() -> None:
+    # A fully-filled order under the replacement dialect translates to a <= 0 wire
+    # amount, which is meaningless to send — raise synchronously (no venue call spawned)
+    # rather than let the venue reject it asynchronously.
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.AMEND_QUANTITY_DIALECT = "replacement"
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    order = _order(venue_order_id="VENUE123")
+    order.quantity = 2.0
+    order.filled_quantity = 2.0
+    with pytest.raises(ValueError):
+        conn.update_order(order, quantity=2.0)
+
+    exchange.edit_order.assert_not_awaited()
+    assert sent == []
+
+
 # --------------------------------------------------------------------------- #
 # (7) make_client_id prefix
 # --------------------------------------------------------------------------- #

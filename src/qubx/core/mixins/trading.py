@@ -362,13 +362,19 @@ class TradingManager(ITradingManager):
 
     def update_order(
         self,
-        price: float,
-        amount: float,
+        price: float | None = None,
+        quantity: float | None = None,
         order_id: str | None = None,
         client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> None:
-        """Update an existing limit order with new price and amount.
+        """Update a live limit order's price and/or quantity.
+
+        ``quantity`` is the order's new TOTAL, including everything already filled
+        (unsigned). ``None`` means "leave unchanged" — at least one of ``price`` /
+        ``quantity`` must be given. ``quantity <= filled_quantity`` raises: Binance and
+        Gate silently CANCEL an order amended to a total at/below the executed quantity,
+        so a shrink below filled must be requested as a cancel, never an update.
 
         Raises OrderAlreadyTerminal on a settled order (updating a settled order is
         meaningful misuse); a no-op while a previous update is still in flight.
@@ -376,6 +382,8 @@ class TradingManager(ITradingManager):
         (via a synthetic OrderUpdateRejectedEvent) and re-raises to the caller.
         """
         self._ensure_writable()
+        if price is None and quantity is None:
+            raise ValueError("update_order requires price and/or quantity")
         order_id, client_order_id = self._normalize_order_ids(order_id, client_order_id)
         order = self._resolve_order(order_id, client_order_id)
         if order is None:
@@ -387,15 +395,31 @@ class TradingManager(ITradingManager):
             return
 
         instrument = order.instrument
-        amount = self._adjust_size(instrument, amount)
-        adjusted_price = self._adjust_price(instrument, price, amount)
-        if adjusted_price is None:
-            raise ValueError(f"Price adjustment failed for {instrument.symbol}")
+        # _adjust_size/_adjust_price use the amount's sign as a direction hint (reducing-order
+        # detection, rounding direction); quantity is unsigned at the public API, so derive the
+        # sign from the order's side once and reuse it for both.
+        side_sign = 1.0 if order.side == "BUY" else -1.0
+        if quantity is not None:
+            if quantity <= 0:
+                raise ValueError(f"update_order quantity must be positive, got {quantity}")
+            quantity = self._adjust_size(instrument, side_sign * quantity)
+            if quantity <= order.filled_quantity:
+                raise ValueError(
+                    f"update_order total {quantity} <= filled {order.filled_quantity} for "
+                    f"{order.client_order_id}: a total at/below filled is a silent venue "
+                    f"cancel — use cancel_order instead"
+                )
+
+        adjusted_price: float | None = None
+        if price is not None:
+            adjusted_price = self._adjust_price(instrument, price, side_sign * (quantity or order.quantity))
+            if adjusted_price is None:
+                raise ValueError(f"Price adjustment failed for {instrument.symbol}")
 
         cid = order.client_order_id
         self._account_manager.transition_order(instrument.exchange, cid, OrderStatus.PENDING_UPDATE)
         try:
-            self._get_connector(instrument.exchange).update_order(order, price=adjusted_price, quantity=abs(amount))
+            self._get_connector(instrument.exchange).update_order(order, price=adjusted_price, quantity=quantity)
         except Exception as e:
             # Same contract as cancel_order: synthetic reject through the PM reverts
             # PENDING_UPDATE via pre_pending, then the original exception re-raises.

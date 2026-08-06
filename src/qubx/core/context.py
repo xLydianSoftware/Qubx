@@ -828,18 +828,18 @@ class StrategyContext(IStrategyContext):
 
     def update_order(
         self,
-        price: float,
-        amount: float,
+        price: float | None = None,
+        quantity: float | None = None,
         order_id: str | None = None,
         client_order_id: str | None = None,
         exchange: str | None = None,
     ) -> None:
         """
-        Update an existing limit order with new price and amount.
+        Update a live limit order's price and/or total quantity (total includes filled).
         """
         self._assert_not_fit_thread("update_order")
         self._trading_manager.update_order(
-            order_id=order_id, client_order_id=client_order_id, price=price, amount=amount, exchange=exchange
+            order_id=order_id, client_order_id=client_order_id, price=price, quantity=quantity, exchange=exchange
         )
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:

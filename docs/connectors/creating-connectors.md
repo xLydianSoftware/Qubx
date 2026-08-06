@@ -179,7 +179,12 @@ class MyConnector(ChannelEmitter):
     def update_order(self, *, client_order_id: str | None = None,
                      venue_order_id: str | None = None,
                      price: float | None = None,
-                     quantity: float | None = None) -> None: ...
+                     quantity: float | None = None) -> None:
+        # `quantity` is the order's new TOTAL size including everything already filled
+        # (None = unchanged). Translate it to your venue's amend dialect on the wire, but
+        # echo the requested total (or None) back in OrderUpdatedEvent.new_quantity —
+        # never the wire figure.
+        ...
 
     def request_order_status(self, *, client_order_id: str | None = None,
                              venue_order_id: str | None = None) -> None: ...
