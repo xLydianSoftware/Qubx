@@ -940,7 +940,7 @@ class ITradingManager:
         """
         ...
 
-    def set_reduce_only_when_degraded(self, enabled: bool) -> None:
+    def set_deny_trading_when_degraded(self, enabled: bool) -> None:
         """While the context is degraded, refuse orders that would open or increase a
         position (QubxDegradedState). Applied from the initializer once on_init has run."""
         ...
@@ -2365,14 +2365,14 @@ class IStrategyInitializer:
         """Return registered instrument-service-change callbacks, in registration order."""
         ...
 
-    def set_reduce_only_when_degraded(self, enabled: bool) -> None:
+    def set_deny_trading_when_degraded(self, enabled: bool) -> None:
         """
         While the context is degraded, refuse orders that would open or increase a position
         (QubxDegradedState). Position-reducing orders are always allowed. Off by default.
         """
         ...
 
-    def get_reduce_only_when_degraded(self) -> bool:
+    def get_deny_trading_when_degraded(self) -> bool:
         """
         Whether exposure-increasing orders are refused while the context is degraded.
         """

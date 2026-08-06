@@ -47,7 +47,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
     stale_data_check_interval: str | None = None
 
     # While the context is degraded, refuse orders that would open or increase a position
-    reduce_only_when_degraded: bool = False
+    deny_trading_when_degraded: bool = False
 
     # Number of days ahead to check for delisting
     delisting_check_days: int = 1
@@ -217,7 +217,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
         self.stale_data_detection_period = detection_period
         self.stale_data_check_interval = check_interval
 
-    def set_reduce_only_when_degraded(self, enabled: bool) -> None:
+    def set_deny_trading_when_degraded(self, enabled: bool) -> None:
         """
         While the context is degraded (stale data, venue unavailable), refuse orders that
         would open or increase a position with QubxDegradedState. Position-reducing orders
@@ -229,13 +229,13 @@ class BasicStrategyInitializer(IStrategyInitializer):
         Args:
             enabled: True to refuse exposure-increasing orders while degraded
         """
-        self.reduce_only_when_degraded = enabled
+        self.deny_trading_when_degraded = enabled
 
-    def get_reduce_only_when_degraded(self) -> bool:
+    def get_deny_trading_when_degraded(self) -> bool:
         """
         Whether exposure-increasing orders are refused while the context is degraded.
         """
-        return self.reduce_only_when_degraded
+        return self.deny_trading_when_degraded
 
     def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
         """

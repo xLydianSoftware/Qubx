@@ -61,7 +61,7 @@ class TradingManager(ITradingManager):
     _client_id_store: ClientIdStore
     _exchange_to_connector: dict[str, IConnector]
     _read_only: bool
-    _reduce_only_when_degraded: bool
+    _deny_trading_when_degraded: bool
 
     def __init__(
         self,
@@ -80,15 +80,15 @@ class TradingManager(ITradingManager):
         self._exchange_to_connector = dict(connectors)
         self._read_only = read_only
         # - set from the initializer once on_init has run (see StrategyContext.start)
-        self._reduce_only_when_degraded = False
+        self._deny_trading_when_degraded = False
 
     def _ensure_writable(self) -> None:
         """Single read-only check for the venue-write boundary (trade/cancel/update)."""
         if self._read_only:
             raise ReadOnlyConnector("trading is read-only — write rejected")
 
-    def set_reduce_only_when_degraded(self, enabled: bool) -> None:
-        self._reduce_only_when_degraded = enabled
+    def set_deny_trading_when_degraded(self, enabled: bool) -> None:
+        self._deny_trading_when_degraded = enabled
 
     def _reduce_only_amount(self, instrument: Instrument, amount: float) -> tuple[float, float]:
         """Clamp *amount* so it can only move the position toward zero. Returns the
@@ -112,36 +112,29 @@ class TradingManager(ITradingManager):
         position = self._account_manager.get_position(instrument)
         return position.quantity if position is not None else 0.0
 
-    def _ensure_not_degraded(self, instrument: Instrument, amount: float) -> float:
-        """Reduce-only while the context is degraded. No-op unless the strategy enabled it
-        in on_init.
+    def _ensure_not_degraded(self, instrument: Instrument) -> None:
+        """Refuse to trade while the context is degraded. No-op unless the strategy enabled
+        it in on_init.
 
-        The framework knows it is acting on stale data, so an order that opens or increases
-        a position raises QubxDegradedState instead of being dropped silently. A flip
-        through zero is clamped to an exact close: the caller's intent includes exiting.
+        Every order is refused, not only the ones that increase exposure. A reduce-only
+        carve-out holds when the reason is a stale local view, but not when it is the venue:
+        under an exchange maintenance window a closing order cannot reach it either, so
+        accepting one would report a close the strategy never got.
 
         A degradation with no scope is context-wide and applies to every exchange; one
-        scoped to another exchange leaves this instrument tradeable.
+        scoped to another exchange leaves this instrument tradeable. ``cancel_order`` is
+        never refused — pulling a resting order lowers exposure and needs no fresh data.
         """
-        if not self._reduce_only_when_degraded:
-            return amount
+        if not self._deny_trading_when_degraded:
+            return
         info = self._context.status
         if not info.is_degraded_for(instrument.exchange):
-            return amount
-
-        clamped, current = self._reduce_only_amount(instrument, amount)
-        if clamped == 0.0:
-            holding = info.degradations_for(instrument.exchange)
-            raise QubxDegradedState(
-                f"[{instrument.symbol}] context is DEGRADED ({', '.join(d.label for d in holding)}) — "
-                f"only position-reducing orders are accepted (current={current}, requested={amount})",
-                holding,
-            )
-        if clamped != amount:
-            logger.warning(
-                f"[Degraded] :: clamping {instrument.symbol} order to close (current={current}, amount={amount})"
-            )
-        return clamped
+            return
+        holding = info.degradations_for(instrument.exchange)
+        raise QubxDegradedState(
+            f"[{instrument.symbol}] context is DEGRADED ({', '.join(d.label for d in holding)}) — trading refused",
+            holding,
+        )
 
     def _blacklist_clamp(self, instrument: Instrument, amount: float) -> float:
         """Reduce-only for blacklisted instruments: an order may only move the position
@@ -176,7 +169,7 @@ class TradingManager(ITradingManager):
         amount = self._blacklist_clamp(instrument, amount)
         if amount == 0.0:
             return None
-        amount = self._ensure_not_degraded(instrument, amount)
+        self._ensure_not_degraded(instrument)
         size_adj = self._adjust_size(instrument, amount)
         side = self._get_side(amount)
         order_type = self._get_order_type(instrument, price, options)
@@ -457,6 +450,7 @@ class TradingManager(ITradingManager):
             return
 
         instrument = order.instrument
+        self._ensure_not_degraded(instrument)
         # _adjust_size/_adjust_price use the amount's sign as a direction hint (reducing-order
         # detection, rounding direction); quantity is unsigned at the public API, so derive the
         # sign from the order's side once and reuse it for both.

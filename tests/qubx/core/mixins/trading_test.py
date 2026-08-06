@@ -1003,9 +1003,11 @@ def test_trade_sends_no_order_when_blacklisted_and_opening(
     mock_connector.submit_order.assert_not_called()
 
 
-class TestDegradedContextGate:
-    """A degraded context may only reduce exposure: the framework knows it is acting on
-    stale data, so opening or increasing a position is refused."""
+class TestTradingWhileDegraded:
+    """A degraded context refuses to trade at all: the framework knows it is acting on
+    stale data, and a reduce-only carve-out only holds for a backlog — under an exchange
+    maintenance window even a closing order cannot reach the venue. Cancelling stays
+    allowed, so a strategy can always pull its resting orders."""
 
     def _tm(self, mock_connector, mock_account, status: QubxStatusInfo, enabled: bool = True) -> TradingManager:
         context = Mock()
@@ -1020,7 +1022,7 @@ class TestDegradedContextGate:
             strategy_name="test_strategy",
             health_monitor=DummyHealthMonitor(),
         )
-        tm.set_reduce_only_when_degraded(enabled)
+        tm.set_deny_trading_when_degraded(enabled)
         return tm
 
     def _degraded(self, scope: str | None = None) -> QubxStatusInfo:
@@ -1064,30 +1066,35 @@ class TestDegradedContextGate:
         with pytest.raises(QubxDegradedState):
             tm.trade(instrument, 1.0)
 
-    def test_reducing_a_position_is_allowed(self, mock_connector, mock_account, instrument):
+    def test_reducing_a_position_is_also_refused(self, mock_connector, mock_account, instrument):
         mock_account.get_position.return_value = self._position(instrument, 2.0)
         tm = self._tm(mock_connector, mock_account, self._degraded())
 
-        assert tm.trade(instrument, -1.0) is not None
-        mock_connector.submit_order.assert_called_once()
-
-    def test_a_flip_that_ends_smaller_is_clamped_to_an_exact_close(self, mock_connector, mock_account, instrument):
-        mock_account.get_position.return_value = self._position(instrument, 2.0)
-        tm = self._tm(mock_connector, mock_account, self._degraded())
-
-        order = tm.trade(instrument, -3.0)  # - would leave a 1 short: smaller, so clamp to close
-
-        assert order is not None and order.quantity == pytest.approx(2.0)
-
-    def test_a_flip_that_ends_larger_is_refused(self, mock_connector, mock_account, instrument):
-        mock_account.get_position.return_value = self._position(instrument, 2.0)
-        tm = self._tm(mock_connector, mock_account, self._degraded())
-
-        # - a 3 short is MORE exposure than the 2 long it replaces (same rule as the blacklist)
         with pytest.raises(QubxDegradedState):
-            tm.trade(instrument, -5.0)
+            tm.trade(instrument, -1.0)
+        mock_connector.submit_order.assert_not_called()
 
-    def test_a_degradation_scoped_to_another_exchange_does_not_gate(self, mock_connector, mock_account, instrument):
+    def test_update_order_is_refused(self, mock_connector, mock_account, instrument):
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+        mock_account.get_position.return_value = self._position(order.instrument, 0.0)
+        tm = self._tm(mock_connector, mock_account, self._degraded())
+
+        with pytest.raises(QubxDegradedState):
+            tm.update_order(price=51_000.0, order_id="test_order_123")
+        mock_connector.update_order.assert_not_called()
+
+    def test_cancel_order_is_allowed(self, mock_connector, mock_account, instrument):
+        """Pulling a resting order lowers exposure and needs no fresh data — refusing it
+        would strand orders exactly when the context is least trustworthy."""
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+        tm = self._tm(mock_connector, mock_account, self._degraded())
+
+        assert tm.cancel_order(order_id="test_order_123") is True
+        mock_connector.cancel_order.assert_called_once_with(order)
+
+    def test_a_degradation_scoped_to_another_exchange_does_not_deny(self, mock_connector, mock_account, instrument):
         mock_account.get_position.return_value = self._position(instrument, 0.0)
         tm = self._tm(mock_connector, mock_account, self._degraded(scope="OKX"))
 
@@ -1111,7 +1118,7 @@ class TestDegradedContextGate:
         # - default: a degraded context does not stop an opening order
         assert tm.trade(instrument, 1.0) is not None
 
-    def test_a_normal_context_never_gates(self, mock_connector, mock_account, instrument):
+    def test_a_normal_context_is_not_denied(self, mock_connector, mock_account, instrument):
         mock_account.get_position.return_value = self._position(instrument, 0.0)
         tm = self._tm(mock_connector, mock_account, QubxStatusInfo(QubxStatus.NORMAL))
 
