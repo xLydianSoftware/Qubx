@@ -9,6 +9,7 @@ a kw-only snapshot_grace (threaded once via the local apply wrapper below).
 from typing import TypeVar
 
 import numpy as np
+import pytest
 
 from qubx.core.account_manager import reducer
 from qubx.core.account_manager.state import AccountState
@@ -693,6 +694,52 @@ def test_accept_during_pending_update_preserves_marker():
     r = apply(state, OrderUpdateRejectedEvent(instrument=None, client_order_id="c1", reason="below filled"), T1)
     assert r.order is not None and r.order.status is OrderStatus.ACCEPTED
     assert r.order_change is OrderChange.UPDATE_REJECTED
+
+
+def test_update_ack_total_below_filled_clamps_remaining_at_zero():
+    # ACE 2026-08-05 regression class: an ack whose total is below cumulative fills
+    # must never make remaining (= quantity - filled) negative. Clamp to filled and
+    # let the snapshot/status refetch reconcile.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)  # quantity=1.0
+    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill(amount=0.6)), T0)
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+
+    r = apply(state, OrderUpdatedEvent(instrument=None, client_order_id="c1", new_price=None, new_quantity=0.4), T1)
+
+    o = r.order
+    assert o is not None
+    assert o.filled_quantity == 0.6
+    assert o.quantity == 0.6  # clamped to filled, not 0.4
+    assert o.quantity - o.filled_quantity == 0.0  # remaining never negative
+
+
+def test_update_ack_total_above_filled_applies_verbatim():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)  # quantity=1.0
+    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill(amount=0.6)), T0)
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+
+    r = apply(state, OrderUpdatedEvent(instrument=None, client_order_id="c1", new_price=None, new_quantity=2.0), T1)
+
+    o = r.order
+    assert o is not None
+    assert o.quantity == 2.0
+    assert o.quantity - o.filled_quantity == pytest.approx(1.4)
+
+
+def test_canceled_during_pending_update_terminalizes_and_clears_pre_pending():
+    # Binance/Gate amend with total <= executedQty silently cancels the order; the
+    # connector surfaces that as OrderCanceledEvent while we sit in PENDING_UPDATE.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0)
+
+    r = apply(state, OrderCanceledEvent(instrument=None, client_order_id="c1"), T1)
+
+    assert r.order is not None
+    assert r.order.status is OrderStatus.CANCELED
+    assert state.get_pre_pending("c1") is None
 
 
 # --------------------------------------------------------------------------- #

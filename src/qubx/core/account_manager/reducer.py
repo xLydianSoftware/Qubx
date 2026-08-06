@@ -470,7 +470,17 @@ def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datet
     if event.new_price is not None:
         order.price = event.new_price
     if event.new_quantity is not None:
-        order.quantity = event.new_quantity
+        if event.new_quantity < order.filled_quantity:
+            # Ack total below cumulative fills would make remaining negative (the
+            # ACE 2026-08-05 poison). Clamp to filled (remaining 0); the periodic
+            # snapshot / status refetch reconciles the true figure.
+            logger.error(
+                f"[{order.client_order_id}] update-ack total {event.new_quantity} < "
+                f"filled {order.filled_quantity}; clamping quantity to filled"
+            )
+            order.quantity = order.filled_quantity
+        else:
+            order.quantity = event.new_quantity
     order.last_update_time = event.last_update_time if event.last_update_time is not None else now
     if order.status == OrderStatus.PENDING_UPDATE:
         target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
