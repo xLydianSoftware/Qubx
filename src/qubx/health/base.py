@@ -21,6 +21,11 @@ STALE_THRESHOLDS = {
     "trade": "30min",
 }
 
+# Event types whose timestamps mark period boundaries (funding settlement), not emission
+# moments — their age is structural, so they are excluded from the pooled data_feed figure.
+# Per-type tracking and emission still include them.
+DATA_FEED_LATENCY_EXCLUDE = frozenset({DataType.FUNDING_PAYMENT})
+
 
 @dataclass
 class TimingContext:
@@ -43,6 +48,7 @@ class BaseHealthMonitor(IHealthMonitor):
         buffer_size: int = 1000,
         emit_health: bool = True,
         queue_degrade_window: str = "5Min",
+        latency_window: str = "5Min",
     ):
         """Initialize the health metrics monitor.
 
@@ -54,6 +60,9 @@ class BaseHealthMonitor(IHealthMonitor):
             queue_monitor_interval: Interval to check queue size, e.g. "100ms", "500ms" (default: "100ms")
             buffer_size: Size of buffer for storing metrics
             emit_health: Whether to emit health metrics (default: True)
+            latency_window: Only samples that arrived within this window enter latency
+                percentiles, so a buffer that stopped rolling cannot pin the "now" stats
+                with stale readings (default: "5Min")
         """
         self.time_provider = time_provider
         self._emitter = emitter
@@ -73,6 +82,7 @@ class BaseHealthMonitor(IHealthMonitor):
         # minimum", evaluated continuously instead of in minute buckets. Floor is 0 — a
         # healthy queue empties constantly, so no level threshold is needed.
         self._queue_degrade_window = convert_tf_str_td64(queue_degrade_window) if queue_degrade_window else None
+        self._latency_window_ns = recognize_timeframe(latency_window)
         self._last_drain_time: dt_64 | None = None
         self._queue_degraded = False  # - the monitor's own edge tracker: status is written only on transitions
         self._status: ContextStatus | None = None
@@ -376,12 +386,20 @@ class BaseHealthMonitor(IHealthMonitor):
         # Calculate events per second
         return float(total_events / time_window_seconds)
 
+    def _recent_values(self, indicator) -> np.ndarray:
+        """Values of samples that arrived within the latency window, oldest first."""
+        samples = indicator.to_array()
+        cutoff = self.time_provider.time().astype("datetime64[ns]").astype(int) - self._latency_window_ns
+        return samples["value"][samples["timestamp"] > cutoff]
+
     def get_data_latency(self, exchange: str, event_type: str, percentile: float = 90) -> float:
         """Get data latency for a specific event type on an exchange."""
         key = (exchange, event_type)
         if key not in self._data_latency or self._data_latency[key].is_empty():
             return 0.0
-        latencies = self._data_latency[key].to_array()["value"]
+        latencies = self._recent_values(self._data_latency[key])
+        if len(latencies) == 0:
+            return 0.0
         return float(np.percentile(latencies, percentile))
 
     def get_data_latencies(self, exchange: str, percentile: float = 90) -> dict[str, float]:
@@ -415,10 +433,10 @@ class BaseHealthMonitor(IHealthMonitor):
 
     def get_exchange_latencies(self, exchange: str, percentile: float = 90) -> LatencyMetrics:
         data_latencies = []
-        for (ex, _), latency in self._data_latency.items():
-            if ex == exchange:
+        for (ex, event_type), latency in self._data_latency.items():
+            if ex == exchange and event_type not in DATA_FEED_LATENCY_EXCLUDE:
                 if not latency.is_empty():
-                    data_latencies.extend(latency.to_array()["value"])
+                    data_latencies.extend(self._recent_values(latency))
 
         data_feed = float(np.percentile(data_latencies, percentile)) if data_latencies else 0.0
 
@@ -624,12 +642,16 @@ class BaseHealthMonitor(IHealthMonitor):
         metrics = self.get_exchange_latencies(exchange, percentile=90)
         tags = {"type": "health", "exchange": exchange}
         assert self._emitter is not None
-        self._emitter.emit(
-            name="latency.p90.data",
-            value=metrics.data_feed,
-            tags=tags,
-            timestamp=current_time,
-        )
+        # One row per event type: types have incompatible latency semantics (a funding
+        # payment is stamped at settlement, a quote at emission), so dashboards pick the
+        # types they mean instead of receiving a pre-pooled figure.
+        for event_type, data_latency in self.get_data_latencies(exchange, percentile=90).items():
+            self._emitter.emit(
+                name="latency.p90.data",
+                value=data_latency,
+                tags={**tags, "event_type": str(event_type)},
+                timestamp=current_time,
+            )
         self._emitter.emit(
             name="latency.p90.order_submit",
             value=metrics.order_submit,

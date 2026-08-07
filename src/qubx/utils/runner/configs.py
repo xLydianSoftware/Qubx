@@ -156,6 +156,9 @@ class HealthConfig(StrictBaseModel):
     #   1Hz samples and never went a whole minute without emptying; observed backlogs ran
     #   4-5 minutes. Empty string disables the check.
     queue_degrade_window: str = "5Min"
+    # - latency percentiles only look at samples that arrived within this window, so a
+    #   buffer that stopped rolling (sparse event types, dead feed) cannot pin the stats.
+    latency_window: str = "5Min"
 
 
 class DataTypeThrottleConfig(StrictBaseModel):

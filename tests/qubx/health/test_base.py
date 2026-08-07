@@ -676,6 +676,98 @@ class TestBaseHealthMonitor:
         assert metrics.order_submit > 0
         assert metrics.order_cancel > 0
 
+    def test_data_feed_pool_excludes_funding_payment(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Pooled per-exchange data_feed latency must ignore funding_payment samples.
+
+        funding_payment events are timestamped at the funding settlement time, so their
+        measured age is structural (seconds to hours), not transport latency. Once enough
+        of them accumulate in the pool, the pooled p90 permanently jumps to the funding
+        cluster even though the quote feed is healthy.
+        """
+        instrument = _get_test_instrument()
+        exchange = instrument.exchange
+        monitor.subscribe(instrument, "quote")
+        monitor.subscribe(instrument, "funding_payment")
+
+        current_time = time_provider.time()
+        for _ in range(90):
+            monitor.on_data_arrival(instrument, "quote", current_time - np.timedelta64(50, "ms"))
+        # settlement-stamped events: hours old on arrival, 25% of the pool
+        for _ in range(30):
+            monitor.on_data_arrival(instrument, "funding_payment", current_time - np.timedelta64(4, "h"))
+
+        pooled = monitor.get_exchange_latencies(exchange).data_feed
+        assert 45 <= pooled <= 55
+
+        # per-type view still reports the funding age for diagnostics
+        funding = monitor.get_data_latency(exchange, "funding_payment")
+        assert funding >= 4 * 3600 * 1000 * 0.99
+
+    def test_data_latency_ignores_samples_outside_window(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """A buffer that stopped receiving samples must not pin the 'now' percentile."""
+        instrument = _get_test_instrument()
+        exchange = instrument.exchange
+        monitor.subscribe(instrument, "quote")
+
+        monitor.on_data_arrival(instrument, "quote", time_provider.time() - np.timedelta64(500, "ms"))
+        assert monitor.get_data_latency(exchange, "quote") > 0
+        assert monitor.get_exchange_latencies(exchange).data_feed > 0
+
+        time_provider.advance(timedelta(minutes=6))  # beyond the default 5Min window
+        assert monitor.get_data_latency(exchange, "quote") == 0.0
+        assert monitor.get_exchange_latencies(exchange).data_feed == 0.0
+
+    def test_data_latency_window_uses_only_recent_samples(
+        self, monitor: BaseHealthMonitor, time_provider: MockTimeProvider
+    ) -> None:
+        """Stale high-latency samples age out of the percentile once fresh ones arrive."""
+        instrument = _get_test_instrument()
+        exchange = instrument.exchange
+        monitor.subscribe(instrument, "quote")
+
+        for _ in range(50):
+            monitor.on_data_arrival(instrument, "quote", time_provider.time() - np.timedelta64(900, "ms"))
+        time_provider.advance(timedelta(minutes=6))
+        for _ in range(50):
+            monitor.on_data_arrival(instrument, "quote", time_provider.time() - np.timedelta64(50, "ms"))
+
+        latency = monitor.get_data_latency(exchange, "quote")
+        assert 45 <= latency <= 55
+        pooled = monitor.get_exchange_latencies(exchange).data_feed
+        assert 45 <= pooled <= 55
+
+    def test_latency_window_is_configurable(self, time_provider: MockTimeProvider) -> None:
+        """A custom latency_window bounds how far back the percentile looks."""
+        monitor = BaseHealthMonitor(time_provider, latency_window="1Min")
+        instrument = _get_test_instrument()
+        monitor.subscribe(instrument, "quote")
+
+        monitor.on_data_arrival(instrument, "quote", time_provider.time() - np.timedelta64(100, "ms"))
+        time_provider.advance(timedelta(seconds=90))
+        assert monitor.get_data_latency(instrument.exchange, "quote") == 0.0
+
+    def test_data_latency_emitted_per_event_type(self, time_provider: MockTimeProvider) -> None:
+        """latency.p90.data rows carry an event_type tag so dashboards choose which
+        types to plot instead of receiving one pooled figure."""
+        emitter = InMemoryMetricEmitter()
+        monitor = BaseHealthMonitor(time_provider, emitter=emitter)
+        instrument = _get_test_instrument()
+        monitor.subscribe(instrument, "quote")
+        monitor.subscribe(instrument, "funding_payment")
+
+        monitor.on_data_arrival(instrument, "quote", time_provider.time() - np.timedelta64(50, "ms"))
+        monitor.on_data_arrival(instrument, "funding_payment", time_provider.time() - np.timedelta64(4, "h"))
+        monitor._emit()
+
+        df = emitter.get_dataframe(metric_name="latency.p90.data")
+        assert set(df["event_type"]) == {"quote", "funding_payment"}
+        assert 45 <= df[df["event_type"] == "quote"].iloc[0]["value"] <= 55
+        assert df[df["event_type"] == "funding_payment"].iloc[0]["value"] >= 4 * 3600 * 1000 * 0.99
+
     def test_subscribe_adds_to_active_subscriptions(self, monitor: BaseHealthMonitor) -> None:
         """Test that subscribe adds instrument/event_type to active subscriptions."""
         instrument = _get_test_instrument()
