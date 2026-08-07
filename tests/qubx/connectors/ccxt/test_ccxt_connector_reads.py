@@ -739,8 +739,8 @@ def test_connect_triggers_initial_snapshot_and_subscription() -> None:
     with patch.object(type(conn), "_loop", new=loop):
         conn.connect()
 
-    # WS execution subscription + the funding poll loop started on the exchange loop.
-    assert len(submitted) == 2
+    # WS execution subscription + the funding and leverage poll loops, all on the exchange loop.
+    assert len(submitted) == 3
     # Initial snapshot requested (fire-and-forget via the _spawn capture).
     assert len(conn._captured) == 1  # type: ignore[attr-defined]
     # Close the coroutines we never awaited (avoid "coroutine was never awaited").

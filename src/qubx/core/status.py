@@ -13,7 +13,7 @@ applies to; ``None`` means the whole context.
 """
 
 import threading
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field
 from enum import StrEnum
 
 from qubx.core.basics import dt_64
@@ -36,14 +36,35 @@ class Degradation:
     scope: str | None = None
     message: str = ""
 
+    @property
+    def label(self) -> str:
+        """``reason@exchange`` when scoped, plain ``reason`` when context-wide."""
+        return f"{self.reason}@{self.scope}" if self.scope else str(self.reason)
+
 
 @dataclass(frozen=True, slots=True)
 class QubxStatusInfo:
     status: QubxStatus
     degradations: tuple[Degradation, ...] = ()
+    # - scopes held, precomputed once per transition so readers on the order path do not
+    #   iterate; None is the context-wide scope and matches every exchange
+    _scopes: frozenset = field(default_factory=frozenset, repr=False, compare=False)
+
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "_scopes", frozenset(d.scope for d in self.degradations))
+
+    def is_degraded_for(self, exchange: str) -> bool:
+        """True when a degradation affects this exchange: either context-wide (no scope)
+        or scoped to it. Two set lookups, no iteration — this is read per order."""
+        return None in self._scopes or exchange in self._scopes
+
+    def degradations_for(self, exchange: str) -> tuple[Degradation, ...]:
+        """The degradations behind :meth:`is_degraded_for` — for messages, not the hot path."""
+        return tuple(d for d in self.degradations if d.scope is None or d.scope == exchange)
 
 
-_NORMAL = QubxStatusInfo(QubxStatus.NORMAL)
+NORMAL_STATUS = QubxStatusInfo(QubxStatus.NORMAL)
+"""Shared NORMAL snapshot: the default for any context that never degrades."""
 
 
 class ContextStatus:
@@ -53,7 +74,10 @@ class ContextStatus:
 
     def __init__(self) -> None:
         self._lock = threading.Lock()
-        self._info = _NORMAL
+        # - keyed by (reason, scope): dict order is insertion order, so a re-asserted
+        #   degradation keeps its place and the snapshot ordering stays stable
+        self._held: dict[tuple[DegradeReason, str | None], Degradation] = {}
+        self._info = NORMAL_STATUS
 
     @property
     def info(self) -> QubxStatusInfo:
@@ -65,16 +89,11 @@ class ContextStatus:
         (reason, scope). A refresh keeps the original ``since`` — a repeatedly
         re-asserted degradation must not look like it just started.
         """
+        key = (reason, scope)
         with self._lock:
-            held = list(self._info.degradations)
-            fresh = Degradation(reason, since, scope, message)
-            for i, d in enumerate(held):
-                if d.reason is reason and d.scope == scope:
-                    held[i] = replace(fresh, since=d.since)
-                    break
-            else:
-                held.append(fresh)
-            self._info = QubxStatusInfo(QubxStatus.DEGRADED, tuple(held))
+            previous = self._held.get(key)
+            self._held[key] = Degradation(reason, previous.since if previous else since, scope, message)
+            self._info = QubxStatusInfo(QubxStatus.DEGRADED, tuple(self._held.values()))
 
     def clear(self, reason: DegradeReason, scope: str | None = None) -> None:
         """
@@ -82,7 +101,7 @@ class ContextStatus:
         are left. A no-op when none is held.
         """
         with self._lock:
-            kept = tuple(d for d in self._info.degradations if not (d.reason is reason and d.scope == scope))
-            if len(kept) == len(self._info.degradations):
+            if self._held.pop((reason, scope), None) is None:
                 return
-            self._info = QubxStatusInfo(QubxStatus.DEGRADED if kept else QubxStatus.NORMAL, kept)
+            held = tuple(self._held.values())
+            self._info = QubxStatusInfo(QubxStatus.DEGRADED if held else QubxStatus.NORMAL, held)

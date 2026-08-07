@@ -352,6 +352,8 @@ class StrategyContext(IStrategyContext):
         self._instrument_service_manager.set_callbacks(self.initializer.get_instrument_service_callbacks())
         self._instrument_service_manager.start()
 
+        self._trading_manager.set_deny_trading_when_degraded(self.initializer.get_deny_trading_when_degraded())
+
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
         self._processing_manager.configure_stale_data_detection(*stale_data_config)
@@ -701,6 +703,9 @@ class StrategyContext(IStrategyContext):
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
         return self.account.get_fees_calculator(exchange)
 
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return self.account.get_instrument_leverage(instrument)
+
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         return self.account.get_max_instrument_leverage(instrument)
 
@@ -715,11 +720,11 @@ class StrategyContext(IStrategyContext):
 
     # per-instrument venue-setting writes (IAccountConfigurator): the configured leverage and
     # margin mode reach the venue and honour read-only.
-    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
-        self._assert_not_fit_thread("set_max_instrument_leverage")
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
+        self._assert_not_fit_thread("set_instrument_leverage")
         if self._read_only:
             raise ReadOnlyConnector("account configuration is read-only — write rejected")
-        return self._account_manager.set_max_instrument_leverage(instrument, leverage)
+        self._account_manager.set_instrument_leverage(instrument, leverage)
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         self._assert_not_fit_thread("set_margin_mode")

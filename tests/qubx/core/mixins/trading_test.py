@@ -1,15 +1,23 @@
 from unittest.mock import Mock, patch
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus, Position
 from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
-from qubx.core.exceptions import InvalidOrderSize, OrderAlreadyTerminal, OrderNotFound, ReadOnlyConnector
+from qubx.core.exceptions import (
+    InvalidOrderSize,
+    OrderAlreadyTerminal,
+    OrderNotFound,
+    QubxDegradedState,
+    ReadOnlyConnector,
+)
 from qubx.core.interfaces import IStrategyContext, ITimeProvider
 from qubx.core.lookups import lookup
 from qubx.core.mixins.trading import ClientIdStore, TradingManager
+from qubx.core.status import Degradation, DegradeReason, QubxStatus, QubxStatusInfo
 from qubx.health.dummy import DummyHealthMonitor
 
 
@@ -480,7 +488,7 @@ class TestTradingManagerTradeOrderShape:
 
 
 class TestTradingManagerAutoReduceOnly:
-    """A position-reducing order auto-carries reduceOnly so the two min_notional gates agree:
+    """A position-reducing order auto-carries reduceOnly so the two min_notional checks agree:
     _adjust_size exempts reducing orders locally, and the connector only exempts orders whose
     request.options carry reduceOnly. Auto-setting it in trade() keeps them consistent."""
 
@@ -993,3 +1001,125 @@ def test_trade_sends_no_order_when_blacklisted_and_opening(
     inst.exchange = "BINANCE.UM"
     assert trading_manager.trade(inst, -891.4) is None
     mock_connector.submit_order.assert_not_called()
+
+
+class TestTradingWhileDegraded:
+    """A degraded context refuses to trade at all: the framework knows it is acting on
+    stale data, and a reduce-only carve-out only holds for a backlog — under an exchange
+    maintenance window even a closing order cannot reach the venue. Cancelling stays
+    allowed, so a strategy can always pull its resting orders."""
+
+    def _tm(self, mock_connector, mock_account, status: QubxStatusInfo, enabled: bool = True) -> TradingManager:
+        context = Mock()
+        context.time.return_value = pd.Timestamp("2023-01-01").asm8
+        context.is_blacklisted.return_value = False
+        context.quote.return_value = None
+        context.status = status
+        tm = TradingManager(
+            context=context,
+            connectors={"BINANCE.UM": mock_connector},
+            account_manager=mock_account,
+            strategy_name="test_strategy",
+            health_monitor=DummyHealthMonitor(),
+        )
+        tm.set_deny_trading_when_degraded(enabled)
+        return tm
+
+    def _degraded(self, scope: str | None = None) -> QubxStatusInfo:
+        return QubxStatusInfo(
+            QubxStatus.DEGRADED,
+            (Degradation(DegradeReason.INTERNAL_QUEUE_OVERFLOW, np.datetime64("2026-08-04T13:30:00"), scope=scope),),
+        )
+
+    @pytest.fixture
+    def instrument(self) -> Instrument:
+        return Instrument(
+            symbol="BTCUSDT",
+            market_type=MarketType.SWAP,
+            exchange="BINANCE.UM",
+            base="BTC",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="BTCUSDT",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        )
+
+    def _position(self, instrument, quantity: float) -> Position:
+        position = Position(instrument=instrument)
+        position.quantity = quantity
+        return position
+
+    def test_opening_a_position_is_refused(self, mock_connector, mock_account, instrument):
+        mock_account.get_position.return_value = self._position(instrument, 0.0)
+        tm = self._tm(mock_connector, mock_account, self._degraded())
+
+        with pytest.raises(QubxDegradedState, match="internal_queue_overflow"):
+            tm.trade(instrument, 1.0)
+        mock_connector.submit_order.assert_not_called()
+
+    def test_increasing_an_open_position_is_refused(self, mock_connector, mock_account, instrument):
+        mock_account.get_position.return_value = self._position(instrument, 2.0)
+        tm = self._tm(mock_connector, mock_account, self._degraded())
+
+        with pytest.raises(QubxDegradedState):
+            tm.trade(instrument, 1.0)
+
+    def test_reducing_a_position_is_also_refused(self, mock_connector, mock_account, instrument):
+        mock_account.get_position.return_value = self._position(instrument, 2.0)
+        tm = self._tm(mock_connector, mock_account, self._degraded())
+
+        with pytest.raises(QubxDegradedState):
+            tm.trade(instrument, -1.0)
+        mock_connector.submit_order.assert_not_called()
+
+    def test_update_order_is_refused(self, mock_connector, mock_account, instrument):
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+        mock_account.get_position.return_value = self._position(order.instrument, 0.0)
+        tm = self._tm(mock_connector, mock_account, self._degraded())
+
+        with pytest.raises(QubxDegradedState):
+            tm.update_order(price=51_000.0, order_id="test_order_123")
+        mock_connector.update_order.assert_not_called()
+
+    def test_cancel_order_is_allowed(self, mock_connector, mock_account, instrument):
+        """Pulling a resting order lowers exposure and needs no fresh data — refusing it
+        would strand orders exactly when the context is least trustworthy."""
+        order = _live_order()
+        mock_account.find_order_by_id.return_value = order
+        tm = self._tm(mock_connector, mock_account, self._degraded())
+
+        assert tm.cancel_order(order_id="test_order_123") is True
+        mock_connector.cancel_order.assert_called_once_with(order)
+
+    def test_a_degradation_scoped_to_another_exchange_does_not_deny(self, mock_connector, mock_account, instrument):
+        mock_account.get_position.return_value = self._position(instrument, 0.0)
+        tm = self._tm(mock_connector, mock_account, self._degraded(scope="OKX"))
+
+        assert tm.trade(instrument, 1.0) is not None
+
+    def test_a_blacklisted_instrument_is_dropped_silently_even_when_degraded(
+        self, mock_connector, mock_account, instrument
+    ):
+        mock_account.get_position.return_value = self._position(instrument, 0.0)
+        tm = self._tm(mock_connector, mock_account, self._degraded())
+        tm._context.is_blacklisted.return_value = True
+
+        # - the blacklist owns this order; raising would recur every bar and stop the strategy
+        assert tm.trade(instrument, 1.0) is None
+        mock_connector.submit_order.assert_not_called()
+
+    def test_it_is_off_unless_the_strategy_enabled_it(self, mock_connector, mock_account, instrument):
+        mock_account.get_position.return_value = self._position(instrument, 0.0)
+        tm = self._tm(mock_connector, mock_account, self._degraded(), enabled=False)
+
+        # - default: a degraded context does not stop an opening order
+        assert tm.trade(instrument, 1.0) is not None
+
+    def test_a_normal_context_is_not_denied(self, mock_connector, mock_account, instrument):
+        mock_account.get_position.return_value = self._position(instrument, 0.0)
+        tm = self._tm(mock_connector, mock_account, QubxStatusInfo(QubxStatus.NORMAL))
+
+        assert tm.trade(instrument, 1.0) is not None

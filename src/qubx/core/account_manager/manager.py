@@ -540,8 +540,25 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
 
     # Per-instrument exchange-side settings
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """Snapshot first, connector second.
+
+        The snapshot only carries leverage for instruments the account holds a position in
+        — and on Binance not even then, since v3 positionRisk omits the field. So for the
+        common case of asking about an instrument you are flat in, this used to return None
+        while the connector had the answer cached for the whole universe.
+        """
+        leverage = self.get_position(instrument).leverage
+        if leverage is not None:
+            return leverage
+        connector = self._connectors.get(instrument.exchange)
+        return connector.get_instrument_leverage(instrument) if connector is not None else None
+
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        return self.get_position(instrument).leverage
+        # - the venue cap, not a setting: the snapshot carries no such field, so it comes
+        #   from the connector's cache of the venue's published maximum
+        connector = self._connectors.get(instrument.exchange)
+        return connector.get_max_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
         notional = self.get_position(instrument).max_notional
@@ -554,12 +571,16 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return self.get_position(instrument).adl_level
 
     # Per-instrument venue-setting writes
-    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
+        """Request the CONFIGURED leverage for one instrument. Returns nothing: the
+        connector sends the venue call off-thread and reports a refusal as a
+        VenueOperationError to the strategy's on_error, so there is no outcome to hand back here.
+        """
         connector = self._connectors.get(instrument.exchange)
         if connector is None:
             logger.warning(f"[{instrument.exchange}] no connector; cannot set instrument leverage")
-            return False
-        return connector.set_max_instrument_leverage(instrument, leverage)
+            return
+        connector.set_instrument_leverage(instrument, leverage)
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         connector = self._connectors.get(instrument.exchange)

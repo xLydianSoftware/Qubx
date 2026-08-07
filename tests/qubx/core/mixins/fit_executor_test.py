@@ -120,7 +120,7 @@ def make_thread_pm(fit_executor: str = "thread", is_simulation: bool = False, **
 
 
 def drain_until_committed(pm: ProcessingManager, channel: CtrlChannel, timeout: float = 5.0) -> None:
-    """Play the ProcessorThread: drain the channel until the FitCommit clears the gate."""
+    """Play the ProcessorThread: drain the channel until the FitCommit clears the flag."""
     deadline = time.monotonic() + timeout
     while pm._fit_is_running:
         if time.monotonic() > deadline:
@@ -145,7 +145,7 @@ class TestThreadedFitExecution:
         pm._strategy.on_fit.side_effect = on_fit
 
         pm._handle_fit(None, "fit", (None, T0))
-        # - submission returns immediately; the gate stays up until the commit is applied
+        # - submission returns immediately; the flag stays set until the commit is applied
         assert pm._fit_is_running is True
         assert context._strategy_state.is_on_fit_called is False
 
@@ -165,7 +165,7 @@ class TestThreadedFitExecution:
     def test_infra_applied_and_strategy_gated_during_first_slow_fit(self):
         """The incident scenario: a slow fit must not stop the ProcessorThread from
         applying market/account events. During the FIRST fit the strategy is not yet
-        fitted, so its callbacks stay gated even in thread mode."""
+        fitted, so its callbacks stay suppressed even in thread mode."""
         pm, _, channel = make_thread_pm()
         started, release = threading.Event(), threading.Event()
 
@@ -187,7 +187,7 @@ class TestThreadedFitExecution:
             assert pm._fit_is_running is True  # fit is still computing
             pm._cache.update.assert_called_once()  # market cache updated mid-fit
             pm._account_manager.on_market_quote.assert_called_once()  # mark-to-market mid-fit
-            pm._strategy.on_market_data.assert_not_called()  # never-fitted strategy stays gated
+            pm._strategy.on_market_data.assert_not_called()  # never-fitted strategy stays suppressed
         finally:
             release.set()
 
@@ -240,7 +240,7 @@ class TestThreadedFitExecution:
         pm.process_data(instrument, "quote", quote, False)
 
         pm._cache.update.assert_called_once()  # infra still applies
-        pm._strategy.on_market_data.assert_not_called()  # strategy stays gated
+        pm._strategy.on_market_data.assert_not_called()  # strategy stays suppressed
 
     def test_overlapping_fit_trigger_dropped(self):
         pm, _, channel = make_thread_pm()
@@ -611,7 +611,7 @@ class TestStashedContextTripwires:
                 lambda: ctx.unschedule("x"),
                 lambda: ctx.delay("1m", lambda c: None),
                 lambda: ctx.set_margin_mode(MagicMock(), "cross"),
-                lambda: ctx.set_max_instrument_leverage(MagicMock(), 5.0),
+                lambda: ctx.set_instrument_leverage(MagicMock(), 5.0),
                 lambda: ctx.transfer_funds("A", "B", "USDT", 1.0),
                 lambda: ctx.set_warmup_positions({}),
                 lambda: ctx.set_warmup_orders({}),
@@ -686,7 +686,7 @@ class TestReviewFixes:
     def test_position_derivatives_read_from_peek(self):
         instrument = _mock_instrument()
         fit_ctx, context = self._make_fit_ctx(exchanges=[instrument.exchange])
-        assert fit_ctx.get_max_instrument_leverage(instrument) is None
+        assert fit_ctx.get_instrument_leverage(instrument) is None
         assert fit_ctx.get_max_instrument_notional(instrument) == float("inf")
         assert fit_ctx.get_margin_mode(instrument) is None
         assert fit_ctx.get_adl_level(instrument) is None
@@ -734,7 +734,7 @@ class TestReviewFixes:
             MagicMock(side_effect=RuntimeError("boom at proxy construction")),
         )
         pm._handle_fit(None, "fit", (None, T0))
-        # - the pre-fit framework raise still posts the FitCommit: gate clears, bot keeps fitting
+        # - the pre-fit framework raise still posts the FitCommit: flag clears, bot keeps fitting
         drain_until_committed(pm, channel)
         assert pm._fit_is_running is False
         pm._strategy.on_fit.assert_not_called()

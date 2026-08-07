@@ -136,7 +136,7 @@ class ProcessingManager(IProcessingManager):
     # Same-thread re-entrancy guards: on_fit/on_warmup_finished run inline on the processing
     # thread and may pump events that re-enter the trigger tail before is_on_fit_called /
     # is_on_warmup_finished_called flip (set only after the callback returns).
-    # With fit_executor="thread" the fit gate extends from re-entrancy guard to concurrency
+    # With fit_executor="thread" the fit flag extends from re-entrancy guard to concurrency
     # guard: it stays True from submission until the FitCommit is applied — but in thread
     # mode it only drops overlapping fit TRIGGERS; strategy callbacks are delivered
     # concurrently with the running fit (handlers consult ctx.is_fitting).
@@ -410,7 +410,7 @@ class ProcessingManager(IProcessingManager):
         """
         Configure periodic rate limit metric emission.
 
-        Emits pool utilization, gate state, hit counts etc. for all registered
+        Emits pool utilization, limiter state, hit counts etc. for all registered
         rate limiters via ctx.emitter.emit(). Only active in live mode.
 
         Args:
@@ -490,7 +490,7 @@ class ProcessingManager(IProcessingManager):
         return self._run_strategy_pipeline(event)
 
     def _run_strategy_pipeline(self, event: Any) -> bool:
-        """Warmup/fit gating, strategy callback firing and signal processing — the
+        """Warmup/fit checks, strategy callback firing and signal processing — the
         shared tail of the tuple data path (__process_data)."""
         if not self._context._strategy_state.is_on_start_called:
             self._handle_start()
@@ -909,7 +909,7 @@ class ProcessingManager(IProcessingManager):
                 return False
 
     def _is_ready(self) -> bool:
-        """Startup readiness gate: market data ready AND the initial account snapshot applied.
+        """Startup readiness check: market data ready AND the initial account snapshot applied.
 
         Gates on_start / on_fit / state-resolution / restore so those callbacks see REAL capital +
         venue positions instead of the pre-sync zero state (which would produce 0-capital sizing and
@@ -1196,7 +1196,7 @@ class ProcessingManager(IProcessingManager):
 
         ``_fit_is_running`` extends from re-entrancy guard to concurrency guard: it stays
         True from submission until the FitCommit is applied, dropping overlapping fit
-        triggers. Unlike the inline path it does NOT gate strategy callbacks — events are
+        triggers. Unlike the inline path it does NOT suppress strategy callbacks — events are
         delivered concurrently with the running fit (handlers consult ctx.is_fitting).
         """
         if self._fit_is_running:
@@ -1211,7 +1211,7 @@ class ProcessingManager(IProcessingManager):
             self._cache.finalize_ohlc_for_instruments(data[1], self._context.instruments)
             self._fit_executor.submit(lambda: self._run_fit_off_thread(channel))
         except Exception:
-            # - nothing was submitted, so no commit will ever clear the gate — mirror the
+            # - nothing was submitted, so no commit will ever clear the flag — mirror the
             #   inline outer-finally discipline here
             self._fit_is_running = False
             raise
@@ -1223,7 +1223,7 @@ class ProcessingManager(IProcessingManager):
         concurrency policy: mutations (set_universe/subscribe/schedule/emit_signal/...)
         are recorded on the fit-cycle state, live views come back as copies, unclassified
         access fails loudly. The FitCommit is posted in the finally on EVERY path (success, strategy
-        raise, framework raise) so the ``_fit_is_running`` gate can never be stranded —
+        raise, framework raise) so ``_fit_is_running`` can never be stranded —
         mirrors the inline path's outer-finally discipline.
         """
         _t_start = time.monotonic()
@@ -1288,7 +1288,7 @@ class ProcessingManager(IProcessingManager):
         by the subscription commit to its background worker, so the replay stays fast and
         the added instruments go live only after their history landed), commit any
         remaining deferred subscriptions, then — in a finally so no replay failure can
-        strand the gate — drain fit-emitted signals into the normal pipeline, set
+        strand the flag — drain fit-emitted signals into the normal pipeline, set
         is_on_fit_called and clear _fit_is_running. Returning None hands control to
         _run_strategy_pipeline, which processes the drained signals immediately.
         """
@@ -1477,7 +1477,7 @@ class ProcessingManager(IProcessingManager):
     def _feed_simulated_connector(self, instrument: Instrument, payload: Any) -> None:
         # Paper only. is_paper_trading is also True in the backtester (it too uses a
         # SimulatedConnector), but there the SimulationRunner already feeds the OME via the
-        # connector per tick — so gate on `not _is_simulation` as well to avoid double-feeding
+        # connector per tick — so check `not _is_simulation` as well to avoid double-feeding
         # the OME in backtests. Live (not paper) executes at the venue and has no local OME.
         if self._is_simulation or not self._context.is_paper_trading:
             return

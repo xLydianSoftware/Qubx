@@ -51,3 +51,23 @@ class OrderCancellationError(BaseErrorEvent):
 
     def __str__(self):
         return f"[{self.level}] : {self.timestamp} : {self.message} / {self.error} ||| Order cancellation error for {self.order_id} {self.instrument}"
+
+
+@dataclass
+class VenueOperationError(BaseErrorEvent):
+    """A venue write that failed after its caller had already been released.
+
+    Some writes cannot block their caller — ``set_instrument_leverage`` is issued from
+    the ProcessorThread and sends the request off-thread — so a refusal has no return
+    value to travel back on. Without this it would be visible only in the connector's log.
+
+    ``operation`` is the connector method that failed; ``instrument`` is None for an
+    account-wide call.
+    """
+
+    operation: str
+    instrument: Instrument | None = None
+
+    def __str__(self):
+        where = self.instrument if self.instrument is not None else "account"
+        return f"[{self.level}] : {self.timestamp} : {self.message} / {self.error} ||| {self.operation} failed for {where}"

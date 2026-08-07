@@ -49,7 +49,7 @@ from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import ChannelMessage
 from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
-from qubx.core.status import ContextStatus, QubxStatusInfo
+from qubx.core.status import NORMAL_STATUS, ContextStatus, QubxStatusInfo
 from qubx.data.storage import IReader, IStorage
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
@@ -364,12 +364,16 @@ class IAccountViewer:
     # The methods below expose the venue's per-(account, instrument) settings the
     # strategy configures and the caps the venue derives from them.
     ########################################################
-    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        """The leverage currently configured for this instrument on the exchange.
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """The leverage currently CONFIGURED for this instrument on the exchange.
 
-        This is the venue's "initial leverage". Exchange enforces it as per-symbol
+        This is the venue's "initial leverage". The exchange enforces it as a per-symbol
         cap — it won't let a position exceed it — and it drives the initial-margin
         requirement and the max position notional.
+
+        Named ``get_max_instrument_leverage`` until 2026-08. That name said maximum while
+        every implementation returned the configured value, and the venue maximum is a
+        different number entirely (see ``get_max_instrument_leverage`` below).
 
         Returns:
             float | None: Configured leverage, or None if unknown / not populated
@@ -377,9 +381,24 @@ class IAccountViewer:
         """
         ...
 
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """The HIGHEST leverage the venue will accept for this instrument.
+
+        A cap the venue publishes, not a setting: ``set_instrument_leverage`` is clamped
+        to it. On tiered venues (Binance brackets) it depends on position notional, and
+        this reports the value at the smallest position — the most permissive one. A
+        request under it can still be refused once the position grows into a lower
+        bracket.
+
+        Returns:
+            float | None: Venue maximum, or None when the venue does not publish one or
+            it has not been read yet.
+        """
+        ...
+
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
         """Venue's hard cap on a single position's notional at the CURRENT configured
-        leverage (``get_max_instrument_leverage``).
+        leverage (``get_instrument_leverage``).
 
         On tiered venues (Binance) this CHANGES with leverage — higher leverage means
         a lower notional cap.
@@ -502,12 +521,16 @@ class IAccountConfigurator:
     margin mode.
     """
 
-    def set_max_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
-        """Set the configured leverage for this instrument on the exchange.
-        The venue enforces it as per-symbol cap.
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
+        """Request the configured leverage for this instrument on the exchange. The venue
+        enforces it as a per-symbol cap.
 
-        Returns:
-            bool: True if the venue accepted the change, False otherwise.
+        Returns nothing and does not block. The connector sends the venue call off-thread,
+        clamps the request to the venue maximum it has cached, and skips it entirely when
+        the cached configured value already matches. A refusal arrives as a VenueOperationError
+        on the channel, not as a return value: a wide universe called this once per
+        instrument on the ProcessorThread, and waiting for each round trip stalled event
+        processing for tens of seconds.
         """
         ...
 
@@ -929,6 +952,11 @@ class ITradingManager:
         - order_id: Exchange/server order id
         - client_order_id: Client-generated id
         """
+        ...
+
+    def set_deny_trading_when_degraded(self, enabled: bool) -> None:
+        """While the context is degraded, refuse orders that would open or increase a
+        position (QubxDegradedState). Applied from the initializer once on_init has run."""
         ...
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
@@ -1453,13 +1481,14 @@ class IStrategyContext(
 
     @property
     def status(self) -> QubxStatusInfo:
-        """Whether the framework can trade normally right now, and if not, why.
+        """
+        Whether the framework can trade normally right now, and if not, why.
 
-        NORMAL unless something degraded the context (event-queue backlog, exchange
-        maintenance); the returned snapshot lists every degradation currently held.
+        NORMAL unless something degraded the context (event-queue backlog, exchange maintenance);
+        the returned snapshot lists every degradation currently held.
         Always NORMAL in simulation unless a test sets it deliberately.
         """
-        ...
+        return NORMAL_STATUS
 
     def is_running(self) -> bool:
         """Check if the strategy context is running."""
@@ -2350,6 +2379,19 @@ class IStrategyInitializer:
         self,
     ) -> list[Callable[["IStrategyContext", list["Instrument"], list["Instrument"]], None]]:
         """Return registered instrument-service-change callbacks, in registration order."""
+        ...
+
+    def set_deny_trading_when_degraded(self, enabled: bool) -> None:
+        """
+        While the context is degraded, refuse orders that would open or increase a position
+        (QubxDegradedState). Position-reducing orders are always allowed. Off by default.
+        """
+        ...
+
+    def get_deny_trading_when_degraded(self) -> bool:
+        """
+        Whether exposure-increasing orders are refused while the context is degraded.
+        """
         ...
 
     def set_stale_data_detection(

@@ -103,8 +103,13 @@ class _FitAccountView:
     def get_position(self, instrument: Instrument) -> "Position | None":
         return self._peek_position(instrument)
 
-    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
         return self._peek_position(instrument).leverage  # type: ignore[union-attr]
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        # - the venue cap is connector state, not position state; the fit thread reads a
+        #   snapshot and has no connector, so it cannot answer this
+        return None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
         notional = self._peek_position(instrument).max_notional  # type: ignore[union-attr]
@@ -169,8 +174,13 @@ class FitContext(ITimeProvider):
     def get_position(self, instrument: Instrument) -> "Position | None":
         return self._peek_position(instrument)
 
-    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
         return self._peek_position(instrument).leverage  # type: ignore[union-attr]
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        # - the venue cap is connector state, not position state; the fit thread reads a
+        #   snapshot and has no connector, so it cannot answer this
+        return None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
         notional = self._peek_position(instrument).max_notional  # type: ignore[union-attr]
@@ -346,7 +356,7 @@ class FitContext(ITimeProvider):
     update_order = _denied("update_order")
     settle_position = _denied("settle_position")
     # venue/account configuration writes
-    set_max_instrument_leverage = _denied("set_max_instrument_leverage")
+    set_instrument_leverage = _denied("set_instrument_leverage")
     set_margin_mode = _denied("set_margin_mode")
     transfer_funds = _denied("transfer_funds")
     # subscription/schedule plumbing with no deferred story (on_init-time concerns)
@@ -368,6 +378,7 @@ class FitContext(ITimeProvider):
     set_warmup_positions = _denied("set_warmup_positions", "framework-internal")
     set_warmup_orders = _denied("set_warmup_orders", "framework-internal")
     set_warmup_active_targets = _denied("set_warmup_active_targets", "framework-internal")
+    set_deny_trading_when_degraded = _denied("set_deny_trading_when_degraded", "an on_init-time setting")
     initializer = property(_denied("initializer", "an on_init-time object"))
 
     # ------------------------------------------------------------------
