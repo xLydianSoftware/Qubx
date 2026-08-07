@@ -366,26 +366,31 @@ class SubscriptionManager(ISubscriptionManager):
     def _collect_warmups(self, plan: _CommitPlan) -> dict[IDataProvider, dict[tuple[str, Instrument], str]]:
         """Resolve this commit's full warmup set (pending pairs from subscribe() plus the
         global-subscription expansion), partitioned per data provider. Consumes and clears
-        _pending_warmups; providers with nothing to warm are omitted."""
+        _pending_warmups; providers with nothing to warm are omitted.
+
+        Scope depends on WHY a warmup-configured sub is armed this commit (#371):
+        - armed via plan.global_subscriptions (a new/renewed global sub): warm the whole
+          current universe -- correct, a global sub must cover every instrument.
+        - armed only because _new_instruments is non-empty (some OTHER sub got new
+          instruments and this sub shares a warmup config, e.g. a warmup-only ohlc(1h)
+          riding a live quote(100ms) base sub): warm just _new_instruments. Widening this
+          to the whole universe re-fetches warmup for every already-subscribed instrument
+          on every commit that adds so much as one instrument.
+        Initial boot stays correct under the narrow scope: at the first commit ALL
+        instruments are in plan.stream_subscriptions (hence in _new_instruments), so
+        everything still warms once at start.
+        """
         # - handle warmup for global subscriptions
         for _data_provider in self._data_providers:
             _subscribed_instruments = set(_data_provider.get_subscribed_instruments())
-            _new_instruments = (
-                set.union(*plan.stream_subscriptions.values()) if plan.stream_subscriptions else set()
-            )
+            _new_instruments = set.union(*plan.stream_subscriptions.values()) if plan.stream_subscriptions else set()
 
-            _subs_to_warm = set(plan.global_subscriptions)
+            for sub in plan.global_subscriptions:
+                self._record_pending_warmup(_data_provider, sub, _subscribed_instruments.union(_new_instruments))
+
             if _new_instruments:
-                _subs_to_warm.update(self._sub_to_warmup.keys())
-
-            for sub in _subs_to_warm:
-                _warmup_period = self._sub_to_warmup.get(sub)
-                if _warmup_period is None:
-                    continue
-                _sub_instruments = _data_provider.get_subscribed_instruments(sub)
-                _add_instruments = _subscribed_instruments.union(_new_instruments).difference(_sub_instruments)
-                for instr in _add_instruments:
-                    self._pending_warmups[(sub, instr)] = _warmup_period
+                for sub in set(self._sub_to_warmup.keys()) - plan.global_subscriptions:
+                    self._record_pending_warmup(_data_provider, sub, _new_instruments)
 
         # TODO: think about appropriate handling of timeouts
         _warmups: dict[IDataProvider, dict[tuple[str, Instrument], str]] = {}
@@ -395,6 +400,18 @@ class SubscriptionManager(ISubscriptionManager):
                 _warmups[_data_provider] = _warmup_configs
         self._pending_warmups.clear()
         return _warmups
+
+    def _record_pending_warmup(
+        self, data_provider: IDataProvider, sub: str, candidate_instruments: set[Instrument]
+    ) -> None:
+        """Queue warmup for `sub` x (candidate_instruments - already subscribed to `sub`),
+        skipping subs with no warmup period configured."""
+        _warmup_period = self._sub_to_warmup.get(sub)
+        if _warmup_period is None:
+            return
+        _sub_instruments = data_provider.get_subscribed_instruments(sub)
+        for instr in candidate_instruments.difference(_sub_instruments):
+            self._pending_warmups[(sub, instr)] = _warmup_period
 
     def _get_pending_warmups_for_exchange(self, exchange: str) -> dict[tuple[str, Instrument], str]:
         return {
