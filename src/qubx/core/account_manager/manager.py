@@ -6,7 +6,6 @@ Periodic ticks (reconcile, sweep, liveness) call the reconcile.py decision helpe
 fire the connector requests — connector calls stay manager-only, as does PM wiring.
 """
 
-import time
 from typing import Callable, Literal
 
 import numpy as np
@@ -541,8 +540,25 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return {ins: self.get_leverage(ins) for ins in self.get_positions(exchange)}
 
     # Per-instrument exchange-side settings
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """Snapshot first, connector second.
+
+        The snapshot only carries leverage for instruments the account holds a position in
+        — and on Binance not even then, since v3 positionRisk omits the field. So for the
+        common case of asking about an instrument you are flat in, this used to return None
+        while the connector had the answer cached for the whole universe.
+        """
+        leverage = self.get_position(instrument).leverage
+        if leverage is not None:
+            return leverage
+        connector = self._connectors.get(instrument.exchange)
+        return connector.get_instrument_leverage(instrument) if connector is not None else None
+
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        return self.get_position(instrument).leverage
+        # - the venue cap, not a setting: the snapshot carries no such field, so it comes
+        #   from the connector's cache of the venue's published maximum
+        connector = self._connectors.get(instrument.exchange)
+        return connector.get_max_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
         notional = self.get_position(instrument).max_notional
@@ -555,56 +571,16 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return self.get_position(instrument).adl_level
 
     # Per-instrument venue-setting writes
-    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
+        """Request the CONFIGURED leverage for one instrument. Returns nothing: the
+        connector sends the venue call off-thread and reports a refusal as a
+        VenueOperationError to the strategy's on_error, so there is no outcome to hand back here.
+        """
         connector = self._connectors.get(instrument.exchange)
         if connector is None:
             logger.warning(f"[{instrument.exchange}] no connector; cannot set instrument leverage")
-            return False
-        return connector.set_instrument_leverage(instrument, leverage)
-
-    def set_instrument_leverages(self, leverages: dict[Instrument, float]) -> dict[Instrument, bool]:
-        by_exchange: dict[str, dict[Instrument, float]] = {}
-        result: dict[Instrument, bool] = {}
-        for instrument, leverage in leverages.items():
-            by_exchange.setdefault(instrument.exchange, {})[instrument] = leverage
-        for exchange, batch in by_exchange.items():
-            connector = self._connectors.get(exchange)
-            if connector is None:
-                logger.warning(f"[{exchange}] no connector; cannot set instrument leverage")
-                result.update(dict.fromkeys(batch, False))
-                continue
-            result.update(self._apply_leverages(exchange, connector, batch))
-        return result
-
-    def _apply_leverages(self, exchange: str, connector, batch: dict[Instrument, float]) -> dict[Instrument, bool]:
-        """Batch where the connector supports it, otherwise one call per instrument.
-        Connectors live in other repos and adopt the batch API on their own schedule.
-
-        Timed: this blocks the caller (the ProcessorThread at warmup-finished / universe
-        change), so how long it takes is the thing to watch on a wide universe.
-        """
-        started = time.monotonic()
-        try:
-            applied = connector.set_instrument_leverages(batch)
-            logger.info(
-                f"[{exchange}] leverage set for {len(batch)} instruments in {time.monotonic() - started:.2f}s (batched)"
-            )
-            return applied
-        except AttributeError:
-            logger.warning(
-                f"[{exchange}] connector has no set_instrument_leverages — falling back to one "
-                f"blocking call per instrument ({len(batch)})"
-            )
-        applied: dict[Instrument, bool] = {}
-        for instrument, leverage in batch.items():
-            try:
-                applied[instrument] = connector.set_instrument_leverage(instrument, leverage)
-            except AttributeError:
-                applied[instrument] = connector.set_max_instrument_leverage(instrument, leverage)
-        logger.info(
-            f"[{exchange}] leverage set for {len(batch)} instruments in {time.monotonic() - started:.2f}s (sequential)"
-        )
-        return applied
+            return
+        connector.set_instrument_leverage(instrument, leverage)
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         connector = self._connectors.get(instrument.exchange)

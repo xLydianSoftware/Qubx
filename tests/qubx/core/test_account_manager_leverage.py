@@ -208,7 +208,7 @@ def test_venue_settings_read_off_position():
     pos.adl_level = 2
     state.set_position(inst, pos)
 
-    assert am.get_max_instrument_leverage(inst) == 10.0
+    assert am.get_instrument_leverage(inst) == 10.0
     assert am.get_max_instrument_notional(inst) == 1_000_000.0
     assert am.get_margin_mode(inst) == "isolated"
     assert am.get_adl_level(inst) == 2
@@ -218,21 +218,15 @@ def test_venue_settings_neutral_when_not_reported():
     # An instrument the venue never reported reads as None / inf (get_position materializes flat).
     am = _am()
     inst = _instrument("BTCUSDT")
-    assert am.get_max_instrument_leverage(inst) is None
+    # - the leverage fallback asks the connector, which knows nothing about it either
+    am._connectors["binance"].get_instrument_leverage.return_value = None
+    assert am.get_instrument_leverage(inst) is None
     assert am.get_max_instrument_notional(inst) == float("inf")
     assert am.get_margin_mode(inst) is None
     assert am.get_adl_level(inst) is None
 
 
 # ---- per-instrument venue settings: write side ------------------------------ #
-
-
-def test_set_instrument_leverage_routes_to_connector():
-    am = _am()
-    inst = _instrument("BTCUSDT")
-    am._connectors["binance"].set_instrument_leverage.return_value = True
-    assert am.set_instrument_leverage(inst, 7.0) is True
-    am._connectors["binance"].set_instrument_leverage.assert_called_once_with(inst, 7.0)
 
 
 def test_set_margin_mode_routes_to_connector():
@@ -243,44 +237,41 @@ def test_set_margin_mode_routes_to_connector():
     am._connectors["binance"].set_margin_mode.assert_called_once_with(inst, "cross")
 
 
-def test_set_leverage_unmanaged_exchange_returns_false():
+def test_set_instrument_leverage_returns_nothing_and_routes_to_the_connector():
+    """The connector sends the venue call off-thread and never reports back here, so
+    there is no outcome to return — a bool would only ever mean 'a connector existed'."""
+    am = _am(exchanges=("binance",))
+    inst = _instrument("BTCUSDT")
+
+    assert am.set_instrument_leverage(inst, 7.0) is None
+    am._connectors["binance"].set_instrument_leverage.assert_called_once_with(inst, 7.0)
+
+
+def test_set_leverage_on_an_unmanaged_exchange_is_a_logged_no_op():
     am = _am(exchanges=("binance",))
     inst = _instrument("BTCUSDT", exchange="bybit")  # no connector for bybit
-    assert am.set_instrument_leverage(inst, 7.0) is False
+
+    assert am.set_instrument_leverage(inst, 7.0) is None
 
 
-def test_set_instrument_leverages_dispatches_one_batch_per_exchange() -> None:
-    """A wide universe spans venues: each connector must get ONE call with its own
-    instruments, not one call per instrument."""
-    from unittest.mock import Mock
+def test_instrument_leverage_falls_back_to_the_connector_when_flat():
+    """The snapshot only carries leverage for held positions (and Binance v3 positionRisk
+    omits it entirely), so asking about an instrument you are flat in must reach the
+    connector, which caches the venue's configured value for the whole universe."""
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am._connectors["binance"].get_instrument_leverage.return_value = 3.0
 
-    from qubx.core.account_manager.manager import AccountManager
-
-    binance_a, binance_b = _instrument("BTCUSDT", "BINANCE.UM"), _instrument("ETHUSDT", "BINANCE.UM")
-    okx = _instrument("BTCUSDT", "OKX")
-    binance_conn, okx_conn = Mock(), Mock()
-    binance_conn.set_instrument_leverages.return_value = {binance_a: True, binance_b: False}
-    okx_conn.set_instrument_leverages.return_value = {okx: True}
-
-    am = AccountManager.__new__(AccountManager)
-    am._connectors = {"BINANCE.UM": binance_conn, "OKX": okx_conn}
-
-    result = am.set_instrument_leverages({binance_a: 5.0, okx: 3.0, binance_b: 5.0})
-
-    assert result == {binance_a: True, binance_b: False, okx: True}
-    binance_conn.set_instrument_leverages.assert_called_once_with({binance_a: 5.0, binance_b: 5.0})
-    okx_conn.set_instrument_leverages.assert_called_once_with({okx: 3.0})
+    assert am.get_instrument_leverage(inst) == 3.0
+    am._connectors["binance"].get_instrument_leverage.assert_called_once_with(inst)
 
 
-def test_set_instrument_leverages_reports_false_for_an_unknown_exchange() -> None:
-    from unittest.mock import Mock
+def test_instrument_leverage_prefers_the_snapshot_over_the_connector():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    pos = Position(instrument=inst)
+    pos.leverage = 5.0
+    am._states["binance"].set_position(inst, pos)
 
-    from qubx.core.account_manager.manager import AccountManager
-
-    known, unknown = _instrument("BTCUSDT", "BINANCE.UM"), _instrument("BTCUSDT", "KRAKEN.F")
-    conn = Mock()
-    conn.set_instrument_leverages.return_value = {known: True}
-    am = AccountManager.__new__(AccountManager)
-    am._connectors = {"BINANCE.UM": conn}
-
-    assert am.set_instrument_leverages({known: 5.0, unknown: 2.0}) == {known: True, unknown: False}
+    assert am.get_instrument_leverage(inst) == 5.0
+    am._connectors["binance"].get_instrument_leverage.assert_not_called()

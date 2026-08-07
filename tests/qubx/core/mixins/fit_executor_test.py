@@ -686,7 +686,7 @@ class TestReviewFixes:
     def test_position_derivatives_read_from_peek(self):
         instrument = _mock_instrument()
         fit_ctx, context = self._make_fit_ctx(exchanges=[instrument.exchange])
-        assert fit_ctx.get_max_instrument_leverage(instrument) is None
+        assert fit_ctx.get_instrument_leverage(instrument) is None
         assert fit_ctx.get_max_instrument_notional(instrument) == float("inf")
         assert fit_ctx.get_margin_mode(instrument) is None
         assert fit_ctx.get_adl_level(instrument) is None

@@ -12,7 +12,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import ccxt
 import pytest
 
-from qubx.connectors.ccxt.connector import CcxtConnector
+from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -24,6 +24,7 @@ from qubx.core.basics import (
     OrderType,
 )
 from qubx.core.connector import IConnector
+from qubx.core.errors import VenueOperationError
 from qubx.core.events import (
     OrderAcceptedEvent,
     OrderCanceledEvent,
@@ -732,24 +733,90 @@ def test_make_client_id_adds_prefix() -> None:
 # --------------------------------------------------------------------------- #
 # (8) set_instrument_leverage / set_margin_mode call ccxt + return bool
 # --------------------------------------------------------------------------- #
-def test_set_leverage_calls_ccxt_returns_true() -> None:
+@pytest.mark.asyncio
+async def test_set_leverage_sends_the_venue_call_off_thread() -> None:
+    """The caller is the ProcessorThread, so the request is spawned, not awaited: the
+    method returns before the venue has seen anything."""
     exchange = Mock()
     exchange.set_leverage = AsyncMock(return_value={})
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
-    ok = conn.set_instrument_leverage(_instrument(), 5.0)
-    assert ok is True
-    exchange.set_leverage.assert_awaited_once_with(5.0, "BTC/USDT:USDT")
+    assert conn.set_instrument_leverage(_instrument(), 5.0) is None
+    exchange.set_leverage.assert_not_awaited()
+
+    await _drive(conn)
+    exchange.set_leverage.assert_awaited_once_with(5, "BTC/USDT:USDT")
 
 
-def test_set_leverage_returns_false_on_error() -> None:
+@pytest.mark.asyncio
+async def test_set_leverage_reports_a_refusal_on_the_channel() -> None:
+    """Nothing is waiting on a return value, so a venue refusal would be invisible
+    without an event."""
     exchange = Mock()
     exchange.set_leverage = AsyncMock(side_effect=ccxt.ExchangeError("nope"))
     exchange.has = {"editOrder": True}
-    conn, _, _ = _make_connector(exchange=exchange)
+    conn, sent, _ = _make_connector(exchange=exchange)
 
-    assert conn.set_instrument_leverage(_instrument(), 5.0) is False
+    conn.set_instrument_leverage(_instrument(), 5.0)
+    await _drive(conn)
+
+    errors = [e for _, dtype, e, _ in sent if dtype == "error"]
+    assert len(errors) == 1
+    assert isinstance(errors[0], VenueOperationError)
+    assert errors[0].operation == "set_instrument_leverage"
+    assert "nope" in str(errors[0].error)
+
+
+@pytest.mark.asyncio
+async def test_set_leverage_is_skipped_when_the_venue_already_has_it() -> None:
+    """Most of a universe is already at the wanted leverage on any tick after the first;
+    sending those anyway was the bulk of the ~1.2s-per-instrument cost."""
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=20)
+
+    conn.set_instrument_leverage(_instrument(), 5.0)
+
+    await _drive(conn)
+    exchange.set_leverage.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_set_leverage_is_clamped_to_the_cached_venue_maximum() -> None:
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=2, maximum=10)
+
+    conn.set_instrument_leverage(_instrument(), 50.0)
+    await _drive(conn)
+
+    # - int on the wire: Binance rejects a float with -1102 (measured live 2026-08-07,
+    #   every clamped request failed because the clamp produced a float)
+    exchange.set_leverage.assert_awaited_once_with(10, "BTC/USDT:USDT")
+
+
+@pytest.mark.asyncio
+async def test_a_successful_set_updates_the_cache() -> None:
+    """Without this the same value is re-sent every tick until the hourly refresh."""
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=2, maximum=10)
+
+    conn.set_instrument_leverage(_instrument(), 5.0)
+    await _drive(conn)
+
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=5, maximum=10)
+
+    conn.set_instrument_leverage(_instrument(), 5.0)
+    await _drive(conn)
+    assert exchange.set_leverage.await_count == 1
 
 
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:
@@ -777,13 +844,13 @@ def _position_row(**over) -> dict:
     return row
 
 
-def test_get_max_instrument_leverage_reads_position_row() -> None:
+def test_get_instrument_leverage_reads_position_row() -> None:
     exchange = Mock()
     exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
-    assert conn.get_max_instrument_leverage(_instrument()) == 10.0
+    assert conn.get_instrument_leverage(_instrument()) == 10.0
     exchange.fetch_positions.assert_awaited_once_with(["BTC/USDT:USDT"])
 
 
@@ -820,62 +887,9 @@ def test_reads_none_inf_when_no_position() -> None:
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
-    assert conn.get_max_instrument_leverage(_instrument()) is None
+    assert conn.get_instrument_leverage(_instrument()) is None
     assert conn.get_max_instrument_notional(_instrument()) == float("inf")
     assert conn.get_margin_mode(_instrument()) is None
     assert conn.get_adl_level(_instrument()) is None
 
 
-# --------------------------------------------------------------------------- #
-# (8b) set_instrument_leverages issues the venue calls concurrently
-# --------------------------------------------------------------------------- #
-def _instrument_named(symbol: str) -> Instrument:
-    return Instrument(
-        symbol=symbol,
-        market_type=MarketType.SWAP,
-        exchange="BINANCE.UM",
-        base=symbol[:-4],
-        quote="USDT",
-        settle="USDT",
-        exchange_symbol=symbol,
-        tick_size=0.01,
-        lot_size=0.001,
-        min_size=0.001,
-    )
-
-
-def test_set_leverages_issues_every_call_in_one_round_trip() -> None:
-    """The sequential path blocked the ProcessorThread for one venue round trip PER
-    instrument — ~50s over a 100-instrument universe. The batch submits them all to the
-    exchange loop together, so the waits overlap."""
-    exchange = Mock()
-    exchange.set_leverage = AsyncMock(return_value={})
-    exchange.has = {"editOrder": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-    a, b = _instrument_named("BTCUSDT"), _instrument_named("ETHUSDT")
-
-    result = conn.set_instrument_leverages({a: 5.0, b: 3.0})
-
-    assert result == {a: True, b: True}
-    assert exchange.set_leverage.await_count == 2
-    # - one submission to the loop for the whole batch, not one per instrument
-    assert conn._run_sync.call_count == 1
-
-
-def test_set_leverages_reports_per_instrument_failures() -> None:
-    exchange = Mock()
-    a, b = _instrument_named("BTCUSDT"), _instrument_named("ETHUSDT")
-
-    async def _set(leverage, symbol):
-        if symbol.startswith("ETH"):
-            raise ccxt.ExchangeError("nope")
-        return {}
-
-    exchange.set_leverage = AsyncMock(side_effect=_set)
-    exchange.has = {"editOrder": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    result = conn.set_instrument_leverages({a: 5.0, b: 3.0})
-
-    # - one venue refusal must not sink the rest of the batch
-    assert result == {a: True, b: False}

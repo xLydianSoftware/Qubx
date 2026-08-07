@@ -703,6 +703,9 @@ class StrategyContext(IStrategyContext):
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
         return self.account.get_fees_calculator(exchange)
 
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return self.account.get_instrument_leverage(instrument)
+
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         return self.account.get_max_instrument_leverage(instrument)
 
@@ -717,17 +720,11 @@ class StrategyContext(IStrategyContext):
 
     # per-instrument venue-setting writes (IAccountConfigurator): the configured leverage and
     # margin mode reach the venue and honour read-only.
-    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
         self._assert_not_fit_thread("set_instrument_leverage")
         if self._read_only:
             raise ReadOnlyConnector("account configuration is read-only — write rejected")
-        return self._account_manager.set_instrument_leverage(instrument, leverage)
-
-    def set_instrument_leverages(self, leverages: dict[Instrument, float]) -> dict[Instrument, bool]:
-        self._assert_not_fit_thread("set_instrument_leverages")
-        if self._read_only:
-            raise ReadOnlyConnector("account configuration is read-only — write rejected")
-        return self._account_manager.set_instrument_leverages(leverages)
+        self._account_manager.set_instrument_leverage(instrument, leverage)
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         self._assert_not_fit_thread("set_margin_mode")

@@ -298,16 +298,17 @@ class SimulatedConnector(ChannelEmitter):
     def is_simulated_trading(self) -> bool:
         return True
 
-    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
-        return True
-
-    def set_instrument_leverages(self, leverages: dict[Instrument, float]) -> dict[Instrument, bool]:
-        return dict.fromkeys(leverages, True)
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
+        # - simulation does not model venue leverage settings; accept and forget
+        return None
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         return True
 
     # Simulation does not model venue margin: the config getters read neutral.
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        return None
+
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         return None
 

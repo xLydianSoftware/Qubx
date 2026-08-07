@@ -32,6 +32,7 @@ import threading
 import time
 from asyncio.exceptions import CancelledError
 from collections.abc import Coroutine
+from dataclasses import dataclass
 from typing import Any, Literal
 
 import ccxt
@@ -55,6 +56,7 @@ from qubx.core.basics import (
     resolve_reduce_only,
 )
 from qubx.core.connector import ChannelEmitter
+from qubx.core.errors import ErrorLevel, VenueOperationError, create_error_event
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
@@ -99,6 +101,20 @@ from .utils import (
 # ccxt.BadRequest that is genuinely a framework param error is expected to have
 # been caught by the synchronous validation in submit_order; if one escapes the
 # venue call it is treated as a venue verdict and emitted.)
+# How often the connector re-reads the venue's configured / maximum leverage.
+LEVERAGE_REFRESH_INTERVAL_S = 3600.0
+
+
+@dataclass(frozen=True, slots=True)
+class _LeverageInfo:
+    """One symbol's venue leverage state, in whole numbers as the venue reports and
+    accepts them. Either field is None when that read failed or the venue does not
+    report it."""
+
+    configured: int | None
+    maximum: int | None
+
+
 _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
     ccxt.InsufficientFunds,
     ccxt.OrderNotFillable,
@@ -170,6 +186,9 @@ class CcxtConnector(ChannelEmitter):
         self._ws_ready = False
         self._executions_future: Any = None
         self._funding_future: Any = None
+        self._leverage_future: Any = None
+        # - venue leverage state per ccxt symbol, refreshed by _leverage_poll_loop
+        self._leverage_cache: dict[str, _LeverageInfo] = {}
 
         # Re-subscribe the account WS stream + resync against venue truth after the
         # ExchangeManager swaps in a fresh exchange (the running _subscribe_executions
@@ -691,45 +710,135 @@ class CcxtConnector(ChannelEmitter):
     # ------------------------------------------------------------------ #
     # Leverage / margin
     # ------------------------------------------------------------------ #
-    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> bool:
-        try:
-            symbol = instrument_to_ccxt_symbol(instrument)
-            self._run_sync(self._em.exchange.set_leverage(leverage, symbol))
-            return True
-        except Exception as e:  # noqa: BLE001
-            logger.error(f"[{self.exchange_name}] Failed to set leverage {leverage} for {instrument.symbol}: {e}")
-            return False
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
+        """Request the configured leverage. Never blocks and never reports back.
 
-    def set_instrument_leverages(self, leverages: dict[Instrument, float]) -> dict[Instrument, bool]:
-        """All the set_leverage calls in flight together instead of one blocking round trip
-        each: the caller is the ProcessorThread, and a 100-instrument universe at ~500ms a
-        call blocked event processing for ~50s. ccxt's own throttle still paces the sends,
-        so the win is the overlapped waits, not unbounded concurrency."""
-        if not leverages:
-            return {}
-        instruments = list(leverages)
+        Three things happen before anything reaches the venue, all off the cache the
+        poller keeps: the request is clamped to the venue maximum, skipped entirely when
+        the venue already has that value, and otherwise sent off-thread. A wide universe
+        called this once per instrument on the ProcessorThread and each round trip cost
+        ~1.2s; skipping the unchanged ones removes most calls outright, and the rest no
+        longer hold the caller.
 
-        async def _apply() -> list[Any]:
-            return await asyncio.gather(
-                *(self._em.exchange.set_leverage(leverages[i], instrument_to_ccxt_symbol(i)) for i in instruments),
-                return_exceptions=True,
+        With no cache entry (first tick after connect, or a venue whose meta read failed)
+        both checks are skipped and the request goes as asked — the venue still enforces
+        its own cap, and its refusal arrives as a VenueOperationError on on_error.
+        """
+        symbol = instrument_to_ccxt_symbol(instrument)
+        # - whole numbers throughout: the venue takes an integer (Binance answers a float
+        #   with -1102 "Mandatory parameter 'leverage' ... malformed", and ccxt types it
+        #   int), and comparing int to int keeps the cache decisions readable.
+        wanted = int(leverage)
+        if wanted != leverage:
+            logger.warning(
+                f"[{self.exchange_name}] {instrument.symbol}: leverage {leverage} is not a whole "
+                f"number; the venue takes integers, requesting {wanted}"
             )
-
-        try:
-            outcomes = self._run_sync(_apply())
-        except Exception as e:  # noqa: BLE001 — the batch itself failed; report all as refused
-            logger.error(f"[{self.exchange_name}] set_instrument_leverages failed: {type(e).__name__}: {e}")
-            return dict.fromkeys(instruments, False)
-
-        result: dict[Instrument, bool] = {}
-        for instrument, outcome in zip(instruments, outcomes):
-            if isinstance(outcome, BaseException):
-                logger.error(
-                    f"[{self.exchange_name}] Failed to set leverage {leverages[instrument]} "
-                    f"for {instrument.symbol}: {type(outcome).__name__}: {outcome}"
+        cached = self._leverage_cache.get(symbol)
+        if cached is not None:
+            if cached.maximum is not None and wanted > cached.maximum:
+                logger.warning(
+                    f"[{self.exchange_name}] {instrument.symbol}: leverage {wanted} exceeds the venue "
+                    f"maximum {cached.maximum}; requesting {cached.maximum}"
                 )
-            result[instrument] = not isinstance(outcome, BaseException)
-        return result
+                wanted = cached.maximum
+            if cached.configured is not None and cached.configured == wanted:
+                logger.info(
+                    f"[{self.exchange_name}] {instrument.symbol}: venue already at leverage "
+                    f"{cached.configured}, not sending {wanted}"
+                )
+                return
+        logger.info(
+            f"[{self.exchange_name}] {instrument.symbol}: sending leverage {wanted} "
+            f"(cached {cached.configured} / max {cached.maximum})"
+            if cached is not None
+            else f"[{self.exchange_name}] {instrument.symbol}: sending leverage {wanted} (no cache entry)"
+        )
+        self._spawn(self._do_set_leverage(instrument, symbol, wanted))
+
+    async def _do_set_leverage(self, instrument: Instrument, symbol: str, leverage: int) -> None:
+        try:
+            await self._em.exchange.set_leverage(leverage, symbol)
+        except Exception as e:  # noqa: BLE001 — the caller is long gone; report on the channel
+            logger.error(f"[{self.exchange_name}] Failed to set leverage {leverage} for {instrument.symbol}: {e}")
+            self.channel.send(
+                create_error_event(
+                    VenueOperationError(
+                        timestamp=self._time.time(),
+                        message=f"set leverage {leverage} for {instrument.symbol}",
+                        level=ErrorLevel.MEDIUM,
+                        error=e,
+                        operation="set_instrument_leverage",
+                        instrument=instrument,
+                    )
+                )
+            )
+            return
+        # - adopt what we just set, so the next call for the same value is skipped without
+        #   waiting for the poller; the poller corrects it if the venue disagrees
+        cached = self._leverage_cache.get(symbol)
+        self._leverage_cache[symbol] = _LeverageInfo(
+            configured=leverage, maximum=cached.maximum if cached is not None else None
+        )
+
+    def _start_leverage_poller(self) -> None:
+        if self._leverage_future is None or self._leverage_future.done():
+            self._leverage_future = self._loop.submit(self._leverage_poll_loop())
+            self._leverage_future.add_done_callback(self._log_spawn_error)
+
+    async def _leverage_poll_loop(self) -> None:
+        """Refresh on connect, then hourly. Sleeps in <=60s slices so a cancel at
+        disconnect lands promptly instead of after the full interval."""
+        while True:
+            await self._refresh_leverage_cache()
+            remaining = LEVERAGE_REFRESH_INTERVAL_S
+            while remaining > 0:
+                await asyncio.sleep(min(60.0, remaining))
+                remaining -= 60.0
+
+    async def _refresh_leverage_cache(self) -> None:
+        """Two venue reads, both whole-universe: the configured leverage per symbol and
+        the leverage tiers. Either may be unsupported or fail — each is caught on its own
+        so one missing half does not blank the other.
+
+        The tier list is per-notional (Binance's brackets); the cached maximum is the
+        largest of them, i.e. the cap at the smallest position. A request under that can
+        still be refused once the position grows into a lower bracket, and that refusal
+        arrives as a VenueOperationError like any other.
+        """
+        ex = self._em.exchange
+        configured: dict[str, float] = {}
+        maxima: dict[str, float] = {}
+        # - annotated locals: ccxt's BASE Exchange declares both methods as an unconditional
+        #   `raise NotSupported`, so their inferred return type is NoReturn. Only the venue
+        #   subclasses return dicts, and `ex` is typed as the base. A venue without the
+        #   override does raise, and the except below is what handles it.
+        try:
+            rows: dict[str, Any] = await ex.fetch_leverages()
+            for symbol, row in rows.items():
+                value = row.get("longLeverage") or row.get("leverage")
+                if value is not None:
+                    configured[symbol] = int(value)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] configured-leverage read failed: {type(e).__name__}: {e}")
+        try:
+            tiers_by_symbol: dict[str, Any] = await ex.fetch_leverage_tiers()
+            for symbol, tiers in tiers_by_symbol.items():
+                levels = [t["maxLeverage"] for t in tiers if t.get("maxLeverage") is not None]
+                if levels:
+                    maxima[symbol] = int(max(levels))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] leverage-tier read failed: {type(e).__name__}: {e}")
+
+        if not configured and not maxima:
+            return
+        self._leverage_cache = {
+            symbol: _LeverageInfo(configured=configured.get(symbol), maximum=maxima.get(symbol))
+            for symbol in configured.keys() | maxima.keys()
+        }
+        logger.info(
+            f"[{self.exchange_name}] leverage cache refreshed: {len(configured)} configured, {len(maxima)} maxima"
+        )
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         try:
@@ -746,13 +855,29 @@ class CcxtConnector(ChannelEmitter):
             return False
 
     # Authoritative venue pull for the per-instrument settings
-    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        # - symbolConfig first: Binance v3 positionRisk has no `leverage` at all
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        # - the poller's cache first: it already holds every symbol's configured leverage
+        #   and costs nothing, where the fallbacks below each block on a venue round trip
+        cached = self._leverage_cache.get(instrument_to_ccxt_symbol(instrument))
+        if cached is not None and cached.configured is not None:
+            return float(cached.configured)
+        # - symbolConfig next: Binance v3 positionRisk has no `leverage` at all
         leverage, _ = self._fetch_leverage_row(instrument)
         if leverage is not None:
             return leverage
         row = self._fetch_position_row(instrument)
         return info_float(row, "leverage") if row is not None else None
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """The venue's published maximum, from the poller's cache.
+
+        No fallback: the only per-symbol source is ``fetch_leverage_tiers``, which the
+        poller already sweeps for the whole universe every hour. None here means that
+        sweep has not run yet or the venue does not publish tiers — and the write path
+        treats None as "send it unclamped and let the venue decide".
+        """
+        cached = self._leverage_cache.get(instrument_to_ccxt_symbol(instrument))
+        return float(cached.maximum) if cached is not None and cached.maximum is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
         # - symbolConfig first: `maxNotionalValue` is v2-only on positionRisk
@@ -1601,6 +1726,7 @@ class CcxtConnector(ChannelEmitter):
         """
         self._start_executions_stream()
         self._start_funding_poller()
+        self._start_leverage_poller()
         # Initial snapshot (design.md "connect / reconnect contract", case 1).
         self.request_snapshot()
 
@@ -1644,6 +1770,9 @@ class CcxtConnector(ChannelEmitter):
         if self._funding_future is not None and not self._funding_future.done():
             self._funding_future.cancel()
         self._funding_future = None
+        if self._leverage_future is not None and not self._leverage_future.done():
+            self._leverage_future.cancel()
+        self._leverage_future = None
         try:
             self._run_sync(self._em.exchange.close(), timeout=10)
         except Exception as e:  # noqa: BLE001
