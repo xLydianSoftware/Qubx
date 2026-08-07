@@ -1699,7 +1699,9 @@ class LatencyMetrics:
     """
     Health metrics for system performance.
 
-    All latency values are in milliseconds.
+    All latency values are in milliseconds. `data_feed` pools event types whose
+    timestamps mark emission moments; settlement-stamped types (funding payments)
+    are excluded because their age is structural, not transport latency.
     """
 
     data_feed: float
