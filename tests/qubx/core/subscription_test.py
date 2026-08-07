@@ -157,6 +157,67 @@ class TestSubscriptionStuff:
         assert result_a == expected
         assert result_b == expected
 
+    def test_new_instrument_does_not_rewarm_whole_universe(self):
+        """Regression for #371: a warmup-only sub (has a warmup spec but is never itself
+        a live subscription -- e.g. ohlc(1h) riding a live trade base sub) must warm only
+        the newly-added instrument when one more instrument joins an already-subscribed
+        base sub, not the whole existing universe."""
+        btc = self._get_instrument("BTCUSDT")
+        eth = self._get_instrument("ETHUSDT")
+        sol = self._get_instrument("SOLUSDT")
+
+        self.manager.set_base_subscription(DataType.TRADE)
+        self.manager.set_warmup({DataType.OHLC["1h"]: "3d"})
+        self.mock_broker.get_subscribed_instruments.side_effect = (
+            lambda sub=None: {btc, eth} if sub is None or sub == DataType.TRADE else set()
+        )
+
+        # - btc/eth already subscribed to the live base sub from an earlier commit
+        self.manager.subscribe(DataType.TRADE, [btc, eth])
+        self.manager.commit()
+        self.mock_broker.warmup.reset_mock()
+
+        # - one new instrument joins
+        self.manager.subscribe(DataType.TRADE, sol)
+        self.manager.commit()
+
+        expected_warmup = {(DataType.OHLC["1h"], sol): "3d"}
+        self.mock_broker.warmup.assert_called_once_with(expected_warmup)
+
+    def test_new_global_subscription_warms_full_universe(self):
+        """A genuinely NEW global subscription (armed via plan.global_subscriptions) must
+        still warm the whole current universe -- the #371 fix only narrows the scope for
+        subs armed solely because _new_instruments is non-empty."""
+        btc = self._get_instrument("BTCUSDT")
+        eth = self._get_instrument("ETHUSDT")
+        sol = self._get_instrument("SOLUSDT")
+        instruments = {btc, eth, sol}
+        self.mock_broker.get_subscribed_instruments.side_effect = lambda sub=None: instruments if sub is None else set()
+
+        self.manager.set_warmup({DataType.FUNDING_PAYMENT: "1d"})
+        self.manager.subscribe(DataType.FUNDING_PAYMENT)
+        self.manager.commit()
+
+        expected_warmup = {(DataType.FUNDING_PAYMENT, i): "1d" for i in instruments}
+        self.mock_broker.warmup.assert_called_once_with(expected_warmup)
+
+    def test_initial_boot_warms_all_instruments(self):
+        """First-ever commit: every instrument is 'new' (all land in
+        plan.stream_subscriptions), so the #371 fix's narrow _new_instruments-only scope
+        still warms everyone -- there is no already-subscribed instrument to exclude."""
+        btc = self._get_instrument("BTCUSDT")
+        eth = self._get_instrument("ETHUSDT")
+        sol = self._get_instrument("SOLUSDT")
+        instruments = {btc, eth, sol}
+
+        self.manager.set_base_subscription(DataType.TRADE)
+        self.manager.set_warmup({DataType.OHLC["1h"]: "3d"})
+        self.manager.subscribe(DataType.TRADE, list(instruments))
+        self.manager.commit()
+
+        expected_warmup = {(DataType.OHLC["1h"], i): "3d" for i in instruments}
+        self.mock_broker.warmup.assert_called_once_with(expected_warmup)
+
     def test_ohlc_warmup(self):
         instruments = {self._get_instrument("BTCUSDT"), self._get_instrument("ETHUSDT")}
         self.mock_broker.get_subscribed_instruments.return_value = set()
