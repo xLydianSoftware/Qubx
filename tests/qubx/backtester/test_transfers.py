@@ -217,7 +217,10 @@ def test_simulation_context_has_transfer_manager():
 
     runner.ctx.transfer_funds("BINANCE.UM", "HYPERLIQUID", "USDT", 1000.0)
     assert runner.account_manager.get_balance("USDT", exchange="BINANCE.UM").total == 4000.0
-    assert runner.account_manager.get_balance("USDT", exchange="HYPERLIQUID").total == 6000.0
+    # HYPERLIQUID is seeded in its own settle currency (USDC), not the scalar "USDT" passed
+    # to SimulationSetup, so its USDT balance starts at 0 and only holds the transferred amount.
+    assert runner.account_manager.get_balance("USDT", exchange="HYPERLIQUID").total == 1000.0
+    assert runner.account_manager.get_balance("USDC", exchange="HYPERLIQUID").total == 5000.0
 
 
 def test_warmup_mode_force_assigns_sim_manager():

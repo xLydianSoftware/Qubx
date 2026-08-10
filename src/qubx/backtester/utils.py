@@ -8,6 +8,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
+    Balance,
     CtrlChannel,
     DataType,
     Instrument,
@@ -133,6 +134,21 @@ class SimulationSetup:
 
     def __str__(self) -> str:
         return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchanges}[{self.commissions}]"
+
+
+def initial_balances(setup: SimulationSetup) -> dict[str, Balance]:
+    """Startup balance per exchange, each in that venue's own base currency."""
+    assert isinstance(setup.capital, dict)
+    return {
+        exchange: Balance(
+            exchange=exchange,
+            currency=setup.base_currencies[exchange],
+            total=capital,
+            free=capital,
+            locked=0.0,
+        )
+        for exchange, capital in setup.capital.items()
+    }
 
 
 # fmt: off

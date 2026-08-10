@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from qubx.backtester.utils import SetupTypes, SimulationSetup
+from qubx.backtester.utils import SetupTypes, SimulationSetup, initial_balances
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, Instrument, MarketType
 
@@ -130,3 +130,32 @@ def test_simulation_config_accepts_per_exchange_mapping():
         base_currency={"HYPERLIQUID.F": "USDC"},
     )
     assert cfg.base_currency == {"HYPERLIQUID.F": "USDC"}
+
+
+def test_initial_balances_seed_each_venue_in_its_own_currency():
+    setup = _multi_setup(
+        "USDT",
+        [_swap("BINANCE.UM", "BTCUSDT", "USDT"), _swap("HYPERLIQUID.F", "BTCUSDC", "USDC")],
+    )
+    balances = initial_balances(setup)
+    assert balances["BINANCE.UM"].currency == "USDT"
+    assert balances["HYPERLIQUID.F"].currency == "USDC"
+    assert balances["BINANCE.UM"].total == 50_000.0
+    assert balances["HYPERLIQUID.F"].free == 50_000.0
+
+
+def test_seeded_capital_visible_per_venue():
+    setup = _multi_setup(
+        "USDT",
+        [_swap("BINANCE.UM", "BTCUSDT", "USDT"), _swap("HYPERLIQUID.F", "BTCUSDC", "USDC")],
+    )
+    am = SimulatedAccountManager(
+        connectors={ex: MagicMock() for ex in setup.exchanges},
+        base_currencies=setup.base_currencies,
+        time=_Clock(),
+    )
+    for exchange, balance in initial_balances(setup).items():
+        am.seed_balance(exchange, balance)
+
+    assert am.get_total_capital("HYPERLIQUID.F") == 50_000.0
+    assert am.get_total_capital() == 100_000.0

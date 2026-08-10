@@ -11,7 +11,7 @@ from qubx.backtester.sentinels import NoDataContinue
 from qubx.backtester.simulated_data import SimulatedDataIterator
 from qubx.backtester.transfers import SimulationTransferManager
 from qubx.core.account_manager import AccountManagerConfig, SimulatedAccountManager
-from qubx.core.basics import SW, Balance, DataType, Instrument, TransactionCostsCalculator
+from qubx.core.basics import SW, DataType, Instrument, TransactionCostsCalculator
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import SimulationConfigError, SimulationError
 from qubx.core.helpers import extract_parameters_from_object, full_qualified_class_name
@@ -49,6 +49,7 @@ from .utils import (
     SimulationSetup,
     _get_default_warmup_period,
     find_open_close_time_indent_secs_from_subscription,
+    initial_balances,
 )
 
 
@@ -608,7 +609,7 @@ class SimulationRunner:
 
         am = SimulatedAccountManager(
             connectors=self._connectors,
-            base_currencies={exchange: self.setup.base_currency for exchange in self.setup.exchanges},
+            base_currencies=self.setup.base_currencies,
             time=time_provider,
             cfg=AccountManagerConfig(),
             account_id=self.account_id,
@@ -616,17 +617,7 @@ class SimulationRunner:
         )
 
         # - seed initial capital per exchange into the account state
-        assert isinstance(self.setup.capital, dict)
-        for exchange, capital in self.setup.capital.items():
-            am.seed_balance(
-                exchange,
-                Balance(
-                    exchange=exchange,
-                    currency=self.setup.base_currency,
-                    total=capital,
-                    free=capital,
-                    locked=0.0,
-                ),
-            )
+        for exchange, balance in initial_balances(self.setup).items():
+            am.seed_balance(exchange, balance)
 
         return am
