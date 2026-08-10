@@ -10,7 +10,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from qubx.backtester.utils import SetupTypes, SimulationSetup, initial_balances
+from qubx.backtester.utils import SetupTypes, SimulationSetup, find_instruments_and_exchanges, initial_balances
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import Balance, Instrument, MarketType
 
@@ -113,9 +113,35 @@ def test_mixed_settle_venue_falls_back_to_scalar():
     assert setup.base_currencies["BINANCE.UM"] == "USDT"
 
 
+def test_non_stable_settle_is_not_derived_as_base_currency():
+    # BINANCE.UM:ETHBTC is a BTC-settled linear swap: deriving BTC would seed 100k BTC at par.
+    setup = _multi_setup("USDT", [_swap("BINANCE.UM", "ETHBTC", "BTC")])
+    assert setup.base_currencies["BINANCE.UM"] == "USDT"
+
+
 def test_no_instruments_keeps_scalar_for_every_exchange():
     setup = _multi_setup("usdt", [])
     assert setup.base_currencies == {"BINANCE.UM": "USDT", "HYPERLIQUID.F": "USDT"}
+
+
+def test_scalar_base_currency_follows_deterministic_exchange_order():
+    # exchanges[0] picks the scalar base_currency persisted into _metadata.parquet, so the
+    # exchange list must not depend on per-process string hashing.
+    instruments = [_swap("HYPERLIQUID.F", "BTCUSDC", "USDC"), _swap("BINANCE.UM", "BTCUSDT", "USDT")]
+    _, exchanges = find_instruments_and_exchanges(instruments, None)
+    assert exchanges == ["BINANCE.UM", "HYPERLIQUID.F"]
+
+    setup = SimulationSetup(
+        setup_type=SetupTypes.STRATEGY,
+        name="test",
+        generator=None,
+        tracker=None,
+        instruments=instruments,
+        exchanges=exchanges,
+        capital=100_000.0,
+        base_currency="USDT",
+    )
+    assert setup.base_currency == "USDT"
 
 
 def test_simulation_config_accepts_per_exchange_mapping():

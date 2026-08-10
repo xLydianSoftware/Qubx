@@ -8,6 +8,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
+    STABLE_CURRENCIES,
     Balance,
     CtrlChannel,
     DataType,
@@ -81,10 +82,18 @@ def _type(obj: Any) -> SetupTypes:
     return t
 
 
+def _settle_currencies(instruments: list[Instrument], exchange: str) -> set[str]:
+    return {i.settle.upper() for i in instruments if i.exchange == exchange and i.settle}
+
+
 def _derive_settle_currency(instruments: list[Instrument], exchange: str) -> str | None:
-    """The one settle currency a venue's instruments agree on, or None when absent or mixed."""
-    settles = {i.settle.upper() for i in instruments if i.exchange == exchange and i.settle}
-    return settles.pop() if len(settles) == 1 else None
+    """The one settle currency a venue's instruments agree on, or None when absent, mixed, or
+    not a recognized stable — BINANCE.UM:ETHBTC settles in BTC, and BTC is not 1.0 of capital."""
+    settles = _settle_currencies(instruments, exchange)
+    if len(settles) != 1:
+        return None
+    settle = settles.pop()
+    return settle if settle in STABLE_CURRENCIES else None
 
 
 @dataclass
@@ -121,10 +130,15 @@ class SimulationSetup:
             if isinstance(self.base_currency, str)
             else (explicit.get(self.exchanges[0], "USDT") if self.exchanges else "USDT")
         )
-        self.base_currencies = {
-            ex: explicit.get(ex) or _derive_settle_currency(self.instruments, ex) or default_ccy
-            for ex in self.exchanges
-        }
+        self.base_currencies = {}
+        for ex in self.exchanges:
+            resolved = explicit.get(ex) or _derive_settle_currency(self.instruments, ex)
+            if resolved is None and (settles := _settle_currencies(self.instruments, ex)):
+                logger.debug(
+                    f"No single stable settle currency for {ex} (saw {sorted(settles)}) "
+                    f"- using {default_ccy} as its base currency"
+                )
+            self.base_currencies[ex] = resolved or default_ccy
         self.base_currency = self.base_currencies[self.exchanges[0]] if self.exchanges else default_ccy
         # Normalize capital to a per-exchange dict: split evenly when a single float is given
         if isinstance(self.capital, (int, float)):
@@ -325,7 +339,9 @@ def find_instruments_and_exchanges(
                 _instrs.append(instrument)
                 _exchanges.append(resolved_exchange)
 
-    return _instrs, list(set(_exchanges))
+    # sorted, not list(set(...)): string hashing is per-process randomized, and exchanges[0]
+    # decides the persisted scalar base_currency of a multi-venue run.
+    return _instrs, sorted(set(_exchanges))
 
 
 class _StructureSniffer:
