@@ -970,7 +970,12 @@ git commit -m "fix(results): persist per-exchange capital and preserve it when s
 
 **Interfaces:**
 - Consumes: `_transfer_offsets` (Task 6), `_capital_from_meta` (Task 7).
-- Produces: nothing consumed downstream. This is the regression gate for both reporting defects.
+- Produces: nothing consumed downstream. The sum-equals-total invariant is the regression gate for
+  the capital-split defect (a scalar capital leaking into a multi-exchange result doubles the
+  per-exchange sum). It does not gate the transfer defect — a transfer's two legs are exact
+  negatives landing on the same bar, so a value-preserving transfer leaves the sum unchanged
+  regardless of alignment. That defect is gated separately, by asserting the transferred amount
+  lands on the source and destination venues' own equity curves.
 
 - [ ] **Step 1: Write the failing-if-regressed tests**
 

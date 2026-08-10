@@ -1,4 +1,5 @@
 import pandas as pd
+import pytest
 
 from qubx.core.metrics import TradingSessionResult, _transfer_offsets
 from qubx.utils.results import _capital_from_meta
@@ -195,23 +196,35 @@ def test_per_exchange_equity_reconciles_after_legacy_scalar_load():
     _assert_reconciles(_two_venue_result(capital))
 
 
-def test_per_exchange_equity_reconciles_with_transfers():
+def test_transfer_moves_capital_from_source_to_destination_venue():
+    # A transfer's two legs are exact negatives landing on the same bar, so the sum-equals-total
+    # invariant holds whether the transfer is aligned correctly, misaligned, or dropped entirely
+    # (see get_equity_per_exchange). The sum assertion below is only a no-money-created-or-
+    # destroyed cross-check. Comparing per-venue equity with and without transfers isolates the
+    # transfer's actual effect from organic PnL/commissions, and is what catches a misaligned or
+    # dropped transfer.
+    transfer_amount = 5_000.0
     transfers = _transfers(
         [
             {
                 "timestamp": pd.Timestamp("2026-01-01 01:02"),
                 "from_exchange": "BINANCE.UM",
                 "to_exchange": "HYPERLIQUID.F",
-                "amount": 5_000.0,
-                "to_amount": 5_000.0,
+                "amount": transfer_amount,
+                "to_amount": transfer_amount,
                 "status": "completed",
             }
         ]
     )
     result = _two_venue_result({"BINANCE.UM": 50_000.0, "HYPERLIQUID.F": 50_000.0}, transfers)
     _assert_reconciles(result)
-    per_exchange = result.get_equity_per_exchange()
-    assert per_exchange["HYPERLIQUID.F"].iloc[-1] - per_exchange["HYPERLIQUID.F"].iloc[0] > 4_000.0
+
+    with_transfers = result.get_equity_per_exchange()
+    without_transfers = result.get_equity_per_exchange(with_transfers=False)
+    source_effect = (with_transfers["BINANCE.UM"] - without_transfers["BINANCE.UM"]).iloc[-1]
+    dest_effect = (with_transfers["HYPERLIQUID.F"] - without_transfers["HYPERLIQUID.F"]).iloc[-1]
+    assert source_effect == pytest.approx(-transfer_amount)
+    assert dest_effect == pytest.approx(transfer_amount)
 
 
 def test_per_exchange_equity_reconciles_after_slicing():

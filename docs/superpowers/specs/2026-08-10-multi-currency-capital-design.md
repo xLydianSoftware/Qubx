@@ -209,8 +209,13 @@ cut, taken from `get_equity_per_exchange`.
 
 ### Invariant
 
-`get_equity_per_exchange().sum(axis=1) == get_equity()` at every bar. One assertion covers both
-reporting defects; on the run above it reads $223,402 against $123,402.
+`get_equity_per_exchange().sum(axis=1) == get_equity()` at every bar. This catches the
+capital-split defect: a scalar capital leaking into a multi-exchange result doubles the
+per-exchange sum against total equity (verified; on the run above it reads $223,402 against
+$123,402). It does not catch the transfer defect — a transfer's two legs are exact negatives
+landing on the same bar, so a value-preserving transfer leaves the sum unchanged whether or not
+it is aligned correctly. That defect is caught separately, by asserting the transferred amount
+actually lands on the source and destination venues' own equity curves.
 
 ### Deliberately unchanged
 
