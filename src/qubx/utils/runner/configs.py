@@ -246,7 +246,7 @@ class SimulationConfig(StrictBaseModel):
     data: StorageConfig
     custom_data: list[TypedStorageConfig] = Field(default_factory=list)
     commissions: dict | str | None = None
-    base_currency: str | None = None
+    base_currency: str | dict[str, str] | None = None
     n_jobs: int | None = None
     variate: dict = Field(default_factory=dict)
     debug: str | None = None

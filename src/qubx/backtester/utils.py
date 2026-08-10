@@ -1,5 +1,5 @@
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, TypeAlias
 
@@ -80,6 +80,12 @@ def _type(obj: Any) -> SetupTypes:
     return t
 
 
+def _derive_settle_currency(instruments: list[Instrument], exchange: str) -> str | None:
+    """The one settle currency a venue's instruments agree on, or None when absent or mixed."""
+    settles = {i.settle.upper() for i in instruments if i.exchange == exchange and i.settle}
+    return settles.pop() if len(settles) == 1 else None
+
+
 @dataclass
 class SimulationSetup:
     """
@@ -93,16 +99,32 @@ class SimulationSetup:
     instruments: list[Instrument]
     exchanges: list[str]
     capital: float | dict[str, float]
-    base_currency: str
+    base_currency: str | dict[str, str]
     commissions: str | dict[str, str | None] | None = None
     signal_timeframe: str = "1Min"
     accurate_stop_orders_execution: bool = False
     enable_funding: bool = False
+    base_currencies: dict[str, str] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Normalize once at the config boundary: AccountState stores base_currency upper-cased,
-        # so a lowercase value here would seed capital under a key total_capital never reads.
-        self.base_currency = self.base_currency.upper()
+        # Per-exchange base currency: explicit mapping wins, else the venue's shared settle
+        # currency, else the scalar. AccountState upper-cases, so normalize here or the seeded
+        # Balance lands under a key total_capital never reads.
+        explicit = (
+            {ex: ccy.upper() for ex, ccy in self.base_currency.items()}
+            if isinstance(self.base_currency, dict)
+            else {}
+        )
+        default_ccy = (
+            self.base_currency.upper()
+            if isinstance(self.base_currency, str)
+            else (explicit.get(self.exchanges[0], "USDT") if self.exchanges else "USDT")
+        )
+        self.base_currencies = {
+            ex: explicit.get(ex) or _derive_settle_currency(self.instruments, ex) or default_ccy
+            for ex in self.exchanges
+        }
+        self.base_currency = self.base_currencies[self.exchanges[0]] if self.exchanges else default_ccy
         # Normalize capital to a per-exchange dict: split evenly when a single float is given
         if isinstance(self.capital, (int, float)):
             n = len(self.exchanges)
@@ -345,7 +367,7 @@ def recognize_simulation_configuration(
     instruments: list[Instrument],
     exchanges: list[str],
     capital: float | dict[str, float],
-    basic_currency: str,
+    basic_currency: str | dict[str, str],
     commissions: str | dict[str, str | None] | None,
     signal_timeframe: str,
     accurate_stop_orders_execution: bool,
