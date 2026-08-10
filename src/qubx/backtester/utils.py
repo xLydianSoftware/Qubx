@@ -678,7 +678,16 @@ def recognize_simulation_data_config(
     )
 
 
-_TRANSFERS_LOG_COLUMNS = ["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]
+_TRANSFERS_LOG_COLUMNS = [
+    "transaction_id",
+    "from_exchange",
+    "to_exchange",
+    "currency",
+    "amount",
+    "status",
+    "to_currency",
+    "to_amount",
+]
 
 
 def collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataFrame | None:
@@ -705,6 +714,8 @@ def collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataF
                 "currency": t.currency,
                 "amount": t.amount,
                 "status": str(t.status),
+                "to_currency": t.to_currency or t.currency,
+                "to_amount": t.to_amount if t.to_amount is not None else t.amount,
             }
             for t in transfers
         ]
