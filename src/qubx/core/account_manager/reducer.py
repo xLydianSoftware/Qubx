@@ -313,6 +313,7 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
     realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
     logger.debug("deal {} amt={} {}->{} tid={}", instrument.symbol, deal.amount, _before, pos.quantity, deal.trade_id)
     if instrument.is_futures():
+        state.mark_cash_currency(instrument.settle)
         # TODO(account-mgmt): fee is folded into settle here (correct when
         # settle == portfolio base currency); revisit for instruments whose
         # settle currency differs from the portfolio base currency.

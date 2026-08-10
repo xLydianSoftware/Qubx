@@ -680,5 +680,6 @@ class SimulatedAccountManager(AccountManager):
         # redeliver); live venues debit on-venue and we observe via pushes/snapshots.
         # Only an existing settle balance is adjusted — funding never creates one.
         if state.get_balance(instrument.settle) is not None:
+            state.mark_cash_currency(instrument.settle)
             state.adjust_balance(instrument.settle, amount)
         return FundingPaymentEvent(instrument=instrument, time=np.datetime64(int(payment.time), "ns"), amount=amount)

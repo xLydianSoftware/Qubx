@@ -794,3 +794,29 @@ def test_event_venue_ts_stamps_order_last_update_time():
     )
     assert r.order is not None
     assert r.order.last_update_time == venue_ts  # venue ts, not T1
+
+
+USDC_PERP = Instrument(
+    symbol="BTCUSDC",
+    market_type=MarketType.SWAP,
+    exchange="hyperliquid",
+    base="BTC",
+    quote="USDC",
+    settle="USDC",
+    exchange_symbol="BTCUSDC",
+    tick_size=0.01,
+    lot_size=0.001,
+    min_size=0.001,
+    contract_size=1.0,
+)
+
+
+def test_futures_deal_marks_settle_currency_as_cash():
+    # Round trip on a USDC-settled perp inside a USDT-based state: buy 1 @ 100, sell 1 @ 110.
+    state = AccountState("hyperliquid", "USDT")
+    reducer._book_deal(state, USDC_PERP, _fill(amount=1.0, price=100.0))
+    reducer._book_deal(state, USDC_PERP, _fill(trade_id="t2", amount=-1.0, price=110.0))
+
+    assert state.conversion_rate_to_base("USDC") == 1.0
+    assert state.get_balance("USDC").total == pytest.approx(10.0)
+    assert state.total_capital() == pytest.approx(10.0)  # flat book: cash only, no market value
