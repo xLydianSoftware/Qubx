@@ -197,12 +197,8 @@ def test_per_exchange_equity_reconciles_after_legacy_scalar_load():
 
 
 def test_transfer_moves_capital_from_source_to_destination_venue():
-    # A transfer's two legs are exact negatives landing on the same bar, so the sum-equals-total
-    # invariant holds whether the transfer is aligned correctly, misaligned, or dropped entirely
-    # (see get_equity_per_exchange). The sum assertion below is only a no-money-created-or-
-    # destroyed cross-check. Comparing per-venue equity with and without transfers isolates the
-    # transfer's actual effect from organic PnL/commissions, and is what catches a misaligned or
-    # dropped transfer.
+    # Sum-equals-total is tautological here (the two legs are exact negatives), so it holds even
+    # if the transfer is misaligned or dropped — the with/without comparison is what catches that.
     transfer_amount = 5_000.0
     transfers = _transfers(
         [
