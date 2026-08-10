@@ -178,6 +178,26 @@ def write_metadata_parquet(
     write_parquet_table(table, path, storage_options)
 
 
+def _capital_from_meta(meta: dict, exchanges: list[str]) -> float | dict[str, float]:
+    """Per-exchange capital from metadata, falling back to an even split for legacy results.
+
+    Legacy rows predate the `capital_by_exchange` column and store only the total; the sim has
+    split a scalar evenly across venues since 69ed8448, so an even split reproduces what ran.
+    """
+    import json as _json
+
+    raw = meta.get("capital_by_exchange") or ""
+    if raw:
+        try:
+            parsed = _json.loads(raw)
+            if isinstance(parsed, dict) and parsed:
+                return {str(k): float(v) for k, v in parsed.items()}
+        except (ValueError, TypeError):
+            logger.warning(f"Ignoring malformed capital_by_exchange metadata: {raw!r}")
+    total = float(meta.get("capital", 0.0))
+    return {ex: total / len(exchanges) for ex in exchanges} if len(exchanges) > 1 else total
+
+
 class SimulationResultsSaver:
     """
     Manages writing simulation results and status to parquet storage.
@@ -232,6 +252,7 @@ class SimulationResultsSaver:
             ("creation_time", pa.timestamp("us", tz="UTC")),
             ("simulation_time_sec", pa.int64()),
             ("capital", pa.float64()),
+            ("capital_by_exchange", pa.string()),  # - JSON string; absent on legacy results
             ("base_currency", pa.string()),
             ("commissions", pa.string()),
             ("exchanges", pa.list_(pa.string())),
@@ -654,6 +675,7 @@ class SimulationResultsSaver:
             "creation_time": _ts_utc(result.creation_time),
             "simulation_time_sec": int(result.simulation_time_sec or 0),
             "capital": float(_capital),
+            "capital_by_exchange": _json.dumps(result.capital) if isinstance(result.capital, dict) else "",
             "base_currency": result.base_currency or "",
             "commissions": _commissions,
             "exchanges": list(result.exchanges or []),
@@ -915,7 +937,7 @@ class SimulationResultsSaver:
             stop=_strip_tz(meta.get("stop", "")),
             exchanges=_to_list(meta.get("exchanges")),
             instruments=_to_list(meta.get("symbols")),
-            capital=float(meta.get("capital", 0.0)),
+            capital=_capital_from_meta(meta, _to_list(meta.get("exchanges"))),
             base_currency=meta.get("base_currency", "USDT"),
             commissions=meta.get("commissions"),
             portfolio_log=portfolio,

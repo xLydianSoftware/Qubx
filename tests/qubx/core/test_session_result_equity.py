@@ -1,6 +1,7 @@
 import pandas as pd
 
 from qubx.core.metrics import _transfer_offsets
+from qubx.utils.results import _capital_from_meta
 
 INDEX = pd.date_range("2026-01-01", periods=4, freq="1h")
 
@@ -121,3 +122,28 @@ def test_converted_transfer_credits_destination_amount():
     )
     assert list(_transfer_offsets(tl, "B", INDEX)) == [0.0, 0.0, 99.0, 99.0]
     assert list(_transfer_offsets(tl, "A", INDEX)) == [0.0, 0.0, -100.0, -100.0]
+
+
+def test_capital_by_exchange_round_trips():
+    meta = {"capital": 100_000.0, "capital_by_exchange": '{"BINANCE.UM": 60000.0, "HYPERLIQUID.F": 40000.0}'}
+    assert _capital_from_meta(meta, ["BINANCE.UM", "HYPERLIQUID.F"]) == {
+        "BINANCE.UM": 60_000.0,
+        "HYPERLIQUID.F": 40_000.0,
+    }
+
+
+def test_legacy_scalar_capital_splits_evenly():
+    meta = {"capital": 100_000.0}
+    assert _capital_from_meta(meta, ["BINANCE.UM", "HYPERLIQUID.F"]) == {
+        "BINANCE.UM": 50_000.0,
+        "HYPERLIQUID.F": 50_000.0,
+    }
+
+
+def test_single_exchange_capital_stays_scalar():
+    assert _capital_from_meta({"capital": 100_000.0}, ["BINANCE.UM"]) == 100_000.0
+
+
+def test_malformed_capital_by_exchange_falls_back_to_even_split():
+    meta = {"capital": 100_000.0, "capital_by_exchange": "not-json"}
+    assert _capital_from_meta(meta, ["A", "B"]) == {"A": 50_000.0, "B": 50_000.0}

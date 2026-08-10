@@ -728,11 +728,15 @@ class TradingSessionResult:
         start = to_timestamp(key.start) if key.start is not None else None
         stop = to_timestamp(key.stop) if key.stop is not None else None
 
-        # Recompute capital as equity value at the cut start point
+        # Recompute capital at the cut, preserving the per-exchange split so
+        # get_equity_per_exchange keeps reconciling with get_equity after a slice.
         if start is not None and not self.portfolio_log.empty:
-            equity = self.get_equity()
-            prior = equity.loc[:start]
-            capital = float(prior.iloc[-1]) if not prior.empty else self.capital
+            if isinstance(self.capital, dict) and len(self.exchanges) > 1:
+                prior = self.get_equity_per_exchange().loc[:start]
+                capital = {ex: float(prior[ex].iloc[-1]) for ex in prior.columns} if not prior.empty else self.capital
+            else:
+                prior_equity = self.get_equity().loc[:start]
+                capital = float(prior_equity.iloc[-1]) if not prior_equity.empty else self.capital
         else:
             capital = self.capital
 
