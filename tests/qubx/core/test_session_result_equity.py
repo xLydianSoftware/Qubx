@@ -1,6 +1,6 @@
 import pandas as pd
 
-from qubx.core.metrics import _transfer_offsets
+from qubx.core.metrics import TradingSessionResult, _transfer_offsets
 from qubx.utils.results import _capital_from_meta
 
 INDEX = pd.date_range("2026-01-01", periods=4, freq="1h")
@@ -147,3 +147,73 @@ def test_single_exchange_capital_stays_scalar():
 def test_malformed_capital_by_exchange_falls_back_to_even_split():
     meta = {"capital": 100_000.0, "capital_by_exchange": "not-json"}
     assert _capital_from_meta(meta, ["A", "B"]) == {"A": 50_000.0, "B": 50_000.0}
+
+
+def _two_venue_result(capital, transfers: pd.DataFrame | None = None) -> TradingSessionResult:
+    idx = INDEX
+    portfolio = pd.DataFrame(
+        {
+            "BINANCE.UM:BTCUSDT_PnL": [0.0, 10.0, 10.0, 10.0],
+            "BINANCE.UM:BTCUSDT_Commissions": [0.0, 1.0, 0.0, 0.0],
+            "BINANCE.UM:BTCUSDT_Value": [1000.0, 1000.0, 1000.0, 1000.0],
+            "HYPERLIQUID.F:BTCUSDC_PnL": [0.0, -10.0, -10.0, -10.0],
+            "HYPERLIQUID.F:BTCUSDC_Commissions": [0.0, 1.0, 0.0, 0.0],
+            "HYPERLIQUID.F:BTCUSDC_Value": [-1000.0, -1000.0, -1000.0, -1000.0],
+        },
+        index=idx,
+    )
+    return TradingSessionResult(
+        id=0,
+        name="t",
+        start=idx[0],
+        stop=idx[-1],
+        exchanges=["BINANCE.UM", "HYPERLIQUID.F"],
+        instruments=[],
+        capital=capital,
+        base_currency="USDT",
+        commissions=None,
+        portfolio_log=portfolio,
+        executions_log=pd.DataFrame(),
+        signals_log=pd.DataFrame(),
+        targets_log=pd.DataFrame(),
+        strategy_class="test",
+        transfers_log=transfers,
+    )
+
+
+def _assert_reconciles(result: TradingSessionResult) -> None:
+    per_exchange = result.get_equity_per_exchange().sum(axis=1)
+    pd.testing.assert_series_equal(per_exchange, result.get_equity(), check_names=False)
+
+
+def test_per_exchange_equity_reconciles_in_memory():
+    _assert_reconciles(_two_venue_result({"BINANCE.UM": 50_000.0, "HYPERLIQUID.F": 50_000.0}))
+
+
+def test_per_exchange_equity_reconciles_after_legacy_scalar_load():
+    capital = _capital_from_meta({"capital": 100_000.0}, ["BINANCE.UM", "HYPERLIQUID.F"])
+    _assert_reconciles(_two_venue_result(capital))
+
+
+def test_per_exchange_equity_reconciles_with_transfers():
+    transfers = _transfers(
+        [
+            {
+                "timestamp": pd.Timestamp("2026-01-01 01:02"),
+                "from_exchange": "BINANCE.UM",
+                "to_exchange": "HYPERLIQUID.F",
+                "amount": 5_000.0,
+                "to_amount": 5_000.0,
+                "status": "completed",
+            }
+        ]
+    )
+    result = _two_venue_result({"BINANCE.UM": 50_000.0, "HYPERLIQUID.F": 50_000.0}, transfers)
+    _assert_reconciles(result)
+    per_exchange = result.get_equity_per_exchange()
+    assert per_exchange["HYPERLIQUID.F"].iloc[-1] - per_exchange["HYPERLIQUID.F"].iloc[0] > 4_000.0
+
+
+def test_per_exchange_equity_reconciles_after_slicing():
+    result = _two_venue_result({"BINANCE.UM": 50_000.0, "HYPERLIQUID.F": 50_000.0})
+    _assert_reconciles(result[INDEX[1] :])
