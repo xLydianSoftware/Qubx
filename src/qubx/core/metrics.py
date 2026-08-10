@@ -604,6 +604,28 @@ def monthly_returns(
     return pd.concat((100 * r_month, acc_balance), axis=1, keys=["Returns", "Balance"])
 
 
+def _transfer_offsets(transfers: pd.DataFrame, exchange: str, index: pd.DatetimeIndex) -> pd.Series:
+    """Cumulative net transfer effect on `exchange`, aligned as-of onto `index`.
+
+    Transfer timestamps come from strategy schedules and rarely coincide with portfolio-log
+    bars, so alignment is as-of (first bar at or after the transfer) rather than exact match.
+    """
+    if not {"from_exchange", "to_exchange", "amount"}.issubset(transfers.columns):
+        return pd.Series(0.0, index=index)
+    done = transfers
+    if "status" in done.columns:
+        done = done[done["status"].astype(str).str.lower() == "completed"]
+    if done.empty:
+        return pd.Series(0.0, index=index)
+
+    credited = done["to_amount"].fillna(done["amount"]) if "to_amount" in done.columns else done["amount"]
+    deltas = credited.where(done["to_exchange"] == exchange, 0.0) - done["amount"].where(
+        done["from_exchange"] == exchange, 0.0
+    )
+    cumulative = deltas.groupby(level=0).sum().sort_index().cumsum()
+    return cumulative.reindex(index, method="ffill").fillna(0.0)
+
+
 class TradingSessionResult:
     # fmt: off
     id: int
@@ -807,30 +829,7 @@ class TradingSessionResult:
 
             # Account for transfers if requested
             if with_transfers and self.transfers_log is not None and not self.transfers_log.empty:
-                if (
-                    "to_exchange" in self.transfers_log.columns
-                    and "from_exchange" in self.transfers_log.columns
-                    and "amount" in self.transfers_log.columns
-                ):
-                    # Filter transfers for this exchange
-                    inbound = self.transfers_log[self.transfers_log["to_exchange"] == exchange]["amount"]
-                    outbound = self.transfers_log[self.transfers_log["from_exchange"] == exchange]["amount"]
-
-                    # Create series of transfer amounts at each timestamp
-                    transfer_amounts = pd.Series(0.0, index=self.portfolio_log.index)
-
-                    # Add inbound transfers
-                    for ts, amount in inbound.items():
-                        if ts in transfer_amounts.index:
-                            transfer_amounts.loc[ts] += amount
-
-                    # Subtract outbound transfers
-                    for ts, amount in outbound.items():
-                        if ts in transfer_amounts.index:
-                            transfer_amounts.loc[ts] -= amount
-
-                    # Cumulative sum to apply transfers from their timestamp onwards
-                    equity += transfer_amounts.cumsum()
+                equity = equity + _transfer_offsets(self.transfers_log, exchange, self.portfolio_log.index)
 
             result[exchange] = equity
 
