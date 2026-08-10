@@ -89,7 +89,8 @@ $223,402 against a true equity of $123,402, exactly one scalar capital too much.
 
 ## Non-goals
 
-- Non-stable currency conversion. `conversion_rate` stays 1.0; the seam is wired, not filled.
+- Marks-based currency conversion. `conversion_rate_to_base` answers 1.0 for cash currencies and
+  `None` elsewhere; the seam is wired and typed, not filled.
 - A live `ITransferManager`. Qubx ships only the simulated one; live is injected by the strategy
   (frab supplies quantkit's `XChangesTransferService`).
 - Changing the funding guard at `manager.py:682`. See "Deliberately unchanged".
@@ -124,12 +125,47 @@ simulation:
 
 ### 2. Currency-agnostic total capital
 
-`AccountState.total_capital()` (`state.py:186`) sums every balance through `conversion_rate`
-instead of reading `self.base_currency` alone. The venue-reported-equity short-circuit stays
-ahead of it untouched, so live continues to prefer `_venue_figures.equity`.
+`AccountState.total_capital()` (`state.py:186`) iterates **every** balance instead of reading
+`self.base_currency` alone, valuing each through a rate lookup that is allowed to answer "unknown":
 
-Consequence worth having: a stray foreign stable on a venue still counts, so the metric cannot
-silently lose money again if seeding or a transfer puts funds somewhere unexpected.
+```python
+def conversion_rate_to_base(self, currency: str) -> float | None:
+    """Rate from `currency` to this account's base currency, or None when unknown."""
+
+def total_capital(self) -> float:
+    venue = self._venue_figures
+    if venue is not None and venue.equity is not None:
+        return venue.equity
+    cash = sum(
+        b.total * rate
+        for c, b in self._balances.items()
+        if (rate := self.conversion_rate_to_base(c)) is not None
+    )
+    return cash + sum(p.market_value_funds for p in list(self._positions.values()))
+```
+
+The venue-reported-equity short-circuit stays ahead of it untouched, so live continues to prefer
+`_venue_figures.equity`.
+
+Summing *all* balances at 1.0 would be wrong, not merely imprecise: spot fills credit the base
+asset (`reducer.py:325`, `adjust_balance(instrument.base, deal.amount)`), so a flat sum values a
+million PEPE at a million dollars. Today's defect understates capital by a bounded amount; that
+would overstate it without bound. `tests/qubx/core/account_manager/state_metrics_test.py:61-70`
+already pins the correct behaviour and must keep passing unedited.
+
+The rate table therefore starts narrow and widens later without moving a call site: today it
+answers 1.0 for the venue's cash currencies and `None` for everything else; when marks-based
+conversion lands (the `state.py:245` TODO) it answers for everything. PEPE is excluded because it
+is unpriced, not because it is special-cased.
+
+Cash currencies are tracked explicitly: a persisted `_cash_currencies: set[str]` on `AccountState`
+(added to `__slots__`, `state.py:49-67`), seeded with `base_currency` and extended wherever a
+settle balance is adjusted (`reducer.py:320`, `manager.py:683`). Persisting rather than deriving
+from open positions means a flat venue's leftover USDC keeps counting.
+
+This also closes the mixed-settle hole that per-exchange seeding cannot: a BINANCE.UM carrying
+both USDT-M and USDC-M perps resolves to a single base currency, and the USDC-M side's PnL is only
+visible because USDC is a settle currency.
 
 ### 3. Converting transfers (simulation)
 
@@ -188,8 +224,11 @@ Account and currency:
 
 - `SimulationSetup` resolution table: scalar broadcast, explicit override, single-settle
   derivation, mixed-settle fallback
-- `total_capital()` sums multiple balances, and the venue-figures short-circuit still wins
+- `total_capital()` counts a non-base *settle* balance, still excludes an unpriced asset balance
+  (the existing PEPE pin passes unedited), and the venue-figures short-circuit still wins
   (this is what keeps live unchanged)
+- `_cash_currencies` grows when a settle balance is adjusted and keeps counting after the
+  position closes
 - converting transfers, extending `tests/qubx/backtester/test_transfers.py`: source debited in
   its currency, destination credited in its own, both amounts recorded, insufficient funds
   checked against the source balance
