@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from qubx import logger
-from qubx.core.basics import Balance, Deal, Instrument, Order, OrderStatus, Position
+from qubx.core.basics import STABLE_CURRENCIES, Balance, Deal, Instrument, Order, OrderStatus, Position
 
 # Bounded per-exchange funding-bucket dedup (insertion order ≈ funding-event time order):
 # old buckets evict once the cap is hit so the set can't grow unbounded over long-running
@@ -188,7 +188,13 @@ class AccountState:
     # ================================================================== #
 
     def mark_cash_currency(self, currency: str) -> None:
-        if currency:
+        """Count `currency` as cash at par from now on — recognized stables only.
+
+        A BTC-settled instrument (BINANCE.UM:ETHBTC) must not turn a BTC balance into capital.
+        The account's own base currency is exempt: it is seeded into the set at construction,
+        so a deliberately coin-margined account keeps being counted.
+        """
+        if currency and currency.upper() in STABLE_CURRENCIES:
             self._cash_currencies.add(currency.upper())
 
     def conversion_rate_to_base(self, currency: str) -> float | None:
@@ -207,11 +213,14 @@ class AccountState:
         # list() is a C-atomic snapshot: these aggregates are read from other threads
         # (fit thread, control server) while the ProcessorThread inserts positions —
         # a bare generator over the live dict can raise "dict changed size during
-        # iteration". Same pattern for every _positions iteration below.
+        # iteration". Same pattern for every _balances/_positions iteration here and below.
         cash = sum(
-            b.total * rate
-            for c, b in list(self._balances.items())
-            if (rate := self.conversion_rate_to_base(c)) is not None
+            (
+                b.total * rate
+                for c, b in list(self._balances.items())
+                if (rate := self.conversion_rate_to_base(c)) is not None
+            ),
+            0.0,
         )
         return cash + sum(p.market_value_funds for p in list(self._positions.values()))
 

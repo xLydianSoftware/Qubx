@@ -820,3 +820,29 @@ def test_futures_deal_marks_settle_currency_as_cash():
     assert state.conversion_rate_to_base("USDC") == 1.0
     assert state.get_balance("USDC").total == pytest.approx(10.0)
     assert state.total_capital() == pytest.approx(10.0)  # flat book: cash only, no market value
+
+
+BTC_PERP = Instrument(
+    symbol="ETHBTC",
+    market_type=MarketType.SWAP,
+    exchange="binance.um",
+    base="ETH",
+    quote="BTC",
+    settle="BTC",
+    exchange_symbol="ETHBTC",
+    tick_size=0.00001,
+    lot_size=0.001,
+    min_size=0.001,
+    contract_size=1.0,
+)
+
+
+def test_btc_settled_deal_does_not_become_cash():
+    # BINANCE.UM:ETHBTC is BTC-settled; 0.01 BTC of realized PnL is not 0.01 of capital.
+    state = AccountState("binance.um", "USDT")
+    reducer._book_deal(state, BTC_PERP, _fill(amount=1.0, price=0.05))
+    reducer._book_deal(state, BTC_PERP, _fill(trade_id="t2", amount=-1.0, price=0.06))
+
+    assert state.conversion_rate_to_base("BTC") is None
+    assert state.get_balance("BTC").total == pytest.approx(0.01)
+    assert state.total_capital() == 0.0

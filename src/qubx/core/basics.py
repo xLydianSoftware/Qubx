@@ -40,6 +40,9 @@ OPTION_SIGNAL_PRICE = "signal_price"
 OPTION_SKIP_PRICE_CROSS_CONTROL = "skip_price_cross_control"
 OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION = "avoid_stop_order_price_validation"
 
+# The only currencies the framework may value at par (1.0) until marks-based conversion lands.
+STABLE_CURRENCIES: frozenset[str] = frozenset({"USDT", "USDC", "USD", "BUSD", "DAI", "FDUSD", "TUSD", "USDE", "PYUSD"})
+
 SW = Stopwatch()
 
 
