@@ -104,8 +104,13 @@ dict in `__post_init__`, beside the existing capital split (`backtester/utils.py
 Resolution order per venue:
 
 1. explicit mapping entry, if given
-2. otherwise, the shared `settle` of that venue's configured instruments, when they agree
+2. otherwise, the shared `settle` of that venue's configured instruments, when they agree *and*
+   that currency is a recognized stable
 3. otherwise, the scalar `base_currency`
+
+An unrecognized settle currency can't be valued at par, so a BTC-settled venue
+(`BINANCE.UM:ETHBTC`) falls through to the scalar instead of being seeded 100,000 BTC counted as
+capital.
 
 `runner.py:611` passes the resolved dict to `SimulatedAccountManager` instead of broadcasting one
 string; `runner.py:622-629` seeds each venue in its own currency.
@@ -160,8 +165,10 @@ is unpriced, not because it is special-cased.
 
 Cash currencies are tracked explicitly: a persisted `_cash_currencies: set[str]` on `AccountState`
 (added to `__slots__`, `state.py:49-67`), seeded with `base_currency` and extended wherever a
-settle balance is adjusted (`reducer.py:320`, `manager.py:683`). Persisting rather than deriving
-from open positions means a flat venue's leftover USDC keeps counting.
+settle balance is adjusted (`reducer.py:320`, `manager.py:683`), via `mark_cash_currency`, which
+only admits recognized stables — the account's own `base_currency` stays exempt since it is
+seeded in at construction. Persisting rather than deriving from open positions means a flat
+venue's leftover USDC keeps counting.
 
 This also closes the mixed-settle hole that per-exchange seeding cannot: a BINANCE.UM carrying
 both USDT-M and USDC-M perps resolves to a single base currency, and the USDC-M side's PnL is only
