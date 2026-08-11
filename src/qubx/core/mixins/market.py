@@ -41,6 +41,8 @@ class CachedMarketDataHolder(IMarketDataCache):
     _updates: dict[Instrument, Bar | Quote | Trade]
     _generic_series: dict[Instrument, dict[str, GenericSeries]]
     _max_series_length: int
+    _per_type_lengths: dict[str, int]
+    _logged_caps: set[str]
 
     # Appends and the *_snapshot reads (FitContext on the StrategyFitThread)
     # serialize on this lock so a threaded fit never sees a torn series. An
@@ -48,12 +50,19 @@ class CachedMarketDataHolder(IMarketDataCache):
     # taken unconditionally — simulation just never contends on it.
     _series_lock: RLock
 
-    def __init__(self, default_timeframe: str | None = None, max_buffer_size: int = 10_000) -> None:
+    def __init__(
+        self,
+        default_timeframe: str | None = None,
+        max_buffer_size: int = 10_000,
+        per_type_lengths: dict[str, int] | None = None,
+    ) -> None:
         self._ohlcvs = dict()
         self._last_bar = defaultdict(lambda: None)
         self._updates = dict()
         self._generic_series = defaultdict(dict)
         self._max_series_length = max_buffer_size
+        self._per_type_lengths = dict(per_type_lengths or {})
+        self._logged_caps = set()
         self._series_lock = RLock()
         if default_timeframe:
             self.update_default_timeframe(default_timeframe)
@@ -61,10 +70,41 @@ class CachedMarketDataHolder(IMarketDataCache):
     def update_default_timeframe(self, default_timeframe: str):
         self.default_timeframe = convert_tf_str_td64(default_timeframe)
 
+    def _resolve_series_length(self, event_type: str) -> int:
+        """
+        Resolve the retention cap for a subscription/event type by its base dtype
+        name (e.g. "orderbook(0,1)" -> "orderbook"), falling back to the default
+        buffer size when the base name has no configured cap.
+        """
+        try:
+            base = DataType.from_str(event_type)[0].value
+            if base == DataType.NONE.value:
+                base = event_type.split("(")[0]
+        except Exception:
+            base = event_type.split("(")[0]
+
+        n = self._per_type_lengths.get(base, self._max_series_length)
+        if base in self._per_type_lengths and base not in self._logged_caps:
+            self._logged_caps.add(base)
+            logger.info(f"market cache retention: {base}={n}")
+        return n
+
+    def _resolve_ohlc_length(self, max_size: float | int) -> float | int:
+        # OHLC series default to unbounded (today's behavior, relied on by long
+        # backtests/warmups reading full history) unless an explicit "ohlc" cap
+        # is configured -- unlike generic series, which have always defaulted
+        # to max_buffer_size. Only overrides the caller's own default sentinel.
+        if max_size != np.inf:
+            return max_size
+        if DataType.OHLC.value in self._per_type_lengths:
+            return self._resolve_series_length(DataType.OHLC.value)
+        return max_size
+
     def init_ohlcv(self, instrument: Instrument, max_size=np.inf):
         if instrument not in self._ohlcvs:
+            _length = self._resolve_ohlc_length(max_size)
             self._ohlcvs[instrument] = {
-                self.default_timeframe: OHLCV(instrument.symbol, self.default_timeframe, max_size),
+                self.default_timeframe: OHLCV(instrument.symbol, self.default_timeframe, _length),
             }
         # - Clear updates to prevent stale data when re-adding instruments
         self._updates.pop(instrument, None)
@@ -155,7 +195,8 @@ class CachedMarketDataHolder(IMarketDataCache):
 
         if tf not in self._ohlcvs[instrument]:
             # - check requested timeframe
-            new_ohlc = OHLCV(instrument.symbol, tf, max_size)
+            _length = self._resolve_ohlc_length(max_size)
+            new_ohlc = OHLCV(instrument.symbol, tf, _length)
             if tf < self.default_timeframe:
                 logger.warning(
                     f"[{instrument.symbol}] Request for timeframe {timeframe} that is smaller then minimal {self.default_timeframe}"
@@ -204,7 +245,7 @@ class CachedMarketDataHolder(IMarketDataCache):
             _instr_series[event_type] = GenericSeries(
                 f"{instrument.symbol}.{event_type}",
                 1,
-                self._max_series_length,
+                self._resolve_series_length(event_type),
             )
         return _instr_series[event_type]
 
@@ -411,9 +452,11 @@ class MarketManager(IMarketManager):
         data_providers: list[IDataProvider],
         universe_manager: IUniverseManager,
         aux_data_storage: IStorage,
+        max_buffer_size: int = 10_000,
+        per_type_lengths: dict[str, int] | None = None,
     ):
         self._time_provider = time_provider
-        self._cache = CachedMarketDataHolder()
+        self._cache = CachedMarketDataHolder(max_buffer_size=max_buffer_size, per_type_lengths=per_type_lengths)
         self._data_providers = data_providers
         self._universe_manager = universe_manager
         self._aux_data_storage = aux_data_storage

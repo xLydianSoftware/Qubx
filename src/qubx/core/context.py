@@ -172,6 +172,7 @@ class StrategyContext(IStrategyContext):
         state_persistence: IStatePersistence | None = None,
         state_snapshot_interval: str | None = None,
         rate_limiting_config: Any | None = None,
+        market_cache_config: Any | None = None,
         event_loop: asyncio.AbstractEventLoop | None = None,
         read_only: bool = False,
         fit_executor: FitExecutorMode = FitExecutorMode.THREAD,
@@ -248,11 +249,17 @@ class StrategyContext(IStrategyContext):
             else DataType.NONE,
         )
 
+        # - market_cache_config is untyped (Any) to avoid a core -> utils.runner.configs
+        #   import cycle; None (sim/backtester/warmup callers) preserves today's defaults.
+        _mc_default_length = market_cache_config.default_length if market_cache_config else 10_000
+        _mc_per_type = market_cache_config.per_type if market_cache_config else None
         self._market_data_provider = MarketManager(
             time_provider=self._time_provider,
             data_providers=self._data_providers,
             universe_manager=self,
             aux_data_storage=aux_data_storage,
+            max_buffer_size=_mc_default_length,
+            per_type_lengths=_mc_per_type,
         )
 
         # Create delisting detector to be shared between universe and processing managers
