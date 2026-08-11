@@ -251,8 +251,8 @@ class StrategyContext(IStrategyContext):
 
         # - market_cache_config is untyped (Any) to avoid a core -> utils.runner.configs
         #   import cycle; None (sim/backtester/warmup callers) preserves today's defaults.
-        _mc_default_length = market_cache_config.default_length if market_cache_config else 10_000
-        _mc_per_type = market_cache_config.per_type if market_cache_config else None
+        _mc_default_length = market_cache_config.default_length if market_cache_config is not None else 10_000
+        _mc_per_type = market_cache_config.per_type if market_cache_config is not None else None
         self._market_data_provider = MarketManager(
             time_provider=self._time_provider,
             data_providers=self._data_providers,

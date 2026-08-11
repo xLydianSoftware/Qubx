@@ -78,9 +78,10 @@ class CachedMarketDataHolder(IMarketDataCache):
         """
         try:
             base = DataType.from_str(event_type)[0].value
-            if base == DataType.NONE.value:
-                base = event_type.split("(")[0]
         except Exception:
+            base = DataType.NONE.value
+        if base == DataType.NONE.value:
+            # unrecognized/malformed dtype string -- fall back to the plain prefix
             base = event_type.split("(")[0]
 
         n = self._per_type_lengths.get(base, self._max_series_length)
@@ -314,7 +315,7 @@ class CachedMarketDataHolder(IMarketDataCache):
             ohlc.update_by_bars(bars)
         else:
             # Create a new OHLCV and add the bars
-            ohlc = OHLCV(instrument.symbol, tf)
+            ohlc = OHLCV(instrument.symbol, tf, self._resolve_ohlc_length(np.inf))
             ohlc.update_by_bars(bars)
             self._ohlcvs[instrument][tf] = ohlc
 
