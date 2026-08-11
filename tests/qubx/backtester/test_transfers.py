@@ -7,6 +7,7 @@ import pytest
 from qubx.backtester.runner import SimulationRunner
 from qubx.backtester.transfers import SimulationTransferManager
 from qubx.backtester.utils import (
+    _TRANSFERS_LOG_COLUMNS,
     SetupTypes,
     SimulationSetup,
     collect_transfers_log,
@@ -100,7 +101,9 @@ def test_insufficient_funds_raises_and_leaves_balances_untouched():
 def test_unknown_currency_raises():
     am = _am()
     tm = SimulationTransferManager(am, _T())
-    with pytest.raises(ValueError, match="Insufficient funds"):
+    # DOGE is unpriced on E1: pricing is checked before balance, so this is now a
+    # conversion-rate rejection rather than an insufficient-funds one.
+    with pytest.raises(ValueError, match="no conversion rate"):
         tm.transfer_funds("E1", "E2", "DOGE", 1.0)
 
 
@@ -217,7 +220,10 @@ def test_simulation_context_has_transfer_manager():
 
     runner.ctx.transfer_funds("BINANCE.UM", "HYPERLIQUID", "USDT", 1000.0)
     assert runner.account_manager.get_balance("USDT", exchange="BINANCE.UM").total == 4000.0
-    assert runner.account_manager.get_balance("USDT", exchange="HYPERLIQUID").total == 6000.0
+    # Transfers convert at the venue boundary: HYPERLIQUID settles in USDC, so the withdrawn
+    # USDT arrives converted into USDC, not as a foreign USDT balance.
+    assert runner.account_manager.get_balance("USDT", exchange="HYPERLIQUID").total == 0.0
+    assert runner.account_manager.get_balance("USDC", exchange="HYPERLIQUID").total == 6000.0
 
 
 def test_warmup_mode_force_assigns_sim_manager():
@@ -242,3 +248,60 @@ def test_on_init_injection_wins_in_plain_sim():
     runner = _make_runner(strategy=_InjectingStrategy())
 
     assert runner.ctx._transfer_manager is stub
+
+
+def _am_cross_currency():
+    am = SimulatedAccountManager(
+        connectors={"BINANCE.UM": MagicMock(), "HYPERLIQUID.F": MagicMock()},
+        base_currencies={"BINANCE.UM": "USDT", "HYPERLIQUID.F": "USDC"},
+        time=_T(),
+    )
+    am.get_state("BINANCE.UM").update_balance(
+        "USDT", Balance(exchange="BINANCE.UM", currency="USDT", total=1000.0, free=1000.0)
+    )
+    am.get_state("HYPERLIQUID.F").update_balance(
+        "USDC", Balance(exchange="HYPERLIQUID.F", currency="USDC", total=1000.0, free=1000.0)
+    )
+    return am
+
+
+def test_transfer_debits_source_currency_credits_destination_currency():
+    am = _am_cross_currency()
+    mgr = SimulationTransferManager(am, _T())
+    tid = mgr.transfer_funds("HYPERLIQUID.F", "BINANCE.UM", "USDC", 250.0)
+
+    assert am.get_balance("USDC", "HYPERLIQUID.F").free == 750.0
+    assert am.get_balance("USDT", "BINANCE.UM").free == 1250.0
+    assert am.get_balance("USDC", "BINANCE.UM").total == 0.0
+
+    t = mgr.get_transfer_status(tid)
+    assert (t.currency, t.amount) == ("USDC", 250.0)
+    assert (t.to_currency, t.to_amount) == ("USDT", 250.0)
+
+
+def test_transfer_insufficient_funds_checks_source_currency():
+    am = _am_cross_currency()
+    mgr = SimulationTransferManager(am, _T())
+    with pytest.raises(ValueError, match="Insufficient funds"):
+        mgr.transfer_funds("HYPERLIQUID.F", "BINANCE.UM", "USDC", 5000.0)
+
+
+def test_transfer_rejects_unpriced_currency():
+    am = _am_cross_currency()
+    am.get_state("HYPERLIQUID.F").update_balance(
+        "PEPE", Balance(exchange="HYPERLIQUID.F", currency="PEPE", total=10.0, free=10.0)
+    )
+    mgr = SimulationTransferManager(am, _T())
+    with pytest.raises(ValueError, match="no conversion rate"):
+        mgr.transfer_funds("HYPERLIQUID.F", "BINANCE.UM", "PEPE", 1.0)
+
+
+def test_transfers_log_carries_destination_columns():
+    am = _am_cross_currency()
+    mgr = SimulationTransferManager(am, _T())
+    mgr.transfer_funds("HYPERLIQUID.F", "BINANCE.UM", "USDC", 100.0)
+    df = collect_transfers_log(mgr)
+
+    assert list(df.columns) == _TRANSFERS_LOG_COLUMNS
+    assert df.iloc[0]["to_currency"] == "USDT"
+    assert df.iloc[0]["to_amount"] == 100.0

@@ -185,3 +185,52 @@ def test_net_leverage_signed_negative_for_short():
     assert state.net_leverage() == -5_000.0 / 995_000.0
     assert state.gross_leverage() == 5_000.0 / 995_000.0
     assert state.leverage(inst) == -5_000.0 / 995_000.0
+
+
+def test_total_capital_counts_marked_settle_currency():
+    state = _state(1000.0)  # base USDT
+    state.mark_cash_currency("USDC")
+    state.update_balance("USDC", Balance(exchange="binance", currency="USDC", free=250.0, locked=0.0, total=250.0))
+    assert state.total_capital() == 1250.0
+
+
+def test_marked_cash_currency_counts_with_no_positions():
+    state = _state(1000.0)
+    state.mark_cash_currency("USDC")
+    state.update_balance("USDC", Balance(exchange="binance", currency="USDC", free=250.0, locked=0.0, total=250.0))
+    assert not state.get_positions()
+    assert state.total_capital() == 1250.0
+
+
+def test_non_stable_settle_currency_is_not_marked_as_cash():
+    state = _state(1000.0)
+    state.mark_cash_currency("BTC")
+    state.update_balance("BTC", Balance(exchange="binance", currency="BTC", free=2.0, locked=0.0, total=2.0))
+    assert state.conversion_rate_to_base("BTC") is None
+    assert state.total_capital() == 1000.0
+
+
+def test_coin_margined_base_currency_still_counts():
+    # The base currency is exempt from the stable check — it is seeded at construction.
+    state = _state(2.0, base_currency="BTC")
+    assert state.total_capital() == 2.0
+
+
+def test_total_capital_is_float_on_empty_state():
+    capital = AccountState(exchange="binance", base_currency="USDT").total_capital()
+    assert isinstance(capital, float)
+    assert capital == 0.0
+
+
+def test_conversion_rate_unknown_for_unpriced_asset():
+    state = _state(1000.0)
+    assert state.conversion_rate_to_base("USDT") == 1.0
+    assert state.conversion_rate_to_base("PEPE") is None
+
+
+def test_venue_equity_still_wins_over_summed_cash():
+    state = _state(1000.0)
+    state.mark_cash_currency("USDC")
+    state.update_balance("USDC", Balance(exchange="binance", currency="USDC", free=250.0, locked=0.0, total=250.0))
+    state.set_venue_figures(_venue(equity=5000.0))
+    assert state.total_capital() == 5000.0

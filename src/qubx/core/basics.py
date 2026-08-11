@@ -40,6 +40,9 @@ OPTION_SIGNAL_PRICE = "signal_price"
 OPTION_SKIP_PRICE_CROSS_CONTROL = "skip_price_cross_control"
 OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION = "avoid_stop_order_price_validation"
 
+# The only currencies the framework may value at par (1.0) until marks-based conversion lands.
+STABLE_CURRENCIES: frozenset[str] = frozenset({"USDT", "USDC", "USD", "BUSD", "DAI", "FDUSD", "TUSD", "USDE", "PYUSD"})
+
 SW = Stopwatch()
 
 
@@ -943,6 +946,8 @@ class Transfer:
     timestamp: dt_64
     raw_status: str | None = None  # venue-native status; None for simulation
     failure_reason: str | None = None  # populated when status is FAILED
+    to_currency: str | None = None  # destination currency when it differs from `currency`
+    to_amount: float | None = None  # credited amount in `to_currency`
 
     def to_dict(self) -> dict[str, Any]:
         """JSON-safe mapping (datetime64 -> str, status -> its value) for wire/reporting."""
@@ -956,6 +961,8 @@ class Transfer:
             "status": str(self.status),
             "raw_status": self.raw_status,
             "failure_reason": self.failure_reason,
+            "to_currency": self.to_currency,
+            "to_amount": self.to_amount,
         }
 
 

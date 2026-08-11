@@ -19,7 +19,7 @@ from dataclasses import dataclass
 import numpy as np
 
 from qubx import logger
-from qubx.core.basics import Balance, Deal, Instrument, Order, OrderStatus, Position
+from qubx.core.basics import STABLE_CURRENCIES, Balance, Deal, Instrument, Order, OrderStatus, Position
 
 # Bounded per-exchange funding-bucket dedup (insertion order ≈ funding-event time order):
 # old buckets evict once the cap is hit so the set can't grow unbounded over long-running
@@ -52,6 +52,7 @@ class AccountState:
         "_active_orders",
         "_positions",
         "_balances",
+        "_cash_currencies",
         "_venue_id_index",
         "_inflight_index",
         "_pending_evict_index",
@@ -74,6 +75,9 @@ class AccountState:
         self._active_orders: dict[str, Order] = {}  # client_order_id -> Order
         self._positions: dict[Instrument, Position] = {}
         self._balances: dict[str, Balance] = {}  # currency -> Balance
+        # Currencies this venue settles cash in: base plus any settle currency actually booked.
+        # Persisted rather than derived from open positions so leftovers survive a flat book.
+        self._cash_currencies: set[str] = {self.base_currency}
 
         # ---- lookup / bookkeeping indices (mutator-maintained) -----------
         # venue_order_id -> client_order_id
@@ -183,16 +187,41 @@ class AccountState:
     # figures are preferred over the derived value, per metric.          #
     # ================================================================== #
 
+    def mark_cash_currency(self, currency: str) -> None:
+        """Count `currency` as cash at par from now on — recognized stables only.
+
+        A BTC-settled instrument (BINANCE.UM:ETHBTC) must not turn a BTC balance into capital.
+        The account's own base currency is exempt: it is seeded into the set at construction,
+        so a deliberately coin-margined account keeps being counted.
+        """
+        if currency and currency.upper() in STABLE_CURRENCIES:
+            self._cash_currencies.add(currency.upper())
+
+    def conversion_rate_to_base(self, currency: str) -> float | None:
+        """Rate from `currency` to this account's base currency, or None when unknown.
+
+        Cash currencies are stable-to-stable at 1.0; everything else is unpriced until
+        marks-based conversion lands, and unpriced balances are excluded rather than
+        counted at par — a spot base asset is not capital.
+        """
+        return 1.0 if currency.upper() in self._cash_currencies else None
+
     def total_capital(self) -> float:
         venue = self._venue_figures
         if venue is not None and venue.equity is not None:
             return venue.equity
-        base = self._balances.get(self.base_currency)
-        cash = base.total if base is not None else 0.0
         # list() is a C-atomic snapshot: these aggregates are read from other threads
         # (fit thread, control server) while the ProcessorThread inserts positions —
         # a bare generator over the live dict can raise "dict changed size during
-        # iteration". Same pattern for every _positions iteration below.
+        # iteration". Same pattern for every _balances/_positions iteration here and below.
+        cash = sum(
+            (
+                b.total * rate
+                for c, b in list(self._balances.items())
+                if (rate := self.conversion_rate_to_base(c)) is not None
+            ),
+            0.0,
+        )
         return cash + sum(p.market_value_funds for p in list(self._positions.values()))
 
     def total_initial_margin(self) -> float:

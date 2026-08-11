@@ -10,9 +10,9 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
-from qubx.backtester.utils import SetupTypes, SimulationSetup
+from qubx.backtester.utils import SetupTypes, SimulationSetup, find_instruments_and_exchanges, initial_balances
 from qubx.core.account_manager import SimulatedAccountManager
-from qubx.core.basics import Balance
+from qubx.core.basics import Balance, Instrument, MarketType
 
 
 class _Clock:
@@ -57,3 +57,131 @@ def test_lowercase_base_currency_capital_not_ignored():
     assert am.get_base_currency("BINANCE.UM") == "USDT"
     assert am.get_balance("USDT", "BINANCE.UM").total == 10_000.0
     assert am.get_total_capital("BINANCE.UM") == 10_000.0
+
+
+def _multi_setup(base_currency, instruments) -> SimulationSetup:
+    return SimulationSetup(
+        setup_type=SetupTypes.STRATEGY,
+        name="test",
+        generator=None,
+        tracker=None,
+        instruments=instruments,
+        exchanges=["BINANCE.UM", "HYPERLIQUID.F"],
+        capital=100_000.0,
+        base_currency=base_currency,
+    )
+
+
+def _swap(exchange: str, symbol: str, settle: str) -> Instrument:
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SWAP,
+        exchange=exchange,
+        base=symbol[:3],
+        quote=settle,
+        settle=settle,
+        exchange_symbol=symbol,
+        tick_size=0.01,
+        lot_size=0.001,
+        min_size=0.001,
+        contract_size=1.0,
+    )
+
+
+def test_base_currency_derived_per_exchange_from_settle():
+    setup = _multi_setup(
+        "USDT",
+        [_swap("BINANCE.UM", "BTCUSDT", "USDT"), _swap("HYPERLIQUID.F", "BTCUSDC", "USDC")],
+    )
+    assert setup.base_currencies == {"BINANCE.UM": "USDT", "HYPERLIQUID.F": "USDC"}
+
+
+def test_explicit_mapping_overrides_derivation():
+    setup = _multi_setup(
+        {"HYPERLIQUID.F": "usdc"},
+        [_swap("BINANCE.UM", "BTCUSDT", "USDT"), _swap("HYPERLIQUID.F", "BTCUSDC", "USDC")],
+    )
+    assert setup.base_currencies == {"BINANCE.UM": "USDT", "HYPERLIQUID.F": "USDC"}
+    assert isinstance(setup.base_currency, str)
+
+
+def test_mixed_settle_venue_falls_back_to_scalar():
+    setup = _multi_setup(
+        "USDT",
+        [_swap("BINANCE.UM", "BTCUSDT", "USDT"), _swap("BINANCE.UM", "BTCUSDC", "USDC")],
+    )
+    assert setup.base_currencies["BINANCE.UM"] == "USDT"
+
+
+def test_non_stable_settle_is_not_derived_as_base_currency():
+    # BINANCE.UM:ETHBTC is a BTC-settled linear swap: deriving BTC would seed 100k BTC at par.
+    setup = _multi_setup("USDT", [_swap("BINANCE.UM", "ETHBTC", "BTC")])
+    assert setup.base_currencies["BINANCE.UM"] == "USDT"
+
+
+def test_no_instruments_keeps_scalar_for_every_exchange():
+    setup = _multi_setup("usdt", [])
+    assert setup.base_currencies == {"BINANCE.UM": "USDT", "HYPERLIQUID.F": "USDT"}
+
+
+def test_scalar_base_currency_follows_deterministic_exchange_order():
+    # exchanges[0] picks the scalar base_currency persisted into _metadata.parquet, so the
+    # exchange list must not depend on per-process string hashing.
+    instruments = [_swap("HYPERLIQUID.F", "BTCUSDC", "USDC"), _swap("BINANCE.UM", "BTCUSDT", "USDT")]
+    _, exchanges = find_instruments_and_exchanges(instruments, None)
+    assert exchanges == ["BINANCE.UM", "HYPERLIQUID.F"]
+
+    setup = SimulationSetup(
+        setup_type=SetupTypes.STRATEGY,
+        name="test",
+        generator=None,
+        tracker=None,
+        instruments=instruments,
+        exchanges=exchanges,
+        capital=100_000.0,
+        base_currency="USDT",
+    )
+    assert setup.base_currency == "USDT"
+
+
+def test_simulation_config_accepts_per_exchange_mapping():
+    from qubx.utils.runner.configs import SimulationConfig
+
+    cfg = SimulationConfig(
+        capital=100_000.0,
+        instruments=["BINANCE.UM:SWAP:BTCUSDT", "HYPERLIQUID.F:SWAP:BTCUSDC"],
+        start="2026-01-01",
+        stop="2026-02-01",
+        data={"storage": "qdb::quantlab"},
+        base_currency={"HYPERLIQUID.F": "USDC"},
+    )
+    assert cfg.base_currency == {"HYPERLIQUID.F": "USDC"}
+
+
+def test_initial_balances_seed_each_venue_in_its_own_currency():
+    setup = _multi_setup(
+        "USDT",
+        [_swap("BINANCE.UM", "BTCUSDT", "USDT"), _swap("HYPERLIQUID.F", "BTCUSDC", "USDC")],
+    )
+    balances = initial_balances(setup)
+    assert balances["BINANCE.UM"].currency == "USDT"
+    assert balances["HYPERLIQUID.F"].currency == "USDC"
+    assert balances["BINANCE.UM"].total == 50_000.0
+    assert balances["HYPERLIQUID.F"].free == 50_000.0
+
+
+def test_seeded_capital_visible_per_venue():
+    setup = _multi_setup(
+        "USDT",
+        [_swap("BINANCE.UM", "BTCUSDT", "USDT"), _swap("HYPERLIQUID.F", "BTCUSDC", "USDC")],
+    )
+    am = SimulatedAccountManager(
+        connectors={ex: MagicMock() for ex in setup.exchanges},
+        base_currencies=setup.base_currencies,
+        time=_Clock(),
+    )
+    for exchange, balance in initial_balances(setup).items():
+        am.seed_balance(exchange, balance)
+
+    assert am.get_total_capital("HYPERLIQUID.F") == 50_000.0
+    assert am.get_total_capital() == 100_000.0

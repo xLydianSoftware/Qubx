@@ -192,6 +192,35 @@ class TestSimulatedAccountFunding:
         assert event is not None  # attribution still books downstream
         assert am.get_state(instr.exchange).get_balance("USDT") is None  # no balance materialized
 
+    def test_settlement_marks_settle_currency_as_cash(self):
+        # USDC-settled swap on a USDT-based venue: process_market_funding must register
+        # instrument.settle as cash so total_capital() actually counts the settlement.
+        instr = Instrument(
+            symbol="BTCUSDC",
+            market_type=MarketType.SWAP,
+            exchange="TEST",
+            base="BTC",
+            quote="USDC",
+            settle="USDC",
+            exchange_symbol="BTCUSDC",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+            contract_size=1.0,
+        )
+        am = _sim_am(instr)
+        am.seed_balance(instr.exchange, Balance(exchange=instr.exchange, currency="USDC", free=0.0, total=0.0))
+        am.seed_position(_marked_position(instr, 0.5))
+        state = am.get_state(instr.exchange)
+        assert state.conversion_rate_to_base("USDC") is None  # not cash yet
+        capital_before = state.total_capital()
+
+        event = am.process_market_funding(instr, _payment())
+
+        assert event is not None
+        assert state.conversion_rate_to_base("USDC") == 1.0
+        assert state.total_capital() == pytest.approx(capital_before + event.amount)
+
     def test_live_account_manager_never_books_market_funding(self):
         # live: the account's funding arrives via the connector's typed events only
         instr = _btc()

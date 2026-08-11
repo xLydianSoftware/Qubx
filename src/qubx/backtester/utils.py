@@ -1,5 +1,5 @@
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Callable, TypeAlias
 
@@ -8,6 +8,8 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
+    STABLE_CURRENCIES,
+    Balance,
     CtrlChannel,
     DataType,
     Instrument,
@@ -80,6 +82,20 @@ def _type(obj: Any) -> SetupTypes:
     return t
 
 
+def _settle_currencies(instruments: list[Instrument], exchange: str) -> set[str]:
+    return {i.settle.upper() for i in instruments if i.exchange == exchange and i.settle}
+
+
+def _derive_settle_currency(instruments: list[Instrument], exchange: str) -> str | None:
+    """The one settle currency a venue's instruments agree on, or None when absent, mixed, or
+    not a recognized stable — BINANCE.UM:ETHBTC settles in BTC, and BTC is not 1.0 of capital."""
+    settles = _settle_currencies(instruments, exchange)
+    if len(settles) != 1:
+        return None
+    settle = settles.pop()
+    return settle if settle in STABLE_CURRENCIES else None
+
+
 @dataclass
 class SimulationSetup:
     """
@@ -93,16 +109,37 @@ class SimulationSetup:
     instruments: list[Instrument]
     exchanges: list[str]
     capital: float | dict[str, float]
-    base_currency: str
+    base_currency: str | dict[str, str]
     commissions: str | dict[str, str | None] | None = None
     signal_timeframe: str = "1Min"
     accurate_stop_orders_execution: bool = False
     enable_funding: bool = False
+    base_currencies: dict[str, str] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
-        # Normalize once at the config boundary: AccountState stores base_currency upper-cased,
-        # so a lowercase value here would seed capital under a key total_capital never reads.
-        self.base_currency = self.base_currency.upper()
+        # Per-exchange base currency: explicit mapping wins, else the venue's shared settle
+        # currency, else the scalar. AccountState upper-cases, so normalize here or the seeded
+        # Balance lands under a key total_capital never reads.
+        explicit = (
+            {ex: ccy.upper() for ex, ccy in self.base_currency.items()}
+            if isinstance(self.base_currency, dict)
+            else {}
+        )
+        default_ccy = (
+            self.base_currency.upper()
+            if isinstance(self.base_currency, str)
+            else (explicit.get(self.exchanges[0], "USDT") if self.exchanges else "USDT")
+        )
+        self.base_currencies = {}
+        for ex in self.exchanges:
+            resolved = explicit.get(ex) or _derive_settle_currency(self.instruments, ex)
+            if resolved is None and (settles := _settle_currencies(self.instruments, ex)):
+                logger.debug(
+                    f"No single stable settle currency for {ex} (saw {sorted(settles)}) "
+                    f"- using {default_ccy} as its base currency"
+                )
+            self.base_currencies[ex] = resolved or default_ccy
+        self.base_currency = self.base_currencies[self.exchanges[0]] if self.exchanges else default_ccy
         # Normalize capital to a per-exchange dict: split evenly when a single float is given
         if isinstance(self.capital, (int, float)):
             n = len(self.exchanges)
@@ -111,6 +148,21 @@ class SimulationSetup:
 
     def __str__(self) -> str:
         return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchanges}[{self.commissions}]"
+
+
+def initial_balances(setup: SimulationSetup) -> dict[str, Balance]:
+    """Startup balance per exchange, each in that venue's own base currency."""
+    assert isinstance(setup.capital, dict)
+    return {
+        exchange: Balance(
+            exchange=exchange,
+            currency=setup.base_currencies[exchange],
+            total=capital,
+            free=capital,
+            locked=0.0,
+        )
+        for exchange, capital in setup.capital.items()
+    }
 
 
 # fmt: off
@@ -287,7 +339,9 @@ def find_instruments_and_exchanges(
                 _instrs.append(instrument)
                 _exchanges.append(resolved_exchange)
 
-    return _instrs, list(set(_exchanges))
+    # sorted, not list(set(...)): string hashing is per-process randomized, and exchanges[0]
+    # decides the persisted scalar base_currency of a multi-venue run.
+    return _instrs, sorted(set(_exchanges))
 
 
 class _StructureSniffer:
@@ -345,7 +399,7 @@ def recognize_simulation_configuration(
     instruments: list[Instrument],
     exchanges: list[str],
     capital: float | dict[str, float],
-    basic_currency: str,
+    basic_currency: str | dict[str, str],
     commissions: str | dict[str, str | None] | None,
     signal_timeframe: str,
     accurate_stop_orders_execution: bool,
@@ -640,7 +694,16 @@ def recognize_simulation_data_config(
     )
 
 
-_TRANSFERS_LOG_COLUMNS = ["transaction_id", "from_exchange", "to_exchange", "currency", "amount", "status"]
+_TRANSFERS_LOG_COLUMNS = [
+    "transaction_id",
+    "from_exchange",
+    "to_exchange",
+    "currency",
+    "amount",
+    "status",
+    "to_currency",
+    "to_amount",
+]
 
 
 def collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataFrame | None:
@@ -667,6 +730,8 @@ def collect_transfers_log(transfer_manager: ITransferManager | None) -> pd.DataF
                 "currency": t.currency,
                 "amount": t.amount,
                 "status": str(t.status),
+                "to_currency": t.to_currency or t.currency,
+                "to_amount": t.to_amount if t.to_amount is not None else t.amount,
             }
             for t in transfers
         ]

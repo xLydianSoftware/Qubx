@@ -38,7 +38,7 @@ def simulate(
     instruments: list[str] | list[Instrument] | dict[ExchangeName_t, list[SymbolOrInstrument_t]] | None = None,
     commissions: str | dict[str, str | None] | None = None,
     exchange: ExchangeName_t | list[ExchangeName_t] | None = None,
-    base_currency: str = "USDT",
+    base_currency: str | dict[str, str] = "USDT",
     n_jobs: int = 1,
     silent: bool = False,
     aux_data: IStorage | None = None,
