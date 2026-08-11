@@ -673,6 +673,7 @@ def create_strategy_context(
         state_persistence=_state_persistence,
         state_snapshot_interval=_state_snapshot_interval,
         rate_limiting_config=_rate_limiting_config,
+        market_cache_config=config.live.market_cache,
         event_loop=loop,
         read_only=config.live.read_only,
         fit_executor=config.live.fit_executor,
