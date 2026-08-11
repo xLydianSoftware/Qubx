@@ -76,7 +76,7 @@ class AggregatedLiquidations:
         return f"[{time_to_str(self.time, 'ns')}]\t B:{self.buy_amount} @ {self.avg_buy_price} | S:{self.sell_amount} @ {self.avg_sell_price}"  # type: ignore
 
 
-@dataclass
+@dataclass(slots=True)
 class FundingRate:
     time: dt_64
     rate: float

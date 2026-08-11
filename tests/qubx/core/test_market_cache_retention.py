@@ -92,3 +92,13 @@ def test_update_by_bars_creates_unbounded_series_when_ohlc_unconfigured(mock_ins
     ohlcv = h.update_by_bars(mock_instrument, "5m", bars)
     assert isinstance(ohlcv, OHLCV)
     assert ohlcv.max_series_length == np.inf
+
+
+def test_funding_rate_has_slots():
+    import numpy as np
+    from qubx.core.basics import FundingRate
+
+    fr = FundingRate(time=np.datetime64(0, "ns"), rate=0.0001, interval="1h", next_funding_time=np.datetime64(3600_000_000_000, "ns"))
+    assert not hasattr(fr, "__dict__")
+    with pytest.raises(AttributeError):
+        fr.extra = 1  # type: ignore[attr-defined]
