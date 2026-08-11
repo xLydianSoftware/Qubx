@@ -210,6 +210,28 @@ class AccountManagerConfig(StrictBaseModel):
     terminal_order_history_size: int = 10_000
 
 
+class MarketCacheConfig(StrictBaseModel):
+    """Retention caps for per-instrument market-data buffers (spec 2026-08-11)."""
+
+    default_length: int = 10_000
+    per_type: dict[str, int] = Field(default_factory=dict)
+
+    @field_validator("default_length")
+    @classmethod
+    def _default_positive(cls, v: int) -> int:
+        if v < 1:
+            raise ValueError("default_length must be >= 1")
+        return v
+
+    @field_validator("per_type")
+    @classmethod
+    def _caps_positive(cls, v: dict[str, int]) -> dict[str, int]:
+        for k, n in v.items():
+            if n < 1:
+                raise ValueError(f"per_type[{k!r}] must be >= 1")
+        return v
+
+
 class LiveConfig(StrictBaseModel):
     read_only: bool = False
     base_currency: str | None = None
@@ -226,6 +248,7 @@ class LiveConfig(StrictBaseModel):
     state: StatePersistenceConfig | None = None
     rate_limiting: RateLimitingConfig | None = None
     account_manager: AccountManagerConfig = Field(default_factory=AccountManagerConfig)
+    market_cache: MarketCacheConfig = Field(default_factory=MarketCacheConfig)
     # Where strategy.on_fit runs in live mode. "thread" (default) hands the fit body
     # to a dedicated StrategyFitThread; deferred ctx mutations are applied atomically
     # on the ProcessorThread at fit end. "inline" is the legacy behavior — the fit
