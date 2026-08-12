@@ -119,6 +119,7 @@ class RatePool(BasePool):
         super().__init__(config, exchange, scope_id)
         self._backend = backend
         self._key = self._make_key()
+        self._sync_tasks: set[asyncio.Task] = set()
 
     def _make_key(self) -> str:
         return f"ratelimit:{self._exchange}:{self._config.name}:{self._scope_id}"
@@ -145,11 +146,20 @@ class RatePool(BasePool):
     def sync(self, remaining: float, capacity: float | None = None) -> None:
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(
-                self._backend.set_remaining(self._key, remaining, self._config.capacity, self._config.refill_rate)
-            )
         except RuntimeError:
-            pass  # No running loop — skip sync (e.g., during shutdown)
+            return  # no running loop — skip sync (e.g. during shutdown)
+        task = loop.create_task(
+            self._backend.set_remaining(self._key, remaining, self._config.capacity, self._config.refill_rate)
+        )
+        # keep a reference so the task cannot be collected mid-flight, and retrieve its result:
+        # a header sync fires per response, so an unretrieved Redis error would log on every one
+        self._sync_tasks.add(task)
+        task.add_done_callback(self._on_sync_done)
+
+    def _on_sync_done(self, task: asyncio.Task) -> None:
+        self._sync_tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            logger.debug(f"Rate limit sync failed for {self._exchange}:{self.name}: {exc}")
 
     async def get_state(self) -> dict[str, Any]:
         remaining = await self._backend.get_remaining(self._key, self._config.capacity, self._config.refill_rate)

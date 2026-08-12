@@ -49,7 +49,7 @@ def _limiter_for(api_key: str | None, exchange: str = "venue"):
 
 
 class TestDisabledWarning:
-    def test_disabled_manager_warns_once(self, captured_logs):
+    def test_disabled_manager_says_so_once(self, captured_logs):
         loop = asyncio.new_event_loop()
         try:
             manager = RateLimitManager(None, loop)
@@ -57,8 +57,10 @@ class TestDisabledWarning:
         finally:
             loop.close()
 
-        warnings = [m for lvl, m in captured_logs if lvl == "WARNING" and "disabled" in m.lower()]
-        assert len(warnings) == 1, warnings
+        # INFO, not WARNING: absent rate_limiting is the common case, so a warning would be noise
+        lines = [m for lvl, m in captured_logs if lvl == "INFO" and "disabled" in m.lower()]
+        assert len(lines) == 1, lines
+        assert not [m for lvl, m in captured_logs if lvl == "WARNING" and "disabled" in m.lower()]
 
     def test_enabled_manager_does_not_warn(self, captured_logs):
         """Negative control: the warning is about the missing section, not about construction."""

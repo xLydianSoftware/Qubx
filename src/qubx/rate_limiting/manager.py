@@ -41,7 +41,9 @@ class RateLimitManager:
         if config is None:
             self._backend = None
             self._egress_ip = None
-            logger.warning(
+            # INFO, not WARNING: no rate_limiting section is the default for most configs, and a
+            # warning on the common case just trains people to ignore warnings
+            logger.info(
                 "Rate limiting is DISABLED (no live.rate_limiting section) — venue calls are not governed by "
                 "Qubx rate limiting (ccxt's own throttler still paces REST, each ws client keeps its throttler)"
             )

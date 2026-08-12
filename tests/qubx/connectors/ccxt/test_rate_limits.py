@@ -175,10 +175,51 @@ class TestBinanceConfigs:
         # _default_config ships a single pool; a binance config always carries orders too
         assert set(create_ccxt_rate_limit_config(ccxt_id).pools) == {"ccxt_rest", "orders"}
 
-    @pytest.mark.parametrize("venue, capacity", [("okx", 20), ("bybit", 120), ("kraken", 20)])
+    @pytest.mark.parametrize("venue, capacity", [("okx", 4), ("bybit", 100), ("kraken", 10)])
     def test_binance_dispatch_does_not_swallow_other_venues(self, venue: str, capacity: float):
         # negative control for the startswith("binance") dispatch
         assert create_ccxt_rate_limit_config(venue).pools["ccxt_rest"].capacity == capacity
+
+
+class TestPoolWindowSafety:
+    """A pool charged in ccxt cost units must not outrun the venue's own window.
+
+    The bucket starts full, so the worst case over the venue's window W is ``capacity + W*refill``.
+    These are the arithmetic that a pool sized in *request counts* silently fails.
+    """
+
+    def test_bybit_worst_window_stays_within_the_ip_rule(self):
+        # 600 requests / 5s per IP (403 + 10min ban). Worst case is the cheapest endpoint we call,
+        # where one cost unit is one request.
+        pool = create_ccxt_rate_limit_config("bybit").pools["ccxt_rest"]
+        assert pool.capacity + 5 * pool.refill_rate <= 600
+        assert pool.refill_rate <= 120
+
+    def test_okx_worst_window_stays_within_every_endpoint_budget(self):
+        # ccxt normalises okx so cost * budget == 20 units per 2s for every endpoint, so one bound
+        # covers them all
+        pool = create_ccxt_rate_limit_config("okx").pools["ccxt_rest"]
+        assert pool.capacity + 2 * pool.refill_rate <= 20
+
+    def test_kraken_public_reads_stay_within_the_documented_one_per_second(self):
+        pool = create_ccxt_rate_limit_config("kraken").pools["ccxt_rest"]
+        ohlc_cost = cxp.kraken().api["public"]["get"]["OHLC"]
+        assert pool.refill_rate / ohlc_cost <= 1.0
+
+    @pytest.mark.parametrize(
+        "venue, endpoint, cost, floor",
+        # regression floors: these venues were sized in request counts and ran 3-25x too slow
+        [("bybit", "v5/market/kline", 5, 20.0), ("kraken", "OHLC", 1.2, 0.8), ("okx", "market/candles", 0.5, 16.0)],
+    )
+    def test_market_data_throughput_floor(self, venue: str, endpoint: str, cost: float, floor: float):
+        pool = create_ccxt_rate_limit_config(venue).pools["ccxt_rest"]
+        assert pool.refill_rate / cost >= floor
+
+    @pytest.mark.parametrize("venue", _VENUES)
+    def test_gate_max_wait_outlasts_every_cooldown(self, venue: str):
+        # otherwise one reported 429 times out every waiter by construction
+        cfg = create_ccxt_rate_limit_config(venue)
+        assert cfg.gate_max_wait > max(p.cooldown for p in cfg.pools.values())
 
 
 class TestOrderCountHeaderDerivation:
@@ -252,7 +293,7 @@ class TestKrakenConfig:
     def test_kraken_spot_keeps_the_counter_pools(self):
         # negative control: the futures branch must not capture spot
         pools = create_ccxt_rate_limit_config("kraken").pools
-        assert (pools["ccxt_rest"].capacity, pools["ccxt_rest"].refill_rate) == (20, 0.33)
+        assert (pools["ccxt_rest"].capacity, pools["ccxt_rest"].refill_rate) == (10, 1.0)
         assert (pools["orders"].capacity, pools["orders"].refill_rate) == (60, 1.0)
 
 

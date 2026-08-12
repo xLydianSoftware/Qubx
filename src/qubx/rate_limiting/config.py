@@ -63,12 +63,13 @@ class ExchangeRateLimitConfig:
         pools: Named pool configurations
         endpoint_map: Maps endpoint names to their costs across pools
         default_costs: Fallback costs for unmapped endpoints
-        gate_max_wait: Max seconds to wait for a closed gate before raising timeout
+        gate_max_wait: Max seconds to wait for a closed gate before raising timeout. Must exceed the
+            longest pool cooldown, or a single reported 429 times out every waiter by construction.
         metrics_interval: Seconds between metric emissions (0 to disable)
     """
 
     pools: dict[str, PoolConfig] = field(default_factory=dict)
     endpoint_map: dict[str, EndpointCosts] = field(default_factory=dict)
     default_costs: EndpointCosts = field(default_factory=lambda: EndpointCosts([]))
-    gate_max_wait: float = 15.0
+    gate_max_wait: float = 35.0
     metrics_interval: float = 60.0

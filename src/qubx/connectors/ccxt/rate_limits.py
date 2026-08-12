@@ -144,12 +144,22 @@ def _okx_config() -> ExchangeRateLimitConfig:
       counters are independent and per instrument; pooling them per account is conservative in both
       directions, and keeps us under the 1000/2sec sub-account cap by construction.
 
+    ``ccxt_rest`` is denominated in ccxt cost units, which OKX's ccxt table normalizes so that
+    ``cost * documented_budget == 20 units per 2s`` for every endpoint (candles 0.5x40, tickers
+    1x20, balance 2x10, order 1/3x60). One pool therefore expresses every per-endpoint limit at
+    once, and the single safety bound is ``capacity + 2*refill <= 20``: a full bucket plus one
+    window of refill must not outrun the tightest budget. That yields candles at 16 req/s against
+    OKX's 20, and balance at 4 against 5.
+
+    Conservative by construction, since it conflates IP-, User-ID- and per-instrument-scoped budgets
+    into one — with N instruments OKX would allow N times more on the per-instId endpoints.
+
     No ``HEADER_PARSERS`` entry: OKX publishes no rate-limit header at all and meters per endpoint /
     instrument id — see the note above ``HEADER_PARSERS``.
     """
     return ExchangeRateLimitConfig(
         pools={
-            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 20, 10.0, cooldown=15.0),
+            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 4, 8.0, cooldown=15.0),
             "orders": PoolConfig("orders", "account", 60, 30.0, cooldown=10.0),
         },
         endpoint_map=_default_endpoint_costs(),
@@ -169,12 +179,19 @@ def _bybit_config() -> ExchangeRateLimitConfig:
       for create and cancel). Bybit meters per endpoint; pooling the three is conservative. Not
       modelled: option ``cancel-all`` is 1/s, stricter than this pool.
 
+    ``ccxt_rest`` is denominated in ccxt cost units (v5 market endpoints cost 5, order create/cancel
+    2.5, wallet-balance 1), and sized against the IP rule at its worst case — the cheapest endpoint,
+    where one unit is one request. The bucket starts full, so ``capacity + 5*refill <= 600`` caps the
+    worst 5s window at exactly the venue's limit, and refill <= 120 caps the sustained rate. That is
+    the most this pool can allow without assuming which endpoints the traffic is made of; it gives
+    market data 100/5 = 20 req/s.
+
     No ``HEADER_PARSERS`` entry: v5's ``X-Bapi-Limit-*`` headers are per-endpoint, not per-IP — see
     the note above ``HEADER_PARSERS``.
     """
     return ExchangeRateLimitConfig(
         pools={
-            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 120, 24.0, cooldown=15.0),
+            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 100, 100.0, cooldown=15.0),
             "orders": PoolConfig("orders", "account", 10, 10.0, cooldown=10.0),
         },
         endpoint_map=_default_endpoint_costs(),
@@ -188,11 +205,17 @@ def _bybit_config() -> ExchangeRateLimitConfig:
 def _kraken_config(exchange_name: str) -> ExchangeRateLimitConfig:
     """Kraken rate limits.
 
-    Kraken Spot runs two independent counters, both decaying at a tier-dependent rate.
+    Kraken Spot runs three independent budgets with three different scopes: public market data per
+    IP (~1 req/s, and per IP+pair for OHLC/Trades), the private counter per API key (threshold/decay
+    by tier), and the trading counter per pair. One IP-scoped pool cannot express all three; the
+    public rule binds first for our workload (OHLCV warmup), so it is the one modelled.
 
-    REST counter (``ccxt_rest``), threshold / decay per second: starter 15 / 0.33, intermediate
-    20 / 0.5, pro 20 / 1.0. AddOrder and CancelOrder are explicitly excluded from it. ccxt supplies
-    the real per-call cost (public 1.0-1.2, balance 3, ledgers 6, orders 0).
+    ``ccxt_rest`` is therefore denominated in ccxt cost units, which for kraken are seconds of
+    pacing at ``rateLimit=1000ms`` — not Kraken counter points. refill 1.0 unit/s reproduces each
+    rule in turn: OHLC/Depth/Trades cost 1.2 => 0.83 req/s under the public 1/s allowance, Balance
+    costs 3 => 0.33/s which is the starter tier's decay for a cost-1 private call, Ledgers 6 =>
+    0.167/s against a real 0.165/s. Capacity is a deliberately modest burst: Kraken documents no
+    public burst tolerance, so this does not test an unwritten rule.
 
     Trading counter (``orders``), threshold / decay per second: starter 60 / 1.0, intermediate
     125 / 2.34, pro 180 / 3.75. Starter is modelled — the tier is not discoverable from the API.
@@ -234,10 +257,10 @@ def _kraken_config(exchange_name: str) -> ExchangeRateLimitConfig:
             default_costs=EndpointCosts([("ccxt_rest", 1)]),
         )
 
-    # Counter threshold → capacity, decay → refill; the decay is the lowest (starter) tier's.
+    # orders is in order count (starter tier's trading threshold/decay), ccxt_rest in ccxt units
     return ExchangeRateLimitConfig(
         pools={
-            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 20, 0.33, cooldown=30.0),
+            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 10, 1.0, cooldown=30.0),
             "orders": PoolConfig("orders", "account", 60, 1.0, cooldown=15.0),
         },
         # ccxt's per-endpoint cost (Balance=3, Ledgers=6, orders=0) always overrides the static 1.

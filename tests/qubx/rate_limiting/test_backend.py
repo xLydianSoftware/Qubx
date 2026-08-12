@@ -4,7 +4,9 @@ import asyncio
 
 import pytest
 
+from qubx.rate_limiting import PoolConfig
 from qubx.rate_limiting.backend import InMemoryBackend
+from qubx.rate_limiting.pools import RatePool
 
 
 class TestSetRemaining:
@@ -94,3 +96,37 @@ class TestGetRemaining:
         backend = InMemoryBackend()
         await backend.acquire("k", 4.0, 10.0, 0.1)
         assert await backend.get_remaining("k", 10.0, 0.1) == pytest.approx(6.0, abs=0.5)
+
+
+class TestSyncTaskLifecycle:
+    """``RatePool.sync`` fires a background task per response header — it must not leak or go quiet."""
+
+    async def test_sync_failure_is_retrieved_not_left_unhandled(self):
+        pool = RatePool(PoolConfig("p", "ip", 100, 10.0), "ex", "local", _ExplodingBackend())
+        unhandled: list = []
+        asyncio.get_running_loop().set_exception_handler(lambda _loop, ctx: unhandled.append(ctx))
+
+        pool.sync(50)
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+        assert unhandled == [], f"unretrieved task exception: {unhandled}"
+        assert pool._sync_tasks == set(), "task reference leaked after completion"
+
+    async def test_sync_task_is_referenced_while_in_flight(self):
+        # negative control: an unreferenced task can be collected mid-flight
+        pool = RatePool(PoolConfig("p", "ip", 100, 10.0), "ex", "local", _SlowBackend())
+        pool.sync(50)
+        assert len(pool._sync_tasks) == 1
+        await asyncio.sleep(0.05)
+        assert pool._sync_tasks == set()
+
+
+class _ExplodingBackend(InMemoryBackend):
+    async def set_remaining(self, key, remaining, capacity=0, refill_rate=0):
+        raise RuntimeError("redis blip")
+
+
+class _SlowBackend(InMemoryBackend):
+    async def set_remaining(self, key, remaining, capacity=0, refill_rate=0):
+        await asyncio.sleep(0.01)
