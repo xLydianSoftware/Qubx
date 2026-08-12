@@ -6,12 +6,16 @@ polymorphically — no pool_type branching in the engine.
 """
 
 import asyncio
+import math
+import time
 from typing import Any
 
 from qubx import logger
 
 from .backend import IRateLimitBackend
 from .config import PoolConfig
+
+_GATE_POLL_S = 0.25  # bounds only how late an early reopen (reset_gate / quota sync) is noticed
 
 
 class RateLimitGateTimeout(Exception):
@@ -23,18 +27,21 @@ class RateLimitGateTimeout(Exception):
 
 
 class BasePool:
-    """Base pool with gate mechanism and metrics tracking."""
+    """Base pool with gate mechanism and metrics tracking.
+
+    The gate is a monotonic deadline rather than an event, so it is observable and settable from
+    any thread or event loop without binding to one.
+    """
 
     def __init__(self, config: PoolConfig, exchange: str, scope_id: str):
         self._config = config
         self._exchange = exchange
         self._scope_id = scope_id
-        self._gate = asyncio.Event()
-        self._gate.set()
-        self._gate_task: asyncio.Task | None = None
+        self._gate_until: float = 0.0
         self.hits: int = 0
         self.total_wait: float = 0
         self.consumed: float = 0
+        self.timeouts: int = 0
 
     @property
     def name(self) -> str:
@@ -50,7 +57,7 @@ class BasePool:
 
     @property
     def is_gate_closed(self) -> bool:
-        return not self._gate.is_set()
+        return time.monotonic() < self._gate_until
 
     def update_scope_id(self, scope_id: str) -> None:
         self._scope_id = scope_id
@@ -59,23 +66,33 @@ class BasePool:
         raise NotImplementedError
 
     def close_gate(self, cooldown: float, reason: str) -> None:
-        raise NotImplementedError
+        verb = "extended" if self.is_gate_closed else "closed"
+        logger.warning(f"Rate limit gate {verb} for {self._exchange}:{self.name} ({cooldown:.1f}s): {reason}")
+        self._gate_until = max(self._gate_until, time.monotonic() + cooldown)
 
     def sync(self, remaining: float, capacity: float | None = None) -> None:
         raise NotImplementedError
 
     def reset_gate(self) -> None:
-        """Reopen gate and cancel any pending reopen task."""
-        self._gate.set()
-        self._cancel_gate_task()
+        self._gate_until = 0.0
 
     async def get_state(self) -> dict[str, Any]:
         raise NotImplementedError
 
-    def _cancel_gate_task(self) -> None:
-        if self._gate_task is not None and not self._gate_task.done():
-            self._gate_task.cancel()
-        self._gate_task = None
+    async def _wait_for_gate(self, gate_max_wait: float) -> None:
+        give_up_at = time.monotonic() + gate_max_wait
+        waited = False
+        while (now := time.monotonic()) < self._gate_until:
+            if now >= give_up_at:
+                self.timeouts += 1
+                raise RateLimitGateTimeout(
+                    f"{self._exchange}: gate for pool '{self.name}' did not reopen within {gate_max_wait:.0f}s",
+                    pool_name=self.name,
+                )
+            waited = True
+            await asyncio.sleep(min(self._gate_until - now, give_up_at - now, _GATE_POLL_S))
+        if waited:
+            logger.info(f"Rate limit gate reopened for {self._exchange}:{self.name}")
 
     def _base_state(self, remaining: float, capacity: float) -> dict[str, Any]:
         return {
@@ -91,16 +108,18 @@ class BasePool:
             "hits": self.hits,
             "total_wait_s": self.total_wait,
             "consumed": self.consumed,
+            "timeouts": self.timeouts,
         }
 
 
 class RatePool(BasePool):
-    """Time-based token bucket pool. Gate reopens on timer after cooldown."""
+    """Time-based token bucket pool. Gate reopens once the cooldown deadline passes."""
 
     def __init__(self, config: PoolConfig, exchange: str, scope_id: str, backend: IRateLimitBackend):
         super().__init__(config, exchange, scope_id)
         self._backend = backend
         self._key = self._make_key()
+        self._sync_tasks: set[asyncio.Task] = set()
 
     def _make_key(self) -> str:
         return f"ratelimit:{self._exchange}:{self._config.name}:{self._scope_id}"
@@ -110,41 +129,37 @@ class RatePool(BasePool):
         self._key = self._make_key()
 
     async def acquire(self, weight: float, gate_max_wait: float) -> None:
-        if not self._gate.is_set():
-            try:
-                await asyncio.wait_for(self._gate.wait(), timeout=gate_max_wait)
-            except asyncio.TimeoutError:
-                raise RateLimitGateTimeout(
-                    f"{self._exchange}: gate for pool '{self.name}' did not reopen "
-                    f"within {gate_max_wait:.0f}s",
-                    pool_name=self.name,
-                ) from None
+        if weight > self._config.capacity:
+            # a weight no bucket can ever hold never completes: the Redis backend retries forever
+            logger.warning(
+                f"Rate limit {self._exchange}:{self.name}: weight {weight} exceeds capacity "
+                f"{self._config.capacity}, clamping"
+            )
+            weight = self._config.capacity
+
+        await self._wait_for_gate(gate_max_wait)
 
         wait_time = await self._backend.acquire(self._key, weight, self._config.capacity, self._config.refill_rate)
         self.total_wait += wait_time
         self.consumed += weight
 
-    def close_gate(self, cooldown: float, reason: str) -> None:
-        verb = "extended" if not self._gate.is_set() else "closed"
-        logger.warning(f"Rate limit gate {verb} for {self._exchange}:{self.name} ({cooldown:.1f}s): {reason}")
-        self._gate.clear()
-        self._cancel_gate_task()
-        self._gate_task = asyncio.ensure_future(self._reopen_after(cooldown))
-
-    async def _reopen_after(self, delay: float) -> None:
-        try:
-            await asyncio.sleep(delay)
-            self._gate.set()
-            logger.info(f"Rate limit gate reopened for {self._exchange}:{self.name} after {delay:.1f}s")
-        except asyncio.CancelledError:
-            pass
-
     def sync(self, remaining: float, capacity: float | None = None) -> None:
         try:
             loop = asyncio.get_running_loop()
-            loop.create_task(self._backend.set_remaining(self._key, remaining))
         except RuntimeError:
-            pass  # No running loop — skip sync (e.g., during shutdown)
+            return  # no running loop — skip sync (e.g. during shutdown)
+        task = loop.create_task(
+            self._backend.set_remaining(self._key, remaining, self._config.capacity, self._config.refill_rate)
+        )
+        # keep a reference so the task cannot be collected mid-flight, and retrieve its result:
+        # a header sync fires per response, so an unretrieved Redis error would log on every one
+        self._sync_tasks.add(task)
+        task.add_done_callback(self._on_sync_done)
+
+    def _on_sync_done(self, task: asyncio.Task) -> None:
+        self._sync_tasks.discard(task)
+        if not task.cancelled() and (exc := task.exception()) is not None:
+            logger.debug(f"Rate limit sync failed for {self._exchange}:{self.name}: {exc}")
 
     async def get_state(self) -> dict[str, Any]:
         remaining = await self._backend.get_remaining(self._key, self._config.capacity, self._config.refill_rate)
@@ -165,9 +180,10 @@ class QuotaPool(BasePool):
         return self._remaining
 
     async def acquire(self, weight: float, gate_max_wait: float) -> None:
-        if not self._gate.is_set() or self._remaining <= 0:
+        if self.is_gate_closed or self._remaining <= 0:
             if self._remaining <= 0:
                 self.close_gate(self._config.cooldown, "quota depleted")
+            self.timeouts += 1
             raise RateLimitGateTimeout(
                 f"{self._exchange}: quota pool '{self.name}' depleted",
                 pool_name=self.name,
@@ -176,10 +192,9 @@ class QuotaPool(BasePool):
         self.consumed += weight
 
     def close_gate(self, cooldown: float, reason: str) -> None:
-        verb = "extended" if not self._gate.is_set() else "closed"
-        logger.warning(f"Rate limit gate {verb} for {self._exchange}:{self.name} ({cooldown:.1f}s): {reason}")
-        self._gate.clear()
-        self._cancel_gate_task()
+        verb = "extended" if self.is_gate_closed else "closed"
+        logger.warning(f"Rate limit gate {verb} for {self._exchange}:{self.name}: {reason}")
+        self._gate_until = math.inf  # no timer can reopen a quota gate, only the exchange can
 
     def sync(self, remaining: float, capacity: float | None = None) -> None:
         self._remaining = remaining
@@ -190,12 +205,9 @@ class QuotaPool(BasePool):
             # real account quota (best approximation when exchange only reports remaining)
             if capacity is None:
                 self._config.capacity = max(self._config.capacity, remaining)
-            if not self._gate.is_set():
-                self._cancel_gate_task()
-                self._gate.set()
-                logger.info(
-                    f"Rate limit gate reopened for {self._exchange}:{self.name} (remaining={remaining})"
-                )
+            if self.is_gate_closed:
+                self._gate_until = 0.0
+                logger.info(f"Rate limit gate reopened for {self._exchange}:{self.name} (remaining={remaining})")
 
     async def get_state(self) -> dict[str, Any]:
         return self._base_state(self._remaining, self._config.capacity)

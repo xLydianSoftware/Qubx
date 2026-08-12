@@ -10,6 +10,7 @@ from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage
+from qubx.rate_limiting import RateLimitGateTimeout
 from qubx.utils.time import to_timedelta
 
 
@@ -459,22 +460,28 @@ class MultiStorage(IStorage):
 
     def get_reader(self, exchange: str, market: str) -> IReader:
         key = (exchange, market)
-        if key not in self._reader_cache:
-            readers: list[IReader] = []
-            for s in self._storages:
-                try:
-                    readers.append(s.get_reader(exchange, market))
-                except Exception:
-                    pass
-            if not readers:
-                raise ValueError(
-                    f"No reader available for {exchange}:{market} in any of the {len(self._storages)} storages"
-                )
-            # - single reader: return directly; multiple: wrap in MultiReader
-            self._reader_cache[key] = (
-                MultiReader(readers, tolerance=self._tolerance, keep=self._keep) if len(readers) > 1 else readers[0]
-            )
-        return self._reader_cache[key]
+        if key in self._reader_cache:
+            return self._reader_cache[key]
+
+        readers: list[IReader] = []
+        transient = False
+        for s in self._storages:
+            try:
+                readers.append(s.get_reader(exchange, market))
+            except RateLimitGateTimeout as e:
+                # the venue is throttling us, not telling us this storage lacks the data
+                transient = True
+                logger.warning(f"{s.__class__.__name__} rate limited for {exchange}:{market}: {e}")
+            except Exception as e:
+                logger.debug(f"{s.__class__.__name__} has no reader for {exchange}:{market}: {e}")
+        if not readers:
+            raise ValueError(f"No reader available for {exchange}:{market} in any of the {len(self._storages)} storages")
+
+        reader = MultiReader(readers, tolerance=self._tolerance, keep=self._keep) if len(readers) > 1 else readers[0]
+        # caching a set built while a storage was throttled would drop it for the whole run
+        if not transient:
+            self._reader_cache[key] = reader
+        return reader
 
     def close(self) -> None:
         for reader in self._reader_cache.values():

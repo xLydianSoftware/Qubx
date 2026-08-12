@@ -8,27 +8,59 @@ state with exchange-reported usage.
 References:
 - Binance: https://binance-docs.github.io/apidocs/spot/en/#limits
 - Binance Futures: https://binance-docs.github.io/apidocs/futures/en/#limits
+- Binance Portfolio Margin: https://developers.binance.com/docs/derivatives/portfolio-margin/general-info
 - OKX: https://www.okx.com/docs-v5/en/#overview-rate-limit
-- Kraken: https://docs.kraken.com/api/docs/guides/rate-limits
+- Kraken Spot REST: https://docs.kraken.com/api/docs/guides/spot-rest-ratelimits
+- Kraken Spot trading: https://docs.kraken.com/api/docs/guides/spot-ratelimits
+- Kraken Futures: https://docs.kraken.com/api/docs/guides/futures-rate-limits
 - Bybit: https://bybit-exchange.github.io/docs/v5/rate-limit
 """
 
+from weakref import WeakKeyDictionary
+
+from qubx import logger
 from qubx.rate_limiting import EndpointCosts, ExchangeRateLimitConfig, PoolConfig
 
+_BINANCE_UM = ("binance.um", "binance.um.mm", "binanceusdm", "binanceqv_usdm", "binance_um_mm")
+_BINANCE_CM = ("binance.cm", "binancecoinm")
+_BINANCE_PM = ("binance.pm", "binancepm")
 
-def create_ccxt_rate_limit_config(exchange_name: str, ccxt_exchange=None) -> ExchangeRateLimitConfig:
+
+# Placeholder weight for the "rest" endpoint: the throttle passes ccxt's real per-endpoint cost as
+# weight_override, which replaces it. The weight on order endpoints is literal — order-count limits
+# count orders, not weight.
+_CCXT_SUPPLIES_COST = 1
+
+
+def _default_endpoint_costs() -> dict[str, EndpointCosts]:
+    """Which pools each operation debits — routing, not limits. The limits are the ``pools``.
+
+    The same on every ccxt venue (Kraken Futures overrides it), since only the numbers differ, not
+    the topology. Order endpoints are listed even for venues without an ``orders`` pool: an unmapped
+    endpoint falls back to ``default_costs`` and would double-charge the IP pool, whereas a cost
+    naming an absent pool is simply skipped by the engine.
+    """
+    order = EndpointCosts([("orders", 1)])
+    return {
+        "rest": EndpointCosts([("ccxt_rest", _CCXT_SUPPLIES_COST)]),
+        "create_order": order,
+        "cancel_order": order,
+        "edit_order": order,
+        # leverage is an IP-weight endpoint here, not an order — but it must still be mapped, or it
+        # falls back to default_costs and charges the IP pool a second time
+        "set_leverage": EndpointCosts([]),
+    }
+
+
+def create_ccxt_rate_limit_config(exchange_name: str) -> ExchangeRateLimitConfig:
     """Create rate limit config for a CCXT exchange.
 
-    Handles exchange.market_type differentiation (spot vs futures).
-
-    Args:
-        exchange_name: Exchange name (e.g., "binance", "binance.um", "kraken")
-        ccxt_exchange: Optional CCXT exchange instance for auto-detection
+    Accepts both framework venue names (``BINANCE.UM``) and ccxt exchange ids (``binanceusdm``).
     """
     name = exchange_name.lower()
     base = name.split(".")[0]
 
-    if base in ("binance", "binanceusdm", "binancecoinm"):
+    if base.startswith("binance"):
         return _binance_config(name)
     elif base == "okx":
         return _okx_config()
@@ -37,58 +69,65 @@ def create_ccxt_rate_limit_config(exchange_name: str, ccxt_exchange=None) -> Exc
     elif base in ("kraken", "krakenfutures"):
         return _kraken_config(name)
     else:
-        return _default_config(exchange_name, ccxt_exchange)
+        return _default_config(exchange_name)
 
 
 # === Binance ===
 
 
 def _binance_config(exchange_name: str) -> ExchangeRateLimitConfig:
-    """Binance rate limits differentiated by market type.
+    """Binance rate limits per surface (verified against live ``exchangeInfo``, 2026-08-10).
 
-    Spot:
-    - IP weight: 6000/min (recently increased from 1200)
-    - UID weight: 180,000/min
-    - Orders: 10/sec, 200,000/day per account
+    | surface       | IP weight | orders   | order-count header |
+    |---------------|-----------|----------|--------------------|
+    | spot (api)    | 6000/1m   | 100/10s  | -10S               |
+    | USD-M (fapi)  | 2400/1m   | 300/10s  | -10S               |
+    | COIN-M (dapi) | 2400/1m   | 1200/1m  | -1M                |
+    | PM (papi)     | 6000/1m   | 1200/1m  | -1M                |
 
-    USDM Futures (binance.um):
-    - IP weight: 2400/min
-    - Orders: 300/10sec per account
+    fapi publishes both 300/10s and 1200/1m; one bucket models the 10s one, since a burst breaches it
+    long before the 1m. The residual gap is sustained flow: 30/s passes the 10s model but exceeds
+    1200/1m, and only the venue's own -1015 (which closes the gate) catches it. dapi publishes only
+    1200/1m, spot only 100/10s (plus 200000/1d, unmodelled).
 
-    COIN-M Futures (binance.cm):
-    - IP weight: 6000/min
-    - Orders: 300/10sec per account
-
-    Headers: X-MBX-USED-WEIGHT-1M, X-MBX-ORDER-COUNT-1S, X-MBX-ORDER-COUNT-1D
+    ``capacity`` must equal the modelled window's allowance and ``capacity / refill_rate`` its length:
+    ``sync_from_exchange`` derives ``remaining = capacity - used``, and ``_order_count_header`` picks
+    the header from that ratio. Changing either without the other silently disables the sync.
     """
-    if exchange_name in ("binance.um", "binanceusdm"):
-        # USDM Futures
+    if exchange_name in _BINANCE_UM:
         return ExchangeRateLimitConfig(
             pools={
                 "ccxt_rest": PoolConfig("ccxt_rest", "ip", 2400, 40.0, cooldown=30.0),
                 "orders": PoolConfig("orders", "account", 300, 30.0, cooldown=10.0),
             },
-            endpoint_map={"ccxt_rest": EndpointCosts([("ccxt_rest", 1)])},
+            endpoint_map=_default_endpoint_costs(),
             default_costs=EndpointCosts([("ccxt_rest", 1)]),
         )
-    elif exchange_name in ("binance.cm", "binancecoinm"):
-        # COIN-M Futures
+    elif exchange_name in _BINANCE_CM:
+        return ExchangeRateLimitConfig(
+            pools={
+                "ccxt_rest": PoolConfig("ccxt_rest", "ip", 2400, 40.0, cooldown=30.0),
+                "orders": PoolConfig("orders", "account", 1200, 20.0, cooldown=10.0),
+            },
+            endpoint_map=_default_endpoint_costs(),
+            default_costs=EndpointCosts([("ccxt_rest", 1)]),
+        )
+    elif exchange_name in _BINANCE_PM:
         return ExchangeRateLimitConfig(
             pools={
                 "ccxt_rest": PoolConfig("ccxt_rest", "ip", 6000, 100.0, cooldown=30.0),
-                "orders": PoolConfig("orders", "account", 300, 30.0, cooldown=10.0),
+                "orders": PoolConfig("orders", "account", 1200, 20.0, cooldown=10.0),
             },
-            endpoint_map={"ccxt_rest": EndpointCosts([("ccxt_rest", 1)])},
+            endpoint_map=_default_endpoint_costs(),
             default_costs=EndpointCosts([("ccxt_rest", 1)]),
         )
     else:
-        # Spot
         return ExchangeRateLimitConfig(
             pools={
                 "ccxt_rest": PoolConfig("ccxt_rest", "ip", 6000, 100.0, cooldown=30.0),
-                "orders": PoolConfig("orders", "account", 10, 10.0, cooldown=10.0),
+                "orders": PoolConfig("orders", "account", 100, 10.0, cooldown=10.0),
             },
-            endpoint_map={"ccxt_rest": EndpointCosts([("ccxt_rest", 1)])},
+            endpoint_map=_default_endpoint_costs(),
             default_costs=EndpointCosts([("ccxt_rest", 1)]),
         )
 
@@ -97,20 +136,33 @@ def _binance_config(exchange_name: str) -> ExchangeRateLimitConfig:
 
 
 def _okx_config() -> ExchangeRateLimitConfig:
-    """OKX rate limits (unified across spot/futures).
+    """OKX v5 rate limits (unified across spot/futures).
 
     - REST: varies heavily by endpoint (2-60 req/2sec per endpoint)
-    - Trade endpoints: 60/2sec per account
     - Market data: 20/2sec per IP
+    - place / amend / cancel order: 60 req/2sec each, scoped per user id + instrument id. The three
+      counters are independent and per instrument; pooling them per account is conservative in both
+      directions, and keeps us under the 1000/2sec sub-account cap by construction.
 
-    Headers: x-ratelimit-remaining, x-ratelimit-limit, x-ratelimit-reset
+    ``ccxt_rest`` is denominated in ccxt cost units, which OKX's ccxt table normalizes so that
+    ``cost * documented_budget == 20 units per 2s`` for every endpoint (candles 0.5x40, tickers
+    1x20, balance 2x10, order 1/3x60). One pool therefore expresses every per-endpoint limit at
+    once, and the single safety bound is ``capacity + 2*refill <= 20``: a full bucket plus one
+    window of refill must not outrun the tightest budget. That yields candles at 16 req/s against
+    OKX's 20, and balance at 4 against 5.
+
+    Conservative by construction, since it conflates IP-, User-ID- and per-instrument-scoped budgets
+    into one — with N instruments OKX would allow N times more on the per-instId endpoints.
+
+    No ``HEADER_PARSERS`` entry: OKX publishes no rate-limit header at all and meters per endpoint /
+    instrument id — see the note above ``HEADER_PARSERS``.
     """
     return ExchangeRateLimitConfig(
         pools={
-            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 20, 10.0, cooldown=15.0),
+            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 4, 8.0, cooldown=15.0),
             "orders": PoolConfig("orders", "account", 60, 30.0, cooldown=10.0),
         },
-        endpoint_map={"ccxt_rest": EndpointCosts([("ccxt_rest", 1)])},
+        endpoint_map=_default_endpoint_costs(),
         default_costs=EndpointCosts([("ccxt_rest", 1)]),
     )
 
@@ -119,18 +171,30 @@ def _okx_config() -> ExchangeRateLimitConfig:
 
 
 def _bybit_config() -> ExchangeRateLimitConfig:
-    """Bybit rate limits (unified v5 API).
+    """Bybit v5 rate limits.
 
-    - REST: 10 req/sec per endpoint per IP (varies by endpoint)
-    - Orders: 10/sec per account
-    - Rate limit info in response body: rate_limit_status, rate_limit_reset_ms
+    - IP rule modelled by ``ccxt_rest``: 600 req/5s per IP; breaching it returns HTTP 403 and bans
+      the IP for 10 minutes.
+    - Orders: 10 req/s per UID for create/amend/cancel on inverse/linear/option (spot allows 20/s
+      for create and cancel). Bybit meters per endpoint; pooling the three is conservative. Not
+      modelled: option ``cancel-all`` is 1/s, stricter than this pool.
+
+    ``ccxt_rest`` is denominated in ccxt cost units (v5 market endpoints cost 5, order create/cancel
+    2.5, wallet-balance 1), and sized against the IP rule at its worst case — the cheapest endpoint,
+    where one unit is one request. The bucket starts full, so ``capacity + 5*refill <= 600`` caps the
+    worst 5s window at exactly the venue's limit, and refill <= 120 caps the sustained rate. That is
+    the most this pool can allow without assuming which endpoints the traffic is made of; it gives
+    market data 100/5 = 20 req/s.
+
+    No ``HEADER_PARSERS`` entry: v5's ``X-Bapi-Limit-*`` headers are per-endpoint, not per-IP — see
+    the note above ``HEADER_PARSERS``.
     """
     return ExchangeRateLimitConfig(
         pools={
-            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 120, 24.0, cooldown=15.0),
+            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 100, 100.0, cooldown=15.0),
             "orders": PoolConfig("orders", "account", 10, 10.0, cooldown=10.0),
         },
-        endpoint_map={"ccxt_rest": EndpointCosts([("ccxt_rest", 1)])},
+        endpoint_map=_default_endpoint_costs(),
         default_costs=EndpointCosts([("ccxt_rest", 1)]),
     )
 
@@ -141,51 +205,66 @@ def _bybit_config() -> ExchangeRateLimitConfig:
 def _kraken_config(exchange_name: str) -> ExchangeRateLimitConfig:
     """Kraken rate limits.
 
-    Kraken Spot uses a unique "call counter" system:
-    - Each API call adds to a counter (1-6 depending on endpoint)
-    - Counter decays at a fixed rate based on verification level
-    - Intermediate verified: max counter 20, decay 0.33/sec
-    - Pro verified: max counter 20, decay 1.0/sec
+    Kraken Spot runs three independent budgets with three different scopes: public market data per
+    IP (~1 req/s, and per IP+pair for OHLC/Trades), the private counter per API key (threshold/decay
+    by tier), and the trading counter per pair. One IP-scoped pool cannot express all three; the
+    public rule binds first for our workload (OHLCV warmup), so it is the one modelled.
 
-    Per-endpoint costs from CCXT:
-    - Public: 1.0-1.2 per call
-    - Private: 0-6 per call (orders=0, balance=3, ledgers=6)
-    - Orders: cost 0 (separate matching engine limit)
+    ``ccxt_rest`` is therefore denominated in ccxt cost units, which for kraken are seconds of
+    pacing at ``rateLimit=1000ms`` — not Kraken counter points. refill 1.0 unit/s reproduces each
+    rule in turn: OHLC/Depth/Trades cost 1.2 => 0.83 req/s under the public 1/s allowance, Balance
+    costs 3 => 0.33/s which is the starter tier's decay for a cost-1 private call, Ledgers 6 =>
+    0.167/s against a real 0.165/s. Capacity is a deliberately modest burst: Kraken documents no
+    public burst tolerance, so this does not test an unwritten rule.
 
-    Kraken Futures:
-    - Simple: ~1.67 req/sec (600ms rateLimit)
-    - No per-endpoint weights documented
+    Trading counter (``orders``), threshold / decay per second: starter 60 / 1.0, intermediate
+    125 / 2.34, pro 180 / 3.75. Starter is modelled — the tier is not discoverable from the API.
+    Two known distortions, both documented rather than modelled: Kraken meters this counter per
+    *pair* while the pool is per account (over-throttles a multi-pair strategy), and its cost rises
+    with how young the order is (cancel costs 8 under 5s, decaying to 1 over 300s) while
+    ``_endpoint_map`` charges a flat 1 (under-throttles cancel-heavy flow).
 
-    Matching engine (order) limits (separate from REST):
-    - Spot: based on tier, typically 60/min for intermediate
-    - Futures: separate per-instrument limits
+    Kraken Futures runs one account-wide ``/derivatives`` budget of 500 cost units per 10s. Reads
+    (openorders, openpositions, accounts, fills) cost 2, order ops (sendorder, cancelorder,
+    editorder) cost 10, public endpoints (charts, instruments, tickers, orderbook) cost 0. There is
+    no separate order-count limit, so no ``orders`` pool. ``/history`` has its own 100-per-10min
+    pool; nothing here calls it.
+
+    Neither the Spot REST, Spot trading nor the Futures guide documents any rate-limit response
+    header, and ccxt parses none — hence no Kraken entry in ``HEADER_PARSERS``; breaches surface
+    reactively as ``EOrder:Rate limit exceeded`` (spot) / ``apiLimitExceeded`` (futures).
     """
-    if exchange_name in ("krakenfutures",):
+    if exchange_name in ("kraken.f", "krakenfutures"):
+        # ccxt declares no per-endpoint costs for krakenfutures and charges a flat 1 per request, so
+        # the pool counts half-tokens: a read is exactly 1 unit, and order endpoints add 4 on top of
+        # that 1 to reach the venue's 10. 250 units/10s; the bucket starts full, so capacity +
+        # 10*refill == 250 keeps the worst 10s window at exactly the documented 500 tokens.
+        # Under-counted (not on our call paths): batch orders, cancelallorders.
+        order_surcharge = EndpointCosts([("ccxt_rest", 4)])
         return ExchangeRateLimitConfig(
             pools={
-                "ccxt_rest": PoolConfig("ccxt_rest", "ip", 10, 1.67, cooldown=15.0),
+                "ccxt_rest": PoolConfig("ccxt_rest", "account", 125, 12.5, cooldown=10.0),
             },
-            endpoint_map={"ccxt_rest": EndpointCosts([("ccxt_rest", 1)])},
+            endpoint_map={
+                "rest": EndpointCosts([("ccxt_rest", _CCXT_SUPPLIES_COST)]),
+                "create_order": order_surcharge,
+                "cancel_order": order_surcharge,
+                "edit_order": order_surcharge,
+                # ccxt's set_leverage hits PUT leveragepreferences, which the venue bills like an
+                # order op — unlike Binance, where leverage is plain IP weight
+                "set_leverage": order_surcharge,
+            },
             default_costs=EndpointCosts([("ccxt_rest", 1)]),
         )
 
-    # Kraken Spot — counter-decay system maps to token bucket:
-    # capacity=20 (max counter), refill=0.33/sec (intermediate) or 1.0/sec (pro)
-    # Using intermediate as default — can be overridden via config
+    # orders is in order count (starter tier's trading threshold/decay), ccxt_rest in ccxt units
     return ExchangeRateLimitConfig(
         pools={
-            # Main REST counter (per IP, decays at 0.33/sec for intermediate tier)
-            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 20, 0.33, cooldown=30.0),
-            # Order matching engine (separate limit per account)
+            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 10, 1.0, cooldown=30.0),
             "orders": PoolConfig("orders", "account", 60, 1.0, cooldown=15.0),
         },
-        endpoint_map={
-            # CCXT defines per-endpoint costs for Kraken — these are the weights
-            # that get passed through CCXT's calculateRateLimiterCost → our throttle override.
-            # Key costs: Balance=3, ClosedOrders=3, TradesHistory=6, Ledgers=6
-            # Orders have cost=0 in the REST counter (separate matching engine limit)
-            "ccxt_rest": EndpointCosts([("ccxt_rest", 1)]),
-        },
+        # ccxt's per-endpoint cost (Balance=3, Ledgers=6, orders=0) always overrides the static 1.
+        endpoint_map=_default_endpoint_costs(),
         default_costs=EndpointCosts([("ccxt_rest", 1)]),
     )
 
@@ -193,23 +272,20 @@ def _kraken_config(exchange_name: str) -> ExchangeRateLimitConfig:
 # === Default ===
 
 
-def _default_config(exchange_name: str, ccxt_exchange=None) -> ExchangeRateLimitConfig:
-    """Default conservative config for unknown exchanges.
-
-    Derives from CCXT's rateLimit property if exchange instance provided.
-    """
-    rate_limit_ms = 50  # default: 20 req/sec
-    if ccxt_exchange and hasattr(ccxt_exchange, "rateLimit"):
-        rate_limit_ms = ccxt_exchange.rateLimit or 50
-
-    rps = 1000.0 / rate_limit_ms
-    capacity = rps * 60  # 1 minute capacity
+def _default_config(exchange_name: str) -> ExchangeRateLimitConfig:
+    """Fallback for venues with no hand-tuned config — the numbers below are a guess, not a limit."""
+    rps = 20.0
+    capacity = rps * 60
+    logger.warning(
+        f"No rate limit config for '{exchange_name}' — guessing {rps:.0f} req/s "
+        f"(capacity {capacity:.0f}); add a config in qubx.connectors.ccxt.rate_limits"
+    )
 
     return ExchangeRateLimitConfig(
         pools={
             "ccxt_rest": PoolConfig("ccxt_rest", "ip", capacity, rps, cooldown=15.0),
         },
-        endpoint_map={"ccxt_rest": EndpointCosts([("ccxt_rest", 1)])},
+        endpoint_map=_default_endpoint_costs(),
         default_costs=EndpointCosts([("ccxt_rest", 1)]),
     )
 
@@ -217,79 +293,132 @@ def _default_config(exchange_name: str, ccxt_exchange=None) -> ExchangeRateLimit
 # === Response Header Parsers ===
 
 
+def _header(headers: dict, name: str) -> str | None:
+    """Case-insensitive header lookup — ccxt copies aiohttp's raw casing, it does not normalize."""
+    value = headers.get(name)
+    if value is not None:
+        return value
+    lowered = name.lower()
+    for key, val in headers.items():
+        if key.lower() == lowered:
+            return val
+    return None
+
+
+def _order_count_header(pool: PoolConfig) -> str:
+    """The ``X-MBX-ORDER-COUNT-*`` header matching *pool*'s window.
+
+    Binance names the window ``(intervalNum)(intervalLetter)``, and a pool's window is
+    ``capacity / refill_rate`` under this module's denomination rule. Deriving it is what lets one
+    parser serve venues with different order windows — ``binance.um`` (10s) and ``binance.pm`` (1m)
+    share the ccxt id ``binanceusdm``, so a hardcoded name would be wrong for one of them.
+    """
+    seconds = pool.capacity / pool.refill_rate
+    if seconds < 60:
+        return f"X-MBX-ORDER-COUNT-{int(seconds)}S"
+    if seconds < 3600:
+        return f"X-MBX-ORDER-COUNT-{int(seconds // 60)}M"
+    return f"X-MBX-ORDER-COUNT-{int(seconds // 3600)}H"
+
+
+def _used_count(headers: dict, name: str) -> int | None:
+    """Header value as a usage count, or None when absent, unparseable, or negative.
+
+    Binance sends ``-1`` for "not applicable" — notably ``X-MBX-USED-WEIGHT-1M: -1`` on order
+    responses (observed on testnet). Treating it as a count yields ``remaining = capacity + 1`` and
+    resets the pool to full on every order placement.
+    """
+    raw = _header(headers, name)
+    if raw is None:
+        return None
+    try:
+        used = int(raw)
+    except (TypeError, ValueError):
+        return None
+    return used if used >= 0 else None
+
+
 def parse_binance_headers(headers: dict, rate_limiter) -> None:
-    """Parse Binance rate limit headers and sync with rate limiter.
+    """Sync the IP weight pool from ``X-MBX-USED-WEIGHT-1M`` and the order pool from its
+    window-matched ``X-MBX-ORDER-COUNT-*``.
 
-    Binance returns:
-    - X-MBX-USED-WEIGHT-1M: weight used in current 1-minute window
-    - X-MBX-ORDER-COUNT-1S: orders placed in current 1-second window
-    - X-MBX-ORDER-COUNT-1D: orders placed in current day
+    Order-count headers ride only on order *placement* responses — cancels carry none — so every
+    other response skips that branch. Syncing them is what catches order flow we did not place
+    ourselves (manual trading, a second bot on the same key); our own count is otherwise exact,
+    though charging cancels locally makes it conservative until the next placement re-pins it.
     """
     if rate_limiter is None:
         return
 
-    # Try both casing conventions (CCXT normalizes to lowercase)
-    used_weight = headers.get("x-mbx-used-weight-1m") or headers.get("X-MBX-USED-WEIGHT-1M")
-    if used_weight:
-        try:
-            rate_limiter.sync_from_exchange("ccxt_rest", used=int(used_weight))
-        except Exception:
-            pass
+    used_weight = _used_count(headers, "X-MBX-USED-WEIGHT-1M")
+    if used_weight is not None:
+        rate_limiter.sync_from_exchange("ccxt_rest", used=used_weight)
 
-    order_count = headers.get("x-mbx-order-count-1s") or headers.get("X-MBX-ORDER-COUNT-1S")
-    if order_count and "orders" in rate_limiter.config.pools:
-        try:
-            rate_limiter.sync_from_exchange("orders", used=int(order_count))
-        except Exception:
-            pass
-
-
-def parse_okx_headers(headers: dict, rate_limiter) -> None:
-    """Parse OKX rate limit headers and sync with rate limiter.
-
-    OKX returns:
-    - x-ratelimit-remaining: remaining requests for this endpoint
-    - x-ratelimit-limit: total limit for this endpoint
-    - x-ratelimit-reset: timestamp when limit resets (ms)
-    """
-    if rate_limiter is None:
+    orders = rate_limiter.config.pools.get("orders")
+    if orders is None or orders.refill_rate <= 0:
         return
-
-    remaining = headers.get("x-ratelimit-remaining") or headers.get("X-RateLimit-Remaining")
-    if remaining:
-        try:
-            rate_limiter.sync_from_exchange("ccxt_rest", remaining=float(remaining))
-        except Exception:
-            pass
+    order_count = _used_count(headers, _order_count_header(orders))
+    if order_count is not None:
+        rate_limiter.sync_from_exchange("orders", used=order_count)
 
 
+# A venue gets a parser only when it publishes a header whose scope matches the pool being pinned:
+# a per-endpoint or per-instrument signal must never re-pin a venue-wide IP pool. OKX, Bybit and
+# Kraken all fail that test — see each ``_*_config`` docstring for which way.
 HEADER_PARSERS = {
     "binance": parse_binance_headers,
     "binanceusdm": parse_binance_headers,
     "binancecoinm": parse_binance_headers,
-    "okx": parse_okx_headers,
 }
 
 
-def get_header_parser(exchange_name: str):
-    """Get the response header parser for an exchange."""
-    name = exchange_name.lower().split(".")[0]
-    return HEADER_PARSERS.get(name)
+def get_header_parser(exchange_id: str):
+    """Get the response header parser for a ccxt exchange id (``exchange.id``)."""
+    return HEADER_PARSERS.get(exchange_id.lower())
 
 
-# NOTE: As of #264 these parsers are invoked from two fetch paths:
-#
-#   * ``qubx.data.storages.ccxt._sync_rate_limiter_from_response_headers`` after
-#     each successful OHLCV page fetch. Best-effort — ``last_response_headers`` is
-#     an exchange-wide attribute so under concurrent fetches the read may be from a
-#     neighboring request. Since all concurrent requests drain the same IP-scoped
-#     budget, an approximate reading is still strictly better than no sync.
-#
-#   * ``qubx.connectors.ccxt.exchange_manager.ExchangeManager._apply_rate_limiter_to_exchange``
-#     via CCXT's ``on_rest_response`` hook. This one is atomic per-request (the
-#     hook runs inside CCXT's fetch pipeline with the actual response headers), so
-#     the live path gets exact sync rather than best-effort.
-#
-# Both code paths call the parser, which in turn calls
-# ``rate_limiter.sync_from_exchange(...)`` to pin the modeled budget to the
-# server-reported remaining.
+# exchange -> its limiter. The hooks resolve it here at call time, so re-attaching a different
+# limiter re-points them rather than stacking a second wrapper. The value must not reference the
+# exchange, or the weak key could never be collected.
+_INSTALLED: WeakKeyDictionary = WeakKeyDictionary()
+
+
+def install_rate_limiter_hooks(exchange, rate_limiter, label: str = "") -> None:
+    """Route a ccxt exchange's REST throttle and response headers through *rate_limiter*.
+
+    ``fetch2`` only calls ``exchange.throttle`` when ``enableRateLimit`` is set, so the flag stays
+    on; shadowing the bound method is what takes ccxt's own throttler out of the REST path.
+    ccxt.pro's per-Client throttler is separate and still paces subscribe frames.
+    """
+    if rate_limiter is None:
+        return
+
+    already_installed = exchange in _INSTALLED
+    _INSTALLED[exchange] = rate_limiter
+    if already_installed:
+        return
+
+    exchange.enableRateLimit = True
+    original_on_rest = exchange.on_rest_response
+
+    async def _rate_limit_throttle(cost=None):
+        limiter = _INSTALLED.get(exchange)
+        if limiter is not None:
+            await limiter.acquire("rest", weight_override=float(1.0 if cost is None else cost))
+
+    exchange.throttle = _rate_limit_throttle
+
+    parser = get_header_parser(exchange.id or "")
+    if parser is None:
+        return
+
+    def _header_sync_hook(code, reason, url, method, headers, body, req_headers, req_body):
+        limiter = _INSTALLED.get(exchange)
+        try:
+            if headers and limiter is not None:
+                parser(headers, limiter)
+        except Exception as e:
+            logger.debug(f"[{label}] header sync failed (non-fatal): {e}")
+        return original_on_rest(code, reason, url, method, headers, body, req_headers, req_body)
+
+    exchange.on_rest_response = _header_sync_hook

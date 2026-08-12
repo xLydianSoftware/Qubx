@@ -12,7 +12,9 @@ from typing import Any, Callable, Optional
 import ccxt.pro as cxp
 
 from qubx import logger
+from qubx.connectors.ccxt.rate_limits import install_rate_limiter_hooks
 from qubx.core.interfaces import IHealthMonitor, ITimeProvider
+from qubx.rate_limiting import ExchangeRateLimiter
 
 # Constants for better maintainability
 DEFAULT_CHECK_INTERVAL_SECONDS = 60.0
@@ -72,6 +74,8 @@ class ExchangeManager:
 
         # Recreation callback management
         self._recreation_callbacks: list[Callable[[], None]] = []
+
+        self._rate_limiter: ExchangeRateLimiter | None = None
 
         # Use provided exchange or create new one
         if initial_exchange:
@@ -256,75 +260,28 @@ class ExchangeManager:
 
     # === Rate Limiting ===
 
-    def attach_rate_limiter(self, rate_limiter) -> None:
+    def attach_rate_limiter(self, rate_limiter: ExchangeRateLimiter) -> None:
         """Attach an ExchangeRateLimiter to this exchange manager.
 
-        Disables CCXT's built-in rate limiting and replaces the throttle
-        method with our rate limiter. Survives exchange recreation.
-
-        Args:
-            rate_limiter: ExchangeRateLimiter instance
+        Takes CCXT's own throttler out of the REST path and syncs our modeled budget from response
+        headers. Survives exchange recreation.
         """
+        # The factory cache key collides for empty-credential venues, so the data provider and the
+        # connector share one manager and attach the same limiter twice.
+        if self._rate_limiter is rate_limiter:
+            return
         self._rate_limiter = rate_limiter
-        self._apply_rate_limiter_to_exchange(self._exchange)
-        self.register_recreation_callback(lambda: self._apply_rate_limiter_to_exchange(self._exchange))
+        install_rate_limiter_hooks(self._exchange, rate_limiter, label=self._exchange_name)
+        # reads self._exchange at call time — recreation swaps it before firing the callbacks
+        self.register_recreation_callback(
+            lambda: install_rate_limiter_hooks(self._exchange, self._rate_limiter, label=self._exchange_name)
+        )
         logger.info(f"Rate limiter attached to {self._exchange_name}")
 
-    def _apply_rate_limiter_to_exchange(self, exchange: cxp.Exchange) -> None:
-        """Install our throttle and response-header-sync hooks on *exchange*.
-
-        Two hooks are installed per exchange:
-
-        1. **Throttle (pre-request)** — replaces CCXT's built-in throttle so every
-           REST call blocks on our token bucket first. ``acquire`` forwards the
-           CCXT-provided cost to the limiter as ``weight_override``.
-
-        2. **Response hook (post-request)** — wraps CCXT's ``on_rest_response`` to
-           invoke the exchange-specific header parser (OKX ``x-ratelimit-*``,
-           Binance ``X-MBX-USED-WEIGHT-1M``, etc.). The parser calls
-           ``rate_limiter.sync_from_exchange`` so our modeled budget tracks the
-           exchange's reported usage. Unlike ``CcxtStorage``'s best-effort sync,
-           this path runs atomically inside CCXT's fetch pipeline — no
-           concurrent-fetch race on ``last_response_headers``.
-
-        Both hooks are reapplied automatically after exchange recreation via
-        ``register_recreation_callback`` in :meth:`attach_rate_limiter`.
-        """
-        rate_limiter = getattr(self, "_rate_limiter", None)
-        if rate_limiter is None:
-            return
-
-        # 1) Throttle override — pre-request acquisition.
-        exchange.enableRateLimit = True
-
-        async def _rate_limit_throttle(cost=None):
-            if cost is None:
-                cost = 1.0
-            await rate_limiter.acquire("ccxt_rest", weight_override=float(cost))
-
-        exchange.throttle = _rate_limit_throttle
-
-        # 2) Response hook — post-response state sync.
-        from qubx.connectors.ccxt.rate_limits import get_header_parser
-
-        parser = get_header_parser(getattr(exchange, "id", ""))
-        if parser is not None:
-            _orig_on_rest = exchange.on_rest_response
-
-            def _header_sync_hook(code, reason, url, method, headers, body, req_headers, req_body):
-                try:
-                    if headers:
-                        parser(headers, rate_limiter)
-                except Exception as e:
-                    logger.debug(f"[{self._exchange_name}] header sync failed (non-fatal): {e}")
-                return _orig_on_rest(code, reason, url, method, headers, body, req_headers, req_body)
-
-            exchange.on_rest_response = _header_sync_hook
-
     @property
-    def rate_limiter(self):
+    def rate_limiter(self) -> ExchangeRateLimiter | None:
         """Access the attached rate limiter (if any)."""
-        return getattr(self, "_rate_limiter", None)
+        return self._rate_limiter
 
     @property
     def exchange(self) -> cxp.Exchange:

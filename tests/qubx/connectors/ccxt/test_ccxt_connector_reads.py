@@ -46,6 +46,7 @@ from qubx.core.events import (
     OrderRejectedEvent,
 )
 from qubx.core.series import Quote
+from qubx.rate_limiting import RateLimitGateTimeout
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 CCXT_SYMBOL = "BTC/USDT:USDT"
@@ -82,6 +83,7 @@ def _make_connector(
 
     em = Mock()
     em.exchange = exchange
+    em.rate_limiter = None
 
     dp = Mock()
     dp.get_quote = Mock(return_value=_quote())
@@ -338,6 +340,72 @@ async def test_request_snapshot_failed_leg_left_none() -> None:
     assert snap.open_orders == []
     assert snap.positions is None  # failed leg omitted, not wiped
     assert len(snap.balances) == 1
+
+
+@pytest.fixture
+def warnings_logged():
+    records: list = []
+    sink_id = logger.add(lambda m: records.append(m.record), level="WARNING")
+    try:
+        yield records
+    finally:
+        logger.remove(sink_id)
+
+
+def _positions_leg_warnings(records: list) -> list[str]:
+    return [r["message"] for r in records if "fetch_positions failed" in r["message"]]
+
+
+def _snapshot_exchange(positions_error: BaseException) -> Mock:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_open_orders = AsyncMock(return_value=[_ws_order(status="open", cid="qubx_x", venue_id="V1")])
+    exchange.fetch_positions = AsyncMock(side_effect=positions_error)
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 7.0}, "used": {"USDT": 1.0}})
+    exchange.markets = {}
+    return exchange
+
+
+@pytest.mark.asyncio
+async def test_request_snapshot_positions_gate_timeout_left_none(warnings_logged) -> None:
+    # A rate-limit gate timeout is a leg failure like any other: positions omitted, the other legs
+    # still populated. The WARNING must name the exception type — operators need to tell
+    # "we throttled ourselves" apart from "the venue is down".
+    exchange = _snapshot_exchange(RateLimitGateTimeout("gate did not reopen within 30s", pool_name="ccxt_rest"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    snap = sent[0].snapshot
+    assert snap.positions is None
+    assert [o.venue_order_id for o in snap.open_orders] == ["V1"]
+    assert len(snap.balances) == 1
+
+    messages = _positions_leg_warnings(warnings_logged)
+    assert len(messages) == 1, messages
+    assert "RateLimitGateTimeout" in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_request_snapshot_positions_network_error_warning_is_generic(warnings_logged) -> None:
+    # negative control for the test above: a venue outage produces the same shape without the
+    # rate-limit wording, so the two are distinguishable from the log alone
+    exchange = _snapshot_exchange(ccxt.NetworkError("boom"))
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    snap = sent[0].snapshot
+    assert snap.positions is None
+    assert [o.venue_order_id for o in snap.open_orders] == ["V1"]
+    assert len(snap.balances) == 1
+
+    messages = _positions_leg_warnings(warnings_logged)
+    assert len(messages) == 1, messages
+    assert "NetworkError" in messages[0]
+    assert "RateLimitGateTimeout" not in messages[0]
 
 
 @pytest.mark.asyncio

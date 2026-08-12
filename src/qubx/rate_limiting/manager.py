@@ -7,10 +7,11 @@ and per-exchange rate limiter creation via the connector registry.
 
 import asyncio
 import concurrent.futures
+import hashlib
 
 from qubx import logger
 
-from .backend import IRateLimitBackend, InMemoryBackend
+from .backend import InMemoryBackend, IRateLimitBackend
 from .engine import ExchangeRateLimiter
 
 
@@ -40,6 +41,12 @@ class RateLimitManager:
         if config is None:
             self._backend = None
             self._egress_ip = None
+            # INFO, not WARNING: no rate_limiting section is the default for most configs, and a
+            # warning on the common case just trains people to ignore warnings
+            logger.info(
+                "Rate limiting is DISABLED (no live.rate_limiting section) — venue calls are not governed by "
+                "Qubx rate limiting (ccxt's own throttler still paces REST, each ws client keeps its throttler)"
+            )
             return
 
         # Create backend
@@ -93,7 +100,9 @@ class RateLimitManager:
         for rl in self._rate_limiters.values():
             rl.update_scope_id("ip", f"ip_{new_ip}")
 
-    def get_or_create(self, exchange_name: str, connector_name: str) -> ExchangeRateLimiter | None:
+    def get_or_create(
+        self, exchange_name: str, connector_name: str, api_key: str | None = None
+    ) -> ExchangeRateLimiter | None:
         """Get or create a rate limiter for an exchange.
 
         Uses the connector registry to find the rate limit config factory.
@@ -101,6 +110,8 @@ class RateLimitManager:
         Args:
             exchange_name: Exchange name (e.g., "LIGHTER", "BINANCE.UM")
             connector_name: Connector type (e.g., "xlighter", "ccxt")
+            api_key: Venue API key, used only to derive the account scope id. Without it
+                account-scoped pools fall back to a per-process id (see engine.py).
 
         Returns:
             ExchangeRateLimiter or None if rate limiting is disabled or no config registered
@@ -120,6 +131,9 @@ class RateLimitManager:
         scope_ids = {}
         if self._egress_ip:
             scope_ids["ip"] = f"ip_{self._egress_ip}"
+        if api_key:
+            # hashed so the raw key never reaches a Redis key, a log line or a metric tag
+            scope_ids["account"] = f"acct_{hashlib.sha256(api_key.encode()).hexdigest()[:16]}"
 
         rate_limiter = ExchangeRateLimiter(
             exchange_name.lower(),

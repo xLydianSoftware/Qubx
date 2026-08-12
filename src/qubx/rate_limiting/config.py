@@ -15,11 +15,16 @@ class PoolConfig:
     A pool represents one independent rate limit enforced by the exchange.
     Exchanges typically have multiple pools (e.g., request weight + order count).
 
+    `capacity`/`refill_rate` are denominated in the unit the venue itself reports: request weight for
+    the Binance family (`X-MBX-USED-WEIGHT-1M`), ccxt cost elsewhere (a budget of
+    `1000 / exchange.rateLimit` units per second). No conversion is applied — the raw ccxt cost is
+    charged as-is.
+
     Args:
         name: Pool identifier (e.g., "request_weight", "orders", "sendtx")
         scope: What the limit is scoped to: "ip", "account", "address", or "local"
         capacity: Maximum tokens in the bucket
-        refill_rate: Tokens replenished per second (0 for quota pools)
+        refill_rate: Tokens replenished per second (0 for quota pools; rate pools require > 0)
         pool_type: "rate" for time-based refill, "quota" for externally-managed
         cooldown: Seconds to close gate when rate limit is hit
     """
@@ -58,12 +63,13 @@ class ExchangeRateLimitConfig:
         pools: Named pool configurations
         endpoint_map: Maps endpoint names to their costs across pools
         default_costs: Fallback costs for unmapped endpoints
-        gate_max_wait: Max seconds to wait for a closed gate before raising timeout
+        gate_max_wait: Max seconds to wait for a closed gate before raising timeout. Must exceed the
+            longest pool cooldown, or a single reported 429 times out every waiter by construction.
         metrics_interval: Seconds between metric emissions (0 to disable)
     """
 
     pools: dict[str, PoolConfig] = field(default_factory=dict)
     endpoint_map: dict[str, EndpointCosts] = field(default_factory=dict)
     default_costs: EndpointCosts = field(default_factory=lambda: EndpointCosts([]))
-    gate_max_wait: float = 15.0
+    gate_max_wait: float = 35.0
     metrics_interval: float = 60.0

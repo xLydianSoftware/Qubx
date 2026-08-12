@@ -46,11 +46,12 @@ class IRateLimitBackend(ABC):
         """
 
     @abstractmethod
-    async def set_remaining(self, key: str, remaining: float) -> None:
+    async def set_remaining(self, key: str, remaining: float, capacity: float = 0, refill_rate: float = 0) -> None:
         """Force-set remaining tokens (for syncing with exchange-reported state).
 
         Used when exchange headers/responses tell us the actual remaining budget,
-        correcting any drift in our model.
+        correcting any drift in our model. `capacity`/`refill_rate` let a header that
+        arrives before the first acquire create the bucket.
         """
 
 
@@ -81,8 +82,10 @@ class InMemoryBackend(IRateLimitBackend):
             return None
         return limiter.get_available_tokens()
 
-    async def set_remaining(self, key: str, remaining: float) -> None:
+    async def set_remaining(self, key: str, remaining: float, capacity: float = 0, refill_rate: float = 0) -> None:
         limiter = self._limiters.get(key)
-        if limiter is not None:
-            limiter._tokens = remaining
-            limiter._last_refill = time.monotonic()
+        if limiter is None:
+            if capacity <= 0:
+                return
+            limiter = self._get_or_create(key, capacity, refill_rate)
+        limiter.set_tokens(remaining)

@@ -9,6 +9,7 @@ from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.storage import IReader, IStorage
 from qubx.data.storages.multi import MultiReader, MultiStorage
+from qubx.rate_limiting import RateLimitGateTimeout
 
 # ---------------------------------------------------------------------------
 # helpers
@@ -436,6 +437,31 @@ class TestMultiStorage:
         reader = MultiStorage([bad, good]).get_reader("BINANCE.UM", "SWAP")
 
         assert reader is good_reader
+
+    def test_rate_limited_storage_is_not_dropped_for_the_run(self):
+        # a gate timeout is transient, but the reader set is cached — caching it while a storage was
+        # throttled would exclude that storage for the whole process
+        good_reader, recovered = MagicMock(spec=IReader), MagicMock(spec=IReader)
+        throttled = _mock_storage(reader=recovered)
+        throttled.get_reader.side_effect = [RateLimitGateTimeout("gate closed", pool_name="ccxt_rest"), recovered]
+        good = _mock_storage(reader=good_reader)
+        ms = MultiStorage([throttled, good])
+
+        first = ms.get_reader("BINANCE.UM", "SWAP")
+        second = ms.get_reader("BINANCE.UM", "SWAP")
+
+        assert first is good_reader  # degraded while throttled
+        assert isinstance(second, MultiReader)  # both storages back once the gate reopened
+
+    def test_permanently_absent_storage_is_still_cached(self):
+        # negative control: a storage that simply has no reader here must not defeat caching
+        good_reader = MagicMock(spec=IReader)
+        absent = _mock_storage()
+        absent.get_reader.side_effect = ValueError("no such reader")
+        ms = MultiStorage([absent, _mock_storage(reader=good_reader)])
+
+        assert ms.get_reader("BINANCE.UM", "SWAP") is ms.get_reader("BINANCE.UM", "SWAP")
+        assert absent.get_reader.call_count == 1
 
     def test_two_handy_storages_overlapping_ohlc(self):
         """

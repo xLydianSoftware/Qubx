@@ -6,6 +6,7 @@ across different exchange connectors to comply with API rate limits.
 """
 
 import asyncio
+import threading
 import time
 from functools import wraps
 from typing import Callable, Optional
@@ -40,7 +41,10 @@ class TokenBucketRateLimiter:
 
         self._tokens = float(capacity)
         self._last_refill = time.monotonic()
-        self._lock = asyncio.Lock()
+        self._inflight = 0.0  # reserved by tasks still sleeping, i.e. not yet visible to the venue
+        # threading, not asyncio: the same limiter is shared by the runner loop and the
+        # storage/warmup background loops, which live on different threads
+        self._lock = threading.Lock()
 
     def _refill_tokens(self) -> None:
         """Refill tokens based on elapsed time since last refill."""
@@ -54,53 +58,67 @@ class TokenBucketRateLimiter:
 
     async def acquire(self, weight: float = 1.0) -> None:
         """
-        Acquire tokens from the bucket.
+        Reserve `weight` tokens, then sleep off any deficit.
 
-        If not enough tokens are available, waits until sufficient tokens
-        have been refilled.
+        Tokens may go negative: the reservation is taken under the lock so concurrent acquirers get
+        distinct increasing deadlines, and the sleep happens outside it so a waiter never blocks a
+        caller that still has budget.
+
+        A free call (weight 0, e.g. ccxt prices Kraken orders that way) must not queue behind an
+        existing deficit, so it returns before the reservation is taken.
+
+        A task cancelled mid-sleep leaks its reservation — refill absorbs it.
 
         Args:
             weight: Number of tokens to acquire (default: 1.0)
-
-        Raises:
-            ValueError: If weight exceeds bucket capacity
         """
+        if weight <= 0:
+            return
         if weight > self.capacity:
-            raise ValueError(f"Requested weight {weight} exceeds bucket capacity {self.capacity} for {self.name}")
+            logger.warning(f"Rate limiter {self.name}: weight {weight} exceeds capacity {self.capacity}, clamping")
+            weight = self.capacity
 
-        async with self._lock:
-            while True:
-                # Refill tokens based on elapsed time
-                self._refill_tokens()
+        with self._lock:
+            self._refill_tokens()
+            self._tokens -= weight
+            deficit = -self._tokens
+            if deficit > 0:
+                self._inflight += weight
 
-                # Check if we have enough tokens
-                if self._tokens >= weight:
-                    self._tokens -= weight
-                    return
+        if deficit <= 0:
+            return
 
-                # Calculate wait time for sufficient tokens
-                tokens_needed = weight - self._tokens
-                wait_time = tokens_needed / self.refill_rate
+        wait_time = deficit / self.refill_rate
+        if wait_time > 1.0:
+            logger.debug(
+                f"Rate limiter {self.name}: waiting {wait_time:.2f}s (deficit {deficit:.1f}, {self.refill_rate}/s)"
+            )
+        try:
+            await asyncio.sleep(wait_time)
+        finally:
+            with self._lock:
+                self._inflight = max(0.0, self._inflight - weight)
 
-                # Log warning for significant delays
-                if wait_time > 1.0:
-                    logger.debug(
-                        f"Rate limiter {self.name}: waiting {wait_time:.2f}s "
-                        f"(need {tokens_needed:.1f} tokens, refill rate: {self.refill_rate}/s)"
-                    )
+    def set_tokens(self, tokens: float) -> None:
+        """Pin to an exchange-reported level, keeping outstanding reservations owed.
 
-                # Release lock while waiting to allow other tasks to check
-                await asyncio.sleep(wait_time)
+        The venue has not yet seen the requests sleeping tasks reserved for, so its reported
+        remaining is reduced by them.
+        """
+        with self._lock:
+            self._tokens = min(self.capacity, tokens) - self._inflight
+            self._last_refill = time.monotonic()
 
     def get_available_tokens(self) -> float:
         """
         Get current number of available tokens (non-blocking).
 
         Returns:
-            Current token count
+            Current token count, 0 while outstanding reservations are still owed
         """
-        self._refill_tokens()
-        return self._tokens
+        with self._lock:
+            self._refill_tokens()
+            return max(0.0, self._tokens)
 
 
 class RateLimiterRegistry:

@@ -58,6 +58,7 @@ def _make_connector(cls: type[CcxtConnector], exchange: Mock | None = None) -> t
 
     em = Mock()
     em.exchange = exchange
+    em.rate_limiter = None
 
     dp = Mock()
     dp.get_quote = Mock(return_value=_quote())
@@ -590,6 +591,7 @@ async def test_bitfinex_snapshot_venue_figures_pinned_all_none() -> None:
 def _factory_kwargs() -> dict:
     em = Mock()
     em.exchange = Mock()
+    em.rate_limiter = None
     return dict(
         channel=Mock(),
         time_provider=DummyTimeProvider(),

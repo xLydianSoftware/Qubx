@@ -13,6 +13,7 @@ import ccxt
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
+from qubx.connectors.ccxt.rate_limits import _default_endpoint_costs
 from qubx.core.basics import (
     CtrlChannel,
     Instrument,
@@ -35,6 +36,7 @@ from qubx.core.events import (
 )
 from qubx.core.exceptions import BadRequest, InvalidOrderParameters
 from qubx.core.series import Quote
+from qubx.rate_limiting import EndpointCosts, ExchangeRateLimitConfig, ExchangeRateLimiter, PoolConfig
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 
@@ -62,6 +64,7 @@ def _make_connector(
     *,
     exchange: Mock | None = None,
     data_provider: Mock | None = None,
+    rate_limiter: ExchangeRateLimiter | None = None,
 ) -> tuple[CcxtConnector, list, Mock]:
     """Build a connector with a capturing channel and a mocked exchange.
 
@@ -78,6 +81,7 @@ def _make_connector(
 
     em = Mock()
     em.exchange = exchange
+    em.rate_limiter = rate_limiter
 
     if data_provider is None:
         data_provider = Mock()
@@ -474,6 +478,8 @@ async def test_cancel_venue_reject_emits_cancel_rejected() -> None:
     assert isinstance(sent[0], OrderCancelRejectedEvent)
     assert sent[0].client_order_id == "qubx_BTCUSDT_1"
     assert sent[0].venue_order_id == "VENUE123"  # both ids carried so AM routes by either
+    # negative control for the gate-timeout cancel: only a rate-limited reject is coded
+    assert sent[0].code is None
 
 
 @pytest.mark.asyncio
@@ -891,5 +897,292 @@ def test_reads_none_inf_when_no_position() -> None:
     assert conn.get_max_instrument_notional(_instrument()) == float("inf")
     assert conn.get_margin_mode(_instrument()) is None
     assert conn.get_adl_level(_instrument()) is None
+
+
+# (11) order-count budget — every write charges the account-scoped `orders` pool
+_ORDERS_CAPACITY = 5
+
+
+@pytest.fixture
+def order_limiter():
+    """Real limiter (in-memory backend) with a small account-scoped ``orders`` pool.
+
+    ``cooldown`` sits far above ``gate_max_wait`` so a gate closed by a 429 is still closed
+    when the acquire gives up — otherwise the timeout path would be unobservable.
+    """
+    config = ExchangeRateLimitConfig(
+        pools={
+            "ccxt_rest": PoolConfig("ccxt_rest", "ip", 100, 100.0, cooldown=5.0),
+            "orders": PoolConfig("orders", "account", _ORDERS_CAPACITY, 1.0, cooldown=5.0),
+        },
+        endpoint_map=_default_endpoint_costs(),
+        default_costs=EndpointCosts([("ccxt_rest", 1)]),
+        gate_max_wait=0.05,
+    )
+    limiter = ExchangeRateLimiter("BINANCE.UM", config)
+    yield limiter
+    limiter.reset_gates()
+
+
+def _record_acquires(limiter: ExchangeRateLimiter, monkeypatch) -> list[str]:
+    """Record acquired endpoints while still draining the real pools."""
+    seen: list[str] = []
+    real_acquire = limiter.acquire
+
+    async def _recording(endpoint: str, **kw) -> None:
+        seen.append(endpoint)
+        await real_acquire(endpoint, **kw)
+
+    monkeypatch.setattr(limiter, "acquire", _recording)
+    return seen
+
+
+def _write_exchange() -> Mock:
+    """Exchange whose write calls all answer with a venue ack."""
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    del exchange.AMEND_QUANTITY_DIALECT
+    exchange.create_order = AsyncMock(
+        return_value={
+            "id": "VENUE123",
+            "clientOrderId": "qubx_BTCUSDT_1",
+            "status": "NEW",
+            "side": "buy",
+            "type": "limit",
+            "amount": 1.0,
+            "price": 100.0,
+            "timestamp": 1700000000000,
+            "cost": 0.0,
+            "timeInForce": "GTC",
+            "info": {},
+        }
+    )
+    exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1"})
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    return exchange
+
+
+class TestOrderRateLimiting:
+    """Order endpoints debit the account-scoped ``orders`` pool — nothing did before.
+
+    The IP weight of the same request is charged separately by the throttle override inside
+    ccxt's ``fetch2``, which is why these endpoints cost ``[("orders", 1)]`` and nothing else.
+    """
+
+    @pytest.mark.asyncio
+    async def test_submit_acquires_one_order_slot(self, order_limiter, monkeypatch) -> None:
+        acquires = _record_acquires(order_limiter, monkeypatch)
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+
+        conn.submit_order(_order_request())
+        await _drive(conn)
+
+        assert acquires == ["create_order"]
+        exchange.create_order.assert_awaited_once()
+        assert isinstance(sent[0], OrderAcceptedEvent)
+
+    @pytest.mark.asyncio
+    async def test_cancel_acquires_one_order_slot(self, order_limiter, monkeypatch) -> None:
+        acquires = _record_acquires(order_limiter, monkeypatch)
+        retrying = _write_exchange()
+        # one transient failure: an acquire inside _cancel_with_retry's loop would show up twice
+        retrying.cancel_order = AsyncMock(
+            side_effect=[
+                ccxt.NetworkError("connection reset"),
+                {"id": "VENUE123", "clientOrderId": "qubx_BTCUSDT_1"},
+            ]
+        )
+        conn, sent, exchange = _make_connector(exchange=retrying, rate_limiter=order_limiter)
+        conn.cancel_retry_interval = 0
+
+        conn.cancel_order(_order(venue_order_id="VENUE123"))
+        await _drive(conn)
+
+        assert exchange.cancel_order.await_count == 2
+        # one slot per cancel *operation*, not per retry inside _cancel_with_retry
+        assert acquires == ["cancel_order"]
+        assert isinstance(sent[0], OrderCanceledEvent)
+
+    @pytest.mark.asyncio
+    async def test_update_acquires_one_order_slot(self, order_limiter, monkeypatch) -> None:
+        acquires = _record_acquires(order_limiter, monkeypatch)
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+
+        conn.update_order(_order(venue_order_id="VENUE123"), price=102.0)
+        await _drive(conn)
+
+        assert acquires == ["edit_order"]
+        exchange.edit_order.assert_awaited_once()
+        assert isinstance(sent[0], OrderUpdatedEvent)
+
+    @pytest.mark.asyncio
+    async def test_submit_gate_timeout_rejects_without_calling_the_venue(self, order_limiter) -> None:
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        order_limiter.report_limit_hit(pool_name="orders", reason="venue 429")
+        assert order_limiter.is_gate_closed("orders")
+
+        conn.submit_order(_order_request())
+        await _drive(conn)
+
+        exchange.create_order.assert_not_awaited()  # rejected before reaching the venue
+        assert len(sent) == 1
+        assert isinstance(sent[0], OrderRejectedEvent)
+        assert sent[0].code == "RateLimitGateTimeout"
+        assert "orders" in sent[0].reason
+
+    @pytest.mark.asyncio
+    async def test_cancel_gate_timeout_rejects_without_calling_the_venue(self, order_limiter) -> None:
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        order_limiter.report_limit_hit(pool_name="orders", reason="venue 429")
+
+        conn.cancel_order(_order(venue_order_id="VENUE123"))
+        await _drive(conn)
+
+        exchange.cancel_order.assert_not_awaited()
+        assert len(sent) == 1
+        assert isinstance(sent[0], OrderCancelRejectedEvent)
+        assert sent[0].reason.startswith("rate limited: ")
+        assert "orders" in sent[0].reason
+        # coded like submit/update, so a reject filter keyed on code catches rate-limited cancels
+        assert sent[0].code == "RateLimitGateTimeout"
+
+    @pytest.mark.asyncio
+    async def test_update_gate_timeout_rejects_without_calling_the_venue(self, order_limiter) -> None:
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        order_limiter.report_limit_hit(pool_name="orders", reason="venue 429")
+
+        conn.update_order(_order(venue_order_id="VENUE123"), price=102.0)
+        await _drive(conn)
+
+        exchange.edit_order.assert_not_awaited()
+        assert len(sent) == 1
+        assert isinstance(sent[0], OrderUpdateRejectedEvent)
+        assert sent[0].code == "RateLimitGateTimeout"
+
+    @pytest.mark.asyncio
+    async def test_closed_rest_gate_does_not_block_an_order(self, order_limiter, monkeypatch) -> None:
+        # A read-path 429 closes the IP gate; orders cost ``[("orders", 1)]`` only, so placement
+        # stays open. Pin it — widening that cost list must be a deliberate decision.
+        acquires = _record_acquires(order_limiter, monkeypatch)
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        order_limiter.report_limit_hit(pool_name="ccxt_rest", reason="read-path 429")
+        assert order_limiter.is_gate_closed("ccxt_rest")
+
+        conn.submit_order(_order_request())
+        await _drive(conn)
+
+        assert acquires == ["create_order"]
+        exchange.create_order.assert_awaited_once()
+        assert isinstance(sent[0], OrderAcceptedEvent)
+
+    @pytest.mark.asyncio
+    async def test_no_rate_limiter_still_submits(self) -> None:
+        """Negative control: without a limiter the write path is untouched."""
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=None)
+
+        conn.submit_order(_order_request())
+        await _drive(conn)
+
+        exchange.create_order.assert_awaited_once()
+        assert isinstance(sent[0], OrderAcceptedEvent)
+
+    @pytest.mark.asyncio
+    async def test_order_pool_is_actually_drained(self, order_limiter) -> None:
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+
+        for _ in range(3):
+            conn.submit_order(_order_request())
+        await _drive(conn)
+
+        assert exchange.create_order.await_count == 3
+        assert len(sent) == 3
+        state = await order_limiter.get_pool_state("orders")
+        assert state is not None
+        assert state["consumed"] == 3.0
+        assert state["remaining"] < _ORDERS_CAPACITY  # tokens really left the bucket
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        "error",
+        [
+            ccxt.RateLimitExceeded("binance -1015 too many new orders"),
+            ccxt.DDoSProtection("EOrder:Rate limit exceeded"),
+        ],
+        ids=["binance_-1015", "kraken_EOrder"],
+    )
+    async def test_venue_order_limit_closes_only_the_orders_gate(self, order_limiter, error) -> None:
+        """The pool is a proactive model: only the venue's own verdict reveals budget another actor
+        on the account spent. ccxt maps that verdict to two sibling types, so both need wiring.
+        """
+        conn, _sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        exchange.create_order = AsyncMock(side_effect=error)
+
+        conn.submit_order(_order_request())
+        await _drive(conn)
+
+        assert order_limiter.is_gate_closed("orders")
+        assert not order_limiter.is_gate_closed("ccxt_rest"), "an order-budget breach says nothing about the IP pool"
+
+    @pytest.mark.asyncio
+    async def test_venue_order_limit_on_update_closes_the_orders_gate(self, order_limiter) -> None:
+        conn, _sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        exchange.edit_order = AsyncMock(side_effect=ccxt.RateLimitExceeded("binance -1015"))
+
+        conn.update_order(_order(venue_order_id="VENUE123"), price=102.0)
+        await _drive(conn)
+
+        assert order_limiter.is_gate_closed("orders")
+        assert not order_limiter.is_gate_closed("ccxt_rest")
+
+    @pytest.mark.asyncio
+    async def test_venue_order_limit_on_cancel_closes_the_orders_gate(self, order_limiter) -> None:
+        conn, _sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        exchange.cancel_order = AsyncMock(side_effect=ccxt.DDoSProtection("EOrder:Rate limit exceeded"))
+        conn.cancel_timeout = 0  # one attempt, no retry backoff
+
+        conn.cancel_order(_order(venue_order_id="VENUE123"))
+        await _drive(conn)
+
+        assert order_limiter.is_gate_closed("orders")
+        assert not order_limiter.is_gate_closed("ccxt_rest")
+
+    @pytest.mark.asyncio
+    async def test_reports_the_orders_pool_by_name_not_by_endpoint(self, order_limiter, monkeypatch) -> None:
+        """``endpoint=`` would close every pool in that endpoint's cost list, not just ``orders``."""
+        hits: list[dict] = []
+        monkeypatch.setattr(order_limiter, "report_limit_hit", lambda **kw: hits.append(kw))
+        conn, _sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        exchange.create_order = AsyncMock(side_effect=ccxt.RateLimitExceeded("binance -1015"))
+
+        conn.submit_order(_order_request())
+        await _drive(conn)
+
+        assert len(hits) == 1
+        assert hits[0]["pool_name"] == "orders"
+        assert "endpoint" not in hits[0]
+        assert "-1015" in hits[0]["reason"]
+
+    @pytest.mark.asyncio
+    async def test_non_rate_limit_venue_error_leaves_the_gate_open(self, order_limiter) -> None:
+        """Negative control: a rejection is not a budget breach."""
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=order_limiter)
+        exchange.create_order = AsyncMock(side_effect=ccxt.InsufficientFunds("balance too low"))
+
+        conn.submit_order(_order_request())
+        await _drive(conn)
+
+        assert isinstance(sent[0], OrderRejectedEvent)
+        assert not order_limiter.is_gate_closed("orders")
+
+    @pytest.mark.asyncio
+    async def test_venue_order_limit_without_a_limiter_still_rejects(self) -> None:
+        """Negative control: reporting is skipped, the reject still goes out."""
+        conn, sent, exchange = _make_connector(exchange=_write_exchange(), rate_limiter=None)
+        exchange.create_order = AsyncMock(side_effect=ccxt.RateLimitExceeded("binance -1015"))
+
+        conn.submit_order(_order_request())
+        await _drive(conn)
+
+        assert isinstance(sent[0], OrderRejectedEvent)
 
 

@@ -284,42 +284,6 @@ _RETRY_MAX_DELAY_S = 30.0
 _RETRY_JITTER_S = 1.0
 
 
-def _sync_rate_limiter_from_response_headers(ccxt_ex: Any, rate_limiter: Any) -> None:
-    """
-    Best-effort sync of the rate limiter's modeled state from the exchange's
-    last HTTP response headers.
-
-    Without this, the client-side token bucket flies blind to:
-        * cross-process / cross-bot contention on the same IP or account,
-        * drift between our ``PoolConfig`` and the exchange's real limits,
-        * pre-existing budget debt at process start.
-
-    This is a *best-effort* correction because ``ccxt_ex.last_response_headers``
-    is exchange-wide, not per-request — under concurrent fetches the attribute
-    may have been overwritten between the awaited response and this read.
-    That is acceptable in practice: every concurrent request drains the same
-    IP-scoped budget, so whatever remaining value we read is approximately
-    correct, and the limiter converges on subsequent syncs.
-
-    Any exception (missing attr, malformed header, parser bug) is swallowed
-    at DEBUG — header sync must never break a fetch.
-    """
-    if rate_limiter is None:
-        return
-    try:
-        from qubx.connectors.ccxt.rate_limits import get_header_parser
-
-        parser = get_header_parser(getattr(ccxt_ex, "id", ""))
-        if parser is None:
-            return
-        headers = getattr(ccxt_ex, "last_response_headers", None)
-        if not headers:
-            return
-        parser(headers, rate_limiter)
-    except Exception as e:
-        logger.debug(f"[CCXT] header sync failed (non-fatal): {e}")
-
-
 class CcxtFetchExhausted(RuntimeError):
     """
     Raised when one or more symbols exhaust all retry attempts during a
@@ -346,7 +310,7 @@ async def _retryable_fetch(
     call: Callable[[], Awaitable[_T]],
     *,
     rate_limiter: Any = None,
-    rate_limiter_endpoint: str = "ccxt_rest",
+    rate_limit_pool: str = "ccxt_rest",
     max_attempts: int = _RETRY_MAX_ATTEMPTS,
     base_delay: float = _RETRY_BASE_DELAY_S,
     max_delay: float = _RETRY_MAX_DELAY_S,
@@ -367,17 +331,14 @@ async def _retryable_fetch(
     ``AuthenticationError``, plus any non-CCXT exception) is re-raised
     immediately — permanent errors should not consume retry budget.
 
-    The rate-limiter interaction is handled here in two stages per attempt:
-        1. ``acquire(endpoint)`` before each call to block while the gate is closed.
-        2. ``report_limit_hit(endpoint=...)`` on ``RateLimitExceeded`` so the
-           gate closes for ``cooldown`` seconds, pausing all concurrent callers.
+    Budget is acquired inside CCXT's own pipeline by the throttle hook, not here; this function only
+    reports ``RateLimitExceeded`` back so the pool's gate closes for ``cooldown`` seconds.
 
     Args:
         call: Zero-arg callable returning the coroutine to invoke.
-        rate_limiter: Optional ``ExchangeRateLimiter``; if provided, calls are
-            gated and rate-limit hits are reported back to it.
-        rate_limiter_endpoint: Endpoint name used for ``acquire`` /
-            ``report_limit_hit`` lookups.
+        rate_limiter: Optional ``ExchangeRateLimiter``; if provided, rate-limit
+            hits are reported back to it.
+        rate_limit_pool: Pool whose gate is closed on ``RateLimitExceeded``.
         max_attempts: Total attempts including the initial one.
         base_delay: First retry delay in seconds; doubles each attempt.
         max_delay: Cap on the exponential delay.
@@ -390,15 +351,13 @@ async def _retryable_fetch(
     """
     last_exc: BaseException | None = None
     for attempt in range(1, max_attempts + 1):
-        if rate_limiter is not None:
-            await rate_limiter.acquire(rate_limiter_endpoint)
         try:
             return await call()
         except (ccxt.NetworkError, asyncio.TimeoutError) as e:
             last_exc = e
             if isinstance(e, ccxt.RateLimitExceeded) and rate_limiter is not None:
                 rate_limiter.report_limit_hit(
-                    endpoint=rate_limiter_endpoint,
+                    pool_name=rate_limit_pool,
                     reason=(f"{context}: " if context else "") + str(e)[:120],
                 )
             if attempt >= max_attempts:
@@ -489,6 +448,7 @@ class CcxtStorage(IStorage):
 
         from qubx.connectors.ccxt.exchanges import READER_CAPABILITIES
         from qubx.connectors.ccxt.factory import get_ccxt_exchange
+        from qubx.connectors.ccxt.rate_limits import install_rate_limiter_hooks
 
         # - the storage owns one background loop+thread; all exchanges run on it
         if self._loop is None:
@@ -497,6 +457,10 @@ class CcxtStorage(IStorage):
 
         if self._capabilities is None:
             self._capabilities = READER_CAPABILITIES.copy()
+
+        # Direct dict lookup — ``_get_rate_limiter`` needs ``self._exchanges[exchange]``, which must
+        # not be populated before ``load_markets()`` or a failure there caches a broken entry.
+        install_rate_limiter_hooks(ccxt_ex, self._rate_limiters.get(exchange), label=exchange)
 
         self._loop.submit(ccxt_ex.load_markets()).result()
         self._exchanges[exchange] = ccxt_ex
@@ -635,9 +599,8 @@ class CcxtStorage(IStorage):
         all_items: list = []
         current_since = since
 
-        # Get rate limiter for this exchange (if available). Retry + backoff + rate-limit
-        # acquisition are all encapsulated inside ``_retryable_fetch`` so this loop stays
-        # focused on pagination.
+        # Budget acquisition and header sync happen inside CCXT via the hooks installed by
+        # ``_ensure_exchange``; retry + backoff are encapsulated in ``_retryable_fetch``.
         _rl = self._get_rate_limiter(ccxt_ex)
         _ex_id = getattr(ccxt_ex, "id", "ccxt")
 
@@ -645,11 +608,7 @@ class CcxtStorage(IStorage):
             _since = current_since  # capture for the closure below
 
             async def _do_page() -> list:
-                batch = await method(since=_since, limit=limit, **method_kwargs)
-                # Best-effort: keep our modeled budget in sync with what the exchange
-                # actually reports — see ``_sync_rate_limiter_from_response_headers``.
-                _sync_rate_limiter_from_response_headers(ccxt_ex, _rl)
-                return batch
+                return await method(since=_since, limit=limit, **method_kwargs)
 
             batch = await _retryable_fetch(
                 _do_page,

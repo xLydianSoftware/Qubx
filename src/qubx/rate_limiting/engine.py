@@ -6,6 +6,7 @@ behavior (gate management, acquisition, sync) to polymorphic pool objects.
 
 import asyncio
 import time
+import uuid
 from typing import Any
 
 from qubx import logger
@@ -14,6 +15,11 @@ from .backend import InMemoryBackend, IRateLimitBackend
 from .config import ExchangeRateLimitConfig
 from .pools import BasePool, QuotaPool, RatePool
 from .pools import RateLimitGateTimeout as RateLimitGateTimeout  # re-export
+
+# Fallback for a scope we cannot identify. Per-process, not a shared literal: an unknown identity is
+# no evidence of a shared one, and a shared literal collapses every bot on a shared backend onto one
+# bucket — 1/N of the budget each.
+_UNRESOLVED_SCOPE_ID = f"local_{uuid.uuid4().hex[:12]}"
 
 
 class ExchangeRateLimiter:
@@ -62,10 +68,16 @@ class ExchangeRateLimiter:
         backend = backend or InMemoryBackend()
         self._pools: dict[str, BasePool] = {}
         for pool_name, pool_config in config.pools.items():
-            scope_id = self._scope_ids.get(pool_config.scope, "local")
+            scope_id = self._scope_ids.get(pool_config.scope, _UNRESOLVED_SCOPE_ID)
             if pool_config.pool_type == "quota":
                 self._pools[pool_name] = QuotaPool(pool_config, exchange, scope_id)
             else:
+                if pool_config.refill_rate <= 0:
+                    # the token bucket divides a deficit by it
+                    raise ValueError(
+                        f"{exchange}: rate pool '{pool_name}' has refill_rate={pool_config.refill_rate}; "
+                        "rate pools require refill_rate > 0 (use pool_type='quota' for externally-managed pools)"
+                    )
                 self._pools[pool_name] = RatePool(pool_config, exchange, scope_id, backend)
 
     @property
@@ -265,6 +277,7 @@ class ExchangeRateLimiter:
                 {"name": "rate_limit.gate_closed", "value": 1.0 if state["gate_closed"] else 0.0, "tags": {**tags}}
             )
             metrics.append({"name": "rate_limit.hits", "value": float(state["hits"]), "tags": {**tags}})
+            metrics.append({"name": "rate_limit.gate_timeouts", "value": float(state["timeouts"]), "tags": {**tags}})
             metrics.append({"name": "rate_limit.wait_seconds", "value": state["total_wait_s"], "tags": {**tags}})
             metrics.append({"name": "rate_limit.consumed", "value": state["consumed"], "tags": {**tags}})
 
