@@ -331,14 +331,22 @@ class TestBinanceHeaderParser:
 
 
 def _constructed_ccxt_ids() -> dict[str, str]:
-    """``exchange.id`` of every ccxt class the factory can build, keyed by the name it resolves."""
+    """``exchange.id`` of every ccxt class the factory can build, keyed by the name it resolves.
+
+    Classes that cannot be built bare are skipped — bitfinex_f's ``__init__`` starts a websocket on
+    ``self.asyncio_loop``, which is None outside a running loop. The callers still assert that every
+    registered parser id was resolved, so a skip cannot hide a dead registration.
+    """
     names = set(EXCHANGE_ALIASES.values()) | {"binance", "binanceusdm", "binancecoinm", "okx", "bybit", "kraken"}
     ids = {}
     for name in sorted(names):
         cls = getattr(cxp, name, None)
         if cls is None:
-            continue  # optional-dependency exchanges (bitfinex_f) are not registered
-        ids[name] = cls().id
+            continue  # optional-dependency exchanges are absent unless their extra is installed
+        try:
+            ids[name] = cls().id
+        except Exception:
+            continue
     return ids
 
 
