@@ -247,8 +247,8 @@ class CcxtConnector(ChannelEmitter):
         """
         return self._loop.submit(coro).result(timeout=timeout)
 
-    async def _acquire_order_slot(self, endpoint: str) -> None:
-        """Charge the venue's order-count budget; this request's IP weight is charged by the throttle override."""
+    async def _acquire_endpoint_budget(self, endpoint: str) -> None:
+        """Charge whatever budget this endpoint draws beyond IP weight, which the throttle already took."""
         rate_limiter = self._em.rate_limiter
         if rate_limiter is not None:
             await rate_limiter.acquire(endpoint)
@@ -310,7 +310,7 @@ class CcxtConnector(ChannelEmitter):
 
     async def _submit_async(self, instrument: Instrument, client_id: str | None, payload: dict[str, Any]) -> None:
         try:
-            await self._acquire_order_slot("create_order")
+            await self._acquire_endpoint_budget("create_order")
             r = await self._em.exchange.create_order(**payload)
         except RateLimitGateTimeout as e:
             self._emit_submit_rejected(instrument, client_id, e)
@@ -393,7 +393,7 @@ class CcxtConnector(ChannelEmitter):
         """
         try:
             # Outside _cancel_with_retry: one slot per operation, and its broad handlers would eat the timeout.
-            await self._acquire_order_slot("cancel_order")
+            await self._acquire_endpoint_budget("cancel_order")
             ok, response = await self._cancel_with_retry(client_order_id, venue_order_id, symbol, is_trigger)
         except RateLimitGateTimeout as e:
             self._emit_cancel_rejected(
@@ -646,7 +646,7 @@ class CcxtConnector(ChannelEmitter):
         # orderId with -1102).
         vid = venue_order_id
         try:
-            await self._acquire_order_slot("edit_order")
+            await self._acquire_endpoint_budget("edit_order")
             if self._em.exchange.has.get("editOrder", False):
                 r = await self._edit_order_direct(
                     client_order_id, vid, symbol, side, order_type, wire_price, wire_amount
@@ -817,6 +817,7 @@ class CcxtConnector(ChannelEmitter):
 
     async def _do_set_leverage(self, instrument: Instrument, symbol: str, leverage: int) -> None:
         try:
+            await self._acquire_endpoint_budget("set_leverage")
             await self._em.exchange.set_leverage(leverage, symbol)
         except Exception as e:  # noqa: BLE001 — the caller is long gone; report on the channel
             logger.error(f"[{self.exchange_name}] Failed to set leverage {leverage} for {instrument.symbol}: {e}")

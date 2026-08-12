@@ -97,6 +97,20 @@ class TestEndpointMap:
         assert create_ccxt_rate_limit_config(venue).endpoint_map["rest"].costs == [("ccxt_rest", 1)]
 
     @pytest.mark.parametrize("venue", _VENUES)
+    def test_set_leverage_is_mapped_so_it_cannot_double_charge_ip(self, venue: str):
+        # unmapped would fall back to default_costs and charge ccxt_rest on top of the throttle
+        assert "set_leverage" in create_ccxt_rate_limit_config(venue).endpoint_map
+
+    @pytest.mark.parametrize("venue", [v for v in _VENUES if v != "kraken.f"])
+    def test_set_leverage_adds_nothing_beyond_ip_weight(self, venue: str):
+        # Binance & co. bill leverage as plain IP weight, already taken by the throttle
+        assert create_ccxt_rate_limit_config(venue).endpoint_map["set_leverage"].costs == []
+
+    def test_kraken_futures_bills_set_leverage_like_an_order(self):
+        # ccxt's set_leverage hits PUT leveragepreferences, cost 10 at the venue
+        assert create_ccxt_rate_limit_config("kraken.f").endpoint_map["set_leverage"].costs == [("ccxt_rest", 4)]
+
+    @pytest.mark.parametrize("venue", _VENUES)
     def test_orders_is_never_reachable_from_default_costs(self, venue: str):
         # negative control: order endpoints must be the only route into the orders pool
         assert [pool for pool, _ in create_ccxt_rate_limit_config(venue).default_costs.costs] == ["ccxt_rest"]

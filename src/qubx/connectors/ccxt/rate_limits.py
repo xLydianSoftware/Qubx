@@ -46,6 +46,9 @@ def _default_endpoint_costs() -> dict[str, EndpointCosts]:
         "create_order": order,
         "cancel_order": order,
         "edit_order": order,
+        # leverage is an IP-weight endpoint here, not an order — but it must still be mapped, or it
+        # falls back to default_costs and charges the IP pool a second time
+        "set_leverage": EndpointCosts([]),
     }
 
 
@@ -213,7 +216,7 @@ def _kraken_config(exchange_name: str) -> ExchangeRateLimitConfig:
         # the pool counts half-tokens: a read is exactly 1 unit, and order endpoints add 4 on top of
         # that 1 to reach the venue's 10. 250 units/10s; the bucket starts full, so capacity +
         # 10*refill == 250 keeps the worst 10s window at exactly the documented 500 tokens.
-        # Under-counted (unused by our call paths): batch orders, cancelallorders, leveragepreferences.
+        # Under-counted (not on our call paths): batch orders, cancelallorders.
         order_surcharge = EndpointCosts([("ccxt_rest", 4)])
         return ExchangeRateLimitConfig(
             pools={
@@ -224,6 +227,9 @@ def _kraken_config(exchange_name: str) -> ExchangeRateLimitConfig:
                 "create_order": order_surcharge,
                 "cancel_order": order_surcharge,
                 "edit_order": order_surcharge,
+                # ccxt's set_leverage hits PUT leveragepreferences, which the venue bills like an
+                # order op — unlike Binance, where leverage is plain IP weight
+                "set_leverage": order_surcharge,
             },
             default_costs=EndpointCosts([("ccxt_rest", 1)]),
         )
