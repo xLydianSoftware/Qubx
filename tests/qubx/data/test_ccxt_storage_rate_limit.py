@@ -19,7 +19,9 @@ The tests in this file exercise the warmup OHLCV fetch path against a
    the budget and triggers 429s. This proves the mock is exercising the
    code path and that the positive test isn't vacuously passing.
 
-3. **Wiring regression** — every page fetch goes through ``limiter.acquire``.
+3. **Wiring regression** — every page fetch is charged through the throttle
+   hook ``_ensure_exchange`` installs, at the real ccxt cost, and every
+   response drives a header sync through ``on_rest_response``.
 """
 
 from __future__ import annotations
@@ -33,7 +35,9 @@ from unittest.mock import Mock
 import ccxt
 import pytest
 
+from qubx.connectors.ccxt import factory
 from qubx.connectors.ccxt.exchange_manager import ExchangeManager
+from qubx.connectors.ccxt.rate_limits import install_rate_limiter_hooks
 from qubx.core.basics import LiveTimeProvider
 from qubx.data.storages.ccxt import CcxtFetchExhausted, CcxtStorage, _retryable_fetch
 from qubx.health.dummy import DummyHealthMonitor
@@ -66,6 +70,8 @@ class FakeCcxtExchange:
         latency_ms: float = 5.0,
         id: str = "fake",
         server_budget: int | None = None,
+        throttle_cost: float = 1.0,
+        stale_headers: dict[str, str] | None = None,
     ) -> None:
         self.id = id
         self.name = id
@@ -76,10 +82,17 @@ class FakeCcxtExchange:
         self._arrivals: list[float] = []
         self.call_count = 0
         self.rate_limit_hits = 0
-        # Server-reported budget, exposed to callers via ``last_response_headers``
-        # to drive ``_sync_rate_limiter_from_response_headers``. When set, each
-        # successful call decrements it so the header value reflects real usage.
+        # Cost CCXT computes for this endpoint and hands to ``throttle`` (klines with limit=1000
+        # is weight 5 on binance.um, 1.2 on kraken, ...).
+        self.throttle_cost = throttle_cost
+        # Server-reported budget, published in the per-response headers handed to
+        # ``on_rest_response``. When set, each successful call decrements it so the header
+        # value reflects real usage.
         self._server_budget = server_budget
+        self._used_weight = 0
+        # When set, the exchange-wide attribute deliberately diverges from the per-request
+        # headers — a sync that reads it instead of the hook argument is then visible.
+        self.stale_headers = stale_headers
         self.last_response_headers: dict[str, str] = {}
         # CCXT-side hooks — real CCXT invokes ``self.throttle(cost)`` inside
         # ``fetch2()`` and ``self.on_rest_response(...)`` after the HTTP response.
@@ -109,9 +122,9 @@ class FakeCcxtExchange:
         **_: Any,
     ) -> list[list[float]]:
         self.call_count += 1
-        # 1) Pre-request throttle (CCXT calls this inside fetch2). If ExchangeManager
-        #    is attached, this acquires a token from the shared rate limiter.
-        await self.throttle(1.0)
+        # 1) Pre-request throttle (CCXT calls this inside fetch2 with the endpoint's cost).
+        #    Once the hooks are installed this acquires ``throttle_cost`` from the rate limiter.
+        await self.throttle(self.throttle_cost)
 
         now = time.monotonic()
         # drop arrivals outside the sliding window
@@ -127,22 +140,25 @@ class FakeCcxtExchange:
         self._arrivals.append(now)
         await asyncio.sleep(self._latency_s)
 
-        # Publish rate-limit headers as a real exchange would.
+        # Publish rate-limit headers as a real exchange would. Casing is deliberately neither
+        # the canonical constant nor lowercase — the parsers' lookup must be case-insensitive.
+        response_headers: dict[str, str] = {}
         if self._server_budget is not None:
             self._server_budget = max(0, self._server_budget - 1)
-            self.last_response_headers = {
-                # OKX style
+            self._used_weight += 1
+            response_headers = {
+                # no parser reads this one — it rides along as a negative control
                 "x-ratelimit-remaining": str(self._server_budget),
-                # Binance style
-                "x-mbx-used-weight-1m": str(max(0, 1200 - self._server_budget)),
+                "X-Mbx-Used-Weight-1m": str(self._used_weight),  # Binance style
             }
+            self.last_response_headers = self.stale_headers or response_headers
 
-        # 2) Post-response hook (CCXT calls this inside fetch2 after headers are
-        #    parsed). If ExchangeManager is attached, this invokes the header parser
-        #    which calls ``rate_limiter.sync_from_exchange(...)``.
+        # 2) Post-response hook (CCXT calls this inside fetch2 with THIS request's headers).
+        #    Once the hooks are installed this invokes the header parser, which calls
+        #    ``rate_limiter.sync_from_exchange(...)``.
         self.on_rest_response(
             200, "OK", f"https://fake/{symbol}", "GET",
-            self.last_response_headers, "{}", {}, None,
+            response_headers, "{}", {}, None,
         )
 
         # Simulate OKX-style behavior: cap each page at ``bars_per_page`` regardless of
@@ -163,7 +179,7 @@ def _build_rate_limiter(*, capacity: int, refill_rate: float, cooldown: float = 
                 "ccxt_rest", "ip", capacity, refill_rate, cooldown=cooldown
             ),
         },
-        endpoint_map={"ccxt_rest": EndpointCosts([("ccxt_rest", 1)])},
+        endpoint_map={"rest": EndpointCosts([("ccxt_rest", 1)])},
         default_costs=EndpointCosts([("ccxt_rest", 1)]),
     )
     return ExchangeRateLimiter("FAKE.X", config)
@@ -188,6 +204,9 @@ def _build_storage(
     trigger 429s (the negative control in ``TestCcxtStorageRateLimitBudget``)
     don't explode with ``CcxtFetchExhausted``; each test opts-in when it
     wants the strict behavior.
+
+    Injecting ``_exchanges`` bypasses ``_ensure_exchange``, so the hook install it does must be
+    mirrored here — without it nothing throttles the storage path and the whole file goes vacuous.
     """
     storage = CcxtStorage(
         retry_max_attempts=retry_max_attempts,
@@ -197,6 +216,7 @@ def _build_storage(
     )
     storage._exchanges = {"FAKE.X": exchange}  # type: ignore[assignment]
     storage._rate_limiters = {"FAKE.X": limiter} if limiter is not None else {}
+    install_rate_limiter_hooks(exchange, limiter, label="FAKE.X")
     return storage
 
 
@@ -205,6 +225,17 @@ def _bar_span(n_bars: int) -> tuple[int, int]:
     since = 1_700_000_000_000  # arbitrary fixed epoch-ms
     until = since + (n_bars - 1) * TF_MS
     return since, until
+
+
+def _span_for_pages(n_pages: int, bars_per_page: int = 10) -> tuple[int, int]:
+    """Window that makes the pagination loop issue exactly *n_pages* fetches.
+
+    Page k ends at ``since + (k*bpp - 1)*TF + (k-1)`` (the cursor bumps by 1ms per page) and the
+    loop stops on the first page whose last bar reaches ``until``; half a page of slack lands
+    ``until`` strictly between page n-1 and page n.
+    """
+    since = 1_700_000_000_000
+    return since, since + (n_pages * bars_per_page - bars_per_page // 2) * TF_MS
 
 
 def _instruments(*qubx_syms: str) -> list[tuple[str, str]]:
@@ -316,12 +347,110 @@ class TestCcxtStorageRateLimitBudget:
         assert len(acquire_calls) >= expected_min, (
             f"expected ≥{expected_min} acquire calls, got {len(acquire_calls)}"
         )
-        assert all(e == "ccxt_rest" for e in acquire_calls), (
-            f"unexpected endpoints: {set(acquire_calls) - {'ccxt_rest'}}"
+        assert all(e == "rest" for e in acquire_calls), f"unexpected endpoints: {set(acquire_calls) - {'rest'}}"
+
+
+@pytest.mark.asyncio
+class TestStorageChargesRealCcxtCost:
+    """
+    The storage no longer charges a flat 1 per page: CCXT hands ``throttle`` the endpoint's real
+    cost (binance.um klines at limit=1000 is weight 5) and the override forwards it verbatim as
+    ``weight_override``. Charging 1 there under-counts the IP budget five-fold.
+    """
+
+    BARS_PER_PAGE = 10
+    PAGES = 3
+
+    @pytest.mark.parametrize("cost", [5.0, 1.0])
+    async def test_consumed_is_pages_times_the_ccxt_cost(self, cost: float):
+        fake = FakeCcxtExchange(
+            max_rps=1000, bars_per_page=self.BARS_PER_PAGE, latency_ms=0.0, throttle_cost=cost
         )
+        limiter = _build_rate_limiter(capacity=100, refill_rate=1000.0)
+        storage = _build_storage(exchange=fake, limiter=limiter)
+
+        since, until = _span_for_pages(self.PAGES, self.BARS_PER_PAGE)
+        await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
+
+        assert fake.call_count == self.PAGES
+        state = await limiter.get_pool_state("ccxt_rest")
+        assert state is not None
+        assert state["consumed"] == pytest.approx(self.PAGES * cost)
+
+    async def test_nothing_is_consumed_without_a_limiter(self):
+        """Negative control: the charge originates in the hook, so no limiter means no hook."""
+        fake = FakeCcxtExchange(
+            max_rps=1000, bars_per_page=self.BARS_PER_PAGE, latency_ms=0.0, throttle_cost=5.0
+        )
+        limiter = _build_rate_limiter(capacity=100, refill_rate=1000.0)
+        storage = _build_storage(exchange=fake, limiter=None)
+
+        since, until = _span_for_pages(self.PAGES, self.BARS_PER_PAGE)
+        await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
+
+        assert fake.call_count == self.PAGES
+        state = await limiter.get_pool_state("ccxt_rest")
+        assert state is not None
+        assert state["consumed"] == 0.0
+
+
+class TestEnsureExchangeInstallsHooks:
+    """``load_markets()`` is itself a REST call (a heavy one on binance), so the hooks have to be
+    on the exchange before it is submitted."""
+
+    def _fake_with_load_markets(self, monkeypatch) -> tuple[FakeCcxtExchange, list[bool]]:
+        fake = FakeCcxtExchange(max_rps=1000, latency_ms=0.0)
+        default_throttle = fake.throttle
+        throttled_at_load: list[bool] = []
+
+        async def _load_markets(*_a: Any, **_kw: Any) -> dict:
+            throttled_at_load.append(fake.throttle is not default_throttle)
+            return {}
+
+        fake.load_markets = _load_markets  # type: ignore[attr-defined]
+        # ``_ensure_exchange`` imports the factory inside the function, so patch the module attr
+        monkeypatch.setattr(factory, "get_ccxt_exchange", lambda *_a, **_kw: fake)
+        return fake, throttled_at_load
+
+    def test_hooks_are_installed_before_load_markets(self, monkeypatch):
+        fake, throttled_at_load = self._fake_with_load_markets(monkeypatch)
+        limiter = _build_rate_limiter(capacity=100, refill_rate=100.0)
+        storage = CcxtStorage(rate_limiters={"FAKE.X": limiter})
+        try:
+            assert storage._ensure_exchange("FAKE.X") is fake
+        finally:
+            storage.close()
+
+        assert throttled_at_load == [True]
+
+    def test_no_limiter_leaves_the_exchange_untouched(self, monkeypatch):
+        """Negative control: the flag above tracks the install, not the mere act of connecting."""
+        fake, throttled_at_load = self._fake_with_load_markets(monkeypatch)
+        storage = CcxtStorage()
+        try:
+            storage._ensure_exchange("FAKE.X")
+        finally:
+            storage.close()
+
+        assert throttled_at_load == [False]
 
 
 # ─── retry helper unit tests ──────────────────────────────────────────────────
+
+
+class _ThrottlingFailingExchange(FakeCcxtExchange):
+    """Fails the first ``fail_times`` calls *after* paying the throttle, like a real 429 does."""
+
+    def __init__(self, *, fail_times: int, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._fail_times = fail_times
+
+    async def fetch_ohlcv(self, *args: Any, **kwargs: Any) -> list[list[float]]:
+        if self.call_count < self._fail_times:
+            self.call_count += 1
+            await self.throttle(self.throttle_cost)
+            raise ccxt.NetworkError(f"boom on attempt {self.call_count}")
+        return await super().fetch_ohlcv(*args, **kwargs)
 
 
 @pytest.mark.asyncio
@@ -436,14 +565,14 @@ class TestRetryableFetch:
             )
         assert attempts == 1
 
-    async def test_acquires_rate_limiter_before_each_attempt(self):
+    async def test_does_not_acquire_the_limiter_directly(self):
+        """Acquisition lives in the throttle override inside ``fetch2``; a second acquire here
+        would double-charge every attempt."""
         attempts = 0
-        acquire_count = 0
 
-        class _Limiter:
-            async def acquire(self, endpoint: str) -> None:
-                nonlocal acquire_count
-                acquire_count += 1
+        class _ExplodingLimiter:
+            async def acquire(self, *a: Any, **kw: Any) -> None:
+                raise AssertionError("_retryable_fetch must not acquire — the throttle hook does")
 
             def report_limit_hit(self, **kw: Any) -> None:
                 pass
@@ -457,7 +586,7 @@ class TestRetryableFetch:
 
         result = await _retryable_fetch(
             call,
-            rate_limiter=_Limiter(),
+            rate_limiter=_ExplodingLimiter(),
             max_attempts=5,
             base_delay=0.0,
             jitter=0.0,
@@ -465,7 +594,45 @@ class TestRetryableFetch:
         )
         assert result == "ok"
         assert attempts == 3
-        assert acquire_count == 3  # once per attempt
+
+    async def test_every_attempt_is_charged_through_the_throttle(self):
+        """Retries are not free: each attempt re-enters ``fetch2`` and pays the endpoint's cost."""
+        fake = _ThrottlingFailingExchange(fail_times=2, max_rps=1000, latency_ms=0.0, throttle_cost=2.0)
+        limiter = _build_rate_limiter(capacity=100, refill_rate=1000.0)
+        install_rate_limiter_hooks(fake, limiter, label="FAKE.X")
+
+        result = await _retryable_fetch(
+            lambda: fake.fetch_ohlcv("BTC/USDT", "1h"),
+            rate_limiter=limiter,
+            max_attempts=5,
+            base_delay=0.0,
+            jitter=0.0,
+            sleep=self._no_sleep,
+        )
+        assert len(result) > 0
+        assert fake.call_count == 3
+        state = await limiter.get_pool_state("ccxt_rest")
+        assert state is not None
+        assert state["consumed"] == pytest.approx(3 * 2.0)
+
+    async def test_nothing_is_charged_without_the_throttle_hook(self):
+        """Negative control for the test above: the charge comes from the installed hook, not
+        from ``_retryable_fetch``."""
+        fake = _ThrottlingFailingExchange(fail_times=2, max_rps=1000, latency_ms=0.0, throttle_cost=2.0)
+        limiter = _build_rate_limiter(capacity=100, refill_rate=1000.0)
+
+        await _retryable_fetch(
+            lambda: fake.fetch_ohlcv("BTC/USDT", "1h"),
+            rate_limiter=limiter,
+            max_attempts=5,
+            base_delay=0.0,
+            jitter=0.0,
+            sleep=self._no_sleep,
+        )
+        assert fake.call_count == 3
+        state = await limiter.get_pool_state("ccxt_rest")
+        assert state is not None
+        assert state["consumed"] == 0.0
 
     async def test_reports_rate_limit_hit_to_limiter(self):
         hits: list[dict[str, Any]] = []
@@ -489,7 +656,7 @@ class TestRetryableFetch:
         await _retryable_fetch(
             call,
             rate_limiter=_Limiter(),
-            rate_limiter_endpoint="ccxt_rest",
+            rate_limit_pool="ccxt_rest",
             context="OKX BTCUSDT",
             max_attempts=3,
             base_delay=0.0,
@@ -497,7 +664,10 @@ class TestRetryableFetch:
             sleep=self._no_sleep,
         )
         assert len(hits) == 1
-        assert hits[0]["endpoint"] == "ccxt_rest"
+        assert hits[0]["pool_name"] == "ccxt_rest"
+        # ``endpoint=`` would close every pool in that endpoint's cost list — including ``orders``,
+        # stalling the write path on a read-path 429.
+        assert "endpoint" not in hits[0]
         assert "OKX BTCUSDT" in hits[0]["reason"]
 
     async def test_non_rate_limit_errors_do_not_report_to_limiter(self):
@@ -695,7 +865,6 @@ class TestCcxtStorageFlakyExchangeRetries:
             latency_ms=0.0,
         )
         # Patch: fail only for one specific symbol to get a partial outcome.
-        original_fetch = flaky.fetch_ohlcv
 
         async def selective_fetch(symbol, timeframe, **kw):
             if symbol == "LINK/USDT":
@@ -728,14 +897,13 @@ class TestCcxtStorageFlakyExchangeRetries:
 @pytest.mark.asyncio
 class TestResponseHeaderSync:
     """
-    Verify that ``_sync_rate_limiter_from_response_headers`` is invoked for every
-    successful page fetch and that the rate limiter's modeled state is updated
-    from the exchange-reported budget.
+    Verify that the ``on_rest_response`` hook installed by ``_ensure_exchange`` invokes the
+    exchange's header parser for every successful page fetch, and that the parsed budget
+    actually moves the rate limiter's modeled state.
 
-    The sync is best-effort — when concurrency is in play the exchange-wide
-    ``last_response_headers`` attribute may be read from a different request than
-    our own. We don't test that race here (it's accepted in the design); we only
-    verify that the wiring happens and that the parser is invoked with real values.
+    The hook runs inside CCXT's fetch pipeline with THIS request's headers — unlike the deleted
+    best-effort read of the exchange-wide ``last_response_headers``, which under concurrency
+    could belong to a neighbouring request.
     """
 
     BARS_PER_PAGE = 10
@@ -744,26 +912,38 @@ class TestResponseHeaderSync:
     def _spans(self) -> tuple[int, int]:
         return _bar_span(self.BARS_PER_PAGE * self.PAGES_PER_SYMBOL)
 
-    async def test_okx_headers_drive_sync_from_exchange(self):
-        starting_budget = 20
+    @staticmethod
+    def _spy_sync(limiter: ExchangeRateLimiter) -> list[dict[str, Any]]:
+        """Record every ``sync_from_exchange`` call while still applying it."""
+        calls: list[dict[str, Any]] = []
+        real_sync = limiter.sync_from_exchange
+
+        def _spy(pool_name: str, **kw: Any) -> None:
+            calls.append({"pool_name": pool_name, **kw})
+            real_sync(pool_name, **kw)
+
+        limiter.sync_from_exchange = _spy  # type: ignore[method-assign]
+        return calls
+
+    @staticmethod
+    def _drive_hook(fake: FakeCcxtExchange, headers: dict[str, str]) -> None:
+        """Invoke the installed post-response hook exactly as CCXT's fetch pipeline does."""
+        fake.on_rest_response(200, "OK", "https://fake/BTC-USDT", "GET", headers, "{}", {}, None)
+
+    async def test_headers_drive_sync_once_per_page(self):
         fake = FakeCcxtExchange(
-            id="okx",
+            id="binanceusdm",
             max_rps=1000,
             bars_per_page=self.BARS_PER_PAGE,
             latency_ms=0.0,
-            server_budget=starting_budget,
+            server_budget=20,
         )
         limiter = _build_rate_limiter(capacity=1000, refill_rate=1000.0)
         storage = _build_storage(exchange=fake, limiter=limiter)
+        # The sync must ride the installed hook — a bound method would still be the fake's no-op.
+        assert getattr(fake.on_rest_response, "__self__", None) is None
 
-        sync_calls: list[dict[str, Any]] = []
-        real_sync = limiter.sync_from_exchange
-
-        def _spy_sync(pool_name: str, **kw: Any) -> None:
-            sync_calls.append({"pool_name": pool_name, **kw})
-            real_sync(pool_name, **kw)
-
-        limiter.sync_from_exchange = _spy_sync  # type: ignore[method-assign]
+        sync_calls = self._spy_sync(limiter)
 
         since, until = self._spans()
         await storage._async_fetch_ohlcv_multi(
@@ -776,16 +956,114 @@ class TestResponseHeaderSync:
         # that it's > 1 and matches the exchange's actual call count).
         assert len(sync_calls) == fake.call_count
         assert len(sync_calls) >= self.PAGES_PER_SYMBOL
-        # each call targets the rest pool with a numeric remaining budget.
-        for call in sync_calls:
-            assert call["pool_name"] == "ccxt_rest"
-            assert "remaining" in call and call["remaining"] >= 0
-        # budget decrements monotonically and by exactly one per successful call.
-        remainings = [c["remaining"] for c in sync_calls]
-        assert remainings == sorted(remainings, reverse=True), (
-            f"expected monotonically-decreasing remaining, got {remainings}"
+        assert all(c["pool_name"] == "ccxt_rest" for c in sync_calls)
+        # used weight climbs by exactly one per successful call
+        assert [c["used"] for c in sync_calls] == list(range(1, fake.call_count + 1))
+
+    async def test_binance_headers_drive_sync_from_exchange(self):
+        """Binance reports *used* weight, in whatever casing aiohttp handed ccxt."""
+        fake = FakeCcxtExchange(
+            id="binanceusdm",
+            max_rps=1000,
+            bars_per_page=self.BARS_PER_PAGE,
+            latency_ms=0.0,
+            server_budget=500,
+            throttle_cost=5.0,  # so the pinned level differs from what the acquires alone leave
         )
-        assert remainings[-1] == starting_budget - fake.call_count
+        limiter = _build_rate_limiter(capacity=100, refill_rate=1.0)
+        storage = _build_storage(exchange=fake, limiter=limiter)
+        sync_calls = self._spy_sync(limiter)
+
+        since, until = _span_for_pages(3, self.BARS_PER_PAGE)
+        await storage._async_fetch_ohlcv_multi(
+            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
+        )
+
+        # neither the canonical constant nor lowercase — the parser's lookup is case-insensitive
+        assert "X-Mbx-Used-Weight-1m" in fake.last_response_headers
+        assert "X-MBX-USED-WEIGHT-1M" not in fake.last_response_headers
+        assert fake.call_count == 3
+        assert [c["used"] for c in sync_calls] == [1, 2, 3]
+        assert all(c["pool_name"] == "ccxt_rest" for c in sync_calls)
+
+        await asyncio.sleep(0.01)  # RatePool.sync applies through a task
+        state = await limiter.get_pool_state("ccxt_rest")
+        assert state is not None
+        assert state["consumed"] == pytest.approx(3 * 5.0)
+        # pinned to capacity - used by the header, not to the 100 - 15 the acquires alone leave
+        assert state["remaining"] == pytest.approx(97.0, abs=2.0)
+
+    async def test_sync_reads_the_hook_headers_not_the_stale_attribute(self):
+        """``last_response_headers`` is exchange-wide and lags; the hook argument is this
+        request's truth. Point them at different budgets and the limiter must see the hook's."""
+        fake = FakeCcxtExchange(
+            id="binanceusdm",
+            max_rps=1000,
+            bars_per_page=self.BARS_PER_PAGE,
+            latency_ms=0.0,
+            server_budget=50,
+            stale_headers={"X-Mbx-Used-Weight-1m": "999"},
+        )
+        limiter = _build_rate_limiter(capacity=1000, refill_rate=1000.0)
+        storage = _build_storage(exchange=fake, limiter=limiter)
+        sync_calls = self._spy_sync(limiter)
+
+        since, until = _span_for_pages(3, self.BARS_PER_PAGE)
+        await storage._async_fetch_ohlcv_multi(
+            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
+        )
+
+        assert fake.last_response_headers["X-Mbx-Used-Weight-1m"] == "999"  # the decoy is in place
+        assert [c["used"] for c in sync_calls] == [1, 2, 3]
+
+    async def test_header_sync_moves_pool_state(self):
+        fake = FakeCcxtExchange(id="binanceusdm", max_rps=1000, latency_ms=0.0)
+        limiter = _build_rate_limiter(capacity=100, refill_rate=1.0)
+        install_rate_limiter_hooks(fake, limiter, label="FAKE.X")
+
+        await limiter.acquire("rest")  # the bucket only exists once something acquires
+        before = await limiter.get_pool_state("ccxt_rest")
+        assert before is not None
+        assert before["remaining"] == pytest.approx(99.0, abs=1.0)
+
+        self._drive_hook(fake, {"X-Mbx-Used-Weight-1m": "93"})  # 100 capacity - 93 used
+        await asyncio.sleep(0.01)
+
+        after = await limiter.get_pool_state("ccxt_rest")
+        assert after is not None
+        assert after["remaining"] == pytest.approx(7.0, abs=1.0)
+
+    async def test_headerless_response_leaves_pool_state_alone(self):
+        """Negative control for the two tests above: no headers, no movement."""
+        fake = FakeCcxtExchange(id="binanceusdm", max_rps=1000, latency_ms=0.0)
+        limiter = _build_rate_limiter(capacity=100, refill_rate=1.0)
+        install_rate_limiter_hooks(fake, limiter, label="FAKE.X")
+
+        await limiter.acquire("rest")
+        self._drive_hook(fake, {})
+        await asyncio.sleep(0.01)
+
+        state = await limiter.get_pool_state("ccxt_rest")
+        assert state is not None
+        assert state["remaining"] == pytest.approx(99.0, abs=1.0)
+
+    async def test_header_sync_creates_a_never_acquired_bucket(self):
+        """``set_remaining`` now seeds the bucket from the pool config, so a header that lands
+        before the first acquire is applied instead of discarded."""
+        fake = FakeCcxtExchange(id="binanceusdm", max_rps=1000, latency_ms=0.0)
+        limiter = _build_rate_limiter(capacity=100, refill_rate=1.0)
+        install_rate_limiter_hooks(fake, limiter, label="FAKE.X")
+
+        untouched = await limiter.get_pool_state("ccxt_rest")
+        assert untouched is not None
+        assert untouched["remaining"] == 100.0  # nothing acquired yet -> capacity fallback
+
+        self._drive_hook(fake, {"X-Mbx-Used-Weight-1m": "88"})  # 100 capacity - 88 used
+        await asyncio.sleep(0.01)
+
+        state = await limiter.get_pool_state("ccxt_rest")
+        assert state is not None
+        assert state["remaining"] == pytest.approx(12.0, abs=1.0)
 
     async def test_unknown_exchange_skips_sync_silently(self):
         """If the exchange id has no registered parser, sync is a no-op (no error)."""
@@ -813,7 +1091,7 @@ class TestResponseHeaderSync:
     async def test_empty_headers_skip_sync_silently(self):
         """When the exchange hasn't populated headers yet, sync is a no-op."""
         fake = FakeCcxtExchange(
-            id="okx",
+            id="binanceusdm",
             max_rps=1000,
             bars_per_page=self.BARS_PER_PAGE,
             latency_ms=0.0,
@@ -838,10 +1116,10 @@ class TestResponseHeaderSync:
         def _broken_parser(headers: dict, rl: Any) -> None:
             raise RuntimeError("simulated parser bug")
 
-        monkeypatch.setitem(rate_limits.HEADER_PARSERS, "okx", _broken_parser)
+        monkeypatch.setitem(rate_limits.HEADER_PARSERS, "binanceusdm", _broken_parser)
 
         fake = FakeCcxtExchange(
-            id="okx",
+            id="binanceusdm",
             max_rps=1000,
             bars_per_page=self.BARS_PER_PAGE,
             latency_ms=0.0,
@@ -860,7 +1138,7 @@ class TestResponseHeaderSync:
     async def test_no_rate_limiter_skips_sync(self):
         """When no limiter is attached, don't even attempt to parse headers."""
         fake = FakeCcxtExchange(
-            id="okx",
+            id="binanceusdm",
             max_rps=1000,
             bars_per_page=self.BARS_PER_PAGE,
             latency_ms=0.0,
@@ -893,15 +1171,25 @@ class TestRateLimiterE2ECrossSubsystem:
     and verifies end-to-end:
 
     * Combined arrival rate never trips the exchange's 429 budget.
-    * ``limiter.acquire`` fires for every request across both paths (throttle
-      side on ExchangeManager, CcxtStorage-internal acquire for storage side).
-    * ``on_rest_response`` hook fires with correct headers for every
-      ExchangeManager-originated response.
+    * ``limiter.acquire`` fires for every request across both paths — both now go
+      through the throttle override, the storage's via ``install_rate_limiter_hooks``.
     * ``limiter.sync_from_exchange`` is called from both paths and decrements
       a shared remaining-budget view.
 
     The test is self-contained — no network, no real CCXT exchange instance.
     """
+
+    def _wire_manager(self, fake: FakeCcxtExchange, limiter: ExchangeRateLimiter) -> ExchangeManager:
+        """Attach *limiter* through the real ``attach_rate_limiter`` code path."""
+        manager = ExchangeManager(
+            exchange_name="binance.um",
+            factory_params={"exchange": "binance.um"},
+            initial_exchange=fake,
+            health_monitor=DummyHealthMonitor(),
+            time_provider=LiveTimeProvider(),
+        )
+        manager.attach_rate_limiter(limiter)
+        return manager
 
     async def test_shared_limiter_across_storage_and_manager(self):
         # --- Budget design -----------------------------------------------------
@@ -909,17 +1197,18 @@ class TestRateLimiterE2ECrossSubsystem:
         # throughput over any 1s window is ≤ 10 (half of the mock's 20/s threshold).
         # Gap must stay generous: scheduling jitter can make the limiter's sliding
         # throughput briefly higher than its steady refill rate.
+        # No server budget: the header sync re-pins the bucket to ``min(capacity, reported)`` on
+        # every response, which would fight the pacing this test measures. Sync is covered below.
         fake = FakeCcxtExchange(
-            id="okx",
+            id="binanceusdm",
             max_rps=20,
             window_sec=1.0,
             bars_per_page=10,
             latency_ms=2.0,
-            server_budget=1_000,
+            server_budget=None,
         )
         limiter = _build_rate_limiter(capacity=5, refill_rate=5.0, cooldown=0.2)
 
-        # --- CcxtStorage side --------------------------------------------------
         storage = _build_storage(exchange=fake, limiter=limiter)
         # Spy on limiter.acquire to count how many times each path hit the bucket.
         acquire_count = 0
@@ -931,29 +1220,7 @@ class TestRateLimiterE2ECrossSubsystem:
             await real_acquire(endpoint, **kw)
 
         limiter.acquire = _spy_acquire  # type: ignore[method-assign]
-
-        sync_count = 0
-        real_sync = limiter.sync_from_exchange
-
-        def _spy_sync(pool_name, **kw):
-            nonlocal sync_count
-            sync_count += 1
-            real_sync(pool_name, **kw)
-
-        limiter.sync_from_exchange = _spy_sync  # type: ignore[method-assign]
-
-        # --- ExchangeManager side ---------------------------------------------
-        # Wire the same limiter via the real attach_rate_limiter code path.
-        # This replaces fake.throttle with one that calls limiter.acquire, and
-        # wraps fake.on_rest_response with the header-sync hook.
-        manager = ExchangeManager(
-            exchange_name="okx",
-            factory_params={"exchange": "okx"},
-            initial_exchange=fake,
-            health_monitor=DummyHealthMonitor(),
-            time_provider=LiveTimeProvider(),
-        )
-        manager.attach_rate_limiter(limiter)
+        manager = self._wire_manager(fake, limiter)
 
         # --- Concurrent traffic -----------------------------------------------
         storage_symbols = _instruments("BTCUSDT", "ETHUSDT", "SOLUSDT")
@@ -970,7 +1237,7 @@ class TestRateLimiterE2ECrossSubsystem:
             hits = 0
             for i in range(10):
                 bars = await manager.exchange.fetch_ohlcv(
-                    f"BTC/USDT", "1h", since=since + i * TF_MS, limit=1,
+                    "BTC/USDT", "1h", since=since + i * TF_MS, limit=1,
                 )
                 hits += len(bars)
             return hits
@@ -991,21 +1258,66 @@ class TestRateLimiterE2ECrossSubsystem:
             assert len(bars) > 0, f"storage path: no bars for {sym}"
         assert manager_bars > 0, "manager path: no bars returned"
 
-        # Every exchange call must have gone through the limiter's acquire() —
-        # either via CcxtStorage's pre-fetch acquire or via the ExchangeManager-
-        # attached throttle override.
+        # Every exchange call must have gone through the limiter's acquire() — the
+        # throttle override is now the single charging point for both paths.
         assert acquire_count >= fake.call_count, (
             f"acquire fired {acquire_count} times for {fake.call_count} exchange "
             "calls — some requests bypassed the limiter"
         )
 
-        # Header sync must have fired for every successful call (both paths feed
-        # the same limiter): once per ExchangeManager call via on_rest_response,
-        # once per CcxtStorage page via best-effort last_response_headers read.
-        assert sync_count >= fake.call_count, (
-            f"sync_from_exchange fired {sync_count} times for {fake.call_count} "
-            "calls — some responses did not drive limiter sync"
+    async def test_both_paths_drive_header_sync(self):
+        """Every response on either path feeds the shared limiter's modeled budget.
+
+        The limiter is deliberately generous here — this pins the sync wiring, not pacing.
+        """
+        fake = FakeCcxtExchange(
+            id="binanceusdm",
+            max_rps=1000,
+            window_sec=1.0,
+            bars_per_page=10,
+            latency_ms=0.0,
+            server_budget=1_000,
         )
+        limiter = _build_rate_limiter(capacity=1000, refill_rate=1000.0)
+        storage = _build_storage(exchange=fake, limiter=limiter)
+
+        sync_count = 0
+        real_sync = limiter.sync_from_exchange
+
+        def _spy_sync(pool_name, **kw):
+            nonlocal sync_count
+            sync_count += 1
+            real_sync(pool_name, **kw)
+
+        limiter.sync_from_exchange = _spy_sync  # type: ignore[method-assign]
+        manager = self._wire_manager(fake, limiter)
+
+        since, until = _span_for_pages(3)
+        await storage._async_fetch_ohlcv_multi(fake, _instruments("BTCUSDT"), "1h", since, until)
+        await manager.exchange.fetch_ohlcv("BTC/USDT", "1h", since=since, limit=1)
+
+        assert fake.call_count == 4  # 3 storage pages + 1 manager call
+        # Each response drives at least one sync; the shared fake is wrapped by both wirings,
+        # so the parser may run more than once per response (separate exchanges in production).
+        assert sync_count >= fake.call_count
+
+    async def test_parserless_exchange_drives_no_sync(self):
+        """Negative control for the test above: no parser for the id, no sync at all."""
+        fake = FakeCcxtExchange(
+            id="exchange-without-a-parser", max_rps=1000, latency_ms=0.0, server_budget=1_000
+        )
+        limiter = _build_rate_limiter(capacity=1000, refill_rate=1000.0)
+        storage = _build_storage(exchange=fake, limiter=limiter)
+
+        sync_calls: list[Any] = []
+        limiter.sync_from_exchange = lambda *a, **kw: sync_calls.append((a, kw))  # type: ignore[method-assign]
+        self._wire_manager(fake, limiter)
+
+        since, until = _span_for_pages(3)
+        await storage._async_fetch_ohlcv_multi(fake, _instruments("BTCUSDT"), "1h", since, until)
+
+        assert fake.call_count == 3
+        assert sync_calls == []
 
     async def test_exchange_manager_path_alone_stays_under_budget(self):
         """Isolate the live path: rapid-fire REST calls through ExchangeManager.throttle

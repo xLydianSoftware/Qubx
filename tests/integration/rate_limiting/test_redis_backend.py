@@ -13,6 +13,8 @@ import threading
 
 import pytest
 
+from qubx.rate_limiting.config import PoolConfig
+from qubx.rate_limiting.pools import RatePool
 from qubx.rate_limiting.redis_backend import RedisBackend
 
 
@@ -89,7 +91,7 @@ class TestRedisBackendCrossLoop:
         key = "qubx:test:rl:get_set"
 
         async def write():
-            await backend.set_remaining(key, remaining=42.0)
+            await backend.set_remaining(key, remaining=42.0, capacity=100.0, refill_rate=0.0)
 
         async def read() -> float | None:
             return await backend.get_remaining(key, capacity=100.0, refill_rate=0.0)
@@ -107,3 +109,43 @@ class TestRedisBackendCrossLoop:
             second.close()
 
         assert remaining == pytest.approx(42.0, abs=0.5)
+
+
+@pytest.mark.integration
+class TestRedisBackendWaitTime:
+    def test_acquire_returns_the_time_it_actually_slept(self, redis_service, clear_rate_limit_keys):
+        """R4: `rate_limit.wait_seconds` is the only visibility into a deficit stall."""
+        backend = RedisBackend(redis_service)
+        key = "qubx:test:rl:wait_time"
+
+        async def run() -> tuple[float, float]:
+            immediate = await backend.acquire(key, weight=10.0, capacity=10.0, refill_rate=10.0)
+            delayed = await backend.acquire(key, weight=5.0, capacity=10.0, refill_rate=10.0)
+            return immediate, delayed
+
+        loop = asyncio.new_event_loop()
+        try:
+            immediate, delayed = loop.run_until_complete(run())
+        finally:
+            loop.close()
+
+        assert immediate == 0.0  # negative control: an unblocked acquire reports no wait
+        assert delayed > 0.0
+
+    def test_oversized_weight_does_not_retry_forever(self, redis_service, clear_rate_limit_keys):
+        """R3: RatePool clamps before the backend's unbounded retry loop ever sees the weight."""
+        pool = RatePool(
+            PoolConfig("rest", "ip", capacity=10, refill_rate=10.0),
+            "test",
+            "oversized",
+            backend=RedisBackend(redis_service),
+        )
+        pool._key = "qubx:test:rl:oversized"  # keep the bucket inside the cleanup fixture's namespace
+
+        loop = asyncio.new_event_loop()
+        try:
+            loop.run_until_complete(asyncio.wait_for(pool.acquire(1e6, gate_max_wait=1.0), timeout=10.0))
+        finally:
+            loop.close()
+
+        assert pool.consumed == 10.0

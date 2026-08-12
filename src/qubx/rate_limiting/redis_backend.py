@@ -135,6 +135,7 @@ class RedisBackend(IRateLimitBackend):
     async def acquire(self, key: str, weight: float, capacity: float, refill_rate: float) -> float:
         acquire_script, _, _ = self._scripts_for_current_loop()
         now = time.time()
+        waited = 0.0
         while True:
             wait_ms = await acquire_script(
                 keys=[key],
@@ -142,10 +143,11 @@ class RedisBackend(IRateLimitBackend):
             )
             wait_ms = float(wait_ms)
             if wait_ms <= 0:
-                return 0.0
+                return waited
             # Need to wait — sleep and retry
             wait_s = wait_ms / 1000.0
             await asyncio.sleep(wait_s)
+            waited += wait_s
             now = time.time()
 
     async def get_remaining(self, key: str, capacity: float = 0, refill_rate: float = 0) -> float | None:
@@ -160,7 +162,8 @@ class RedisBackend(IRateLimitBackend):
             return None
         return result / 1000.0  # convert millitokens back
 
-    async def set_remaining(self, key: str, remaining: float) -> None:
+    async def set_remaining(self, key: str, remaining: float, capacity: float = 0, refill_rate: float = 0) -> None:
+        # the Lua script creates the key unconditionally, so bucket parameters are not needed here
         _, _, set_remaining_script = self._scripts_for_current_loop()
         now = time.time()
         await set_remaining_script(

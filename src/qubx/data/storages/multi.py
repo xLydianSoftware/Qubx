@@ -464,8 +464,10 @@ class MultiStorage(IStorage):
             for s in self._storages:
                 try:
                     readers.append(s.get_reader(exchange, market))
-                except Exception:
-                    pass
+                except Exception as e:
+                    # the reader set is cached for the run, so a transient failure here (e.g. a rate
+                    # limit gate timeout) drops that storage for good — say so rather than swallow it
+                    logger.warning(f"{s.__class__.__name__} has no reader for {exchange}:{market}: {e}")
             if not readers:
                 raise ValueError(
                     f"No reader available for {exchange}:{market} in any of the {len(self._storages)} storages"

@@ -15,11 +15,16 @@ class PoolConfig:
     A pool represents one independent rate limit enforced by the exchange.
     Exchanges typically have multiple pools (e.g., request weight + order count).
 
+    `capacity`/`refill_rate` are denominated in the unit the venue itself reports: request weight for
+    the Binance family (`X-MBX-USED-WEIGHT-1M`), ccxt cost elsewhere (a budget of
+    `1000 / exchange.rateLimit` units per second). No conversion is applied — the raw ccxt cost is
+    charged as-is.
+
     Args:
         name: Pool identifier (e.g., "request_weight", "orders", "sendtx")
         scope: What the limit is scoped to: "ip", "account", "address", or "local"
         capacity: Maximum tokens in the bucket
-        refill_rate: Tokens replenished per second (0 for quota pools)
+        refill_rate: Tokens replenished per second (0 for quota pools; rate pools require > 0)
         pool_type: "rate" for time-based refill, "quota" for externally-managed
         cooldown: Seconds to close gate when rate limit is hit
     """

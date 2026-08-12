@@ -10,7 +10,7 @@ A **pool** represents one independent rate limit enforced by an exchange. Most e
 
 There are two pool types:
 
-- **Rate pool** (`pool_type="rate"`) — Time-based token bucket. Tokens refill at a constant rate. When depleted, a gate closes and reopens on a timer. Used for request weight limits, message rate limits, etc.
+- **Rate pool** (`pool_type="rate"`) — Time-based token bucket. Tokens refill at a constant rate. When the exchange reports a limit hit, a gate closes until a deadline. Used for request weight limits, message rate limits, etc.
 
 - **Quota pool** (`pool_type="quota"`) — Externally managed budget with no time-based refill. The exchange controls replenishment (e.g., Lighter's volume quota which is replenished by trading volume). When depleted, the gate closes and stays closed until the exchange reports positive remaining via `sync_from_exchange()`.
 
@@ -35,20 +35,20 @@ An **endpoint** maps an API call to one or more pool costs. A single request can
 
 ### Gates
 
-Each pool has a **gate** (an `asyncio.Event`). When open, `acquire()` proceeds immediately. When closed, all requests for that pool block until the gate reopens.
+Each pool has a **gate**, held as a monotonic deadline (`_gate_until`) rather than an `asyncio.Event`. A deadline is loop-agnostic and needs no running loop, so a gate can be closed from any thread and is observed identically from every event loop sharing the limiter. When open, `acquire()` proceeds immediately. When closed, requests for that pool wait until the deadline passes, or raise `RateLimitGateTimeout` after `gate_max_wait` seconds.
 
-- **Rate pool gates** reopen automatically after a cooldown timer.
-- **Quota pool gates** never reopen on a timer — only when the exchange reports positive remaining via `sync_from_exchange()`, or on reconnection via `reset_gates()`.
+- **Rate pool gates** close for `cooldown` seconds (or `retry_after` when the exchange supplies one) and reopen once that deadline passes. Repeated hits extend the deadline; they never shorten it.
+- **Quota pool gates** close indefinitely (`math.inf`) — they reopen only when the exchange reports positive remaining via `sync_from_exchange()`, or on reconnection via `reset_gates()`.
 
 ### Scopes
 
 Pools are scoped to what the exchange rate-limits by:
 
-- `"ip"` — Per IP address (REST API weight limits)
-- `"account"` — Per trading account
+- `"ip"` — Per IP address (REST API weight limits). Id is the discovered egress IP (`egress_ip: auto`) or the one configured explicitly.
+- `"account"` — Per trading account. Id is `acct_<sha256(api_key)[:16]>` — hashed so the raw key never reaches a Redis key, a log line or a metric tag. Two bots holding the same API key therefore share one bucket automatically.
 - `"address"` — Per L1/wallet address (Lighter sendTx limits)
 
-The scope determines the backend storage key, enabling future cross-bot coordination via a shared Redis backend.
+The scope determines the backend storage key, so under `backend: redis` — what production deployments run; the default is the in-process `local` backend — every bot resolving the same scope id shares one bucket. A scope whose id cannot be resolved — no API key configured, no egress IP discovered — falls back to a **per-process** id, not a shared literal: an unknown identity is no evidence of a shared one, and a shared literal would collapse every bot on the backend onto one bucket at 1/N of the budget each. Such a bot is limited correctly on its own, just not coordinated with its peers.
 
 ## Defining Configuration
 
@@ -138,6 +138,13 @@ async def send_order(self, order_params):
 
 The engine iterates the endpoint's pool costs in order, acquiring from each pool. If any pool's gate is closed, `acquire()` blocks (for rate pools) or raises immediately (for quota pools).
 
+### The ccxt connector
+
+`qubx.connectors.ccxt.rate_limits` declares two pools for every ccxt venue:
+
+- `ccxt_rest` (IP-scoped) — acquired by the throttle hook that `install_rate_limiter_hooks()` puts on the exchange, so every REST call ccxt makes is charged its real ccxt cost from inside `fetch2`, storage/warmup fetches included. What is charged depends on when the hook is installed: the storage path installs it before the first call, so even that storage's `load_markets()` is charged, while the live connector attaches its limiter after the exchange is built (`factory.py`), so the connector's own initial markets load is not.
+- `orders` (account-scoped) — acquired by the connector before `create_order` / `cancel_order` / `edit_order`. Those endpoints map to `[("orders", 1)]` only: the IP weight of the same request is already charged by the throttle hook, so naming `ccxt_rest` again would double-charge it.
+
 ### Syncing state from exchange responses
 
 When the exchange reports actual usage in response headers or WebSocket messages, call `sync_from_exchange()` to correct drift between the model and reality.
@@ -180,7 +187,7 @@ async def _handle_error(self, error: dict):
             )
 ```
 
-You can target a specific pool, an endpoint (closes all pools in its costs), or pass nothing to close all rate pools.
+You can target a specific pool, an endpoint (closes all pools in its costs), or pass nothing to close all rate pools. Prefer `pool_name=` — `endpoint=` closes every pool in that endpoint's cost list, so a read-path 429 reported by endpoint would also close the order pool and stall the write path.
 
 ### Resetting on reconnection
 
@@ -257,6 +264,7 @@ Available metrics (all tagged with `exchange`, `pool`, `scope`):
 | `rate_limit.hits` | Cumulative rate limit hits reported |
 | `rate_limit.wait_seconds` | Cumulative time spent waiting for budget |
 | `rate_limit.consumed` | Cumulative tokens consumed |
+| `rate_limit.gate_timeouts` | Cumulative `RateLimitGateTimeout` raised by this pool |
 
 ## Architecture
 
@@ -269,14 +277,14 @@ ExchangeRateLimiter (engine.py)
 ├── collect_metrics()          → delegates to pool.get_state()
 │
 ├── RatePool (pools.py)        — time-based token bucket
-│   ├── acquire()              waits for gate, then backend.acquire()
-│   ├── close_gate()           clears gate, schedules timed reopen
+│   ├── acquire()              waits out the gate deadline, then backend.acquire()
+│   ├── close_gate()           pushes the gate deadline out by cooldown
 │   ├── sync()                 updates backend token count
 │   └── get_state()            reads remaining from backend
 │
 └── QuotaPool (pools.py)       — externally managed
     ├── acquire()              fails fast if depleted (RateLimitGateTimeout)
-    ├── close_gate()           clears gate, NO timed reopen
+    ├── close_gate()           sets the gate deadline to math.inf
     ├── sync()                 updates remaining, reopens gate if positive
     └── get_state()            returns in-memory remaining
 ```

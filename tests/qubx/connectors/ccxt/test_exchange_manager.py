@@ -3,6 +3,7 @@
 from unittest.mock import Mock, patch
 
 from qubx.connectors.ccxt.exchange_manager import ExchangeManager
+from qubx.connectors.ccxt.rate_limits import HEADER_PARSERS
 from qubx.core.basics import Instrument, LiveTimeProvider
 from qubx.core.lookups import lookup
 from qubx.health.dummy import DummyHealthMonitor
@@ -373,7 +374,7 @@ class TestExchangeManagerIntegration:
 # ─── rate-limiter wiring tests (xLydianSoftware/Qubx#264) ─────────────────────
 
 
-def _make_bare_mock_exchange(id: str = "okx") -> Mock:
+def _make_bare_mock_exchange(id: str = "binanceusdm") -> Mock:
     """A Mock that mimics enough of a CCXT exchange for ``attach_rate_limiter`` to run."""
     mock = Mock()
     mock.id = id
@@ -398,7 +399,7 @@ def _make_manager(exchange) -> ExchangeManager:
 
 class TestExchangeManagerRateLimiterWiring:
     def test_attach_rate_limiter_overrides_throttle(self):
-        mock_exchange = _make_bare_mock_exchange("okx")
+        mock_exchange = _make_bare_mock_exchange("binanceusdm")
         original_throttle = mock_exchange.throttle
         manager = _make_manager(mock_exchange)
 
@@ -409,8 +410,8 @@ class TestExchangeManagerRateLimiterWiring:
         assert mock_exchange.enableRateLimit is True
 
     def test_attach_rate_limiter_installs_header_sync_for_known_exchange(self):
-        """For OKX (known exchange), on_rest_response is wrapped."""
-        mock_exchange = _make_bare_mock_exchange("okx")
+        """For a venue with a registered parser, on_rest_response is wrapped."""
+        mock_exchange = _make_bare_mock_exchange("binanceusdm")
         original_on_rest = mock_exchange.on_rest_response
         manager = _make_manager(mock_exchange)
 
@@ -422,7 +423,7 @@ class TestExchangeManagerRateLimiterWiring:
     def test_header_sync_hook_calls_parser_and_preserves_original(self):
         """When the hook fires, parser is called with the headers AND the original
         ``on_rest_response`` is still invoked so CCXT's own logic runs."""
-        mock_exchange = _make_bare_mock_exchange("okx")
+        mock_exchange = _make_bare_mock_exchange("binanceusdm")
         original_on_rest = mock_exchange.on_rest_response
         original_on_rest.return_value = "orig-return-value"
         manager = _make_manager(mock_exchange)
@@ -430,44 +431,47 @@ class TestExchangeManagerRateLimiterWiring:
         rate_limiter = Mock()
         manager.attach_rate_limiter(rate_limiter)
 
-        # Call the installed hook with a representative OKX response
-        headers = {"x-ratelimit-remaining": "15"}
+        # Call the installed hook with a representative response
+        headers = {"X-MBX-USED-WEIGHT-1M": "15"}
         result = mock_exchange.on_rest_response(
-            200, "OK", "https://okx", "GET", headers, "{}", {}, None,
+            200, "OK", "https://binance", "GET", headers, "{}", {}, None,
         )
 
         # Original still called and its return value preserved
         original_on_rest.assert_called_once_with(
-            200, "OK", "https://okx", "GET", headers, "{}", {}, None,
+            200, "OK", "https://binance", "GET", headers, "{}", {}, None,
         )
         assert result == "orig-return-value"
 
         # Parser should have called sync_from_exchange with the parsed remaining
         rate_limiter.sync_from_exchange.assert_called_once()
         _args, kwargs = rate_limiter.sync_from_exchange.call_args
-        assert kwargs.get("remaining") == 15.0
+        assert kwargs.get("used") == 15
 
     def test_header_sync_hook_tolerates_parser_failure(self):
         """A buggy parser must not break the response pipeline."""
-        mock_exchange = _make_bare_mock_exchange("okx")
+        mock_exchange = _make_bare_mock_exchange("binanceusdm")
         original_on_rest = mock_exchange.on_rest_response
         original_on_rest.return_value = None
         manager = _make_manager(mock_exchange)
 
         rate_limiter = Mock()
 
-        with patch(
-            "qubx.connectors.ccxt.rate_limits.parse_okx_headers",
-            side_effect=RuntimeError("simulated parser bug"),
-        ):
+        def _boom(headers, limiter):
+            raise RuntimeError("simulated parser bug")
+
+        # patch the registry entry: HEADER_PARSERS holds a direct reference, so patching the
+        # module-level name would leave get_header_parser returning the real parser
+        with patch.dict(HEADER_PARSERS, {"binanceusdm": _boom}):
             manager.attach_rate_limiter(rate_limiter)
             # Should not raise despite the broken parser
             mock_exchange.on_rest_response(
-                200, "OK", "u", "GET", {"x-ratelimit-remaining": "10"}, "{}", {}, None,
+                200, "OK", "u", "GET", {"X-MBX-USED-WEIGHT-1M": "10"}, "{}", {}, None,
             )
 
         # Original still called even when parser raised
         original_on_rest.assert_called_once()
+        rate_limiter.sync_from_exchange.assert_not_called()
 
     def test_unknown_exchange_skips_header_sync(self):
         """For an exchange with no registered parser, on_rest_response stays untouched."""
@@ -485,7 +489,7 @@ class TestExchangeManagerRateLimiterWiring:
 
     def test_wiring_reapplies_after_recreation(self):
         """Both throttle and on_rest_response are reapplied on exchange recreation."""
-        first_exchange = _make_bare_mock_exchange("okx")
+        first_exchange = _make_bare_mock_exchange("binanceusdm")
         manager = _make_manager(first_exchange)
 
         rate_limiter = Mock()
@@ -494,7 +498,7 @@ class TestExchangeManagerRateLimiterWiring:
         first_wrapped_throttle = first_exchange.throttle
 
         # Simulate recreation: swap in a new exchange then fire registered callbacks
-        second_exchange = _make_bare_mock_exchange("okx")
+        second_exchange = _make_bare_mock_exchange("binanceusdm")
         original_on_rest_second = second_exchange.on_rest_response
         original_throttle_second = second_exchange.throttle
         manager._exchange = second_exchange
@@ -508,3 +512,69 @@ class TestExchangeManagerRateLimiterWiring:
         assert second_exchange.enableRateLimit is True
         assert second_exchange.on_rest_response is not original_on_rest_second
         assert second_exchange.throttle is not original_throttle_second
+
+        # and the reapplied hook drives the parser against the still-attached limiter
+        second_exchange.on_rest_response(200, "OK", "u", "GET", {"X-MBX-USED-WEIGHT-1M": "5"}, "{}", {}, None)
+        rate_limiter.sync_from_exchange.assert_called_once_with("ccxt_rest", used=5)
+
+
+class TestAttachRateLimiterIdempotence:
+    """The factory cache key collides for empty-credential venues, so the data provider and the
+    connector share one manager and attach the same limiter twice."""
+
+    def test_attaching_the_same_limiter_twice_wraps_once(self):
+        mock_exchange = _make_bare_mock_exchange("binanceusdm")
+        manager = _make_manager(mock_exchange)
+        rate_limiter = Mock()
+
+        manager.attach_rate_limiter(rate_limiter)
+        wrapped_once = mock_exchange.on_rest_response
+        manager.attach_rate_limiter(rate_limiter)
+
+        assert mock_exchange.on_rest_response is wrapped_once
+        assert len(manager._recreation_callbacks) == 1
+
+        mock_exchange.on_rest_response(200, "OK", "u", "GET", {"X-MBX-USED-WEIGHT-1M": "5"}, "{}", {}, None)
+        assert rate_limiter.sync_from_exchange.call_count == 1
+
+    def test_attaching_a_different_limiter_still_reapplies(self):
+        # negative control: the identity guard must not block a genuine swap
+        mock_exchange = _make_bare_mock_exchange("binanceusdm")
+        manager = _make_manager(mock_exchange)
+        first, second = Mock(), Mock()
+
+        manager.attach_rate_limiter(first)
+        manager.attach_rate_limiter(second)
+
+        assert manager.rate_limiter is second
+
+        # the hook is installed once and resolves the limiter at call time, so a swap re-points it
+        # rather than stacking a second wrapper — the replaced limiter must stop receiving syncs
+        mock_exchange.on_rest_response(200, "OK", "u", "GET", {"X-MBX-USED-WEIGHT-1M": "5"}, "{}", {}, None)
+        second.sync_from_exchange.assert_called_once_with("ccxt_rest", used=5)
+        first.sync_from_exchange.assert_not_called()
+
+    def test_apply_delegates_to_the_shared_installer(self):
+        """Keeps ExchangeManager and CcxtStorage on one installation path."""
+        mock_exchange = _make_bare_mock_exchange("binanceusdm")
+        manager = _make_manager(mock_exchange)
+        rate_limiter = Mock()
+
+        with patch("qubx.connectors.ccxt.exchange_manager.install_rate_limiter_hooks") as installer:
+            manager.attach_rate_limiter(rate_limiter)
+
+        installer.assert_called_once_with(mock_exchange, rate_limiter, label=manager._exchange_name)
+
+    def test_recreation_callback_delegates_to_the_shared_installer(self):
+        mock_exchange = _make_bare_mock_exchange("binanceusdm")
+        manager = _make_manager(mock_exchange)
+        rate_limiter = Mock()
+        manager.attach_rate_limiter(rate_limiter)
+
+        second_exchange = _make_bare_mock_exchange("binanceusdm")
+        manager._exchange = second_exchange
+        with patch("qubx.connectors.ccxt.exchange_manager.install_rate_limiter_hooks") as installer:
+            for cb in manager._recreation_callbacks:
+                cb()
+
+        installer.assert_called_once_with(second_exchange, rate_limiter, label=manager._exchange_name)

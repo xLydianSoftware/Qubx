@@ -155,7 +155,8 @@ class ConnectionManager:
                 await asyncio.sleep(1)
                 continue
             except (RateLimitExceeded, DDoSProtection) as e:
-                # Rate limit hit — report to rate limiter if available and backoff
+                # WS 429/418 are IP actions that ban REST too, and a gate close is not a token debit,
+                # so the next header sync does not erase it — hence the REST pool.
                 logger.warning(
                     f"<yellow>{self._exchange_id}</yellow> Rate limited in {stream_name}: {e}"
                 )

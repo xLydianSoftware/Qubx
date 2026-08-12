@@ -76,6 +76,7 @@ from qubx.core.events import (
 from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.interfaces import IDataProvider, ITimeProvider
 from qubx.core.utils import recognize_time
+from qubx.rate_limiting import RateLimitGateTimeout
 from qubx.utils.misc import AsyncThreadLoop
 from qubx.utils.time import to_timedelta
 
@@ -127,6 +128,11 @@ _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
     ccxt.OnMaintenance,
     ccxt.ExchangeError,  # catch-all for venue-side ExchangeError subtypes (BadRequest, NotSupported, ...)
 )
+# The venue telling us we exceeded ITS order budget. Both are needed: Binance maps -1015
+# ("too many new orders") to RateLimitExceeded, Kraken maps "EOrder:Rate limit exceeded" to
+# DDoSProtection, and in ccxt the two are siblings, not parent/child.
+_ORDER_RATE_LIMIT_ERRORS: tuple[type[Exception], ...] = (ccxt.RateLimitExceeded, ccxt.DDoSProtection)
+
 # RateLimitExceeded / ExchangeNotAvailable / OnMaintenance are ccxt NetworkError
 # *subclasses* but the venue actively refused the request, so they are venue verdicts
 # and listed above. The except sites MUST match this tuple BEFORE a bare ccxt.NetworkError
@@ -241,6 +247,24 @@ class CcxtConnector(ChannelEmitter):
         """
         return self._loop.submit(coro).result(timeout=timeout)
 
+    async def _acquire_order_slot(self, endpoint: str) -> None:
+        """Charge the venue's order-count budget; this request's IP weight is charged by the throttle override."""
+        rate_limiter = self._em.rate_limiter
+        if rate_limiter is not None:
+            await rate_limiter.acquire(endpoint)
+
+    def _report_order_limit_hit(self, error: Exception) -> None:
+        """Close the orders gate when the venue itself reports an order-budget breach.
+
+        A no-op for every other error. Without it the pool is proactive-model-only, so it never
+        sees the budget another actor on the same account (manual trading, a second bot) spends.
+        """
+        rate_limiter = self._em.rate_limiter
+        if rate_limiter is None or not isinstance(error, _ORDER_RATE_LIMIT_ERRORS):
+            return
+        # pool_name, never endpoint= — the latter closes every pool in the endpoint's cost list
+        rate_limiter.report_limit_hit(pool_name="orders", reason=f"venue order rate limit: {error}")
+
     # ------------------------------------------------------------------ #
     # Write side — submit
     # ------------------------------------------------------------------ #
@@ -286,16 +310,22 @@ class CcxtConnector(ChannelEmitter):
 
     async def _submit_async(self, instrument: Instrument, client_id: str | None, payload: dict[str, Any]) -> None:
         try:
+            await self._acquire_order_slot("create_order")
             r = await self._em.exchange.create_order(**payload)
+        except RateLimitGateTimeout as e:
+            self._emit_submit_rejected(instrument, client_id, e)
+            return
         except _VENUE_VERDICT_ERRORS as e:
             # Venue verdict — must precede the bare NetworkError catch (rate-limit /
             # maintenance / unavailable are NetworkError subclasses but are verdicts).
+            self._report_order_limit_hit(e)
             self._emit_submit_rejected(instrument, client_id, e)
             return
         except ccxt.NetworkError as e:
             # Transient connectivity / timeout: the order may or may not have reached
             # the venue. Do NOT terminal-reject — leave it inflight so AM's inflight
             # check / snapshot reconcile resolves the true state from the venue.
+            self._report_order_limit_hit(e)
             logger.warning(f"[{self.exchange_name}] Network error submitting {client_id}: {e}; leaving inflight")
             return
         except Exception as e:  # noqa: BLE001 — unexpected: still a venue-side failure, must not raise across the loop
@@ -324,7 +354,7 @@ class CcxtConnector(ChannelEmitter):
         )
 
     def _emit_submit_rejected(self, instrument: Instrument, client_id: str | None, error: Exception) -> None:
-        logger.warning(f"[{self.exchange_name}] Order {client_id} rejected by venue: {error}")
+        logger.warning(f"[{self.exchange_name}] Order {client_id} rejected: {error}")
         self.send(
             OrderRejectedEvent(
                 instrument=instrument,
@@ -362,7 +392,14 @@ class CcxtConnector(ChannelEmitter):
         AM to reconcile rather than terminal-rejected.
         """
         try:
+            # Outside _cancel_with_retry: one slot per operation, and its broad handlers would eat the timeout.
+            await self._acquire_order_slot("cancel_order")
             ok, response = await self._cancel_with_retry(client_order_id, venue_order_id, symbol, is_trigger)
+        except RateLimitGateTimeout as e:
+            self._emit_cancel_rejected(
+                client_order_id, venue_order_id, reason=f"rate limited: {e}", code="RateLimitGateTimeout"
+            )
+            return
         except ccxt.NetworkError as e:
             logger.warning(
                 f"[{self.exchange_name}] Network error cancelling {client_order_id or venue_order_id}: "
@@ -379,7 +416,13 @@ class CcxtConnector(ChannelEmitter):
         else:
             self._emit_cancel_rejected(client_order_id, venue_order_id)
 
-    def _emit_cancel_rejected(self, client_order_id: str | None, venue_order_id: str | None) -> None:
+    def _emit_cancel_rejected(
+        self,
+        client_order_id: str | None,
+        venue_order_id: str | None,
+        reason: str | None = None,
+        code: str | None = None,
+    ) -> None:
         # Carry both ids: AM's reject handler resolves the order by cid first, then venue id,
         # so the order can revert out of PENDING_CANCEL regardless of which id the caller had.
         self.send(
@@ -387,7 +430,8 @@ class CcxtConnector(ChannelEmitter):
                 instrument=None,
                 client_order_id=client_order_id,
                 venue_order_id=venue_order_id,
-                reason=f"venue rejected cancel for {venue_order_id or client_order_id}",
+                reason=reason or f"venue rejected cancel for {venue_order_id or client_order_id}",
+                code=code,
             )
         )
 
@@ -420,14 +464,19 @@ class CcxtConnector(ChannelEmitter):
                     else await self._em.exchange.cancel_order_with_client_order_id(client_order_id, symbol)
                 )
                 return True, r
-            except ccxt.NetworkError:
+            except ccxt.NetworkError as e:
                 # Transient (incl. ExchangeNotAvailable / OnMaintenance / rate-limit):
                 # UNKNOWN whether the cancel landed → re-raise so the caller leaves it
                 # inflight rather than terminal-rejecting.
+                self._report_order_limit_hit(e)
                 raise
             except (ccxt.NotSupported, ccxt.BadRequest, ccxt.ExchangeError) as e:
                 logger.warning(f"[{client_order_id}] Cancel-by-client-id rejected by venue: {e}")
                 return False, None
+            except RateLimitGateTimeout:
+                # erupts from inside the venue call (the throttle hook's own gate check) — the venue
+                # was never reached, so it is not a refusal; the caller emits the rate-limited event.
+                raise
             except Exception as e:  # noqa: BLE001
                 logger.warning(f"[{client_order_id}] Cancel-by-client-id unexpected error: {e}")
                 return False, None
@@ -457,6 +506,7 @@ class CcxtConnector(ChannelEmitter):
             except ccxt.NetworkError as e:
                 # Transient connectivity (incl. ExchangeNotAvailable / rate-limit): retry,
                 # and raise on exhaustion so the UNKNOWN outcome leaves the order inflight.
+                self._report_order_limit_hit(e)
                 verdict = self._classify_cancel_error(e, acked=True)
                 if verdict == "reject":
                     logger.warning(f"[{venue_order_id}] Cancel failed (missing/invalid orderId): {e}")
@@ -479,6 +529,9 @@ class CcxtConnector(ChannelEmitter):
                     return None, None
                 last_network_error = None
                 logger.warning(f"[{venue_order_id}] Exchange error while cancelling: {e}")
+            except RateLimitGateTimeout:
+                # see the cloid-only path above: not a venue refusal, the caller emits it coded.
+                raise
             except Exception as err:  # noqa: BLE001
                 logger.error(f"Unexpected error canceling order {venue_order_id}: {err}")
                 return False, None
@@ -593,19 +646,25 @@ class CcxtConnector(ChannelEmitter):
         # orderId with -1102).
         vid = venue_order_id
         try:
+            await self._acquire_order_slot("edit_order")
             if self._em.exchange.has.get("editOrder", False):
                 r = await self._edit_order_direct(
                     client_order_id, vid, symbol, side, order_type, wire_price, wire_amount
                 )
             else:
                 r = await self._update_via_cancel_recreate(client_order_id, venue_order_id, wire_price, wire_amount)
+        except RateLimitGateTimeout as e:
+            self._emit_update_rejected(client_order_id, venue_order_id, e)
+            return
         except _VENUE_VERDICT_ERRORS as e:
             # Venue verdict — must precede the bare NetworkError catch (see _submit_async).
+            self._report_order_limit_hit(e)
             self._emit_update_rejected(client_order_id, venue_order_id, e)
             return
         except ccxt.NetworkError as e:
             # Transient: UNKNOWN whether the edit landed. Leave the order PENDING_UPDATE
             # inflight for AM to reconcile rather than emitting a terminal reject.
+            self._report_order_limit_hit(e)
             logger.warning(f"[{self.exchange_name}] Network error updating {client_order_id}: {e}; leaving inflight")
             return
         except Exception as e:  # noqa: BLE001

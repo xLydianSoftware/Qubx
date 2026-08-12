@@ -66,12 +66,12 @@ class EgressIPResolver:
         return None
 
     async def start(self) -> None:
-        """Start periodic IP discovery."""
-        # Do initial discovery
-        ip = await self.discover()
-        if ip:
-            self._current_ip = ip
-            logger.info(f"Egress IP discovered: {ip}")
+        """Start periodic IP discovery, probing only when no IP is known yet."""
+        if self._current_ip is None:
+            ip = await self.discover()
+            if ip:
+                self._current_ip = ip
+                logger.info(f"Egress IP discovered: {ip}")
 
         # Start monitoring loop
         self._task = asyncio.ensure_future(self._monitor_loop())

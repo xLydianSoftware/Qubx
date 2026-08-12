@@ -539,7 +539,13 @@ def create_strategy_context(
                 f"Exchange {venue_name} maps to canonical exchange {exchange_name}, "
                 "which is already configured — configure only one of them"
             )
-        rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector)
+        try:
+            # scopes account pools to this account; data-only venues have no entry and fall back
+            # to a per-process scope id rather than sharing one bucket across unrelated accounts
+            _venue_api_key = account_manager.get_exchange_credentials(venue_name).api_key
+        except KeyError:
+            _venue_api_key = None
+        rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector, api_key=_venue_api_key)
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager))
         # Both paper and live use a REAL market-data provider (live quotes/OHLC); only paper's
         # *execution* is simulated. The data provider may come from a different source than the
