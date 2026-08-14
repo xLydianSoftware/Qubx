@@ -228,39 +228,27 @@ class SymbolsManifestManager:
             col_name = "asset" if "fundamental" in tname.lower() else symbol_column_name
 
             try:
-                if last_updated is None:
-                    # Full bootstrap - table not in manifest
-                    logger.debug(f"Bootstrapping manifest for table: {tname}")
-                    query = f'SELECT DISTINCT({col_name}) FROM "{tname}"'
-                else:
-                    # Incremental update - only query new data
-                    logger.debug(f"Incrementally updating manifest for table: {tname}")
-                    query = f"SELECT DISTINCT({col_name}) FROM \"{tname}\" WHERE timestamp > '{last_updated}'"
-
+                # Always a full DISTINCT scan (dictionary-backed for SYMBOL columns). An
+                # incremental scan gated on `timestamp > last_updated` compares DATA time
+                # against a wall-clock watermark, so backfilled rows (historical timestamps
+                # inserted later) would never register their symbols.
+                logger.debug(f"Refreshing manifest for table: {tname}")
+                query = f'SELECT DISTINCT({col_name}) FROM "{tname}"'
                 _, records = self.pgc.execute(query)
-                new_symbols = {r[0] for r in records if r[0]}
+                found = {r[0] for r in records if r[0]}
 
+                new_symbols = found - result[tname]
                 if new_symbols:
-                    # Add new symbols to result
                     result[tname].update(new_symbols)
-
-                    # Insert new symbols into manifest
                     self._insert_symbols(tname, new_symbols, now)
 
                 # Even if no new symbols, update the timestamp for existing ones
                 # to mark that we've checked
-                if last_updated is not None and result[tname]:
-                    self._touch_symbols(tname, result[tname], now)
+                if last_updated is not None and (existing := result[tname] - new_symbols):
+                    self._touch_symbols(tname, existing, now)
 
             except Exception as e:
-                logger.warning(f"Failed to update manifest for {tname}: {e}")
-                # Fall back to direct query
-                try:
-                    query = f'SELECT DISTINCT({col_name}) FROM "{tname}"'
-                    _, records = self.pgc.execute(query)
-                    result[tname] = {r[0] for r in records if r[0]}
-                except Exception as e2:
-                    logger.error(f"Failed to query symbols from {tname}: {e2}")
+                logger.error(f"Failed to query symbols from {tname}: {e}")
 
     def _insert_symbols(self, table_name: str, symbols: set[str], timestamp: pd.Timestamp) -> None:
         """Insert new symbols into manifest."""
@@ -568,16 +556,18 @@ class QuestDBReader(IReader):
         (storage_symbols, xtable) = self._dtype_lookup.get(str(dtype).lower(), (set(), None))
         if xtable is None or not storage_symbols:
             raise ValueError(f"Can't find table for {dtype} data !")
-        if data_id not in storage_symbols:
-            raise ValueError(f"{xtable.table_name} doesn't contain data for {data_id} !")
 
+        # - probe the table itself rather than trusting the manifest cache; UNION dedups
+        # - identical rows, so a single-timestamp symbol yields one row, not two
         _query = f"""(SELECT timestamp FROM "{xtable.table_name}" WHERE symbol='{data_id}' ORDER BY timestamp ASC LIMIT 1)
                         UNION
                    (SELECT timestamp FROM "{xtable.table_name}" WHERE symbol='{data_id}' ORDER BY timestamp DESC LIMIT 1)
                 """
         _r = self.pgc.execute(_query)[1]
-        _sr = sorted([np.datetime64(_r[0][0]), np.datetime64(_r[1][0])])
-        return _sr[0], _sr[1]
+        if not _r:
+            raise ValueError(f"{xtable.table_name} doesn't contain data for {data_id} !")
+        _sr = sorted(np.datetime64(r[0]) for r in _r)
+        return _sr[0], _sr[-1]
 
     @_auto_refresh
     def read(
@@ -605,12 +595,14 @@ class QuestDBReader(IReader):
         if xtable is None or not storage_symbols:
             raise ValueError(f"Can't find table for {dtype} data !")
 
-        # - handle symbols: empty collection means "all available" — no WHERE filter
+        # - handle symbols: empty collection means "all available" — no WHERE filter.
+        # - the manifest (storage_symbols) is a lookup cache, never an authority: requested
+        # - symbols go to the WHERE clause as-is, so a stale manifest cannot hide table rows
+        # - (a symbol truly absent from the table just returns no rows)
         if isinstance(data_id, (list, tuple, set)) and not data_id:
             req_symbols = set()
         else:
-            req_symbols = set(data_id if isinstance(data_id, (list, tuple, set)) else [data_id])
-            req_symbols = storage_symbols & req_symbols
+            req_symbols = {str(s).upper() for s in (data_id if isinstance(data_id, (list, tuple, set)) else [data_id])}
 
         # - check if it has any timeframe for resampling
         _, dt_params = DataType.from_str(dtype)
