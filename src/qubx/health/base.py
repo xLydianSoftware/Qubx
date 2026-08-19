@@ -2,7 +2,7 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 
 import numpy as np
 
@@ -86,6 +86,11 @@ class BaseHealthMonitor(IHealthMonitor):
         self._last_drain_time: dt_64 | None = None
         self._queue_degraded = False  # - the monitor's own edge tracker: status is written only on transitions
         self._status: ContextStatus | None = None
+
+        # State-persistence staleness: wired in by set_state_persistence (duck-typed —
+        # needs last_success_age() and staleness_threshold_s); None until wired.
+        self._state_persistence: Any = None
+        self._state_stale = False  # - the monitor's own edge tracker, same pattern as _queue_degraded
 
         # Initialize metrics storage
         self._queue_size = DequeFloat64(buffer_size)  # Store last 1000 queue size measurements
@@ -291,6 +296,39 @@ class BaseHealthMonitor(IHealthMonitor):
         self._status.add(
             DegradeReason.INTERNAL_QUEUE_OVERFLOW, now, message=f"queue size {size}, no drain for {for_str}"
         )
+
+    def set_state_persistence(self, persistence: Any) -> None:
+        """Wire a SafeStatePersistence (duck-typed: needs last_success_age() and
+        staleness_threshold_s) so the monitor can report write staleness."""
+        self._state_persistence = persistence
+        self._state_stale = False
+
+    def check_state_persistence(self) -> None:
+        """One staleness observation: records the current write-lag gauge and
+        degrades/clears STATE_PERSISTENCE_STALE on threshold crossings, mirroring
+        check_queue_drain's edge-tracked add/clear pattern."""
+        sp = self._state_persistence
+        if sp is None or self._status is None:
+            return
+        age = sp.last_success_age()
+        if age is not None:
+            self.record_gauge("state_persistence_lag", age)
+        threshold = sp.staleness_threshold_s
+        stale = age is not None and age > threshold
+        if stale and not self._state_stale:
+            self._state_stale = True
+            logger.warning(
+                f"[health] state not persisted for {age:.0f}s (threshold {threshold:.0f}s) — "
+                "context DEGRADED (state_persistence_stale)"
+            )
+            self._status.add(
+                DegradeReason.STATE_PERSISTENCE_STALE, self.time_provider.time(),
+                message=f"no successful state write for {age:.0f}s",
+            )
+        elif not stale and self._state_stale:
+            self._state_stale = False
+            logger.info("[health] state persistence recovered — state_persistence_stale cleared")
+            self._status.clear(DegradeReason.STATE_PERSISTENCE_STALE)
 
     def set_event_queue_size(self, size: int) -> None:
         self._queue_size.push_back(float(size))
@@ -538,6 +576,8 @@ class BaseHealthMonitor(IHealthMonitor):
                     current_size = self._channel._queue.qsize()
                     self.set_event_queue_size(current_size)
                     self.check_queue_drain(current_size)
+
+                self.check_state_persistence()
 
                 # Perform cleanup of old order requests
                 self._cleanup_old_order_requests()
