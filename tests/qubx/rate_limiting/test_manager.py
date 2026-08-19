@@ -7,9 +7,12 @@ import pytest
 from qubx import logger
 from qubx.connectors.registry import ConnectorRegistry
 from qubx.rate_limiting import EndpointCosts, ExchangeRateLimitConfig, PoolConfig
+from qubx.rate_limiting.backend import InMemoryBackend
 from qubx.rate_limiting.engine import _UNRESOLVED_SCOPE_ID
 from qubx.rate_limiting.ip_resolver import EgressIPResolver
 from qubx.rate_limiting.manager import RateLimitManager
+from qubx.rate_limiting.redis_backend import RedisBackend
+from qubx.rate_limiting.resilient import ResilientRateLimitBackend
 from qubx.utils.runner.configs import RateLimitingConfig
 
 _EGRESS_IP = "203.0.113.7"  # literal, so no IP discovery (and no network I/O) happens
@@ -104,6 +107,39 @@ class TestAccountScoping:
         assert not key.endswith(":local")
         assert key.endswith(_UNRESOLVED_SCOPE_ID)
         assert _UNRESOLVED_SCOPE_ID.startswith("local_")
+
+
+class TestBackendWiring:
+    """Fix round 1 / F6.3 (review Finding 9.3): `_create_backend` wiring had zero coverage."""
+
+    def test_redis_backend_is_wrapped_in_resilient(self):
+        loop = asyncio.new_event_loop()
+        try:
+            manager = RateLimitManager(
+                RateLimitingConfig(backend="redis", redis_url="redis://localhost:6379/0", egress_ip=_EGRESS_IP), loop
+            )
+            assert isinstance(manager._backend, ResilientRateLimitBackend)
+            assert isinstance(manager._backend._primary, RedisBackend)
+        finally:
+            loop.close()
+
+    def test_local_backend_is_not_wrapped(self):
+        """Negative control: `backend="local"` (the default) must stay a plain InMemoryBackend."""
+        loop = asyncio.new_event_loop()
+        try:
+            manager = RateLimitManager(RateLimitingConfig(backend="local", egress_ip=_EGRESS_IP), loop)
+            assert isinstance(manager._backend, InMemoryBackend)
+        finally:
+            loop.close()
+
+    def test_redis_backend_without_url_falls_back_to_in_memory(self):
+        """`backend="redis"` with no `redis_url` must not attempt a RedisBackend at all."""
+        loop = asyncio.new_event_loop()
+        try:
+            manager = RateLimitManager(RateLimitingConfig(backend="redis", redis_url=None, egress_ip=_EGRESS_IP), loop)
+            assert isinstance(manager._backend, InMemoryBackend)
+        finally:
+            loop.close()
 
 
 class TestEgressIPResolver:

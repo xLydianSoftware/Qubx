@@ -71,7 +71,9 @@ async def test_error_opens_breaker_and_serves_fallback():
     resilient = ResilientRateLimitBackend(primary, fallback)
 
     waited = await resilient.acquire("k", 1.0, 10.0, 5.0)
-    assert waited == 0.0  # served by fallback
+    assert waited == 0.0
+    # load-bearing assertions: FakeBackend returns 0.0 on both sides, so `waited` alone
+    # doesn't prove routing — the call counters do.
     assert primary.acquire_calls == 1
     assert fallback.acquire_calls == 1
     assert resilient._broken is True
@@ -195,3 +197,71 @@ async def test_close_closes_both():
 
     assert primary.closed is True
     assert fallback.closed is True
+
+
+@pytest.mark.asyncio
+async def test_cancelled_probe_releases_slot():
+    """Fix round 1 / F1 (review Finding 1): a cancelled probe must not wedge the breaker open forever."""
+    primary, fallback = FakeBackend(), FakeBackend()
+    primary.raise_exc = ConnectionError("redis down")
+    resilient = ResilientRateLimitBackend(primary, fallback)
+
+    await resilient.acquire("k", 1.0, 10.0, 5.0)  # opens breaker
+    assert primary.acquire_calls == 1
+
+    resilient._broken_until = 0.0  # force cooldown expiry
+    primary.raise_exc = None  # primary healed, but ...
+    primary.block_on = asyncio.Event()  # ... the probe blocks in-flight
+
+    probe = asyncio.create_task(resilient.acquire("k", 1.0, 10.0, 5.0))
+    await asyncio.sleep(0)  # let the probe claim the slot and start blocking on primary
+    await asyncio.sleep(0)
+    assert primary.acquire_calls == 2
+    assert resilient._probe_inflight is True
+
+    probe.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await probe
+
+    assert resilient._probe_inflight is False, "cancelled probe leaked the slot — breaker is wedged open"
+    assert resilient._broken is True  # cancellation doesn't heal the breaker by itself
+
+    # the breaker must still be able to recover: force cooldown expiry again and probe once more
+    primary.block_on = None
+    resilient._broken_until = 0.0
+    await resilient.acquire("k", 1.0, 10.0, 5.0)
+    assert primary.acquire_calls == 3  # initial failure + cancelled probe + this recovering probe
+    assert resilient._broken is False
+
+
+@pytest.mark.asyncio
+async def test_stale_success_does_not_close_breaker():
+    """Fix round 1 / F2 (review Finding 2): only the probe's own success may close the breaker."""
+    primary, fallback = FakeBackend(), FakeBackend()
+    resilient = ResilientRateLimitBackend(primary, fallback)
+
+    event = asyncio.Event()
+    primary.block_on = event  # call A blocks here while the breaker is still closed
+
+    task_a = asyncio.create_task(resilient.acquire("k", 1.0, 10.0, 5.0))
+    await asyncio.sleep(0)  # let A dispatch to primary and start blocking, while healthy
+    await asyncio.sleep(0)
+    assert primary.acquire_calls == 1
+
+    # call B fails and opens the breaker while A is still in flight
+    primary.block_on = None  # only A's already-captured Event reference blocks
+    primary.raise_exc = ConnectionError("redis down")
+    await resilient.acquire("k", 1.0, 10.0, 5.0)
+    assert resilient._broken is True
+    assert primary.acquire_calls == 2
+
+    # release A: it now succeeds, but it was dispatched before the breaker opened —
+    # a stale success carries no evidence redis is healthy and must not close the breaker
+    primary.raise_exc = None
+    event.set()
+    await task_a
+    assert resilient._broken is True
+
+    # the next call must go straight to the fallback — no further primary touch
+    await resilient.acquire("k", 1.0, 10.0, 5.0)
+    assert primary.acquire_calls == 2

@@ -3,19 +3,43 @@
 
 ``docker pause`` freezes the server process WITHOUT closing TCP connections —
 the closest reproduction of the 2026-08-19 half-open-socket incident.
-Requires docker; runs only under `-m integration`.
+Requires docker; runs only under `-m integration`, and skips (rather than
+erroring) when docker itself is unavailable.
 """
 
+import shutil
 import subprocess
 import time
 import uuid
 
 import pytest
 
-pytestmark = pytest.mark.integration
-
 CONTAINER = f"qubx-rl-itest-redis-{uuid.uuid4().hex[:8]}"
 PORT = 63791
+
+
+def _docker_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    return subprocess.run(["docker", "ps"], capture_output=True).returncode == 0
+
+
+pytestmark = [
+    pytest.mark.integration,
+    pytest.mark.skipif(not _docker_available(), reason="docker is not available in this environment"),
+]
+
+
+def _wait_until_ready(deadline_s: float = 10.0) -> None:
+    """Poll `redis-cli ping` instead of a fixed sleep — a loaded host or a cold image
+    can take longer than a guessed constant to accept connections."""
+    deadline = time.monotonic() + deadline_s
+    while time.monotonic() < deadline:
+        result = subprocess.run(["docker", "exec", CONTAINER, "redis-cli", "ping"], capture_output=True, text=True)
+        if result.returncode == 0 and result.stdout.strip() == "PONG":
+            return
+        time.sleep(0.1)
+    raise RuntimeError(f"redis container {CONTAINER} did not become ready within {deadline_s}s")
 
 
 @pytest.fixture(scope="module")
@@ -25,9 +49,9 @@ def redis_container():
         check=True,
         capture_output=True,
     )
-    time.sleep(1.0)
+    _wait_until_ready()
     yield CONTAINER
-    subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)
+    subprocess.run(["docker", "rm", "-f", CONTAINER], capture_output=True)  # works on paused containers too
 
 
 def _pause():
