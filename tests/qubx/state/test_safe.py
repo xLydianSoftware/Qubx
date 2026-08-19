@@ -269,6 +269,10 @@ def test_validate_startup_succeeds_after_transient_failures(backend):
     p = SafeStatePersistence(backend, sleep_fn=lambda s: None)
     p.validate_startup(deadline_s=60.0)
     assert calls["n"] == 3
+    # - probe success seeds last-success so staleness monitoring is never silently absent
+    #   for a backend that dies before the first write
+    age = p.last_success_age()
+    assert age is not None and age < 1.0
     p.stop()
 
 

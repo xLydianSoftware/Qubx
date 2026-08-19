@@ -59,3 +59,23 @@ def test_age_none_before_first_write_is_not_stale():
     sp.age = None
     monitor.check_state_persistence()
     assert not any(d.reason == DegradeReason.STATE_PERSISTENCE_STALE for d in status.info.degradations)
+
+
+def test_staleness_is_scoped_to_state_and_never_gates_trading():
+    """A pure persistence outage must never make is_degraded_for(exchange) true —
+    the degradation must be scoped to "state", not context-wide (scope=None)."""
+    monitor, status, sp = _make_monitor()
+
+    sp.age = 120.0
+    monitor.check_state_persistence()
+
+    assert status.info.is_degraded_for("BINANCE.UM") is False
+    state_degradations = [d for d in status.info.degradations if d.reason == DegradeReason.STATE_PERSISTENCE_STALE]
+    assert len(state_degradations) == 1
+    assert state_degradations[0].scope == "state"
+
+    sp.age = 1.0
+    monitor.check_state_persistence()
+
+    assert not any(d.reason == DegradeReason.STATE_PERSISTENCE_STALE for d in status.info.degradations)
+    assert status.info.is_degraded_for("BINANCE.UM") is False

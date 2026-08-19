@@ -216,7 +216,9 @@ class StrategyContext(IStrategyContext):
         # - the monitor writes degradations into the context's status (queue backlog today)
         self._health_monitor.set_status(self._status)
         self._state_persistence = state_persistence or DummyStatePersistence()
-        if hasattr(self._state_persistence, "last_success_age"):
+        if hasattr(self._state_persistence, "last_success_age") and hasattr(
+            self._health_monitor, "set_state_persistence"
+        ):
             self._health_monitor.set_state_persistence(self._state_persistence)
         self._state_snapshot_interval = state_snapshot_interval
         self._rate_limiting_config = rate_limiting_config

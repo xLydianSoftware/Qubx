@@ -42,7 +42,6 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         stats_interval: str = "1m",
         flush_interval: str = "5s",
         tags: dict[str, Any] | None = None,
-        max_workers: int = 1,
         max_queue: int = 10_000,
     ):
         """
@@ -56,8 +55,6 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             stats_to_emit: Optional list of specific stats to emit
             stats_interval: Interval for emitting strategy stats (default: "1m")
             tags: Dictionary of default tags/labels to include with all metrics
-            max_workers: Deprecated and ignored — kept for config compatibility. QuestDB
-                operations now run on a single bounded worker (see ``max_queue``).
             max_queue: Maximum number of pending QuestDB operations queued on the background
                 worker before the oldest is dropped.
         """
@@ -81,8 +78,6 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._last_flush = None
         # - single bounded worker: bounds memory/burst under outages instead of an unbounded
         #   ThreadPoolExecutor queue (platform incident 2026-08-14).
-        if max_workers != 1:
-            logger.debug("[QuestDBMetricEmitter] max_workers is deprecated and ignored (single bounded worker)")
         self._worker = BoundedWorker("questdb_emitter", maxlen=max_queue)
         self._stopped = False
 

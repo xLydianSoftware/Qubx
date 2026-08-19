@@ -323,12 +323,13 @@ class BaseHealthMonitor(IHealthMonitor):
             )
             self._status.add(
                 DegradeReason.STATE_PERSISTENCE_STALE, self.time_provider.time(),
+                scope="state",
                 message=f"no successful state write for {age:.0f}s",
             )
         elif not stale and self._state_stale:
             self._state_stale = False
             logger.info("[health] state persistence recovered — state_persistence_stale cleared")
-            self._status.clear(DegradeReason.STATE_PERSISTENCE_STALE)
+            self._status.clear(DegradeReason.STATE_PERSISTENCE_STALE, scope="state")
 
     def set_event_queue_size(self, size: int) -> None:
         self._queue_size.push_back(float(size))

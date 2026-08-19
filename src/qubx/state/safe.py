@@ -115,6 +115,10 @@ class SafeStatePersistence(IStatePersistence):
         while True:
             try:
                 self._backend.exists("__qubx_probe__")
+                # - the probe proves backend liveness: seed last-success now so a backend that
+                #   dies after startup but before the first write is still caught by staleness
+                #   monitoring instead of leaving last_success_age() = None forever
+                self._last_success = time.monotonic()
                 logger.info(f"[SafeStatePersistence] backend validated after {attempt + 1} attempt(s)")
                 return
             except Exception as e:

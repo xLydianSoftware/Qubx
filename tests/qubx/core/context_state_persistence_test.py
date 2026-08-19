@@ -103,3 +103,17 @@ def test_stop_flushes_safe_state_persistence(mock_components):
 def test_stop_is_noop_for_dummy_state_persistence(mock_components):
     ctx = _build_context(mock_components, None, MagicMock())  # None -> DummyStatePersistence()
     ctx.stop()  # must not raise (DummyStatePersistence has no stop())
+
+
+class _HealthMonitorWithoutStatePersistenceSupport:
+    """A custom IHealthMonitor that predates set_state_persistence — must not AttributeError
+    at construction when paired with real (SafeStatePersistence-shaped) persistence."""
+
+    def set_status(self, status) -> None:
+        pass
+
+
+def test_construction_does_not_raise_for_health_monitor_missing_set_state_persistence(mock_components):
+    sp = _StubSafePersistence()
+    # must not raise AttributeError even though the monitor has no set_state_persistence
+    _build_context(mock_components, sp, _HealthMonitorWithoutStatePersistenceSupport())

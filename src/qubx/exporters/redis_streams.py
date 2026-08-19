@@ -43,7 +43,6 @@ class RedisStreamsExporter(ITradeDataExport):
         position_changes_stream: Optional[str] = None,
         max_stream_length: int = 1000,
         formatter: Optional[IExportFormatter] = None,
-        max_workers: int = 2,
         max_queue: int = 1000,
         account: Optional[IAccountViewer] = None,
     ):
@@ -61,8 +60,6 @@ class RedisStreamsExporter(ITradeDataExport):
             position_changes_stream: Custom stream name for position changes (default: "strategy:{strategy_name}:position_changes")
             max_stream_length: Maximum length of each stream
             formatter: Formatter to use for formatting data (default: DefaultFormatter)
-            max_workers: Deprecated and ignored — kept for config compatibility. Redis
-                operations now run on a single bounded worker (see ``max_queue``).
             max_queue: Maximum number of pending Redis operations queued on the background
                 worker before the oldest is dropped.
             account: Optional account viewer to get account information like total capital, leverage, etc.
@@ -93,8 +90,6 @@ class RedisStreamsExporter(ITradeDataExport):
 
         # - single bounded worker: preserves XADD ordering per stream (2 pool workers could
         #   reorder targets) and bounds memory/burst under outages (platform #375).
-        if max_workers != 2:
-            logger.debug("[RedisStreamsExporter] max_workers is deprecated and ignored (single bounded worker)")
         self._worker = BoundedWorker("redis_exporter", maxlen=max_queue)
         self._stopped = False
 
