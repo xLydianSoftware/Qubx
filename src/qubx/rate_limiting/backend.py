@@ -54,6 +54,10 @@ class IRateLimitBackend(ABC):
         arrives before the first acquire create the bucket.
         """
 
+    async def close(self) -> None:
+        """Release backend resources for the current event loop. Default: no-op."""
+        return None
+
 
 class InMemoryBackend(IRateLimitBackend):
     """In-process token bucket backend.
