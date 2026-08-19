@@ -4,7 +4,6 @@ Redis Streams Exporter for trading data.
 This module provides an implementation of ITradeDataExport that exports trading data to Redis Streams.
 """
 
-from concurrent.futures import ThreadPoolExecutor
 from time import sleep
 from typing import Any, Dict, List, Optional, cast
 
@@ -17,6 +16,7 @@ from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, ITradeDataExport
 from qubx.exporters.formatters import DefaultFormatter, IExportFormatter
+from qubx.utils.threading import BoundedWorker
 
 # Simple retry policy for transient Redis errors (connection drops, timeouts).
 # Non-retryable errors (e.g. encoding bugs) are logged and dropped immediately.
@@ -43,7 +43,7 @@ class RedisStreamsExporter(ITradeDataExport):
         position_changes_stream: Optional[str] = None,
         max_stream_length: int = 1000,
         formatter: Optional[IExportFormatter] = None,
-        max_workers: int = 2,
+        max_queue: int = 1000,
         account: Optional[IAccountViewer] = None,
     ):
         """
@@ -60,10 +60,19 @@ class RedisStreamsExporter(ITradeDataExport):
             position_changes_stream: Custom stream name for position changes (default: "strategy:{strategy_name}:position_changes")
             max_stream_length: Maximum length of each stream
             formatter: Formatter to use for formatting data (default: DefaultFormatter)
-            max_workers: Maximum number of worker threads for Redis operations
+            max_queue: Maximum number of pending Redis operations queued on the background
+                worker before the oldest is dropped.
             account: Optional account viewer to get account information like total capital, leverage, etc.
         """
-        self._redis = redis.from_url(redis_url)
+        # - bounded-failure client: a dead peer costs seconds, never TCP-retransmission
+        #   minutes (incident 2026-08-19; platform #375).
+        self._redis = redis.from_url(
+            redis_url,
+            socket_connect_timeout=2.0,
+            socket_timeout=5.0,
+            socket_keepalive=True,
+            health_check_interval=30,
+        )
         self._strategy_name = strategy_name
 
         self._export_signals = export_signals
@@ -79,7 +88,9 @@ class RedisStreamsExporter(ITradeDataExport):
 
         self._instrument_to_previous_leverage = {}
 
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="redis_exporter")
+        # - single bounded worker: preserves XADD ordering per stream (2 pool workers could
+        #   reorder targets) and bounds memory/burst under outages (platform #375).
+        self._worker = BoundedWorker("redis_exporter", maxlen=max_queue)
         self._stopped = False
 
         if account:
@@ -100,15 +111,15 @@ class RedisStreamsExporter(ITradeDataExport):
         self.stop()
 
     def stop(self) -> None:
-        """Shut down the executor and close the Redis connection."""
+        """Shut down the worker and close the Redis connection."""
         if self._stopped:
             return
         self._stopped = True
 
         try:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._worker.stop(flush_timeout_s=5.0)
         except Exception as e:
-            self._log_warning(f"Error during executor shutdown: {e}")
+            self._log_warning(f"Error during worker shutdown: {e}")
 
         try:
             self._redis.close()
@@ -141,8 +152,8 @@ class RedisStreamsExporter(ITradeDataExport):
             # Prepare data for Redis
             redis_data = self._prepare_for_redis(data)
 
-            # Submit the task to the executor
-            self._executor.submit(self._add_to_redis_stream_impl, stream, redis_data, self._max_stream_length)
+            # Submit the task to the background worker
+            self._worker.submit(self._add_to_redis_stream_impl, stream, redis_data, self._max_stream_length)
         except Exception as e:
             logger.exception(
                 f"[RedisStreamsExporter] Failed to queue Redis stream operation for '{stream}', data={data}: {e}"
@@ -297,4 +308,4 @@ class RedisStreamsExporter(ITradeDataExport):
                 f"{previous_leverage:0.2%} -> {new_leverage:0.2%} @ {price}"
             )
         except Exception:
-            logger.exception(f"[RedisStreamsExporter] Failed to export position change")
+            logger.exception("[RedisStreamsExporter] Failed to export position change")

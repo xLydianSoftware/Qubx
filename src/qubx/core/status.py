@@ -27,6 +27,7 @@ class QubxStatus(StrEnum):
 class DegradeReason(StrEnum):
     INTERNAL_QUEUE_OVERFLOW = "internal_queue_overflow"
     EXCHANGE_MAINTENANCE = "exchange_maintenance"
+    STATE_PERSISTENCE_STALE = "state_persistence_stale"
 
 
 @dataclass(frozen=True, slots=True)
