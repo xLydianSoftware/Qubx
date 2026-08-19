@@ -56,11 +56,14 @@ class FakeSender:
         pass
 
 
-class SyncExecutor:
+class SyncWorker:
+    """Runs submitted work inline — stands in for BoundedWorker so tests can assert
+    synchronously without waiting on a background thread."""
+
     def submit(self, fn, *args, **kwargs):
         fn(*args, **kwargs)
 
-    def shutdown(self, **kwargs):
+    def stop(self, **kwargs):
         pass
 
 
@@ -73,7 +76,7 @@ def emitter(monkeypatch):
     monkeypatch.setattr(qdb_mod, "Sender", MagicMock(from_conf=MagicMock(side_effect=RuntimeError("no net"))))
     em = QuestDBMetricEmitter(host="qdb", tags={"strategy": "bot-1", "run_id": "r-1", "environment": "dev"})
     em._sender = FakeSender()
-    em._executor = SyncExecutor()
+    em._worker = SyncWorker()
     ddl.reset_mock()  # drop the signals/deals DDL calls from __init__
     em._ddl_client_for_test = ddl
     return em
