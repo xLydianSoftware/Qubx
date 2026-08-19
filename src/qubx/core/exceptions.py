@@ -81,3 +81,12 @@ class SimulationConfigError(Exception):
 
 class WarmupValidationError(Exception):
     pass
+
+
+class StatePersistenceUnavailable(BaseError):
+    """State persistence is enabled but unreachable/unreadable at startup.
+
+    Fatal by design (incident 2026-08-19, platform #375): starting a bot that
+    silently lost its persisted state is worse than crash-looping until the
+    backend returns.
+    """

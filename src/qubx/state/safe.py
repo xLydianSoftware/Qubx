@@ -12,6 +12,7 @@ import time
 from typing import Any, Callable
 
 from qubx import logger
+from qubx.core.exceptions import StatePersistenceUnavailable
 from qubx.core.interfaces import IStatePersistence
 
 _TOMBSTONE = object()
@@ -100,6 +101,35 @@ class SafeStatePersistence(IStatePersistence):
     def consecutive_failures(self) -> int:
         """Consecutive *rounds* (batch attempts) with at least one failing key, not failing keys."""
         return self._consecutive_failures
+
+    def validate_startup(
+        self,
+        deadline_s: float = 60.0,
+        probe_backoff_s: tuple[float, ...] = (0.5, 1.0, 2.0, 4.0, 8.0, 10.0),
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        """Probe the backend with backoff for up to ``deadline_s``; raise on exhaustion (spec D3)."""
+        start = clock()
+        attempt = 0
+        last_err: Exception | None = None
+        while True:
+            try:
+                self._backend.exists("__qubx_probe__")
+                logger.info(f"[SafeStatePersistence] backend validated after {attempt + 1} attempt(s)")
+                return
+            except Exception as e:
+                last_err = e
+                elapsed = clock() - start
+                if elapsed >= deadline_s:
+                    raise StatePersistenceUnavailable(
+                        f"state persistence unreachable after {elapsed:.0f}s ({attempt + 1} attempts): {last_err}"
+                    ) from last_err
+                backoff = probe_backoff_s[min(attempt, len(probe_backoff_s) - 1)]
+                logger.warning(
+                    f"[SafeStatePersistence] startup probe failed (attempt {attempt + 1}): {e}; retrying in {backoff}s"
+                )
+                self._sleep(backoff)
+                attempt += 1
 
     # ------------------------------------------------------------------ writer
     def _attempt_batch(self, batch: dict[str, Any]) -> tuple[dict[str, Any], bool, Exception | None]:

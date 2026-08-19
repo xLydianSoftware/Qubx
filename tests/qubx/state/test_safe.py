@@ -6,6 +6,7 @@ from typing import Any
 import pytest
 
 from qubx import logger as qubx_logger
+from qubx.core.exceptions import StatePersistenceUnavailable
 from qubx.state.safe import SafeStatePersistence
 
 
@@ -253,3 +254,39 @@ def test_save_after_stop_does_not_raise_and_warns_once(backend):
     assert warn_count == 1  # warned once, not once per call
     time.sleep(0.05)
     assert backend.store == {}  # nothing reaches the (dead) backend
+
+
+def test_validate_startup_succeeds_after_transient_failures(backend):
+    calls = {"n": 0}
+
+    def flaky_exists(key: str) -> bool:
+        calls["n"] += 1
+        if calls["n"] < 3:
+            raise ConnectionError("not yet")
+        return False
+
+    backend.exists = flaky_exists  # type: ignore[assignment]
+    p = SafeStatePersistence(backend, sleep_fn=lambda s: None)
+    p.validate_startup(deadline_s=60.0)
+    assert calls["n"] == 3
+    p.stop()
+
+
+def test_validate_startup_exhausts_budget_and_raises(backend):
+    def always_down(key: str) -> bool:
+        raise ConnectionError("down")
+
+    backend.exists = always_down  # type: ignore[assignment]
+    fake_now = {"t": 0.0}
+    slept: list[float] = []
+
+    def fake_sleep(s: float) -> None:
+        slept.append(s)
+        fake_now["t"] += s
+
+    p = SafeStatePersistence(backend, sleep_fn=fake_sleep)
+    with pytest.raises(StatePersistenceUnavailable):
+        p.validate_startup(deadline_s=60.0, clock=lambda: fake_now["t"])
+    assert slept[:6] == [0.5, 1.0, 2.0, 4.0, 8.0, 10.0]  # spec D3 schedule
+    assert sum(slept) >= 60.0
+    p.stop()
