@@ -313,4 +313,4 @@ class RedisStreamsExporter(ITradeDataExport):
                 f"{previous_leverage:0.2%} -> {new_leverage:0.2%} @ {price}"
             )
         except Exception:
-            logger.exception(f"[RedisStreamsExporter] Failed to export position change")
+            logger.exception("[RedisStreamsExporter] Failed to export position change")
