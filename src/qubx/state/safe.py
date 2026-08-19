@@ -34,8 +34,14 @@ class SafeStatePersistence(IStatePersistence):
         self._sleep = sleep_fn
 
         self._pending: dict[str, Any] = {}
+        # keys currently being flushed by the writer (dequeued from _pending, not yet resolved) -
+        # consulted by load()/exists() so read-your-writes holds for the whole batch-write duration,
+        # not just while a key sits in _pending (fixes the in-flight read gap, spec review F2).
+        self._inflight: dict[str, Any] = {}
         self._cond = threading.Condition()
         self._stopped = False
+        self._stop_event = threading.Event()  # lets stop() interrupt an in-progress backoff wait (fixes F3)
+        self._warned_after_stop = False
         self._last_success: float | None = None
         self._consecutive_failures = 0
         self._last_fail_log = 0.0
@@ -46,14 +52,26 @@ class SafeStatePersistence(IStatePersistence):
     def save(self, key: str, value: Any) -> None:
         json.dumps(value)  # - eager dry-run: programming errors (TypeError/ValueError) stay loud at the call site
         with self._cond:
+            if self._stopped:
+                self._warn_write_after_stop()
+                return
             self._pending[key] = value
             self._cond.notify()
 
     def delete(self, key: str) -> bool:
         with self._cond:
+            if self._stopped:
+                self._warn_write_after_stop()
+                return True  # optimistic per contract; nothing will actually be persisted
             self._pending[key] = _TOMBSTONE
             self._cond.notify()
         return True  # optimistic: actual backend result is async
+
+    def _warn_write_after_stop(self) -> None:
+        # called under self._cond; log once so a busy shutdown path can't spam the log
+        if not self._warned_after_stop:
+            logger.warning("[SafeStatePersistence] save after stop; value will not be persisted")
+            self._warned_after_stop = True
 
     # ------------------------------------------------------------------- reads
     def load(self, key: str, default: Any = None) -> Any:
@@ -61,12 +79,17 @@ class SafeStatePersistence(IStatePersistence):
             if key in self._pending:
                 v = self._pending[key]
                 return default if v is _TOMBSTONE else v
+            if key in self._inflight:
+                v = self._inflight[key]
+                return default if v is _TOMBSTONE else v
         return self._backend.load(key, default)
 
     def exists(self, key: str) -> bool:
         with self._cond:
             if key in self._pending:
                 return self._pending[key] is not _TOMBSTONE
+            if key in self._inflight:
+                return self._inflight[key] is not _TOMBSTONE
         return self._backend.exists(key)
 
     # ------------------------------------------------------------------ health
@@ -75,9 +98,38 @@ class SafeStatePersistence(IStatePersistence):
 
     @property
     def consecutive_failures(self) -> int:
+        """Consecutive *rounds* (batch attempts) with at least one failing key, not failing keys."""
         return self._consecutive_failures
 
     # ------------------------------------------------------------------ writer
+    def _attempt_batch(self, batch: dict[str, Any]) -> tuple[dict[str, Any], bool, Exception | None]:
+        """Flush one batch to the backend. Returns (still-failed subset, round had any failure, last error)."""
+        failed: dict[str, Any] = {}
+        round_failed = False
+        last_error: Exception | None = None
+        for key, value in batch.items():
+            try:
+                if value is _TOMBSTONE:
+                    self._backend.delete(key)
+                else:
+                    self._backend.save(key, value)
+                self._last_success = time.monotonic()
+            except (TypeError, ValueError):
+                logger.error(f"[SafeStatePersistence] unserializable value for '{key}' reached writer; dropped")
+            except Exception as e:
+                failed[key] = value
+                round_failed = True
+                last_error = e
+        return failed, round_failed, last_error
+
+    def _wait_backoff(self, backoff: float) -> None:
+        if self._sleep is time.sleep:
+            # default sleep: wait on the event so stop() can interrupt a long backoff immediately
+            self._stop_event.wait(backoff)
+        else:
+            # an injected sleep_fn (tests) is honored as given; _stopped is re-checked right after
+            self._sleep(backoff)
+
     def _run(self) -> None:
         while True:
             with self._cond:
@@ -86,39 +138,55 @@ class SafeStatePersistence(IStatePersistence):
                 if not self._pending and self._stopped:
                     return
                 batch, self._pending = self._pending, {}
+                self._inflight = batch
 
-            failed: dict[str, Any] = {}
-            for key, value in batch.items():
-                try:
-                    if value is _TOMBSTONE:
-                        self._backend.delete(key)
-                    else:
-                        self._backend.save(key, value)
-                    self._last_success = time.monotonic()
-                    self._consecutive_failures = 0
-                except (TypeError, ValueError):
-                    logger.error(f"[SafeStatePersistence] unserializable value for '{key}' reached writer; dropped")
-                except Exception as e:
-                    failed[key] = value
-                    self._consecutive_failures += 1
-                    now = time.monotonic()
-                    if now - self._last_fail_log >= 30.0:
-                        logger.warning(
-                            f"[SafeStatePersistence] backend write failed ({self._consecutive_failures} in a row): {e}"
-                        )
-                        self._last_fail_log = now
+            failed, round_failed, last_error = self._attempt_batch(batch)
 
-            if failed:
-                with self._cond:
-                    for key, value in failed.items():
-                        self._pending.setdefault(key, value)  # - newer pending values win over the failed batch
-                    if self._stopped:
-                        return  # - do not backoff-sleep during shutdown
-                backoff = self._retry_backoff_s[min(self._consecutive_failures, len(self._retry_backoff_s)) - 1]
-                self._sleep(backoff)
+            with self._cond:
+                # merge failed keys back into _pending BEFORE clearing _inflight so a key is never
+                # visible in neither map (read-your-writes gap, spec review F2)
+                for key, value in failed.items():
+                    self._pending.setdefault(key, value)  # - newer pending values win over the failed batch
+                self._inflight = {}
+                is_stopped = self._stopped
+
+            # count consecutive FAILING ROUNDS, not failing keys (spec review F1: a batch with one
+            # failing key and one succeeding key must not reset to 0 and then backoff-index to -1)
+            self._consecutive_failures = self._consecutive_failures + 1 if round_failed else 0
+
+            if not failed:
+                continue
+
+            if is_stopped:
+                # bounded flush: this attempt (or the one that follows an interrupted backoff wait)
+                # is the single final drain attempt - no more retries, no more backend calls after this.
+                logger.warning(
+                    f"[SafeStatePersistence] stop(): abandoning {len(failed)} unflushed key(s) after "
+                    f"final drain attempt: {sorted(failed)} (last error: {last_error})"
+                )
+                return
+
+            now = time.monotonic()
+            if now - self._last_fail_log >= 30.0:
+                logger.warning(
+                    f"[SafeStatePersistence] backend write failed for {len(failed)} key(s) "
+                    f"({self._consecutive_failures} consecutive failing round(s)): {last_error}"
+                )
+                self._last_fail_log = now
+
+            backoff = self._retry_backoff_s[min(self._consecutive_failures - 1, len(self._retry_backoff_s) - 1)]
+            self._wait_backoff(backoff)
 
     def stop(self) -> None:
         with self._cond:
             self._stopped = True
             self._cond.notify_all()
+        self._stop_event.set()
         self._writer.join(timeout=self._flush_timeout_s)
+        if self._writer.is_alive():
+            with self._cond:
+                n_unflushed = len(self._pending) + len(self._inflight)
+            logger.warning(
+                f"[SafeStatePersistence] stop(): flush timed out after {self._flush_timeout_s}s with "
+                f"{n_unflushed} key(s) still unflushed"
+            )
