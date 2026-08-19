@@ -37,6 +37,11 @@ class RedisStatePersistence(IStatePersistence):
         key_prefix: str = "state",
         ttl_seconds: int | None = None,
         indent: int | None = 2,
+        *,
+        socket_connect_timeout: float = 2.0,
+        socket_timeout: float = 5.0,
+        socket_keepalive: bool = True,
+        health_check_interval: int = 30,
     ):
         """
         Initialize Redis state persistence.
@@ -47,8 +52,21 @@ class RedisStatePersistence(IStatePersistence):
             key_prefix: Prefix for all keys (default: "state")
             ttl_seconds: Optional TTL in seconds for all keys (None = no expiry)
             indent: JSON indentation level for readability (default: 2, None = compact)
+            socket_connect_timeout: Max seconds to wait for a TCP connection to Redis
+            socket_timeout: Max seconds to wait for a socket read/write to Redis
+            socket_keepalive: Enable TCP keepalive on the underlying socket
+            health_check_interval: Seconds between health-check pings on idle connections
         """
-        self._redis = redis.from_url(redis_url)
+        # - bounded-failure client: a dead peer costs seconds, never TCP-retransmission
+        #   minutes (incident 2026-08-19; platform #375). Retry policy lives in the
+        #   SafeStatePersistence wrapper, not here.
+        self._redis = redis.from_url(
+            redis_url,
+            socket_connect_timeout=socket_connect_timeout,
+            socket_timeout=socket_timeout,
+            socket_keepalive=socket_keepalive,
+            health_check_interval=health_check_interval,
+        )
         self._strategy_name = strategy_name
         self._key_prefix = key_prefix
         self._ttl_seconds = ttl_seconds
