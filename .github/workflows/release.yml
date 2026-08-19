@@ -356,6 +356,11 @@ jobs:
           version: "latest"
 
       - name: Generate release notes
+        env:
+          # cliff.toml has [remote.github] enrichment (PR links, usernames); without a
+          # token git-cliff calls the GitHub API unauthenticated and 403s on shared
+          # runner IPs (broke the v3.3.0 release notes, run 32263898098)
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           uv tool install git-cliff
           PREV_TAG=$(git describe --tags --abbrev=0 HEAD^ 2>/dev/null || echo "")
