@@ -204,3 +204,86 @@ books when bumping.
   same signal.
 - control-api redis retry + QuestDB circuit breaker (#376), Postgres/QuestDB
   server-side keepalives and caps (#377, #378).
+
+## Rate-limit backend resilience (increment 2, agreed with Yuriy 2026-08-19)
+
+The redis rate-limit backend (`qubx/rate_limiting/redis_backend.py`) shares the
+incident's root cause and — via control-api's `BuiltinDefaults` → `redis-ratelimit`
+preset (`env:REDIS_URL`, the same redis as state persistence) — is enabled for
+every platform-deployed bot:
+
+- `aioredis.from_url(url, decode_responses=True, single_connection_client=True)`
+  with **no socket timeouts** → a half-open socket hangs each script call ~15 min.
+- `RatePool.acquire`'s backend await is unbounded (`gate_max_wait` bounds only the
+  gate) and unprotected: after the hang, `ConnectionError` propagates into order
+  placement (ccxt REST throttle hook; qubx_lighter `send_tx`/`ws_subscribe`/REST).
+- `single_connection_client=True` serializes every script call behind the hung one.
+
+Net effect of a redis outage today: a silent multi-minute trading halt per bot.
+
+### Decisions
+
+- **RL-D1 — client timeouts.** `RedisBackend` gains keyword-only ctor params
+  forwarded to `from_url`: `socket_connect_timeout=2.0`, `socket_timeout=5.0`,
+  `socket_keepalive=True`, `health_check_interval=30` (mirroring
+  `RedisStatePersistence`). Safe: every command is a fast Lua eval — no blocking
+  commands — so `socket_timeout` cannot false-positive on a healthy server.
+- **RL-D2 — fail-open to local buckets.** New composite
+  `ResilientRateLimitBackend(IRateLimitBackend)` in
+  `src/qubx/rate_limiting/resilient.py`: primary (redis) + fallback
+  (`InMemoryBackend`, same per-key capacity/refill params). Trading never blocks
+  on rate-limit redis. Accepted degradation: each bot self-paces at the full
+  budget without cross-bot coordination; in-process 429 gates
+  (`report_limit_hit`) and ccxt's own throttler contain the residual venue risk.
+  Recovery needs no state reconciliation: expired redis keys re-init full and
+  header syncs recalibrate from venue-reported usage (the ground truth).
+  `InMemoryBackend` is a safe cross-loop fallback — `TokenBucketRateLimiter`
+  deliberately uses `threading.Lock` + monotonic time, no loop-bound primitives.
+- **RL-D3 — circuit breaker, 30 s.** First primary failure opens the breaker:
+  all calls go straight to the fallback (no per-call timeout tax). When the
+  cooldown expires, exactly one caller probes the primary (a probe-in-flight
+  flag keeps concurrent callers on the fallback); probe failure re-opens for
+  another 30 s, success closes. Breaker state lives on the composite (shared
+  across the per-loop redis clients) as plain monotonic floats — benign races
+  (worst case: two probes) are acceptable.
+- **RL-D4 — observability: logs only.** WARNING on the open transition
+  ("falling back to local buckets"), INFO on recovery. No new metric, no
+  `DegradeReason` — a redis outage already surfaces via
+  `state_persistence_stale`, and double-flagging one root cause is noise.
+  Transition-only logging is naturally throttled (≤2 lines per cooldown).
+- **Errors caught:** `(redis.exceptions.RedisError, OSError)` — covers redis
+  `TimeoutError`/`ConnectionError` and the builtin `ConnectionError`/`TimeoutError`
+  (both `OSError` subclasses). `asyncio.CancelledError` (`BaseException`)
+  propagates untouched.
+- **`close()` joins the `IRateLimitBackend` contract** as a non-abstract
+  `async def close(self) -> None` no-op default (no hasattr probing);
+  `RedisBackend` already overrides it; the composite closes primary then
+  fallback.
+- **Wiring:** `RateLimitManager._create_backend` returns
+  `ResilientRateLimitBackend(RedisBackend(url))` for `backend == "redis"`;
+  the existing creation-failure fallback to plain `InMemoryBackend` stays.
+- **No config schema changes** (`breaker_cooldown_s: float = 30.0` is a ctor
+  default, not YAML) and **no platform-repo changes**: same preset contract,
+  no metric renames (the bot-health dashboard reads `rate_limit.utilization`,
+  unchanged — and during outages pool metrics now flow from local state
+  instead of timing out).
+
+### Failure timeline (target)
+
+t0: redis dies half-open → first acquire hangs ≤5 s (socket_timeout) → error →
+breaker opens (WARNING), call served from the local bucket. t0+ε…t0+30 s: all
+calls local, sub-ms overhead, orders unaffected. t0+30 s: one probe pays ≤5 s,
+fails, re-opens. … redis recovers → next probe succeeds → INFO, primary resumes,
+cross-bot coordination restored.
+
+### Testing
+
+Unit (`tests/qubx/rate_limiting/test_resilient.py`, fake primary): pass-through
+on success (fallback untouched); error → fallback + breaker opens; no primary
+calls during cooldown; exactly one probe after cooldown with concurrent callers
+staying local (Event-synchronized, no sleeps); probe success/failure
+transitions; `get_remaining`/`set_remaining` follow the same policy;
+CancelledError propagates. Client-options test asserting the `from_url` timeout
+kwargs (mirrors `tests/qubx/state/test_redis_client_options.py`). Integration
+(docker `pause`, mirrors `test_safe_integration.py`): acquire returns quickly
+via fallback while redis is paused; unpause → recovery to primary.

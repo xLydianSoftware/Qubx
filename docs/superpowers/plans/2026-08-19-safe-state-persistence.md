@@ -1313,6 +1313,238 @@ Closes the qubx side of xLydianSoftware/xlydian-platform#375 (epic #374, inciden
 
 ---
 
+### Task 10: Resilient rate-limit backend (client timeouts + local fallback + 30s breaker)
+
+Implements spec section "Rate-limit backend resilience (increment 2)". Read that
+section first — decisions RL-D1…RL-D4 are binding.
+
+**Files:**
+- Modify: `src/qubx/rate_limiting/redis_backend.py` (ctor timeout kwargs → `from_url`)
+- Modify: `src/qubx/rate_limiting/backend.py` (add non-abstract `async def close()` no-op to `IRateLimitBackend`)
+- Create: `src/qubx/rate_limiting/resilient.py` (`ResilientRateLimitBackend`)
+- Modify: `src/qubx/rate_limiting/manager.py` (`_create_backend` wraps redis in the composite)
+- Modify: `src/qubx/rate_limiting/__init__.py` (export `ResilientRateLimitBackend`)
+- Test: `tests/qubx/rate_limiting/test_resilient.py`
+- Test: `tests/qubx/rate_limiting/test_redis_client_options.py`
+- Test: `tests/qubx/rate_limiting/test_resilient_integration.py` (docker, `pytest.mark.integration`)
+
+**Interfaces:**
+- Consumes: `IRateLimitBackend`, `InMemoryBackend` (backend.py), `RedisBackend` (redis_backend.py), `from qubx import logger`
+- Produces: `ResilientRateLimitBackend(primary: IRateLimitBackend, fallback: IRateLimitBackend | None = None, breaker_cooldown_s: float = 30.0)` implementing the full `IRateLimitBackend` surface + `close()`; `RedisBackend(redis_url, *, socket_connect_timeout=2.0, socket_timeout=5.0, socket_keepalive=True, health_check_interval=30)`
+
+- [ ] **Step 1: Failing unit tests for the composite**
+
+`tests/qubx/rate_limiting/test_resilient.py` — a `FakeBackend(IRateLimitBackend)`
+records calls and can be set to raise or to block on an `asyncio.Event`:
+
+```python
+class FakeBackend(IRateLimitBackend):
+    def __init__(self) -> None:
+        self.acquire_calls = 0
+        self.get_calls = 0
+        self.set_calls = 0
+        self.closed = False
+        self.raise_exc: Exception | None = None
+        self.block_on: asyncio.Event | None = None
+
+    async def acquire(self, key, weight, capacity, refill_rate) -> float:
+        self.acquire_calls += 1
+        if self.block_on is not None:
+            await self.block_on.wait()
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        return 0.0
+
+    async def get_remaining(self, key, capacity=0, refill_rate=0):
+        self.get_calls += 1
+        if self.raise_exc is not None:
+            raise self.raise_exc
+        return 1.0
+
+    async def set_remaining(self, key, remaining, capacity=0, refill_rate=0) -> None:
+        self.set_calls += 1
+        if self.raise_exc is not None:
+            raise self.raise_exc
+
+    async def close(self) -> None:
+        self.closed = True
+```
+
+Tests (all `async def` via anyio/asyncio marker used elsewhere in this test dir;
+no sleeps — force breaker timing by assigning `backend._broken_until` directly):
+
+1. `test_passthrough_when_primary_healthy` — acquire/get/set hit primary; fallback untouched.
+2. `test_error_opens_breaker_and_serves_fallback` — primary raises `ConnectionError`; acquire returns via fallback; a second acquire does not touch primary (`acquire_calls` stays 1).
+3. `test_probe_after_cooldown_single_caller` — after the error, set `resilient._broken_until = 0.0`; primary healed (`raise_exc = None`); next acquire probes primary and closes the breaker; the following acquire also hits primary.
+4. `test_concurrent_callers_stay_local_while_probe_inflight` — primary healed but blocked on an `Event`; force probe due; start task A (probes, blocks), then await call B → must be served by fallback (primary `acquire_calls == 1`); release the event; A completes; next call hits primary.
+5. `test_probe_failure_reopens` — probe raises again → immediate next call goes to fallback without touching primary.
+6. `test_set_and_get_follow_policy` — with breaker open, `get_remaining`/`set_remaining` route to fallback.
+7. `test_cancelled_error_propagates` — primary raises `asyncio.CancelledError`: it propagates out of acquire and the breaker stays closed.
+8. `test_close_closes_both` — `close()` closes primary and fallback.
+
+`tests/qubx/rate_limiting/test_redis_client_options.py` — mirror
+`tests/qubx/state/test_redis_client_options.py`: monkeypatch
+`redis.asyncio.from_url` with a MagicMock (whose `register_script` returns
+MagicMocks), invoke `RedisBackend("redis://x")._scripts_for_current_loop()`
+inside a running loop, and assert `from_url` received
+`socket_connect_timeout=2.0, socket_timeout=5.0, socket_keepalive=True,
+health_check_interval=30` (plus the existing `decode_responses=True,
+single_connection_client=True`).
+
+- [ ] **Step 2: Run tests, verify they fail** (`ResilientRateLimitBackend` doesn't exist; `from_url` lacks kwargs)
+
+- [ ] **Step 3: Implement**
+
+`src/qubx/rate_limiting/backend.py` — append to `IRateLimitBackend` (non-abstract):
+
+```python
+    async def close(self) -> None:
+        """Release backend resources for the current event loop. Default: no-op."""
+        return None
+```
+
+`src/qubx/rate_limiting/redis_backend.py` — ctor gains keyword-only params with
+the RL-D1 defaults, stored as a `self._client_kwargs` dict merged into the
+existing `from_url` call in `_scripts_for_current_loop` (keep
+`decode_responses=True, single_connection_client=True`).
+
+`src/qubx/rate_limiting/resilient.py`:
+
+```python
+import time
+
+from redis.exceptions import RedisError
+
+from qubx import logger
+
+from .backend import InMemoryBackend, IRateLimitBackend
+
+_BACKEND_ERRORS = (RedisError, OSError)
+
+
+class ResilientRateLimitBackend(IRateLimitBackend):
+    """Composite: primary (redis) with local fallback and a circuit breaker.
+
+    Primary healthy → pass-through. Primary error → breaker opens for
+    breaker_cooldown_s and calls are served by the local fallback (per-bot
+    pacing, no cross-bot coordination). Cooldown expiry → exactly one caller
+    probes the primary; concurrent callers stay on the fallback until the
+    probe resolves. State is plain monotonic floats shared across event
+    loops — races are benign (worst case: two probes).
+    """
+
+    def __init__(
+        self,
+        primary: IRateLimitBackend,
+        fallback: IRateLimitBackend | None = None,
+        breaker_cooldown_s: float = 30.0,
+    ):
+        self._primary = primary
+        self._fallback = fallback or InMemoryBackend()
+        self._breaker_cooldown_s = breaker_cooldown_s
+        self._broken = False
+        self._broken_until = 0.0
+        self._probe_inflight = False
+
+    def _use_primary(self) -> bool:
+        """Route decision for this call; claims the probe slot when one is due."""
+        if not self._broken:
+            return True
+        if self._probe_inflight or time.monotonic() < self._broken_until:
+            return False
+        self._probe_inflight = True
+        return True
+
+    def _on_success(self) -> None:
+        self._probe_inflight = False
+        if self._broken:
+            self._broken = False
+            logger.info("Rate-limit redis backend recovered — resuming cross-bot coordination")
+
+    def _on_error(self, exc: Exception) -> None:
+        self._probe_inflight = False
+        if not self._broken:
+            logger.warning(
+                f"Rate-limit redis backend unavailable ({exc!r}) — "
+                f"falling back to local buckets for {self._breaker_cooldown_s:.0f}s"
+            )
+        self._broken = True
+        self._broken_until = time.monotonic() + self._breaker_cooldown_s
+
+    async def acquire(self, key: str, weight: float, capacity: float, refill_rate: float) -> float:
+        if self._use_primary():
+            try:
+                waited = await self._primary.acquire(key, weight, capacity, refill_rate)
+            except _BACKEND_ERRORS as e:
+                self._on_error(e)
+            else:
+                self._on_success()
+                return waited
+        return await self._fallback.acquire(key, weight, capacity, refill_rate)
+
+    async def get_remaining(self, key: str, capacity: float = 0, refill_rate: float = 0) -> float | None:
+        if self._use_primary():
+            try:
+                remaining = await self._primary.get_remaining(key, capacity, refill_rate)
+            except _BACKEND_ERRORS as e:
+                self._on_error(e)
+            else:
+                self._on_success()
+                return remaining
+        return await self._fallback.get_remaining(key, capacity, refill_rate)
+
+    async def set_remaining(self, key: str, remaining: float, capacity: float = 0, refill_rate: float = 0) -> None:
+        if self._use_primary():
+            try:
+                await self._primary.set_remaining(key, remaining, capacity, refill_rate)
+            except _BACKEND_ERRORS as e:
+                self._on_error(e)
+            else:
+                self._on_success()
+                return
+        await self._fallback.set_remaining(key, remaining, capacity, refill_rate)
+
+    async def close(self) -> None:
+        await self._primary.close()
+        await self._fallback.close()
+```
+
+`src/qubx/rate_limiting/manager.py::_create_backend` — wrap:
+
+```python
+        if config.backend == "redis" and config.redis_url:
+            try:
+                from .redis_backend import RedisBackend
+                from .resilient import ResilientRateLimitBackend
+
+                return ResilientRateLimitBackend(RedisBackend(config.redis_url))
+            except Exception as e:
+                logger.error(f"Failed to create Redis rate limit backend: {e}, falling back to local")
+        return InMemoryBackend()
+```
+
+`__init__.py`: add `ResilientRateLimitBackend` to the imports and `__all__`.
+
+- [ ] **Step 4: Run unit tests, verify pass** (`uv run pytest tests/qubx/rate_limiting/ -q`)
+
+- [ ] **Step 5: Integration test** — `tests/qubx/rate_limiting/test_resilient_integration.py`,
+mirroring `tests/qubx/state/test_safe_integration.py`'s docker fixture (own
+container name e.g. `qubx-rl-itest-redis` and own port, `redis:7-alpine`,
+`pytestmark = pytest.mark.integration`):
+  1. Build `ResilientRateLimitBackend(RedisBackend(url))`; `acquire` succeeds via primary (verify the `ratelimit:` key exists through a separate control client).
+  2. `docker pause` → next `acquire` returns in < 8 s (socket timeout → fallback) and the one after in < 0.5 s (breaker open, no timeout tax).
+  3. `docker unpause` → force `_broken_until = 0.0` → `acquire` routes to primary again (control client sees the key's `last_refill` advance).
+
+- [ ] **Step 6: Full check + commit**
+
+```bash
+uv run ruff check src/qubx/rate_limiting tests/qubx/rate_limiting && uv run ruff format --check src/qubx/rate_limiting tests/qubx/rate_limiting
+uv run pytest tests/qubx/rate_limiting -q
+git add -A && git commit -m "feat(rate-limiting): resilient redis backend — client timeouts, local fallback, 30s circuit breaker"
+```
+
+---
+
 ## Self-review notes
 
 - Spec coverage: §1→T3/T4, §2→T2, §3→T1, §4→T7, §5→T8, §6→T5, §7→T6, §8 (no `processing.py` change) → enforced by touching nothing there; failure timeline → T9 integration; testing section → per-task tests + T9; rollout → PR to dev only.
