@@ -21,7 +21,12 @@ PORT = 63791
 def _docker_available() -> bool:
     if shutil.which("docker") is None:
         return False
-    return subprocess.run(["docker", "ps"], capture_output=True).returncode == 0
+    try:
+        # timeout: this runs at collection time on every suite run — a wedged
+        # docker daemon must not hang collection
+        return subprocess.run(["docker", "ps"], capture_output=True, timeout=5).returncode == 0
+    except subprocess.TimeoutExpired:
+        return False
 
 
 pytestmark = [

@@ -265,3 +265,46 @@ async def test_stale_success_does_not_close_breaker():
     # the next call must go straight to the fallback — no further primary touch
     await resilient.acquire("k", 1.0, 10.0, 5.0)
     assert primary.acquire_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_stale_error_reopens_breaker():
+    """The asymmetric half of the stale-outcome contract: a stale ERROR is still
+    evidence of an unhealthy primary and must re-open the breaker, even right
+    after a successful probe closed it."""
+    primary, fallback = FakeBackend(), FakeBackend()
+    resilient = ResilientRateLimitBackend(primary, fallback)
+
+    event = asyncio.Event()
+    primary.block_on = event  # call A blocks here while the breaker is still closed
+
+    task_a = asyncio.create_task(resilient.acquire("k", 1.0, 10.0, 5.0))
+    await asyncio.sleep(0)  # let A dispatch to primary and start blocking, while healthy
+    await asyncio.sleep(0)
+    assert primary.acquire_calls == 1
+
+    # call B fails and opens the breaker while A is still in flight
+    primary.block_on = None
+    primary.raise_exc = ConnectionError("redis down")
+    await resilient.acquire("k", 1.0, 10.0, 5.0)
+    assert resilient._broken is True
+    assert primary.acquire_calls == 2
+
+    # a healed probe closes the breaker
+    primary.raise_exc = None
+    resilient._broken_until = 0.0
+    await resilient.acquire("k", 1.0, 10.0, 5.0)
+    assert resilient._broken is False
+    assert primary.acquire_calls == 3
+
+    # release A into an error: stale, but it re-opens the breaker for a full cooldown
+    primary.raise_exc = ConnectionError("redis down again")
+    event.set()
+    await task_a  # A's acquire is served by the fallback after the error
+    assert resilient._broken is True
+    assert resilient._probe_inflight is False
+
+    # while the fresh cooldown runs, calls stay on the fallback
+    # (A was counted at dispatch as call 1; the count must not move after its stale error)
+    await resilient.acquire("k", 1.0, 10.0, 5.0)
+    assert primary.acquire_calls == 3

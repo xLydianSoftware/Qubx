@@ -14,11 +14,15 @@ Breaker protocol:
     - Once the cooldown expires, exactly one caller claims the probe slot
       (``_route()``, ``_probe_inflight``) and is routed to the primary; other
       concurrent callers stay on the fallback while the probe is in flight.
-    - Only the probe's own outcome may change breaker state: probe success
-      closes the breaker, probe failure re-opens it for another cooldown. A
-      *stale* success or error — from a call dispatched before the breaker
-      opened, landing after another call already changed the state — is not
-      evidence about the probe and is ignored (see F2 / review Finding 2).
+    - Open and close are asymmetric. Closing requires the probe: only the
+      probe's success closes the breaker, so a *stale* success — from a call
+      dispatched before the breaker opened, landing after — is ignored (see
+      F2 / review Finding 2). Opening does not: ANY primary error opens or
+      re-arms the cooldown, stale or not, because an error is evidence of an
+      unhealthy primary regardless of when the call was dispatched. A stale
+      error landing right after a successful probe therefore re-opens the
+      breaker for a full cooldown — accepted: it costs one 30 s local-only
+      window at the tail of an outage, never a hang.
     - The probe slot is released on every exit path, including
       ``asyncio.CancelledError`` and any exception outside
       ``_BACKEND_ERRORS`` (see F1 / review Finding 1): those propagate to the
@@ -66,11 +70,11 @@ class ResilientRateLimitBackend(IRateLimitBackend):
     limitations. In short: primary healthy → pass-through; primary error →
     breaker opens for ``breaker_cooldown_s`` and calls are served by the
     local fallback; cooldown expiry → exactly one caller probes the primary
-    while concurrent callers stay on the fallback; only that probe's outcome
-    can close (on success) or re-open (on failure) the breaker. Breaker
-    state (``_broken``, ``_broken_until``, ``_probe_inflight``) is plain
-    attributes shared across event loops — the one accepted race is two
-    concurrent probes.
+    while concurrent callers stay on the fallback; only the probe's success
+    closes the breaker, while any primary error (probe or stale) opens or
+    re-arms it. Breaker state (``_broken``, ``_broken_until``,
+    ``_probe_inflight``) is plain attributes shared across event loops — the
+    one accepted race is two concurrent probes.
     """
 
     def __init__(
@@ -102,15 +106,18 @@ class ResilientRateLimitBackend(IRateLimitBackend):
             logger.info("Rate-limit redis backend recovered — resuming cross-bot coordination")
 
     def _on_error(self, exc: Exception, is_probe: bool) -> None:
+        # re-arm the breaker BEFORE releasing the probe slot: once the slot frees,
+        # a racing _route() must already see the fresh cooldown deadline
+        was_broken = self._broken
+        self._broken = True
+        self._broken_until = time.monotonic() + self._breaker_cooldown_s
         if is_probe:
             self._probe_inflight = False
-        if not self._broken:
+        if not was_broken:
             logger.warning(
                 f"Rate-limit redis backend unavailable ({exc!r}) — "
                 f"falling back to local buckets for {self._breaker_cooldown_s:.0f}s"
             )
-        self._broken = True
-        self._broken_until = time.monotonic() + self._breaker_cooldown_s
 
     async def acquire(self, key: str, weight: float, capacity: float, refill_rate: float) -> float:
         use_primary, is_probe = self._route()
