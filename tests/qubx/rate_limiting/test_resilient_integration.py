@@ -5,6 +5,7 @@
 the closest reproduction of the 2026-08-19 half-open-socket incident.
 Requires docker; runs only under `-m integration`.
 """
+
 import subprocess
 import time
 import uuid
@@ -21,7 +22,8 @@ PORT = 63791
 def redis_container():
     subprocess.run(
         ["docker", "run", "-d", "--rm", "--name", CONTAINER, "-p", f"{PORT}:6379", "redis:7-alpine"],
-        check=True, capture_output=True,
+        check=True,
+        capture_output=True,
     )
     time.sleep(1.0)
     yield CONTAINER
