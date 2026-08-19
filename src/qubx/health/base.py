@@ -2,13 +2,13 @@ import threading
 import time
 from collections import defaultdict
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Callable
 
 import numpy as np
 
 from qubx import logger
 from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64, td_64
-from qubx.core.interfaces import IHealthMonitor, IMetricEmitter, ITimeProvider, LatencyMetrics
+from qubx.core.interfaces import IHealthMonitor, IMetricEmitter, IStatePersistence, ITimeProvider, LatencyMetrics
 from qubx.core.status import ContextStatus, DegradeReason, QubxStatus
 from qubx.core.utils import recognize_timeframe
 from qubx.utils import convert_tf_str_td64
@@ -87,9 +87,8 @@ class BaseHealthMonitor(IHealthMonitor):
         self._queue_degraded = False  # - the monitor's own edge tracker: status is written only on transitions
         self._status: ContextStatus | None = None
 
-        # State-persistence staleness: wired in by set_state_persistence (duck-typed —
-        # needs last_success_age() and staleness_threshold_s); None until wired.
-        self._state_persistence: Any = None
+        # State-persistence staleness: wired in by set_state_persistence; None until wired.
+        self._state_persistence: IStatePersistence | None = None
         self._state_stale = False  # - the monitor's own edge tracker, same pattern as _queue_degraded
 
         # Initialize metrics storage
@@ -297,9 +296,10 @@ class BaseHealthMonitor(IHealthMonitor):
             DegradeReason.INTERNAL_QUEUE_OVERFLOW, now, message=f"queue size {size}, no drain for {for_str}"
         )
 
-    def set_state_persistence(self, persistence: Any) -> None:
-        """Wire a SafeStatePersistence (duck-typed: needs last_success_age() and
-        staleness_threshold_s) so the monitor can report write staleness."""
+    def set_state_persistence(self, persistence: IStatePersistence) -> None:
+        """Wire the context's state persistence so the monitor can report write
+        staleness. Backends that don't track write health (last_success_age()
+        is None) are wired but never produce a gauge or degradation."""
         self._state_persistence = persistence
         self._state_stale = False
 
@@ -322,7 +322,8 @@ class BaseHealthMonitor(IHealthMonitor):
                 "context DEGRADED (state_persistence_stale)"
             )
             self._status.add(
-                DegradeReason.STATE_PERSISTENCE_STALE, self.time_provider.time(),
+                DegradeReason.STATE_PERSISTENCE_STALE,
+                self.time_provider.time(),
                 scope="state",
                 message=f"no successful state write for {age:.0f}s",
             )

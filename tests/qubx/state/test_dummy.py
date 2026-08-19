@@ -2,8 +2,6 @@
 Unit tests for DummyStatePersistence.
 """
 
-import pytest
-
 from qubx.core.interfaces import IStatePersistence
 from qubx.state import DummyStatePersistence
 
@@ -15,6 +13,14 @@ class TestDummyStatePersistence:
         """Test that DummyStatePersistence implements IStatePersistence."""
         persistence = DummyStatePersistence()
         assert isinstance(persistence, IStatePersistence)
+
+    def test_interface_defaults(self):
+        """Write-health tracking and stop() are part of the interface contract;
+        Dummy relies on the defaults: no tracking, no-op stop."""
+        persistence = DummyStatePersistence()
+        assert persistence.last_success_age() is None
+        assert persistence.staleness_threshold_s == 60.0
+        persistence.stop()  # no-op, must not raise
 
     def test_save_does_nothing(self):
         """Test that save is a no-op."""

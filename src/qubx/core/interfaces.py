@@ -126,6 +126,31 @@ class IStatePersistence(Protocol):
         """
         ...
 
+    # Write-health staleness threshold in seconds. Only consulted when
+    # last_success_age() returns a value; implementations that track write
+    # health should derive it from their write cadence.
+    staleness_threshold_s: float = 60.0
+
+    def last_success_age(self) -> float | None:
+        """
+        Age in seconds of the last confirmed successful write to the backend.
+
+        Returns:
+            Seconds since the last successful write, or None if this
+            implementation does not track write health. Callers must skip
+            staleness checks when None is returned.
+        """
+        return None
+
+    def stop(self) -> None:
+        """
+        Flush pending writes (bounded) and release backend resources.
+
+        Called once during context shutdown. Implementations without a
+        background writer keep this no-op default.
+        """
+        return None
+
 
 class ITradeDataExport:
     """Interface for exporting trading data to external systems."""
@@ -1998,6 +2023,14 @@ class IHealthMonitor(IHealthWriter, IHealthReader):
 
     def stop(self) -> None:
         """Stop the health metrics monitor."""
+        ...
+
+    def set_state_persistence(self, persistence: IStatePersistence) -> None:
+        """
+        Wire the context's state persistence so the monitor can observe write
+        health (last_success_age) and degrade on staleness. Monitors that do
+        not track persistence health keep this no-op default.
+        """
         ...
 
     def subscribe(self, instrument: Instrument, event_type: str) -> None:

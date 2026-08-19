@@ -1,7 +1,8 @@
-"""Task 6 scope extension: StrategyContext wires a SafeStatePersistence (duck-typed via
-last_success_age) into the health monitor at construction, and flushes it (stop()) during
-StrategyContext.stop()'s fault-tolerant cleanup sequence. DummyStatePersistence (no
-last_success_age/stop) must be a no-op on both paths.
+"""StrategyContext wires its state persistence into the health monitor at construction
+(set_state_persistence is part of IHealthMonitor) and flushes it (stop(), part of
+IStatePersistence) during StrategyContext.stop()'s fault-tolerant cleanup sequence.
+Backends that don't track write health (DummyStatePersistence) rely on the interface
+defaults: last_success_age() -> None and a no-op stop().
 
 Mirrors the StrategyContext construction pattern from context_initializer_test.py — the
 same set of manager classes (MarketManager/UniverseManager/SubscriptionManager/
@@ -15,8 +16,9 @@ import pytest
 
 from qubx.core.context import StrategyContext
 from qubx.core.initializer import BasicStrategyInitializer
-from qubx.core.interfaces import IStrategy
+from qubx.core.interfaces import IHealthMonitor, IStrategy
 from qubx.core.lookups import lookup
+from qubx.state import DummyStatePersistence
 
 
 class _MockStrategy(IStrategy):
@@ -24,7 +26,7 @@ class _MockStrategy(IStrategy):
 
 
 class _StubSafePersistence:
-    """Duck-types the SafeStatePersistence surface context.py wires on: last_success_age()
+    """The SafeStatePersistence surface context.py relies on: last_success_age()
     + staleness_threshold_s (health wiring) and stop() (shutdown flush)."""
 
     staleness_threshold_s = 60.0
@@ -87,10 +89,11 @@ def test_safe_persistence_wired_into_health_monitor_on_construction(mock_compone
     health_monitor.set_state_persistence.assert_called_once_with(sp)
 
 
-def test_dummy_persistence_not_wired_into_health_monitor(mock_components):
+def test_dummy_persistence_is_wired_unconditionally(mock_components):
     health_monitor = MagicMock()
-    _build_context(mock_components, None, health_monitor)  # None -> DummyStatePersistence()
-    health_monitor.set_state_persistence.assert_not_called()
+    ctx = _build_context(mock_components, None, health_monitor)  # None -> DummyStatePersistence()
+    health_monitor.set_state_persistence.assert_called_once_with(ctx._state_persistence)
+    assert isinstance(ctx._state_persistence, DummyStatePersistence)
 
 
 def test_stop_flushes_safe_state_persistence(mock_components):
@@ -102,18 +105,18 @@ def test_stop_flushes_safe_state_persistence(mock_components):
 
 def test_stop_is_noop_for_dummy_state_persistence(mock_components):
     ctx = _build_context(mock_components, None, MagicMock())  # None -> DummyStatePersistence()
-    ctx.stop()  # must not raise (DummyStatePersistence has no stop())
+    ctx.stop()  # must not raise (DummyStatePersistence inherits the no-op stop() default)
 
 
-class _HealthMonitorWithoutStatePersistenceSupport:
-    """A custom IHealthMonitor that predates set_state_persistence — must not AttributeError
-    at construction when paired with real (SafeStatePersistence-shaped) persistence."""
+class _MinimalHealthMonitor(IHealthMonitor):
+    """A monitor that implements nothing beyond what IHealthMonitor's interface
+    defaults provide — set_state_persistence must be inherited as a no-op."""
 
     def set_status(self, status) -> None:
         pass
 
 
-def test_construction_does_not_raise_for_health_monitor_missing_set_state_persistence(mock_components):
+def test_construction_works_for_monitor_using_interface_default(mock_components):
     sp = _StubSafePersistence()
-    # must not raise AttributeError even though the monitor has no set_state_persistence
-    _build_context(mock_components, sp, _HealthMonitorWithoutStatePersistenceSupport())
+    # must not raise: set_state_persistence is part of IHealthMonitor with a no-op default
+    _build_context(mock_components, sp, _MinimalHealthMonitor())

@@ -1,8 +1,11 @@
+from unittest.mock import MagicMock
+
 import numpy as np
 
 from qubx.core.basics import ITimeProvider
 from qubx.core.status import ContextStatus, DegradeReason
 from qubx.health.base import BaseHealthMonitor
+from qubx.state import DummyStatePersistence
 
 
 class FixedTime(ITimeProvider):
@@ -52,6 +55,22 @@ def test_no_persistence_wired_is_noop():
     monitor = BaseHealthMonitor(FixedTime())
     monitor.set_status(ContextStatus())
     monitor.check_state_persistence()  # must not raise
+
+
+def test_dummy_persistence_wired_is_inert():
+    """Context wires persistence unconditionally; a backend that doesn't track write
+    health (last_success_age() -> None interface default) must never produce a gauge
+    or a degradation."""
+    monitor = BaseHealthMonitor(FixedTime())
+    status = ContextStatus()
+    monitor.set_status(status)
+    monitor.record_gauge = MagicMock()  # type: ignore[method-assign]
+    monitor.set_state_persistence(DummyStatePersistence())
+
+    monitor.check_state_persistence()
+
+    monitor.record_gauge.assert_not_called()
+    assert not status.info.degradations
 
 
 def test_age_none_before_first_write_is_not_stale():
