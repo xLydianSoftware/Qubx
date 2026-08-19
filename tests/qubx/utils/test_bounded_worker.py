@@ -1,6 +1,8 @@
 import threading
 import time
 
+import pytest
+
 from qubx.utils.threading import BoundedWorker
 
 
@@ -61,3 +63,13 @@ def test_submit_after_stop_is_noop():
     w.stop()
     w.submit(lambda: None)  # must not raise
     assert w.queued == 0
+
+
+def test_construction_rejects_non_positive_maxlen():
+    # submit() must never raise; a degenerate maxlen (e.g. 0, which makes every submit an
+    # eviction of an empty queue) is a programming error and must be caught loudly at construction
+    # instead, not surfaced as an IndexError out of submit().
+    with pytest.raises(ValueError):
+        BoundedWorker("t5", maxlen=0)
+    with pytest.raises(ValueError):
+        BoundedWorker("t6", maxlen=-1)

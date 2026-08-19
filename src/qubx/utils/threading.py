@@ -22,6 +22,8 @@ class BoundedWorker:
     """
 
     def __init__(self, name: str, maxlen: int, warn_every_s: float = 30.0) -> None:
+        if maxlen < 1:
+            raise ValueError(f"maxlen must be >= 1, got {maxlen}")
         self._name = name
         self._maxlen = maxlen
         self._warn_every_s = warn_every_s
