@@ -203,12 +203,17 @@ def _account_summary():
     \"\"\"Collect per-exchange account summary (total capital, leverage).\"\"\"
     summary = []
     try:
+        # - Position.pnl is unrealized + realized, and realized already carries cumulative funding
+        pnl_by_exchange = {{}}
+        for instr, pos in ctx.get_positions().items():
+            pnl_by_exchange[instr.exchange] = pnl_by_exchange.get(instr.exchange, 0.0) + pos.pnl
         for exch in ctx.exchanges:
             summary.append({{
                 "exchange": exch,
                 "total_capital": _sanitize_number(round(ctx.get_total_capital(exch), 2)),
                 "net_leverage": _sanitize_number(round(ctx.get_net_leverage(exch), 4)),
                 "gross_leverage": _sanitize_number(round(ctx.get_gross_leverage(exch), 4)),
+                "pnl": _sanitize_number(round(pnl_by_exchange.get(exch, 0.0), 2)),
             }})
     except Exception:
         pass
@@ -257,7 +262,7 @@ config_file = Path('{config_path_str}')
 account_file = Path('{account_path_str}') if '{account_path_str}' != 'None' else None
 
 # Add project to system path
-{'add_project_to_system_path()  # dev mode: adds ~/projects' if dev else '# dev mode disabled - ~/projects not added'}
+{"add_project_to_system_path()  # dev mode: adds ~/projects" if dev else "# dev mode disabled - ~/projects not added"}
 add_project_to_system_path(config_file.parent)
 
 # Run the strategy

@@ -70,7 +70,8 @@ Footer {
     width: 1fr;
     border: solid $border-green;
     background: $background;
-    padding: 1;
+    /* - no top padding: the log filter bar docks flush against the border */
+    padding: 0 1 1 1;
 }
 
 #output-container:focus-within {

@@ -21,7 +21,16 @@ from qubx.cli.theme import QUBX_DARK
 from .handlers import KernelEventHandler
 from .init_code import generate_init_code, generate_mock_init_code
 from .kernel import IPyKernel
-from .widgets import AccountSummary, CommandInput, DebugLog, OrdersTable, PositionsTable, QuotesTable, ReplOutput
+from .widgets import (
+    AccountSummary,
+    CommandInput,
+    DebugLog,
+    LogLevelFilter,
+    OrdersTable,
+    PositionsTable,
+    QuotesTable,
+    ReplOutput,
+)
 
 
 class TextualStrategyApp(App[None]):
@@ -32,12 +41,16 @@ class TextualStrategyApp(App[None]):
 
     BINDINGS = [
         Binding("ctrl+l", "clear_repl", "Clear REPL", show=True),
-        Binding("ctrl+c", "interrupt", "Interrupt", show=True),
+        # - not ctrl+c: Textual's Screen binds that to copy_text, and an App binding shadows it,
+        #   which leaves selected text with no way to reach the clipboard
+        Binding("ctrl+k", "interrupt", "Interrupt", show=True),
         Binding("p", "toggle_positions", "Positions", show=True),
         Binding("o", "toggle_orders", "Orders", show=True),
         Binding("m", "toggle_market", "Market", show=True),
         # Binding("d", "toggle_debug", "Debug", show=True),
-        Binding("q", "quit", "Quit", show=True),
+        # - ctrl+q, not a bare q: terminals send plain characters on startup handshakes
+        #   (VS Code's init string among them) and a bare binding quits the app
+        Binding("ctrl+q", "quit", "Quit", show=True),
     ]
 
     def __init__(
@@ -267,6 +280,7 @@ class TextualStrategyApp(App[None]):
             with Horizontal(id="main-container"):
                 # Output on the left
                 with Vertical(id="output-container"):
+                    yield LogLevelFilter(id="log-filter")
                     self.output = ReplOutput(id="output", max_lines=10000)
                     yield self.output
                 # Vertical layout for positions/orders stacked up/down on the right
@@ -321,6 +335,12 @@ class TextualStrategyApp(App[None]):
     def action_clear_repl(self) -> None:
         """Clear the output."""
         self.output.clear_output()
+
+    def on_log_level_filter_changed(self, message: LogLevelFilter.Changed) -> None:
+        """
+        Re-render the log pane with the levels that are still switched on.
+        """
+        self.output.apply_levels(message.enabled)
 
     async def action_interrupt(self) -> None:
         """Send interrupt signal to the kernel."""
