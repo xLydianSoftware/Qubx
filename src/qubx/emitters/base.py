@@ -105,6 +105,7 @@ class BaseMetricEmitter(IMetricEmitter):
         tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
         instrument: Instrument | None = None,
+        force_emit: bool = False,
     ) -> None:
         """
         Emit a metric with the given name, value, and optional tags.
@@ -115,8 +116,10 @@ class BaseMetricEmitter(IMetricEmitter):
             tags: Optional dictionary of tags/labels to include with the metric
             timestamp: Optional timestamp for the metric (defaults to current time)
             instrument: Optional instrument to add symbol and exchange tags from
+            force_emit: Emit even during warmup. For values carrying their own historical
+                timestamp, such as funding payments replayed from the warmup window.
         """
-        if self.is_warmup:
+        if self.is_warmup and not force_emit:
             return
         if self._context is not None and timestamp is None:
             timestamp = self._context.time()

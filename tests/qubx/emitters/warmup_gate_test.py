@@ -66,3 +66,16 @@ def test_strategy_stats_are_suppressed_during_warmup():
     em.notify(ctx)
 
     assert em.get_dataframe().empty
+
+
+def test_force_emit_gets_through_the_warmup_gate():
+    # - funding payments replayed from the warmup window carry their own historical timestamp
+    em = InMemoryMetricEmitter()
+    em.set_context(_context(is_simulation=True, is_warmup=True, time="2026-08-18 15:03:00"))
+
+    em.emit("position_pnl", 1.0)
+    em.emit("funding_payment", 0.0001, timestamp=dt_64(pd.Timestamp("2026-08-18 16:00:00")), force_emit=True)
+
+    df = em.get_dataframe()
+    assert list(df["name"]) == ["funding_payment"]
+    assert list(df["timestamp"]) == [pd.Timestamp("2026-08-18 16:00:00")]

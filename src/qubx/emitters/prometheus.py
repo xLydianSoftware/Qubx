@@ -184,6 +184,7 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
         tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
         instrument: Instrument | None = None,
+        force_emit: bool = False,
         metric_type: MetricType = "gauge",
     ) -> None:
         """
@@ -194,6 +195,8 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
             value: Value of the metric
             tags: Dictionary of tags/labels for the metric
             timestamp: Optional timestamp for the metric (ignored in Prometheus)
+            force_emit: Accepted for interface compatibility; Prometheus scrapes the current
+                gauge value and has no warmup gate to bypass
             metric_type: Type of metric (gauge, counter, summary)
         """
         # Merge tags with instrument decomposed into symbol/exchange/asset/quote
@@ -354,4 +357,3 @@ class PrometheusMetricEmitter(BaseMetricEmitter):
                 )
             except Exception as e:
                 logger.warning(f"[PrometheusMetricEmitter] Failed final push to gateway: {e}")
-

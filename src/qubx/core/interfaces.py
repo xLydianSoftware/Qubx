@@ -2621,6 +2621,7 @@ class IMetricEmitter:
         tags: dict[str, Any] | None = None,
         timestamp: dt_64 | None = None,
         instrument: Instrument | None = None,
+        force_emit: bool = False,
     ) -> None:
         """
         Emit a metric.
@@ -2632,6 +2633,8 @@ class IMetricEmitter:
             timestamp: Optional timestamp for the metric (may be ignored by some implementations)
             instrument: Optional instrument associated with the metric. If provided, symbol and exchange
                       will be added to the tags.
+            force_emit: Emit even during warmup. For values that carry their own historical
+                      timestamp, such as funding payments replayed from the warmup window.
         """
         pass
 
