@@ -82,6 +82,8 @@ class TestBaseMetricEmitter:
         mock.get_gross_leverage.return_value = 0.7
         mock.instruments = ["BTC-USD", "ETH-USD"]
         mock.is_simulation = False
+        mock.is_live = True
+        mock.is_warmup_in_progress = False
         mock.time.return_value = pd.Timestamp("2023-01-01 00:00:00").to_numpy()
 
         # Mock positions
@@ -677,6 +679,8 @@ class TestQuestDBMetricEmitter:
         # Create a mock context
         mock_context = MagicMock(spec=IStrategyContext)
         mock_context.is_simulation = False
+        mock_context.is_live = True
+        mock_context.is_warmup_in_progress = False
         mock_context.time.return_value = pd.Timestamp("2023-01-01 12:00:00").to_numpy()
 
         # First call to notify should set _last_flush

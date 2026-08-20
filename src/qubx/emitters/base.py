@@ -116,10 +116,22 @@ class BaseMetricEmitter(IMetricEmitter):
             timestamp: Optional timestamp for the metric (defaults to current time)
             instrument: Optional instrument to add symbol and exchange tags from
         """
+        if self.is_warmup:
+            return
         if self._context is not None and timestamp is None:
             timestamp = self._context.time()
         merged_tags = self._merge_tags(tags, instrument)
         self._emit_impl(name, float(value), merged_tags, timestamp)
+
+    @property
+    def is_warmup(self) -> bool:
+        """
+        True while the warmup replay is running.
+
+        Warmup rebinds this emitter to a simulated context whose clock sits in the past, so
+        anything emitted from it lands in the store timestamped hours before it was written.
+        """
+        return self._context is not None and self._context.is_warmup_in_progress
 
     def set_context(self, context: IStrategyContext) -> None:
         """
@@ -252,7 +264,7 @@ class BaseMetricEmitter(IMetricEmitter):
         Args:
             context: The strategy context to get statistics from
         """
-        if not context.is_live_or_warmup:
+        if not context.is_live or context.is_warmup_in_progress:
             return
 
         # Convert to pandas timestamp for easier time calculations
