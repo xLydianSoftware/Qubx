@@ -73,6 +73,30 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         **INSTRUMENT_COLUMNS,
         **SCOPE_COLUMNS,
     }
+    # - health/base.py tags every row with type=health plus reason+scope on degradations and
+    #   exchange+event_type on latencies
+    HEALTH_COLUMNS = {
+        "timestamp": "TIMESTAMP",
+        "metric_name": "SYMBOL INDEX",
+        "value": "DOUBLE",
+        "type": "SYMBOL",
+        "exchange": "SYMBOL",
+        "event_type": "SYMBOL",
+        "reason": "SYMBOL",
+        "scope": "SYMBOL",
+        **SCOPE_COLUMNS,
+    }
+    # - rate_limiting/engine.py tags every row with exchange, pool, scope, type
+    RATE_LIMITS_COLUMNS = {
+        "timestamp": "TIMESTAMP",
+        "metric_name": "SYMBOL INDEX",
+        "value": "DOUBLE",
+        "type": "SYMBOL",
+        "exchange": "SYMBOL",
+        "pool": "SYMBOL",
+        "scope": "SYMBOL",
+        **SCOPE_COLUMNS,
+    }
     DEALS_COLUMNS = {
         "timestamp": "TIMESTAMP",
         "amount": "DOUBLE",
@@ -93,6 +117,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         table_name: str = "qubx.metrics",
         signals_table_name: str = "qubx.signals",
         deals_table_name: str = "qubx.deals",
+        health_table_name: str = "qubx.health",
+        rate_limits_table_name: str = "qubx.rate_limits",
         stats_to_emit: list[str] | None = None,
         stats_interval: str = "1m",
         flush_interval: str = "5s",
@@ -107,6 +133,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             port: QuestDB server port
             table_name: Name of the table to store metrics in
             signals_table_name: Name of the table to store signals in
+            health_table_name: Name of the table to store type=health metrics in
+            rate_limits_table_name: Name of the table to store type=rate_limit metrics in
             stats_to_emit: Optional list of specific stats to emit
             stats_interval: Interval for emitting strategy stats (default: "1m")
             tags: Dictionary of default tags/labels to include with all metrics
@@ -122,6 +150,9 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._table_name = table_name
         self._signals_table_name = signals_table_name
         self._deals_table_name = deals_table_name
+        # - streams with their own tag set get their own table, so those tags stay real columns
+        #   there instead of being NULL on every other row of the shared one
+        self._tables_by_type = {"health": health_table_name, "rate_limit": rate_limits_table_name}
         self._conn_str = f"http::addr={host}:{port};"
         self._flush_interval = to_timedelta(flush_interval)
         self._sender = self._try_get_sender()
@@ -137,6 +168,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._declare_table(self._table_name, self.METRICS_COLUMNS, "DAY")
         self._declare_table(self._signals_table_name, self.SIGNALS_COLUMNS, "WEEK")
         self._declare_table(self._deals_table_name, self.DEALS_COLUMNS, "WEEK")
+        self._declare_table(health_table_name, self.HEALTH_COLUMNS, "DAY")
+        self._declare_table(rate_limits_table_name, self.RATE_LIMITS_COLUMNS, "DAY")
 
     def notify(self, context: IStrategyContext) -> None:
         super().notify(context)
@@ -255,19 +288,20 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             if self._sender is None:
                 return
 
-            symbols, tag_columns, custom = self._split_tags(self._table_name, tags)
+            table = self._tables_by_type.get(tags.get("type", ""), self._table_name)
+            symbols, tag_columns, custom = self._split_tags(table, tags)
             columns: dict = {
                 "metric_name": name,
                 "value": round(value, 5),
                 **tag_columns,
-                **self._custom_column(custom),
+                **self._custom_column(table, custom),
             }
 
             # Use the provided timestamp if available, otherwise use current time
             dt_timestamp = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
 
             # Send the row to QuestDB
-            self._sender.row(self._table_name, symbols=symbols, columns=columns, at=dt_timestamp)
+            self._sender.row(table, symbols=symbols, columns=columns, at=dt_timestamp)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to emit metric {name} to QuestDB: {e}")
 
@@ -314,12 +348,11 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             {k: tags[k] for k in keys - allowed},
         )
 
-    @staticmethod
-    def _custom_column(custom: dict[str, Any]) -> dict[str, str]:
+    def _custom_column(self, table: str, custom: dict[str, Any]) -> dict[str, str]:
         """
-        Render leftover tags as JSON, or nothing at all when there are none.
+        Render leftover tags as JSON. Only qubx.metrics declares `custom`.
         """
-        if not custom:
+        if not custom or "custom" not in self._declared_columns.get(table, set()):
             return {}
         return {"custom": json.dumps(custom, sort_keys=True, default=_json_scalar)}
 
