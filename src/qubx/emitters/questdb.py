@@ -28,6 +28,16 @@ DEALS_TABLE = "qubx.deals"
 HEALTH_TABLE = "qubx.health"
 RATE_LIMITS_TABLE = "qubx.rate_limits"
 
+# - retention per reserved table. metrics/signals/deals match what production already carries, so
+#   deploying does not change retention there; health and rate_limits are new and would otherwise
+#   grow without bound.
+METRICS_TTL = "30 days"
+SIGNALS_TTL = "14 weeks"
+DEALS_TTL = "14 weeks"
+HEALTH_TTL = "30 days"
+RATE_LIMITS_TTL = "30 days"
+DEFAULT_USER_TTL = "52 weeks"
+
 
 def _json_scalar(value: Any) -> Any:
     # - numpy scalars are not JSON-serialisable; anything else falls back to its text form
@@ -179,11 +189,11 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._declared_symbols: dict[str, set[str]] = {}
         self._warned_undeclared: set[str] = set()
 
-        self._declare_table(self._metrics_table_name, self.METRICS_COLUMNS, "DAY")
-        self._declare_table(self._signals_table_name, self.SIGNALS_COLUMNS, "WEEK")
-        self._declare_table(self._deals_table_name, self.DEALS_COLUMNS, "WEEK")
-        self._declare_table(health_table_name, self.HEALTH_COLUMNS, "DAY")
-        self._declare_table(rate_limits_table_name, self.RATE_LIMITS_COLUMNS, "DAY")
+        self._declare_table(self._metrics_table_name, self.METRICS_COLUMNS, "DAY", METRICS_TTL)
+        self._declare_table(self._signals_table_name, self.SIGNALS_COLUMNS, "WEEK", SIGNALS_TTL)
+        self._declare_table(self._deals_table_name, self.DEALS_COLUMNS, "WEEK", DEALS_TTL)
+        self._declare_table(health_table_name, self.HEALTH_COLUMNS, "DAY", HEALTH_TTL)
+        self._declare_table(rate_limits_table_name, self.RATE_LIMITS_COLUMNS, "DAY", RATE_LIMITS_TTL)
 
         # - these five have a fixed schema; a strategy table may not target them
         self._reserved_tables = frozenset(
@@ -340,9 +350,9 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             _sender = None
         return _sender
 
-    def _declare_table(self, table: str, columns: dict[str, str], partition_by: str) -> None:
+    def _declare_table(self, table: str, columns: dict[str, str], partition_by: str, max_ttl: str) -> None:
         """
-        Create a reserved table and record its schema.
+        Create a reserved table, record its schema, and set its retention.
 
         The recorded schema is what `_split_tags` filters against, so a table whose DDL could
         not be applied still filters against the declaration rather than accepting everything.
@@ -352,10 +362,25 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         cols_sql = ", ".join(f'"{n}" {t}' for n, t in columns.items())
         ddl = f'CREATE TABLE IF NOT EXISTS "{table}" ({cols_sql}) TIMESTAMP(timestamp) PARTITION BY {partition_by} WAL;'
         try:
-            QuestDBClient(host=self._host, port=8812).execute(ddl)
+            client = QuestDBClient(host=self._host, port=8812)
+            client.execute(ddl)
+            self._set_retention(client, table, max_ttl)
             logger.info(f"[QuestDBMetricEmitter] Ensured table '{table}' exists")
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to create table '{table}': {e}")
+
+    def _set_retention(self, client: QuestDBClient, table: str, max_ttl: str) -> None:
+        """
+        Set retention on a table, whether it was just created or already existed.
+
+        Idempotent and ~2ms, so it runs unconditionally rather than reading the current value
+        back first. QuestDB rejects a TTL finer than the partition size and leaves the table
+        untouched when it does — it owns that rule, so it is not repeated here.
+        """
+        try:
+            client.execute(f'ALTER TABLE "{table}" SET TTL {max_ttl}')
+        except Exception as e:
+            logger.warning(f"[QuestDBMetricEmitter] '{table}': TTL {max_ttl!r} not applied: {e}")
 
     def _refuse_reserved(self, table: str) -> None:
         """
@@ -434,8 +459,14 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         symbol_columns: Sequence[str] = (),
         dedup_keys: Sequence[str] | None = None,
         partition_by: str = "DAY",
+        max_ttl: str | None = DEFAULT_USER_TTL,
     ) -> None:
-        """Create a strategy-owned table with explicit types (spec: strategy-tables §2.0)."""
+        """
+        Create a strategy-owned table with explicit types (spec: strategy-tables §2.0).
+
+        `max_ttl` is applied whether the table was just created or already existed. Pass None
+        to leave retention alone.
+        """
         try:
             self._refuse_reserved(table)
             if isinstance(symbol_columns, str):
@@ -461,7 +492,10 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 quoted_keys = ", ".join(f'"{k}"' for k in dedup_keys)
                 ddl += f" DEDUP UPSERT KEYS({quoted_keys})"
             ddl += ";"
-            QuestDBClient(host=self._host, port=8812).execute(ddl)
+            client = QuestDBClient(host=self._host, port=8812)
+            client.execute(ddl)
+            if max_ttl:
+                self._set_retention(client, table, max_ttl)
             self._declared_columns[table] = set(decl)
             self._declared_symbols[table] = {n for n, t in decl.items() if t == "SYMBOL"}
             logger.info(f"[QuestDBMetricEmitter] Ensured table '{table}' exists")

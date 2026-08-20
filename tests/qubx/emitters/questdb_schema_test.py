@@ -129,3 +129,23 @@ def test_a_strategy_table_is_still_accepted(emitter):
 
     client.assert_called_once()
     assert "loe.execution" in emitter._declared_columns
+
+
+def test_retention_is_set_on_the_reserved_tables(emitter):
+    # - health and rate_limits are new tables and would otherwise grow without bound
+    from qubx.emitters.questdb import DEALS_TTL, HEALTH_TTL, METRICS_TTL, RATE_LIMITS_TTL, SIGNALS_TTL
+
+    assert (METRICS_TTL, HEALTH_TTL, RATE_LIMITS_TTL) == ("30 days", "30 days", "30 days")
+    assert (SIGNALS_TTL, DEALS_TTL) == ("14 weeks", "14 weeks")
+
+
+def test_set_retention_survives_a_ttl_questdb_rejects(emitter):
+    """
+    A TTL finer than the partition is refused by QuestDB; the table must still be usable.
+    """
+    client = MagicMock()
+    client.execute.side_effect = Exception("TTL value must be an integer multiple of partition size")
+
+    emitter._set_retention(client, "some.table", "10 days")  # - must not raise
+
+    client.execute.assert_called_once_with('ALTER TABLE "some.table" SET TTL 10 days')

@@ -26,13 +26,21 @@ class TestCompositeForwarding:
     def test_forwards_to_children(self):
         child_a, child_b = MagicMock(spec=IMetricEmitter), MagicMock(spec=IMetricEmitter)
         comp = CompositeMetricEmitter([child_a, child_b])
-        comp.ensure_table("frab.trades", {"net_pnl": "DOUBLE"}, symbol_columns=("pair",), dedup_keys=("timestamp", "trade_id"))
+        comp.ensure_table(
+            "frab.trades", {"net_pnl": "DOUBLE"}, symbol_columns=("pair",), dedup_keys=("timestamp", "trade_id")
+        )
         comp.emit_record("frab.trades", {"net_pnl": 1.5}, symbol_columns=("pair",))
         for child in (child_a, child_b):
             child.ensure_table.assert_called_once_with(
-                "frab.trades", {"net_pnl": "DOUBLE"}, symbol_columns=("pair",), dedup_keys=("timestamp", "trade_id"), partition_by="DAY"
+                "frab.trades",
+                {"net_pnl": "DOUBLE"},
+                symbol_columns=("pair",),
+                dedup_keys=("timestamp", "trade_id"),
+                partition_by="DAY",
             )
-            child.emit_record.assert_called_once_with("frab.trades", {"net_pnl": 1.5}, symbol_columns=("pair",), timestamp=None)
+            child.emit_record.assert_called_once_with(
+                "frab.trades", {"net_pnl": 1.5}, symbol_columns=("pair",), timestamp=None
+            )
 
     def test_child_error_is_isolated(self):
         bad, good = MagicMock(spec=IMetricEmitter), MagicMock(spec=IMetricEmitter)
@@ -82,6 +90,16 @@ def emitter(monkeypatch):
     return em
 
 
+def _create_sql(emitter) -> str:
+    """
+    The CREATE statement, not the ALTER ... SET TTL that follows it.
+    """
+    for call in emitter._ddl_client_for_test.execute.call_args_list:
+        if call[0][0].lstrip().upper().startswith("CREATE"):
+            return call[0][0]
+    raise AssertionError("no CREATE statement was executed")
+
+
 class TestEnsureTable:
     def test_generates_create_table_with_scope_columns_and_dedup(self, emitter):
         emitter.ensure_table(
@@ -90,7 +108,7 @@ class TestEnsureTable:
             symbol_columns=("pair", "asset"),
             dedup_keys=("timestamp", "trade_id"),
         )
-        ddl_sql = emitter._ddl_client_for_test.execute.call_args[0][0]
+        ddl_sql = _create_sql(emitter)
         assert 'CREATE TABLE IF NOT EXISTS "frab.trades"' in ddl_sql
         assert '"timestamp" TIMESTAMP' in ddl_sql
         # scope columns injected: strategy/environment are SYMBOL_TAGS -> SYMBOL, run_id STRING, is_live BOOLEAN
@@ -114,7 +132,7 @@ class TestEnsureTable:
             {"net_pnl": "DOUBLE"},
             symbol_columns=("run_id", "pair"),
         )
-        ddl_sql = emitter._ddl_client_for_test.execute.call_args[0][0]
+        ddl_sql = _create_sql(emitter)
         # run_id is a reserved scope column (STRING) -> symbol_columns must not flip it to SYMBOL
         assert '"run_id" STRING' in ddl_sql
         assert '"pair" SYMBOL' in ddl_sql
