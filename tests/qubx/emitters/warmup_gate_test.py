@@ -66,3 +66,39 @@ def test_strategy_stats_are_suppressed_during_warmup():
     em.notify(ctx)
 
     assert em.get_dataframe().empty
+
+
+def test_undeclared_tags_are_folded_into_custom():
+    """
+    A strategy tag must not become a column on the shared table.
+    """
+    from unittest.mock import patch
+
+    from qubx.emitters.questdb import QuestDBMetricEmitter
+
+    with patch("qubx.emitters.questdb.Sender"), patch("qubx.emitters.questdb.QuestDBClient"):
+        em = QuestDBMetricEmitter(table_name="qubx.metrics", tags={"strategy": "s"})
+
+    symbols, columns, custom = em._split_tags(
+        "qubx.metrics",
+        {"strategy": "s", "symbol": "BTCUSDT", "is_live": True, "pair": "ADA:A:B", "lookback": "30d"},
+    )
+
+    assert symbols == {"strategy": "s", "symbol": "BTCUSDT"}
+    assert columns == {"is_live": True}
+    assert custom == {"pair": "ADA:A:B", "lookback": "30d"}
+    assert em._custom_column(custom) == {"custom": '{"lookback": "30d", "pair": "ADA:A:B"}'}
+
+
+def test_custom_is_omitted_when_there_are_no_extra_tags():
+    from unittest.mock import patch
+
+    from qubx.emitters.questdb import QuestDBMetricEmitter
+
+    with patch("qubx.emitters.questdb.Sender"), patch("qubx.emitters.questdb.QuestDBClient"):
+        em = QuestDBMetricEmitter(table_name="qubx.metrics", tags={"strategy": "s"})
+
+    _, _, custom = em._split_tags("qubx.metrics", {"strategy": "s", "type": "stats"})
+
+    assert custom == {}
+    assert em._custom_column(custom) == {}

@@ -605,10 +605,10 @@ class TestQuestDBMetricEmitter:
         with patch.object(emitter, "_convert_timestamp", return_value=dt_timestamp):
             emitter.emit("test_metric", 42.0, {"tag1": "value1"}, timestamp)
 
-            # Check that row was called with the correct arguments
-            # Only SYMBOL_TAGS go into symbols, everything else (including metric_name) goes into columns
+            # Declared SYMBOL columns go into symbols; an undeclared tag goes into `custom`
+            # rather than becoming a new column on the shared table
             expected_symbols = {"strategy": "test"}
-            expected_columns = {"metric_name": "test_metric", "value": 42.0, "tag1": "value1"}
+            expected_columns = {"metric_name": "test_metric", "value": 42.0, "custom": '{"tag1": "value1"}'}
             mock_sender.row.assert_called_once_with(
                 "qubx.metrics", symbols=expected_symbols, columns=expected_columns, at=dt_timestamp
             )
@@ -622,10 +622,10 @@ class TestQuestDBMetricEmitter:
 
             emitter.emit("test_metric", 42.0, {"tag1": "value1"})
 
-            # Check that row was called with the correct arguments
-            # Only SYMBOL_TAGS go into symbols, everything else (including metric_name) goes into columns
+            # Declared SYMBOL columns go into symbols; an undeclared tag goes into `custom`
+            # rather than becoming a new column on the shared table
             expected_symbols = {"strategy": "test"}
-            expected_columns = {"metric_name": "test_metric", "value": 42.0, "tag1": "value1"}
+            expected_columns = {"metric_name": "test_metric", "value": 42.0, "custom": '{"tag1": "value1"}'}
             mock_sender.row.assert_called_once_with(
                 "qubx.metrics", symbols=expected_symbols, columns=expected_columns, at=mock_now
             )
