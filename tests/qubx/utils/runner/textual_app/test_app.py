@@ -63,7 +63,11 @@ async def test_app_bindings(tmp_path):
 
     print(f"\nBindings: {list(zip(binding_keys, binding_actions))}")
 
-    assert "q" in binding_keys, "Should have quit binding"
+    # - quit and interrupt are ctrl-prefixed: a bare key fires on terminal startup handshakes,
+    #   and ctrl+c has to stay free for Textual's copy_text
+    assert "ctrl+q" in binding_keys, "Should have quit binding"
+    assert "ctrl+k" in binding_keys, "Should have interrupt binding"
+    assert "ctrl+c" not in binding_keys, "ctrl+c must stay free for Textual's copy_text"
     assert "p" in binding_keys, "Should have positions binding"
     assert "o" in binding_keys, "Should have orders binding"
     assert "m" in binding_keys, "Should have market binding"

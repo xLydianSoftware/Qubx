@@ -5,6 +5,7 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 """
 
 import datetime
+import json
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -20,6 +21,28 @@ from qubx.utils.questdb import QuestDBClient
 from qubx.utils.threading import BoundedWorker
 from qubx.utils.time import to_timedelta
 
+# - tables the emitter owns; a strategy table may not target them
+METRICS_TABLE = "qubx.metrics"
+SIGNALS_TABLE = "qubx.signals"
+DEALS_TABLE = "qubx.deals"
+HEALTH_TABLE = "qubx.health"
+RATE_LIMITS_TABLE = "qubx.rate_limits"
+
+# - retention per reserved table. metrics/signals/deals match what production already carries, so
+#   deploying does not change retention there; health and rate_limits are new and would otherwise
+#   grow without bound.
+METRICS_TTL = "30 days"
+SIGNALS_TTL = "14 weeks"
+DEALS_TTL = "14 weeks"
+HEALTH_TTL = "30 days"
+RATE_LIMITS_TTL = "30 days"
+DEFAULT_USER_TTL = "52 weeks"
+
+
+def _json_scalar(value: Any) -> Any:
+    # - numpy scalars are not JSON-serialisable; anything else falls back to its text form
+    return value.item() if isinstance(value, np.generic) else str(value)
+
 
 class QuestDBMetricEmitter(BaseMetricEmitter):
     """
@@ -31,13 +54,88 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
     SYMBOL_TAGS = ["symbol", "exchange", "type", "environment", "strategy", "event_type"]
     RECORD_COLUMN_TYPES = {"DOUBLE", "LONG", "STRING", "BOOLEAN", "TIMESTAMP", "SYMBOL"}
 
+    # - the schema of each reserved table, used both to create it and to decide which tags may
+    #   become columns. A tag that is not declared here goes to `custom` instead of widening the
+    #   table for every bot writing to the same server.
+    SCOPE_COLUMNS = {
+        "strategy": "SYMBOL",
+        "environment": "SYMBOL",
+        "run_id": "VARCHAR",
+        "bot_id": "SYMBOL INDEX",
+        "instance_id": "VARCHAR",
+        "is_live": "BOOLEAN",
+    }
+    INSTRUMENT_COLUMNS = {"symbol": "SYMBOL", "exchange": "SYMBOL", "asset": "VARCHAR", "quote": "VARCHAR"}
+    # - only the metrics table carries `custom`; signals and deals receive a fixed tag set
+    METRICS_COLUMNS = {
+        "timestamp": "TIMESTAMP",
+        "metric_name": "SYMBOL INDEX",
+        "value": "DOUBLE",
+        "type": "SYMBOL",
+        **INSTRUMENT_COLUMNS,
+        **SCOPE_COLUMNS,
+        "custom": "VARCHAR",
+    }
+    SIGNALS_COLUMNS = {
+        "timestamp": "TIMESTAMP",
+        "signal": "DOUBLE",
+        "price": "DOUBLE",
+        "stop": "DOUBLE",
+        "take": "DOUBLE",
+        "reference_price": "DOUBLE",
+        "target_leverage": "DOUBLE",
+        "group_name": "SYMBOL",
+        "comment": "STRING",
+        "is_service": "BOOLEAN",
+        **INSTRUMENT_COLUMNS,
+        **SCOPE_COLUMNS,
+    }
+    # - health/base.py tags every row with type=health plus reason+scope on degradations and
+    #   exchange+event_type on latencies
+    HEALTH_COLUMNS = {
+        "timestamp": "TIMESTAMP",
+        "metric_name": "SYMBOL INDEX",
+        "value": "DOUBLE",
+        "type": "SYMBOL",
+        "exchange": "SYMBOL",
+        "event_type": "SYMBOL",
+        "reason": "SYMBOL",
+        "scope": "SYMBOL",
+        **SCOPE_COLUMNS,
+    }
+    # - rate_limiting/engine.py tags every row with exchange, pool, scope, type
+    RATE_LIMITS_COLUMNS = {
+        "timestamp": "TIMESTAMP",
+        "metric_name": "SYMBOL INDEX",
+        "value": "DOUBLE",
+        "type": "SYMBOL",
+        "exchange": "SYMBOL",
+        "pool": "SYMBOL",
+        "scope": "SYMBOL",
+        **SCOPE_COLUMNS,
+    }
+    DEALS_COLUMNS = {
+        "timestamp": "TIMESTAMP",
+        "amount": "DOUBLE",
+        "price": "DOUBLE",
+        "aggressive": "BOOLEAN",
+        "fee_amount": "DOUBLE",
+        "fee_currency": "SYMBOL",
+        "deal_id": "STRING",
+        "order_id": "STRING",
+        **INSTRUMENT_COLUMNS,
+        **SCOPE_COLUMNS,
+    }
+
     def __init__(
         self,
         host: str = "localhost",
         port: int = 9000,
-        table_name: str = "qubx.metrics",
-        signals_table_name: str = "qubx.signals",
-        deals_table_name: str = "qubx.deals",
+        metrics_table_name: str = METRICS_TABLE,
+        signals_table_name: str = SIGNALS_TABLE,
+        deals_table_name: str = DEALS_TABLE,
+        health_table_name: str = HEALTH_TABLE,
+        rate_limits_table_name: str = RATE_LIMITS_TABLE,
         stats_to_emit: list[str] | None = None,
         stats_interval: str = "1m",
         flush_interval: str = "5s",
@@ -50,8 +148,10 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         Args:
             host: QuestDB server host
             port: QuestDB server port
-            table_name: Name of the table to store metrics in
+            metrics_table_name: Name of the table to store metrics in
             signals_table_name: Name of the table to store signals in
+            health_table_name: Name of the table to store type=health metrics in
+            rate_limits_table_name: Name of the table to store type=rate_limit metrics in
             stats_to_emit: Optional list of specific stats to emit
             stats_interval: Interval for emitting strategy stats (default: "1m")
             tags: Dictionary of default tags/labels to include with all metrics
@@ -65,9 +165,12 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
         self._host = host
         self._port = port
-        self._table_name = table_name
+        self._metrics_table_name = metrics_table_name
         self._signals_table_name = signals_table_name
         self._deals_table_name = deals_table_name
+        # - streams with their own tag set get their own table, so those tags stay real columns
+        #   there instead of being NULL on every other row of the shared one
+        self._tables_by_type = {"health": health_table_name, "rate_limit": rate_limits_table_name}
         # - bounded-failure ILP client: a dead/stalled QuestDB costs seconds, not an unbounded
         #   hang (incident 2026-08-14: metrics QuestDB hang + unbounded queues burst-flush on
         #   recovery). retry_timeout halved from the client default (10000) so a dead server
@@ -86,9 +189,22 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._declared_symbols: dict[str, set[str]] = {}
         self._warned_undeclared: set[str] = set()
 
-        # Create signals table if it doesn't exist
-        self._ensure_signals_table_exists()
-        self._ensure_deals_table_exists()
+        self._declare_table(self._metrics_table_name, self.METRICS_COLUMNS, "DAY", METRICS_TTL)
+        self._declare_table(self._signals_table_name, self.SIGNALS_COLUMNS, "WEEK", SIGNALS_TTL)
+        self._declare_table(self._deals_table_name, self.DEALS_COLUMNS, "WEEK", DEALS_TTL)
+        self._declare_table(health_table_name, self.HEALTH_COLUMNS, "DAY", HEALTH_TTL)
+        self._declare_table(rate_limits_table_name, self.RATE_LIMITS_COLUMNS, "DAY", RATE_LIMITS_TTL)
+
+        # - these five have a fixed schema; a strategy table may not target them
+        self._reserved_tables = frozenset(
+            {
+                self._metrics_table_name,
+                self._signals_table_name,
+                self._deals_table_name,
+                health_table_name,
+                rate_limits_table_name,
+            }
+        )
 
     def notify(self, context: IStrategyContext) -> None:
         super().notify(context)
@@ -207,15 +323,20 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             if self._sender is None:
                 return
 
-            # Prepare symbols (tags) and columns (values)
-            symbols = self._pop_symbols(tags)
-            columns: dict = {"metric_name": name, "value": round(value, 5), **tags}
+            table = self._tables_by_type.get(tags.get("type", ""), self._metrics_table_name)
+            symbols, tag_columns, custom = self._split_tags(table, tags)
+            columns: dict = {
+                "metric_name": name,
+                "value": round(value, 5),
+                **tag_columns,
+                **self._custom_column(table, custom),
+            }
 
             # Use the provided timestamp if available, otherwise use current time
             dt_timestamp = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
 
             # Send the row to QuestDB
-            self._sender.row(self._table_name, symbols=symbols, columns=columns, at=dt_timestamp)
+            self._sender.row(table, symbols=symbols, columns=columns, at=dt_timestamp)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to emit metric {name} to QuestDB: {e}")
 
@@ -229,59 +350,68 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             _sender = None
         return _sender
 
-    def _ensure_signals_table_exists(self) -> None:
-        """Ensure the signals table exists with the correct schema."""
+    def _declare_table(self, table: str, columns: dict[str, str], partition_by: str, max_ttl: str) -> None:
+        """
+        Create a reserved table, record its schema, and set its retention.
+
+        The recorded schema is what `_split_tags` filters against, so a table whose DDL could
+        not be applied still filters against the declaration rather than accepting everything.
+        """
+        self._declared_columns[table] = set(columns)
+        self._declared_symbols[table] = {n for n, t in columns.items() if t.startswith("SYMBOL")}
+        cols_sql = ", ".join(f'"{n}" {t}' for n, t in columns.items())
+        ddl = f'CREATE TABLE IF NOT EXISTS "{table}" ({cols_sql}) TIMESTAMP(timestamp) PARTITION BY {partition_by} WAL;'
         try:
-            # Use the PostgreSQL interface (port 8812) for DDL operations
             client = QuestDBClient(host=self._host, port=8812)
-
-            create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS "{self._signals_table_name}" (
-                timestamp TIMESTAMP,
-                symbol SYMBOL,
-                exchange SYMBOL,
-                signal DOUBLE,
-                price DOUBLE,
-                stop DOUBLE,
-                take DOUBLE,
-                reference_price DOUBLE,
-                target_leverage DOUBLE,
-                group_name SYMBOL,
-                comment STRING,
-                is_service BOOLEAN
-            ) TIMESTAMP(timestamp) PARTITION BY WEEK;
-            """
-
-            client.execute(create_table_sql)
-            logger.info(f"[QuestDBMetricEmitter] Ensured signals table '{self._signals_table_name}' exists")
+            client.execute(ddl)
+            self._set_retention(client, table, max_ttl)
+            logger.info(f"[QuestDBMetricEmitter] Ensured table '{table}' exists")
         except Exception as e:
-            logger.error(f"[QuestDBMetricEmitter] Failed to create signals table: {e}")
+            logger.error(f"[QuestDBMetricEmitter] Failed to create table '{table}': {e}")
 
-    def _ensure_deals_table_exists(self) -> None:
-        """Ensure the signals table exists with the correct schema."""
+    def _set_retention(self, client: QuestDBClient, table: str, max_ttl: str) -> None:
+        """
+        Set retention on a table, whether it was just created or already existed.
+
+        Idempotent and ~2ms, so it runs unconditionally rather than reading the current value
+        back first. QuestDB rejects a TTL finer than the partition size and leaves the table
+        untouched when it does — it owns that rule, so it is not repeated here.
+        """
         try:
-            # Use the PostgreSQL interface (port 8812) for DDL operations
-            client = QuestDBClient(host=self._host, port=8812)
-
-            create_table_sql = f"""
-            CREATE TABLE IF NOT EXISTS "{self._deals_table_name}" (
-                timestamp TIMESTAMP,
-                symbol SYMBOL,
-                exchange SYMBOL,
-                amount DOUBLE,
-                price DOUBLE,
-                aggressive BOOLEAN,
-                fee_amount DOUBLE,
-                fee_currency SYMBOL,
-                deal_id STRING,
-                order_id STRING
-            ) TIMESTAMP(timestamp) PARTITION BY WEEK;
-            """
-
-            client.execute(create_table_sql)
-            logger.info(f"[QuestDBMetricEmitter] Ensured signals table '{self._signals_table_name}' exists")
+            client.execute(f'ALTER TABLE "{table}" SET TTL {max_ttl}')
         except Exception as e:
-            logger.error(f"[QuestDBMetricEmitter] Failed to create signals table: {e}")
+            logger.warning(f"[QuestDBMetricEmitter] '{table}': TTL {max_ttl!r} not applied: {e}")
+
+    def _refuse_reserved(self, table: str) -> None:
+        """
+        Reject a strategy table that targets one of the emitter's own tables.
+        """
+        if table in self._reserved_tables:
+            raise ValueError(f"'{table}' is reserved by the emitter and has a fixed schema")
+
+    def _split_tags(self, table: str, tags: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
+        """
+        Sort tags into ILP symbol fields, real columns, and the `custom` bag.
+
+        An undeclared tag would otherwise become a new column under ILP auto-create, permanently
+        and for every bot writing to the same table.
+        """
+        allowed = self._declared_columns.get(table, set())
+        symbols = self._declared_symbols.get(table, set())
+        keys = tags.keys()
+        return (
+            {k: str(tags[k]) for k in keys & symbols},
+            {k: tags[k] for k in (keys & allowed) - symbols},
+            {k: tags[k] for k in keys - allowed},
+        )
+
+    def _custom_column(self, table: str, custom: dict[str, Any]) -> dict[str, str]:
+        """
+        Render leftover tags as JSON. Only qubx.metrics declares `custom`.
+        """
+        if not custom or "custom" not in self._declared_columns.get(table, set()):
+            return {}
+        return {"custom": json.dumps(custom, sort_keys=True, default=_json_scalar)}
 
     def emit_signals(
         self,
@@ -329,9 +459,16 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         symbol_columns: Sequence[str] = (),
         dedup_keys: Sequence[str] | None = None,
         partition_by: str = "DAY",
+        max_ttl: str | None = DEFAULT_USER_TTL,
     ) -> None:
-        """Create a strategy-owned table with explicit types (spec: strategy-tables §2.0)."""
+        """
+        Create a strategy-owned table with explicit types (spec: strategy-tables §2.0).
+
+        `max_ttl` is applied whether the table was just created or already existed. Pass None
+        to leave retention alone.
+        """
         try:
+            self._refuse_reserved(table)
             if isinstance(symbol_columns, str):
                 raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
             decl: dict[str, str] = {"timestamp": "TIMESTAMP"}
@@ -355,7 +492,10 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 quoted_keys = ", ".join(f'"{k}"' for k in dedup_keys)
                 ddl += f" DEDUP UPSERT KEYS({quoted_keys})"
             ddl += ";"
-            QuestDBClient(host=self._host, port=8812).execute(ddl)
+            client = QuestDBClient(host=self._host, port=8812)
+            client.execute(ddl)
+            if max_ttl:
+                self._set_retention(client, table, max_ttl)
             self._declared_columns[table] = set(decl)
             self._declared_symbols[table] = {n for n, t in decl.items() if t == "SYMBOL"}
             logger.info(f"[QuestDBMetricEmitter] Ensured table '{table}' exists")
@@ -378,6 +518,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         if self._sender is None:
             return
         try:
+            self._refuse_reserved(table)
             if isinstance(symbol_columns, str):
                 raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
             if self._context is not None and timestamp is None:
@@ -459,7 +600,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
                 # Use _merge_tags to get properly merged tags
                 merged_tags = self._merge_tags({}, signal.instrument)
-                symbols = self._pop_symbols(merged_tags)
+                symbols, tag_columns, _ = self._split_tags(self._signals_table_name, merged_tags)
 
                 columns = {
                     "signal": float(signal.signal),
@@ -472,7 +613,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                     # "options": json.dumps(signal.options) if signal.options else "{}",
                     "is_service": bool(signal.is_service),
                     "group_name": signal.group if signal.group else "",
-                    **merged_tags,
+                    **tag_columns,
                 }
 
                 # Convert timestamp - signal.time is always dt_64, no need to check for string
@@ -498,7 +639,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             for deal in deals:
                 # Use _merge_tags to get properly merged tags
                 merged_tags = self._merge_tags({}, instrument)
-                symbols = self._pop_symbols(merged_tags)
+                symbols, tag_columns, _ = self._split_tags(self._deals_table_name, merged_tags)
 
                 columns = {
                     "amount": float(deal.amount),
@@ -508,7 +649,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                     "fee_currency": deal.fee_currency if deal.fee_currency is not None else None,
                     "deal_id": deal.trade_id,
                     "order_id": deal.order_id,
-                    **merged_tags,
+                    **tag_columns,
                 }
 
                 # Convert timestamp - signal.time is always dt_64, no need to check for string
@@ -519,10 +660,3 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to emit deals to QuestDB: {e}")
-
-    def _pop_symbols(self, tags: dict[str, str]) -> dict[str, str]:
-        symbols = {}
-        for symbol_name in self.SYMBOL_TAGS:
-            if symbol_name in tags:
-                symbols[symbol_name] = tags.pop(symbol_name)
-        return symbols

@@ -718,7 +718,7 @@ class ProcessingManager(IProcessingManager):
             self._exporter.export_signals(self._time_provider.time(), signals, self._account_manager)
 
         # - emit signals to metric emitters if available
-        if self._context.emitter is not None and signals:
+        if self._context.emitter is not None and signals and not self._context.is_warmup_in_progress:
             self._context.emitter.emit_signals(
                 self._time_provider.time(), signals, self._account_manager, _targets_from_trackers
             )
@@ -1636,7 +1636,7 @@ class ProcessingManager(IProcessingManager):
             logger.exception("universe manager on_alter_position raised")
             self._emit_error_metric("downstream_fill_errors", consumer="on_alter_position")
 
-        if self._context.emitter is not None:
+        if self._context.emitter is not None and not self._context.is_warmup_in_progress:
             try:
                 self._context.emitter.emit_deals(
                     time=self._time_provider.time(),

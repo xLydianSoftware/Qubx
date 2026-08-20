@@ -52,12 +52,23 @@ class AccountSummary(Widget):
             parts.append(
                 f"[bold]{exch}[/bold]  "
                 f"Capital: [cyan]${capital:,.2f}[/cyan]  "
+                f"PnL: {self._money(item.get('pnl', 0.0))}  "
                 f"Net: [green]{net_lev:+.3f}x[/green]  "
                 f"Gross: [yellow]{gross_lev:.3f}x[/yellow]"
             )
 
+        total_pnl = sum(item.get("pnl", 0.0) for item in summary)
+        if len(summary) > 1:
+            parts.insert(0, f"[bold]TOTAL[/bold] PnL: {self._money(total_pnl)}")
+
         content = self.query_one("#account-summary-content", Static)
         content.update("    ".join(parts))
+
+    @staticmethod
+    def _money(value: float) -> str:
+        colour = "green" if value > 0 else ("red" if value < 0 else "white")
+        sign = "-" if value < 0 else ""
+        return f"[{colour}]{sign}${abs(value):,.2f}[/{colour}]"
 
     def update_status(self, status: dict | None) -> None:
         """Update the context-status chip.

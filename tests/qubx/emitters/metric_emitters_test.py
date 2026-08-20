@@ -82,6 +82,8 @@ class TestBaseMetricEmitter:
         mock.get_gross_leverage.return_value = 0.7
         mock.instruments = ["BTC-USD", "ETH-USD"]
         mock.is_simulation = False
+        mock.is_live = True
+        mock.is_warmup_in_progress = False
         mock.time.return_value = pd.Timestamp("2023-01-01 00:00:00").to_numpy()
 
         # Mock positions
@@ -587,13 +589,13 @@ class TestQuestDBMetricEmitter:
             from qubx.emitters.questdb import QuestDBMetricEmitter
 
             emitter = QuestDBMetricEmitter(
-                host="testhost", port=9999, table_name="test_table", tags={"strategy": "test"}
+                host="testhost", port=9999, metrics_table_name="test_table", tags={"strategy": "test"}
             )
             mock_sender.from_conf.assert_called_once_with(
                 "http::addr=testhost:9999;request_timeout=5000;retry_timeout=5000;"
             )
             mock_sender.establish.assert_called_once()
-            assert emitter._table_name == "test_table"
+            assert emitter._metrics_table_name == "test_table"
             assert emitter._default_tags["strategy"] == "test"
 
     def test_emit(self, emitter, mock_sender):
@@ -608,10 +610,10 @@ class TestQuestDBMetricEmitter:
             # - wait for the background worker thread to complete before asserting
             emitter._worker.stop(flush_timeout_s=2.0)
 
-            # Check that row was called with the correct arguments
-            # Only SYMBOL_TAGS go into symbols, everything else (including metric_name) goes into columns
+            # Declared SYMBOL columns go into symbols; an undeclared tag goes into `custom`
+            # rather than becoming a new column on the shared table
             expected_symbols = {"strategy": "test"}
-            expected_columns = {"metric_name": "test_metric", "value": 42.0, "tag1": "value1"}
+            expected_columns = {"metric_name": "test_metric", "value": 42.0, "custom": '{"tag1": "value1"}'}
             mock_sender.row.assert_called_once_with(
                 "qubx.metrics", symbols=expected_symbols, columns=expected_columns, at=dt_timestamp
             )
@@ -628,10 +630,10 @@ class TestQuestDBMetricEmitter:
             # - wait for the background worker thread to complete before asserting
             emitter._worker.stop(flush_timeout_s=2.0)
 
-            # Check that row was called with the correct arguments
-            # Only SYMBOL_TAGS go into symbols, everything else (including metric_name) goes into columns
+            # Declared SYMBOL columns go into symbols; an undeclared tag goes into `custom`
+            # rather than becoming a new column on the shared table
             expected_symbols = {"strategy": "test"}
-            expected_columns = {"metric_name": "test_metric", "value": 42.0, "tag1": "value1"}
+            expected_columns = {"metric_name": "test_metric", "value": 42.0, "custom": '{"tag1": "value1"}'}
             mock_sender.row.assert_called_once_with(
                 "qubx.metrics", symbols=expected_symbols, columns=expected_columns, at=mock_now
             )
@@ -685,6 +687,8 @@ class TestQuestDBMetricEmitter:
         # Create a mock context
         mock_context = MagicMock(spec=IStrategyContext)
         mock_context.is_simulation = False
+        mock_context.is_live = True
+        mock_context.is_warmup_in_progress = False
         mock_context.time.return_value = pd.Timestamp("2023-01-01 12:00:00").to_numpy()
 
         # First call to notify should set _last_flush
