@@ -6,11 +6,15 @@ import inspect
 import os
 from typing import Any
 
+import pandas as pd
+
 from qubx import logger
 from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStatePersistence, IStrategyNotifier, ITradeDataExport
 from qubx.data.storage import IStorage
 from qubx.data.storages.multi import MultiStorage
 from qubx.emitters.composite import CompositeMetricEmitter
+from qubx.state.dummy import DummyStatePersistence
+from qubx.state.safe import SafeStatePersistence
 from qubx.utils.misc import class_import
 from qubx.utils.runner.configs import (
     EmissionConfig,
@@ -469,13 +473,22 @@ def create_state_persistence(
         # Copy parameters (env vars already resolved during config load)
         params: dict[str, Any] = dict(config.parameters)
 
-        # Add strategy_name if not already provided
-        if "strategy_name" not in params:
+        # Add strategy_name if the backend accepts it and it's not already provided
+        if "strategy_name" in inspect.signature(persistence_class).parameters and "strategy_name" not in params:
             params["strategy_name"] = strategy_name
 
         persistence = persistence_class(**params)
         logger.info(f"Created state persistence: {persistence_class_name}")
-        return persistence
+
+        if isinstance(persistence, DummyStatePersistence):
+            return persistence
+
+        # - wrap every real backend (spec D2/D4): async latest-wins writes, read-your-writes,
+        #   fail-fast startup (D3). StatePersistenceUnavailable propagates and kills the runner.
+        interval_s = pd.Timedelta(config.snapshot_interval).total_seconds() if config.snapshot_interval else 0.0
+        safe = SafeStatePersistence(persistence, staleness_threshold_s=max(3.0 * interval_s, 60.0))
+        safe.validate_startup()
+        return safe
 
     except Exception as e:
         logger.error(f"Failed to create state persistence {persistence_class_name}: {e}")

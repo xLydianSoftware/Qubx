@@ -17,9 +17,10 @@ Usage:
     >>> await limiter.acquire("fetch_ohlcv")
 """
 
-from qubx.rate_limiting.backend import IRateLimitBackend, InMemoryBackend
+from qubx.rate_limiting.backend import InMemoryBackend, IRateLimitBackend
 from qubx.rate_limiting.config import EndpointCosts, ExchangeRateLimitConfig, PoolConfig
 from qubx.rate_limiting.engine import ExchangeRateLimiter, RateLimitGateTimeout
+from qubx.rate_limiting.resilient import ResilientRateLimitBackend
 
 __all__ = [
     "EndpointCosts",
@@ -29,4 +30,5 @@ __all__ = [
     "InMemoryBackend",
     "PoolConfig",
     "RateLimitGateTimeout",
+    "ResilientRateLimitBackend",
 ]

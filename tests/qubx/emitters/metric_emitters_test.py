@@ -591,7 +591,9 @@ class TestQuestDBMetricEmitter:
             emitter = QuestDBMetricEmitter(
                 host="testhost", port=9999, metrics_table_name="test_table", tags={"strategy": "test"}
             )
-            mock_sender.from_conf.assert_called_once_with("http::addr=testhost:9999;")
+            mock_sender.from_conf.assert_called_once_with(
+                "http::addr=testhost:9999;request_timeout=5000;retry_timeout=5000;"
+            )
             mock_sender.establish.assert_called_once()
             assert emitter._metrics_table_name == "test_table"
             assert emitter._default_tags["strategy"] == "test"
@@ -604,6 +606,9 @@ class TestQuestDBMetricEmitter:
         dt_timestamp = datetime.datetime(2023, 1, 1)
         with patch.object(emitter, "_convert_timestamp", return_value=dt_timestamp):
             emitter.emit("test_metric", 42.0, {"tag1": "value1"}, timestamp)
+
+            # - wait for the background worker thread to complete before asserting
+            emitter._worker.stop(flush_timeout_s=2.0)
 
             # Declared SYMBOL columns go into symbols; an undeclared tag goes into `custom`
             # rather than becoming a new column on the shared table
@@ -621,6 +626,9 @@ class TestQuestDBMetricEmitter:
             mock_datetime.now.return_value = mock_now
 
             emitter.emit("test_metric", 42.0, {"tag1": "value1"})
+
+            # - wait for the background worker thread to complete before asserting
+            emitter._worker.stop(flush_timeout_s=2.0)
 
             # Declared SYMBOL columns go into symbols; an undeclared tag goes into `custom`
             # rather than becoming a new column on the shared table
@@ -657,8 +665,8 @@ class TestQuestDBMetricEmitter:
             # - should not raise an exception
             emitter.emit("test_metric", 42.0)
 
-            # - wait for background executor thread to complete before asserting
-            emitter._executor.shutdown(wait=True)
+            # - wait for background worker thread to complete before asserting
+            emitter._worker.stop(flush_timeout_s=2.0)
 
             # - row must have been called despite the exception
             mock_sender.row.assert_called_once()
@@ -698,6 +706,8 @@ class TestQuestDBMetricEmitter:
         with patch("pandas.Timestamp.now", return_value=current_time):
             # Second call to notify should flush because current_time - _last_flush >= flush_interval
             emitter.notify(mock_context)
+            # - wait for the background worker thread to complete before asserting
+            emitter._worker.stop(flush_timeout_s=2.0)
             mock_sender.flush.assert_called_once()
 
     def test_emit_signals(self, emitter, mock_sender, mock_signals, mock_account):
@@ -706,7 +716,7 @@ class TestQuestDBMetricEmitter:
 
         # Mock the necessary methods
         with patch.object(emitter, "_convert_timestamp", return_value=datetime.datetime(2023, 1, 1, 12, 0, 0)):
-            with patch.object(emitter._executor, "submit") as mock_submit:
+            with patch.object(emitter._worker, "submit") as mock_submit:
                 emitter.emit_signals(time, mock_signals, mock_account)
 
                 # Should submit a single background task that handles all signals
@@ -742,7 +752,7 @@ class TestQuestDBMetricEmitter:
         emitter.emit_signals(time, [], mock_account)
 
         # Should not submit any tasks
-        with patch.object(emitter._executor, "submit") as mock_submit:
+        with patch.object(emitter._worker, "submit") as mock_submit:
             emitter.emit_signals(time, [], mock_account)
             mock_submit.assert_not_called()
 

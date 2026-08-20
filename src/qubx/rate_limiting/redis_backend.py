@@ -95,9 +95,21 @@ class RedisBackend(IRateLimitBackend):
 
     Args:
         redis_url: Redis connection URL (e.g., "redis://redis.platform.svc:6379/0")
+        socket_connect_timeout: Max seconds to wait for a TCP connection to Redis
+        socket_timeout: Max seconds to wait for a socket read/write to Redis
+        socket_keepalive: Enable TCP keepalive on the underlying socket
+        health_check_interval: Seconds between health-check pings on idle connections
     """
 
-    def __init__(self, redis_url: str):
+    def __init__(
+        self,
+        redis_url: str,
+        *,
+        socket_connect_timeout: float = 2.0,
+        socket_timeout: float = 5.0,
+        socket_keepalive: bool = True,
+        health_check_interval: int = 30,
+    ):
         # - fail fast on misconfiguration, but don't create the client here:
         #   the async Redis client (with single_connection_client=True) holds an
         #   internal asyncio.Lock that binds to whichever event loop first awaits
@@ -106,6 +118,12 @@ class RedisBackend(IRateLimitBackend):
         import redis.asyncio as _aioredis  # noqa: F401
 
         self._redis_url = redis_url
+        self._client_kwargs = dict(
+            socket_connect_timeout=socket_connect_timeout,
+            socket_timeout=socket_timeout,
+            socket_keepalive=socket_keepalive,
+            health_check_interval=health_check_interval,
+        )
         self._loop_clients: WeakKeyDictionary[asyncio.AbstractEventLoop, tuple] = WeakKeyDictionary()
         logger.info(f"Redis rate limit backend configured: {redis_url}")
 
@@ -121,7 +139,10 @@ class RedisBackend(IRateLimitBackend):
         entry = self._loop_clients.get(loop)
         if entry is None:
             client = aioredis.from_url(
-                self._redis_url, decode_responses=True, single_connection_client=True
+                self._redis_url,
+                decode_responses=True,
+                single_connection_client=True,
+                **self._client_kwargs,
             )
             scripts = (
                 client.register_script(_LUA_ACQUIRE),

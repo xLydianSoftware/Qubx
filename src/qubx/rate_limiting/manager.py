@@ -64,8 +64,9 @@ class RateLimitManager:
         if config.backend == "redis" and config.redis_url:
             try:
                 from .redis_backend import RedisBackend
+                from .resilient import ResilientRateLimitBackend
 
-                return RedisBackend(config.redis_url)
+                return ResilientRateLimitBackend(RedisBackend(config.redis_url))
             except Exception as e:
                 logger.error(f"Failed to create Redis rate limit backend: {e}, falling back to local")
         return InMemoryBackend()

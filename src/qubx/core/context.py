@@ -216,6 +216,9 @@ class StrategyContext(IStrategyContext):
         # - the monitor writes degradations into the context's status (queue backlog today)
         self._health_monitor.set_status(self._status)
         self._state_persistence = state_persistence or DummyStatePersistence()
+        # - the monitor observes write health; inert for backends that don't track it
+        #   (last_success_age() -> None) and for monitors that ignore the wiring
+        self._health_monitor.set_state_persistence(self._state_persistence)
         self._state_snapshot_interval = state_snapshot_interval
         self._rate_limiting_config = rate_limiting_config
         self.event_loop = event_loop
@@ -595,6 +598,14 @@ class StrategyContext(IStrategyContext):
             self._logging.close()
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to close logging: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
+
+        # PRIORITY 7: Flush pending state persistence (bounded; the interface default
+        # is a no-op for backends without a background writer)
+        try:
+            self._state_persistence.stop()
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to stop state persistence: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
 
         # CLEANUP: Restore signal handlers and deregister atexit

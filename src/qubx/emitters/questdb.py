@@ -7,7 +7,6 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 import datetime
 import json
 from collections.abc import Sequence
-from concurrent.futures import ThreadPoolExecutor
 from typing import Any, cast
 
 import numpy as np
@@ -19,6 +18,7 @@ from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
 from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.questdb import QuestDBClient
+from qubx.utils.threading import BoundedWorker
 from qubx.utils.time import to_timedelta
 
 # - tables the emitter owns; a strategy table may not target them
@@ -130,7 +130,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         stats_interval: str = "1m",
         flush_interval: str = "5s",
         tags: dict[str, Any] | None = None,
-        max_workers: int = 1,
+        max_queue: int = 10_000,
     ):
         """
         Initialize the QuestDB Metric Emitter.
@@ -145,7 +145,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             stats_to_emit: Optional list of specific stats to emit
             stats_interval: Interval for emitting strategy stats (default: "1m")
             tags: Dictionary of default tags/labels to include with all metrics
-            max_workers: Maximum number of worker threads for QuestDB operations
+            max_queue: Maximum number of pending QuestDB operations queued on the background
+                worker before the oldest is dropped.
         """
         # Initialize default tags with strategy name
         default_tags = tags or {}
@@ -160,11 +161,17 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         # - streams with their own tag set get their own table, so those tags stay real columns
         #   there instead of being NULL on every other row of the shared one
         self._tables_by_type = {"health": health_table_name, "rate_limit": rate_limits_table_name}
-        self._conn_str = f"http::addr={host}:{port};"
+        # - bounded-failure ILP client: a dead/stalled QuestDB costs seconds, not an unbounded
+        #   hang (incident 2026-08-14: metrics QuestDB hang + unbounded queues burst-flush on
+        #   recovery). retry_timeout halved from the client default (10000) so a dead server
+        #   costs <=10s per flush attempt.
+        self._conn_str = f"http::addr={host}:{port};request_timeout=5000;retry_timeout=5000;"
         self._flush_interval = to_timedelta(flush_interval)
         self._sender = self._try_get_sender()
         self._last_flush = None
-        self._executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="questdb_emitter")
+        # - single bounded worker: bounds memory/burst under outages instead of an unbounded
+        #   ThreadPoolExecutor queue (platform incident 2026-08-14).
+        self._worker = BoundedWorker("questdb_emitter", maxlen=max_queue)
         self._stopped = False
 
         # Strategy-owned tables declared via ensure_table: name -> column/symbol sets.
@@ -199,7 +206,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         if pd.Timestamp.now() - self._last_flush >= self._flush_interval:
             if self._sender is not None:
                 try:
-                    self._executor.submit(self._flush_sender)
+                    self._worker.submit(self._flush_sender)
                 except Exception as e:
                     logger.error(f"[QuestDBMetricEmitter] Failed to queue flush operation: {e}")
             self._last_flush = pd.Timestamp.now()
@@ -222,15 +229,15 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self.stop()
 
     def stop(self) -> None:
-        """Flush pending metrics and shut down the executor and sender."""
+        """Flush pending metrics and shut down the background worker and sender."""
         if self._stopped:
             return
         self._stopped = True
 
         try:
-            self._executor.shutdown(wait=False, cancel_futures=True)
+            self._worker.stop(flush_timeout_s=5.0)
         except Exception as e:
-            self._log_warning(f"Error during executor shutdown: {e}")
+            self._log_warning(f"Error during worker shutdown: {e}")
 
         if self._sender is not None:
             try:
@@ -281,8 +288,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             return
 
         try:
-            # Submit the metric emission to the thread pool
-            self._executor.submit(self._emit_to_questdb, name, value, tags, timestamp)
+            # Submit the metric emission to the background worker
+            self._worker.submit(self._emit_to_questdb, name, value, tags, timestamp)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue metric {name}: {e}")
 
@@ -401,7 +408,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             return
 
         try:
-            self._executor.submit(self._emit_signals_to_questdb, time, signals, account, target_positions)
+            self._worker.submit(self._emit_signals_to_questdb, time, signals, account, target_positions)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue signals emission: {e}")
 
@@ -416,7 +423,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             return
 
         try:
-            self._executor.submit(self._emit_deals_to_questdb, time, instrument, deals, account)
+            self._worker.submit(self._emit_deals_to_questdb, time, instrument, deals, account)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue deals emission: {e}")
 
@@ -513,7 +520,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 else:
                     columns[k] = v
             at = self._convert_timestamp(timestamp) if timestamp is not None else datetime.datetime.now()
-            self._executor.submit(self._emit_record_to_questdb, table, symbols, columns, at)
+            self._worker.submit(self._emit_record_to_questdb, table, symbols, columns, at)
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to queue record for '{table}': {e}")
 
