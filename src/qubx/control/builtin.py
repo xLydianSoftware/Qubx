@@ -3,6 +3,7 @@
 from collections import defaultdict
 from typing import Callable
 
+import numpy as np
 import pandas as pd
 
 from qubx.core.basics import DataType, Instrument, MarketType, Signal
@@ -584,6 +585,22 @@ def _get_health(ctx: IStrategyContext, **kwargs) -> ActionResult:
         for exch, by_type in rates.items()
     }
 
+    # - seconds since the last event of each (exchange, type). This is the freshness signal an
+    #   external watchdog needs: `connected` only says a stream is enabled, not that data arrives.
+    #   NaT is reported as None rather than a NaN age: this payload is JSON-serialised with
+    #   allow_nan=False, so a single NaN would 500 the health endpoint and blind the probe.
+    now = ctx.time()
+
+    def _age(t) -> float | None:
+        if t is None or np.isnat(np.datetime64(t)):
+            return None
+        return round(float((now - t) / np.timedelta64(1, "s")), 2)
+
+    last_event_ages_s = {
+        exch: {event_type: _age(t) for event_type, t in health.get_last_event_times_by_exchange(exch).items()}
+        for exch in exchanges
+    }
+
     info = ctx.status
     return ActionResult(
         status="ok",
@@ -597,6 +614,7 @@ def _get_health(ctx: IStrategyContext, **kwargs) -> ActionResult:
             "queue_size": health.get_queue_size(),
             "data_latencies_ms": latencies,
             "event_frequency": frequency,
+            "last_event_ages_s": last_event_ages_s,
         },
     )
 

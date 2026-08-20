@@ -36,7 +36,7 @@ class CcxtFuturePatchMixin:
             task = asyncio.create_task(coro)
             
             def callback(done):
-                complete, _ = done.result()
+                complete, _ = done.result()  # unbounded-result-ok: asyncio Future has no timeout param
                 # Check for exceptions
                 exceptions = []
                 cancelled = False
@@ -44,7 +44,7 @@ class CcxtFuturePatchMixin:
                     if f.cancelled():
                         cancelled = True
                     else:
-                        err = f.exception()
+                        err = f.exception()  # unbounded-result-ok: asyncio Future, already complete
                         if err:
                             exceptions.append(err)
                 
@@ -59,7 +59,7 @@ class CcxtFuturePatchMixin:
                 elif cancelled:
                     future.cancel()
                 else:
-                    first_result = list(complete)[0].result()
+                    first_result = list(complete)[0].result()  # unbounded-result-ok: asyncio Future
                     future.set_result(first_result)
             
             task.add_done_callback(callback)

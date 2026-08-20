@@ -237,3 +237,55 @@ class TestSubscriptionStuff:
             | {(DataType.TRADE, i): "10m" for i in instruments}
         )
         self.mock_broker.warmup.assert_called_once_with(expected_warmup)
+
+
+class TestSubscriptionWatchdog:
+    """The stale-instrument watchdog is the last independent recovery path.
+
+    It used to skip any provider reporting not-connected, and a wedged CCXT provider reports
+    exactly that (stop_stream clears the stream-enabled flag before it blocks), so the watchdog
+    disarmed itself in the 2026-07-28 freeze.
+    """
+
+    def _manager(self, data_provider, health_monitor):
+        time_provider = Mock()
+        time_provider.time.return_value = 0.0
+        state = StrategyState()
+        state.is_on_warmup_finished_called = True
+        return SubscriptionManager(time_provider, [data_provider], health_monitor, state, monitor_interval_seconds=1e6)
+
+    def _provider(self, instrument, connected: bool):
+        provider = Mock()
+        provider.is_simulation = False
+        provider.is_connected.return_value = connected
+        provider.exchange.return_value = "BINANCE.UM"
+        provider.get_subscribed_instruments.side_effect = lambda dt: [instrument] if dt == "orderbook" else []
+        return provider
+
+    def _stale_health(self):
+        health = Mock()
+        health.is_stale.side_effect = lambda instr, dt: dt == "orderbook"
+        return health
+
+    def test_a_disconnected_provider_is_still_checked_and_recovered(self):
+        instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instrument is not None
+        provider = self._provider(instrument, connected=False)
+        manager = self._manager(provider, self._stale_health())
+
+        manager._monitor_subscription_status()
+
+        provider.unsubscribe.assert_called_once_with("orderbook", {instrument})
+        provider.subscribe.assert_called_once_with("orderbook", {instrument})
+
+    def test_simulation_providers_are_still_skipped(self):
+        instrument = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instrument is not None
+        provider = self._provider(instrument, connected=True)
+        provider.is_simulation = True
+        manager = self._manager(provider, self._stale_health())
+
+        manager._monitor_subscription_status()
+
+        provider.unsubscribe.assert_not_called()
+        provider.subscribe.assert_not_called()

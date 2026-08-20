@@ -40,19 +40,21 @@ class LiquidationDataHandler(BaseDataTypeHandler):
         Returns:
             SubscriptionConfiguration with subscriber and unsubscriber functions
         """
+        # Bind the exchange here, not inside the closures: recreation swaps
+        # `exchange_manager.exchange`, and an unsubscriber resolved at call time would be aimed at
+        # a different exchange than the one the stream was established on.
+        exchange = self._exchange_manager.exchange
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
 
         async def watch_liquidation(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            liquidations = await self._exchange_manager.exchange.watch_liquidations_for_symbols(symbols)
+            liquidations = await exchange.watch_liquidations_for_symbols(symbols)
 
             for liquidation in liquidations:
                 try:
                     exch_symbol = liquidation["symbol"]
-                    instrument = ccxt_find_instrument(
-                        exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument
-                    )
+                    instrument = ccxt_find_instrument(exch_symbol, exchange, _symbol_to_instrument)
                     liquidation_event = ccxt_convert_liquidation(liquidation)
 
                     channel.send((instrument, sub_type, liquidation_event, False))
@@ -63,9 +65,7 @@ class LiquidationDataHandler(BaseDataTypeHandler):
 
         async def un_watch_liquidation(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            unwatch = getattr(self._exchange_manager.exchange, "un_watch_liquidations_for_symbols", lambda _: None)(
-                symbols
-            )
+            unwatch = getattr(exchange, "un_watch_liquidations_for_symbols", lambda _: None)(symbols)
             if unwatch is not None:
                 await unwatch
 

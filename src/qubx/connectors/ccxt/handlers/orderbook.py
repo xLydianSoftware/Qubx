@@ -118,19 +118,21 @@ class OrderBookDataHandler(BaseDataTypeHandler):
         depth: int,
     ) -> SubscriptionConfiguration:
         """Prepare subscription configuration for multiple instruments using bulk API."""
+        # Bind the exchange here, not inside the closures: recreation swaps
+        # `exchange_manager.exchange`, and an unsubscriber resolved at call time would be aimed at
+        # a different exchange than the one the stream was established on.
+        exchange = self._exchange_manager.exchange
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
         _limit = self._orderbook_limit
-        _unwatch_accepts_limit = "limit" in inspect.signature(
-            self._exchange_manager.exchange.un_watch_order_book_for_symbols
-        ).parameters
+        _unwatch_accepts_limit = "limit" in inspect.signature(exchange.un_watch_order_book_for_symbols).parameters
 
         async def watch_orderbook(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            ccxt_ob = await self._exchange_manager.exchange.watch_order_book_for_symbols(symbols, limit=_limit)
+            ccxt_ob = await exchange.watch_order_book_for_symbols(symbols, limit=_limit)
 
             exch_symbol = ccxt_ob["symbol"]
-            instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
+            instrument = ccxt_find_instrument(exch_symbol, exchange, _symbol_to_instrument)
 
             # Use private processing method to avoid duplication
             self._process_orderbook(ccxt_ob, instrument, sub_type, channel, depth, tick_size_pct)
@@ -138,9 +140,9 @@ class OrderBookDataHandler(BaseDataTypeHandler):
         async def un_watch_orderbook(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
             if _unwatch_accepts_limit:
-                await self._exchange_manager.exchange.un_watch_order_book_for_symbols(symbols, limit=_limit)
+                await exchange.un_watch_order_book_for_symbols(symbols, limit=_limit)
             else:
-                await self._exchange_manager.exchange.un_watch_order_book_for_symbols(symbols)
+                await exchange.un_watch_order_book_for_symbols(symbols)
 
         return SubscriptionConfiguration(
             subscription_type=sub_type,
@@ -166,11 +168,14 @@ class OrderBookDataHandler(BaseDataTypeHandler):
         WebSocket streams without waiting for all instruments. This follows the same
         pattern as the OHLC handler for proper individual stream management.
         """
+        exchange = self._exchange_manager.exchange
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _limit = self._orderbook_limit
-        _unwatch_single_accepts_limit = "limit" in inspect.signature(
-            self._exchange_manager.exchange.un_watch_order_book
-        ).parameters if hasattr(self._exchange_manager.exchange, "un_watch_order_book") else False
+        _unwatch_single_accepts_limit = (
+            "limit" in inspect.signature(exchange.un_watch_order_book).parameters
+            if hasattr(exchange, "un_watch_order_book")
+            else False
+        )
 
         individual_subscribers = {}
         individual_unsubscribers = {}
@@ -183,7 +188,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
                 async def individual_subscriber():
                     try:
                         # Watch orderbook for single instrument
-                        ccxt_ob = await self._exchange_manager.exchange.watch_order_book(symbol, limit=_limit)
+                        ccxt_ob = await exchange.watch_order_book(symbol, limit=_limit)
 
                         # Use private processing method to avoid duplication
                         self._process_orderbook(ccxt_ob, inst, sub_type, channel, depth, tick_size_pct)
@@ -199,7 +204,7 @@ class OrderBookDataHandler(BaseDataTypeHandler):
             individual_subscribers[instrument] = create_individual_subscriber()
 
             # Create individual unsubscriber if exchange supports it
-            un_watch_method = getattr(self._exchange_manager.exchange, "un_watch_order_book", None)
+            un_watch_method = getattr(exchange, "un_watch_order_book", None)
             if un_watch_method is not None and callable(un_watch_method):
 
                 def create_individual_unsubscriber(
@@ -210,9 +215,9 @@ class OrderBookDataHandler(BaseDataTypeHandler):
                     async def individual_unsubscriber():
                         try:
                             if accepts_limit:
-                                await self._exchange_manager.exchange.un_watch_order_book(symbol, limit=_limit)
+                                await exchange.un_watch_order_book(symbol, limit=_limit)
                             else:
-                                await self._exchange_manager.exchange.un_watch_order_book(symbol)
+                                await exchange.un_watch_order_book(symbol)
                         except Exception as e:
                             logger.error(
                                 f"<yellow>{exchange_id}</yellow> Error unsubscribing orderbook for {symbol}: {e}"

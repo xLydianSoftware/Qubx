@@ -568,3 +568,69 @@ class TestOrderBookHandlerEdgeCases:
         # Should re-raise the exception for connection manager to handle
         with pytest.raises(Exception, match="Connection failed"):
             await btc_subscriber()
+
+
+class TestExchangeIsCapturedAtPrepareTime:
+    """Recreation swaps `exchange_manager.exchange` under a live subscription.
+
+    Closures that resolve it at call time would aim an unsubscriber at an exchange the stream was
+    never established on, so the venue never acks and the wait runs to its timeout.
+    """
+
+    @pytest.mark.asyncio
+    async def test_bulk_unsubscriber_targets_the_exchange_it_was_prepared_on(
+        self, mock_data_provider, mock_exchange_with_bulk_support, orderbook_channel, btc_instrument
+    ):
+        handler = OrderBookDataHandler(
+            data_provider=mock_data_provider,
+            exchange_manager=mock_exchange_with_bulk_support,
+            exchange_id="test",
+        )
+        config = handler.prepare_subscription(
+            name="test_stream",
+            sub_type=DataType.ORDERBOOK,
+            channel=orderbook_channel,
+            instruments={btc_instrument},
+        )
+        original = mock_exchange_with_bulk_support.exchange
+
+        recreated = Mock()
+        recreated.has = {"watchOrderBookForSymbols": True}
+        recreated.un_watch_order_book_for_symbols = AsyncMock()
+        recreated.name = "binance"
+        mock_exchange_with_bulk_support.exchange = recreated
+
+        assert config.unsubscriber_func is not None
+        await config.unsubscriber_func()
+
+        original.un_watch_order_book_for_symbols.assert_awaited_once()
+        recreated.un_watch_order_book_for_symbols.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_individual_unsubscriber_targets_the_exchange_it_was_prepared_on(
+        self, mock_data_provider, mock_exchange_without_bulk_support, orderbook_channel, btc_instrument
+    ):
+        handler = OrderBookDataHandler(
+            data_provider=mock_data_provider,
+            exchange_manager=mock_exchange_without_bulk_support,
+            exchange_id="test",
+        )
+        config = handler.prepare_subscription(
+            name="test_stream",
+            sub_type=DataType.ORDERBOOK,
+            channel=orderbook_channel,
+            instruments={btc_instrument},
+        )
+        original = mock_exchange_without_bulk_support.exchange
+
+        recreated = Mock()
+        recreated.has = {"watchOrderBookForSymbols": False}
+        recreated.un_watch_order_book = AsyncMock()
+        recreated.name = "binance"
+        mock_exchange_without_bulk_support.exchange = recreated
+
+        assert config.instrument_unsubscribers is not None
+        await config.instrument_unsubscribers[btc_instrument]()
+
+        original.un_watch_order_book.assert_awaited_once()
+        recreated.un_watch_order_book.assert_not_awaited()

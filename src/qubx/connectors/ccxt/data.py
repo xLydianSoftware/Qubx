@@ -19,6 +19,8 @@ from .subscription_manager import SubscriptionManager
 from .subscription_orchestrator import SubscriptionOrchestrator
 from .warmup_service import WarmupService
 
+MARKETS_LOAD_TIMEOUT_SECONDS = 60.0
+
 
 class CcxtDataProvider(IDataProvider):
     time_provider: ITimeProvider
@@ -227,7 +229,8 @@ class CcxtDataProvider(IDataProvider):
         # initial set_universe (in paper mode no account processor loads them). ccxt
         # caches markets, so this is idempotent with the account processor's load.
         try:
-            self._loop.submit(self._exchange_manager.exchange.load_markets()).result()
+            # Bounded: a hang here wedges startup with no diagnostic at all.
+            self._loop.run_sync(self._exchange_manager.exchange.load_markets(), timeout=MARKETS_LOAD_TIMEOUT_SECONDS)
             logger.info(
                 f"<yellow>{self._exchange_id}</yellow> Markets loaded "
                 f"({len(self._exchange_manager.exchange.markets or {})})"

@@ -452,7 +452,10 @@ class SubscriptionManager(ISubscriptionManager):
         exch_sub_to_stale_instr = defaultdict(lambda: defaultdict(set))
         for data_type in ["quote", "orderbook", "trade"]:
             for data_provider in self._data_providers:
-                if data_provider.is_simulation or not data_provider.is_connected():
+                # Deliberately NOT skipped on `not is_connected()`: a wedged CCXT provider drops its
+                # stream-enabled flag before it blocks, so it reports not-connected exactly when this
+                # watchdog is needed most - that self-disarmed the last recovery path on 2026-07-28.
+                if data_provider.is_simulation:
                     continue
                 instruments = data_provider.get_subscribed_instruments(data_type)
                 for instrument in instruments:
