@@ -108,3 +108,24 @@ def test_timestamp_is_passed_through(emitter):
     emitter._emit_to_questdb("total_capital", 1.0, {"type": "stats"}, ts)
 
     assert emitter._sender.row.call_args.kwargs["at"] == ts
+
+
+def test_ensure_table_refuses_a_reserved_name(emitter):
+    with patch("qubx.emitters.questdb.QuestDBClient") as client:
+        emitter.ensure_table("qubx.metrics", columns={"v": "DOUBLE"})
+
+    client.assert_not_called()
+
+
+def test_emit_record_refuses_a_reserved_name(emitter):
+    emitter.emit_record("qubx.health", {"v": 1.0})
+
+    emitter._sender.row.assert_not_called()
+
+
+def test_a_strategy_table_is_still_accepted(emitter):
+    with patch("qubx.emitters.questdb.QuestDBClient") as client:
+        emitter.ensure_table("loe.execution", columns={"v": "DOUBLE"})
+
+    client.assert_called_once()
+    assert "loe.execution" in emitter._declared_columns

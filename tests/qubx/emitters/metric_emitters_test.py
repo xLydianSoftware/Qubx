@@ -589,11 +589,11 @@ class TestQuestDBMetricEmitter:
             from qubx.emitters.questdb import QuestDBMetricEmitter
 
             emitter = QuestDBMetricEmitter(
-                host="testhost", port=9999, table_name="test_table", tags={"strategy": "test"}
+                host="testhost", port=9999, metrics_table_name="test_table", tags={"strategy": "test"}
             )
             mock_sender.from_conf.assert_called_once_with("http::addr=testhost:9999;")
             mock_sender.establish.assert_called_once()
-            assert emitter._table_name == "test_table"
+            assert emitter._metrics_table_name == "test_table"
             assert emitter._default_tags["strategy"] == "test"
 
     def test_emit(self, emitter, mock_sender):

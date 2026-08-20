@@ -21,6 +21,13 @@ from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.questdb import QuestDBClient
 from qubx.utils.time import to_timedelta
 
+# - tables the emitter owns; a strategy table may not target them
+METRICS_TABLE = "qubx.metrics"
+SIGNALS_TABLE = "qubx.signals"
+DEALS_TABLE = "qubx.deals"
+HEALTH_TABLE = "qubx.health"
+RATE_LIMITS_TABLE = "qubx.rate_limits"
+
 
 def _json_scalar(value: Any) -> Any:
     # - numpy scalars are not JSON-serialisable; anything else falls back to its text form
@@ -114,11 +121,11 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self,
         host: str = "localhost",
         port: int = 9000,
-        table_name: str = "qubx.metrics",
-        signals_table_name: str = "qubx.signals",
-        deals_table_name: str = "qubx.deals",
-        health_table_name: str = "qubx.health",
-        rate_limits_table_name: str = "qubx.rate_limits",
+        metrics_table_name: str = METRICS_TABLE,
+        signals_table_name: str = SIGNALS_TABLE,
+        deals_table_name: str = DEALS_TABLE,
+        health_table_name: str = HEALTH_TABLE,
+        rate_limits_table_name: str = RATE_LIMITS_TABLE,
         stats_to_emit: list[str] | None = None,
         stats_interval: str = "1m",
         flush_interval: str = "5s",
@@ -131,7 +138,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         Args:
             host: QuestDB server host
             port: QuestDB server port
-            table_name: Name of the table to store metrics in
+            metrics_table_name: Name of the table to store metrics in
             signals_table_name: Name of the table to store signals in
             health_table_name: Name of the table to store type=health metrics in
             rate_limits_table_name: Name of the table to store type=rate_limit metrics in
@@ -147,7 +154,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
         self._host = host
         self._port = port
-        self._table_name = table_name
+        self._metrics_table_name = metrics_table_name
         self._signals_table_name = signals_table_name
         self._deals_table_name = deals_table_name
         # - streams with their own tag set get their own table, so those tags stay real columns
@@ -165,11 +172,22 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         self._declared_symbols: dict[str, set[str]] = {}
         self._warned_undeclared: set[str] = set()
 
-        self._declare_table(self._table_name, self.METRICS_COLUMNS, "DAY")
+        self._declare_table(self._metrics_table_name, self.METRICS_COLUMNS, "DAY")
         self._declare_table(self._signals_table_name, self.SIGNALS_COLUMNS, "WEEK")
         self._declare_table(self._deals_table_name, self.DEALS_COLUMNS, "WEEK")
         self._declare_table(health_table_name, self.HEALTH_COLUMNS, "DAY")
         self._declare_table(rate_limits_table_name, self.RATE_LIMITS_COLUMNS, "DAY")
+
+        # - these five have a fixed schema; a strategy table may not target them
+        self._reserved_tables = frozenset(
+            {
+                self._metrics_table_name,
+                self._signals_table_name,
+                self._deals_table_name,
+                health_table_name,
+                rate_limits_table_name,
+            }
+        )
 
     def notify(self, context: IStrategyContext) -> None:
         super().notify(context)
@@ -288,7 +306,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             if self._sender is None:
                 return
 
-            table = self._tables_by_type.get(tags.get("type", ""), self._table_name)
+            table = self._tables_by_type.get(tags.get("type", ""), self._metrics_table_name)
             symbols, tag_columns, custom = self._split_tags(table, tags)
             columns: dict = {
                 "metric_name": name,
@@ -331,6 +349,13 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             logger.info(f"[QuestDBMetricEmitter] Ensured table '{table}' exists")
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to create table '{table}': {e}")
+
+    def _refuse_reserved(self, table: str) -> None:
+        """
+        Reject a strategy table that targets one of the emitter's own tables.
+        """
+        if table in self._reserved_tables:
+            raise ValueError(f"'{table}' is reserved by the emitter and has a fixed schema")
 
     def _split_tags(self, table: str, tags: dict[str, Any]) -> tuple[dict[str, str], dict[str, Any], dict[str, Any]]:
         """
@@ -405,6 +430,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
     ) -> None:
         """Create a strategy-owned table with explicit types (spec: strategy-tables §2.0)."""
         try:
+            self._refuse_reserved(table)
             if isinstance(symbol_columns, str):
                 raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
             decl: dict[str, str] = {"timestamp": "TIMESTAMP"}
@@ -451,6 +477,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         if self._sender is None:
             return
         try:
+            self._refuse_reserved(table)
             if isinstance(symbol_columns, str):
                 raise ValueError(f"symbol_columns must be a sequence of names, not a bare string: {symbol_columns!r}")
             if self._context is not None and timestamp is None:
