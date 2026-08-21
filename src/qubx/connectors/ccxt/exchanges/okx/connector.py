@@ -27,9 +27,11 @@ import re
 from functools import partial
 from typing import Any, Coroutine
 
-from qubx.core.basics import FRAMEWORK_CID_PREFIX, Balance
+from qubx import logger
+from qubx.core.basics import FRAMEWORK_CID_PREFIX, Balance, Instrument
 
-from ...utils import info_float
+from ...connector import _LeverageInfo
+from ...utils import info_float, instrument_to_ccxt_symbol
 from .._two_stream import _TwoStreamCcxtConnector
 
 _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
@@ -81,6 +83,55 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             )
         )
         return streams
+
+    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """
+        Ask OKX for the configured leverage when no position carries it.
+
+        The base reads ``fetch_leverages`` — which okx does not have — and then the position
+        row, so a flat instrument reports nothing. ``fetch_leverage`` is per symbol and per
+        margin mode; ccxt asks for cross unless told otherwise, which is the mode
+        ``set_leverage`` writes by default.
+        """
+        leverage = super().get_instrument_leverage(instrument)
+        if leverage is not None:
+            return leverage
+        symbol = instrument_to_ccxt_symbol(instrument)
+        try:
+            row = self._run_sync(self._em.exchange.fetch_leverage(symbol))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] fetch_leverage for {instrument.symbol}: {e}")
+            return None
+        value = row.get("longLeverage") or row.get("shortLeverage") if row else None
+        return float(value) if value is not None else None
+
+    def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
+        """
+        Read the venue cap per instrument: OKX publishes tiers one market at a time.
+
+        The base serves this from the poller's cache, which is filled by
+        ``fetch_leverage_tiers`` — again absent on okx, so the cap was always None and every
+        leverage request went to the venue unclamped. The result is kept in the same cache, so
+        one read per instrument covers the process.
+        """
+        cached = super().get_max_instrument_leverage(instrument)
+        if cached is not None:
+            return cached
+        symbol = instrument_to_ccxt_symbol(instrument)
+        try:
+            tiers = self._run_sync(self._em.exchange.fetch_market_leverage_tiers(symbol))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] leverage tiers for {instrument.symbol}: {e}")
+            return None
+        levels = [t["maxLeverage"] for t in (tiers or []) if t.get("maxLeverage") is not None]
+        if not levels:
+            return None
+        maximum = int(max(levels))
+        held = self._leverage_cache.get(symbol)
+        self._leverage_cache[symbol] = _LeverageInfo(
+            configured=held.configured if held is not None else None, maximum=maximum
+        )
+        return float(maximum)
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         """Use OKX ``cashBal``/``frozenBal`` per currency from the raw response.

@@ -13,7 +13,7 @@ from qubx.connectors.ccxt.exchanges import EXCHANGE_ALIASES, OkxFutures
 from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
 from qubx.connectors.ccxt.utils import ccxt_status_to_order_status
 from qubx.core.basics import OrderStatus
-from qubx.core.basics import CtrlChannel
+from qubx.core.basics import CtrlChannel, Instrument, MarketType
 
 
 def run(coro):
@@ -367,3 +367,76 @@ class TestOrderBookChecksumFailure:
         offline_okx.handle_order_book(client, good)
         assert client.rejected == []
         assert "BTC/USDT:USDT" in offline_okx.orderbooks
+
+
+class TestLeverageReads:
+    """
+    ccxt's okx has no `fetchLeverages` and no `fetchLeverageTiers` — the two whole-universe
+    calls the base connector's poller uses — so the venue cap was always None and a flat
+    instrument reported no configured leverage. Both exist per symbol.
+    """
+
+    @staticmethod
+    def _connector(exchange: Mock) -> OkxCcxtConnector:
+        exchange_manager = Mock()
+        exchange_manager.exchange = exchange
+        connector = OkxCcxtConnector(
+            exchange_name="OKX.F",
+            channel=Mock(spec=CtrlChannel),
+            time_provider=Mock(),
+            exchange_manager=exchange_manager,
+            data_provider=Mock(),
+        )
+        connector._run_sync = lambda coro, timeout=None: coro
+        return connector
+
+    @staticmethod
+    def _instrument() -> Instrument:
+        return Instrument(
+            symbol="BTCUSDT",
+            market_type=MarketType.SWAP,
+            exchange="OKX.F",
+            base="BTC",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="BTC-USDT-SWAP",
+            tick_size=0.1,
+            lot_size=0.01,
+            min_size=0.01,
+            contract_size=0.01,
+        )
+
+    def test_venue_cap_read_per_symbol(self):
+        exchange = Mock()
+        exchange.has = {}
+        exchange.fetch_market_leverage_tiers = Mock(
+            return_value=[{"maxLeverage": 125}, {"maxLeverage": 50}, {"maxLeverage": 10}]
+        )
+        connector = self._connector(exchange)
+        assert connector.get_max_instrument_leverage(self._instrument()) == 125.0
+        exchange.fetch_market_leverage_tiers.assert_called_once_with("BTC/USDT:USDT")
+
+    def test_venue_cap_is_cached_after_the_first_read(self):
+        exchange = Mock()
+        exchange.has = {}
+        exchange.fetch_market_leverage_tiers = Mock(return_value=[{"maxLeverage": 125}])
+        connector = self._connector(exchange)
+        instrument = self._instrument()
+        connector.get_max_instrument_leverage(instrument)
+        connector.get_max_instrument_leverage(instrument)
+        assert exchange.fetch_market_leverage_tiers.call_count == 1
+
+    def test_venue_cap_survives_a_failing_read(self):
+        exchange = Mock()
+        exchange.has = {}
+        exchange.fetch_market_leverage_tiers = Mock(side_effect=ccxt.NotSupported("nope"))
+        assert self._connector(exchange).get_max_instrument_leverage(self._instrument()) is None
+
+    def test_configured_leverage_falls_back_to_fetch_leverage(self):
+        exchange = Mock()
+        exchange.has = {}
+        exchange.fetch_positions = Mock(return_value=[])
+        exchange.fetch_leverage = Mock(return_value={"longLeverage": 5, "shortLeverage": 5})
+        connector = self._connector(exchange)
+        assert connector.get_instrument_leverage(self._instrument()) == 5.0
+        exchange.fetch_leverage.assert_called_once_with("BTC/USDT:USDT")
