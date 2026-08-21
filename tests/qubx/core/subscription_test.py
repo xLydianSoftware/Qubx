@@ -241,18 +241,15 @@ class TestSubscriptionStuff:
 
 
 class TestSubscriptionWatchdog:
-    """The stale-instrument watchdog is the last independent recovery path.
+    """The stale-instrument watchdog is the last independent recovery path. Two things disarm it:
 
-    Two ways it disarmed itself:
-      * it skipped any provider reporting not-connected, and a wedged CCXT provider reports exactly
-        that (stop_stream clears the stream-enabled flag before it blocks) - the 2026-07-28 freeze;
-      * it looked instruments up by the bare base type ("orderbook"), while the fleet subscribes as
-        "orderbook(0, 1)" and every provider lookup is an exact-key match - so it collected zero
-        instruments and never even consulted is_stale.
+      * skipping providers that report not-connected - a wedged CCXT provider reports exactly that,
+        since stop_stream clears the stream-enabled flag before it blocks;
+      * looking instruments up by the bare base type ("orderbook") while the subscription key is
+        parameterised ("orderbook(0, 1)") and every provider lookup is an exact-key match.
 
-    These tests drive a REAL ccxt SubscriptionManager keyed with the parameterised type. A mocked
-    provider keyed on "orderbook" passes under both the broken and the fixed lookup, which is how
-    the second bug shipped. (That state class is plain Python - importing it pulls in no ccxt.)
+    These tests drive a REAL ccxt SubscriptionManager keyed with the parameterised type: a mocked
+    provider keyed on "orderbook" passes under both the broken and the fixed lookup.
     """
 
     BASE_SUB = DataType.ORDERBOOK[0, 1]  # "orderbook(0, 1)" - what the platform actually subscribes

@@ -197,9 +197,8 @@ class SubscriptionOrchestrator:
         # 4. Register new stream with subscription manager
         self._subscription_manager.set_subscription_name(subscription_type, subscription_config.stream_name)
 
-        # 5. Arm the stream registry BEFORE submitting, still under the subscription lock.
-        #    listen_to_stream only reads the enabled flag, so this is what makes a later
-        #    stop_stream pop final - see ConnectionManager.listen_to_stream.
+        # 5. Arm the stream registry before submitting: listen_to_stream only reads the enabled
+        #    flag, which is what makes a later stop_stream pop final.
         self._arm_stream(subscription_config.stream_name, subscription_config.unsubscriber_func)
 
         # 6. Create and start new subscription task

@@ -1,8 +1,8 @@
-"""Regression tests for the 2026-07-28 ccxt connector deadlock.
+"""Regression tests for the ccxt connector self-deadlock.
 
-Every test here uses a REAL background event loop: the bug is a thread/loop interaction and mocks
-cannot reproduce it. Every blocking call is run behind a hard deadline so a regression fails the
-test instead of hanging CI forever.
+Every test uses a REAL background event loop: the bug is a thread/loop interaction and mocks cannot
+reproduce it. Every blocking call runs behind a hard deadline so a regression fails the test
+instead of hanging CI forever.
 """
 
 import asyncio
@@ -198,7 +198,7 @@ class TestStopStreamIsBounded:
         assert seen == {"coro": False, "unsub": False, "wanted": False}
 
     def test_stop_stream_from_loop_thread_does_not_deadlock(self, exchange_manager, bg_loop):
-        """Reproduction of the 00:02:28 self-deadlock that froze okx-am-agg for 18 days.
+        """stop_stream called *on* the exchange loop must not park that loop on itself.
 
         Production-ish cleanup_timeout on purpose: with a short one an un-degraded path still
         returns quickly and the test would pass while the exchange loop is frozen for seconds.
@@ -266,8 +266,8 @@ class TestStopStreamIsBounded:
 
 class TestUnsubscribeGracePeriod:
     """The 1s grace lets the venue ack the unsubscribe before a new subscription reuses the same
-    hashes. It is a pure wall-clock guarantee, and it is worthless once the unsubscribe wait has
-    already timed out - the ack is not coming and waiting again doubles the worst-case stall."""
+    hashes. Pure wall-clock, and skipped once the unsubscribe wait has already timed out - no ack
+    is coming and waiting again doubles the worst-case stall."""
 
     def test_no_grace_period_when_the_unsubscribe_wait_timed_out(self, exchange_manager, bg_loop):
         manager = make_manager(exchange_manager, cleanup_timeout=0.3)
@@ -378,12 +378,10 @@ class TestEnabledStreamRegistry:
     def test_a_task_that_starts_after_the_pop_does_not_resurrect_the_stream(self, manager, bg_loop):
         """The other half of the race: the stream task takes its FIRST step after stop_stream popped.
 
-        `stop_stream` pops the registry before it cancels/waits, and cancelling a
-        `run_coroutine_threadsafe` future does not reliably prevent the coroutine's synchronous
-        prefix from running (the chained `task.cancel()` lands behind an already-queued
-        `Task.__step`). While that prefix wrote the enabled flag and the unsubscriber, a stopped
-        stream came back to life: `is_connected()` reported True off a dead stream forever and the
-        entry leaked. The prefix must only READ the flag.
+        Cancelling a `run_coroutine_threadsafe` future does not reliably prevent that first step
+        from running - the chained `task.cancel()` lands behind an already-queued `Task.__step`.
+        So the coroutine must only READ the flag; writing it there resurrects a stopped stream and
+        `is_connected()` reports True off a dead one forever.
         """
         stream_name = "trade:2:start-after-pop"
         channel = MagicMock()

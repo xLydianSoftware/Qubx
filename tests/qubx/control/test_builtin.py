@@ -206,8 +206,8 @@ class TestGetHealth:
         assert result.data["last_event_ages_s"]["BINANCE.UM"] == {"orderbook": 1.5, "trade": 42.0}
 
     def test_a_never_seen_event_type_is_none_not_nan(self):
-        """The payload is JSON-serialised with allow_nan=False - a NaN age 500s the endpoint the
-        platform watchdog polls, i.e. blinds the probe this signal exists for."""
+        """The payload is JSON-serialised with allow_nan=False, so a NaN age would 500 the whole
+        health endpoint."""
         ctx = _make_mock_ctx()
         now = np.datetime64("2026-04-05T10:00:00", "ns")
         ctx.time.return_value = now

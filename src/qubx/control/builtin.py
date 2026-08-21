@@ -585,10 +585,9 @@ def _get_health(ctx: IStrategyContext, **kwargs) -> ActionResult:
         for exch, by_type in rates.items()
     }
 
-    # - seconds since the last event of each (exchange, type). This is the freshness signal an
-    #   external watchdog needs: `connected` only says a stream is enabled, not that data arrives.
-    #   NaT is reported as None rather than a NaN age: this payload is JSON-serialised with
-    #   allow_nan=False, so a single NaN would 500 the health endpoint and blind the probe.
+    # - seconds since the last event of each (exchange, type): `connected` only says a stream is
+    #   enabled, not that data arrives. NaT maps to None, not a NaN age - this payload is
+    #   JSON-serialised with allow_nan=False, so one NaN would 500 the whole health endpoint.
     now = ctx.time()
 
     def _age(t) -> float | None:

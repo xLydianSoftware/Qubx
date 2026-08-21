@@ -1,7 +1,7 @@
 """Lint gate: no unbounded blocking wait anywhere under `qubx/connectors/ccxt/`.
 
-A single timeout-less `concurrent.futures.Future.result()` on the exchange event loop froze a live
-bot for 18 days. This makes the pattern unrepresentable rather than merely fixed.
+A single timeout-less `concurrent.futures.Future.result()` waiting on the exchange event loop can
+freeze a bot indefinitely. This gate makes the pattern unrepresentable rather than merely fixed.
 
 Covered: `.result(...)`, `.exception(...)` and `run_sync(...)` — the three ways this package blocks
 a thread on the exchange loop. A literal `None` timeout counts as unbounded, because that is what

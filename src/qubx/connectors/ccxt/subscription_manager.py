@@ -24,11 +24,12 @@ class SubscriptionManager:
     """
 
     def __init__(self):
-        # Held across a whole subscription transition - computing the new instrument set, stopping
-        # the old stream and installing the new name is one read-modify-write, and the stale-data
-        # watchdog thread and the strategy thread both run it. Per-method locking is not enough.
-        # Reentrant: unsubscribe resubscribes the remainder, and a handler may unsubscribe while
-        # preparing.
+        # Held across a whole subscription transition: computing the new instrument set, stopping
+        # the old stream and installing the new name is one read-modify-write, driven concurrently
+        # by the strategy thread and the stale-data watchdog. Reentrant because unsubscribe
+        # resubscribes the remainder and a handler may unsubscribe while preparing.
+        # INVARIANT: never acquire it from the exchange event loop thread - holders block on that
+        # loop (stream teardown, unsubscribe), so taking it on-loop parks the loop on itself.
         self.lock = threading.RLock()
 
         # Active subscriptions (connection established and receiving data)

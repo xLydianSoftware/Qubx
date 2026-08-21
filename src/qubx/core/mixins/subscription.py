@@ -455,15 +455,15 @@ class SubscriptionManager(ISubscriptionManager):
     def _monitor_subscription_status(self) -> None:
         exch_sub_to_stale_instr = defaultdict(lambda: defaultdict(set))
         for data_provider in self._data_providers:
-            # Deliberately NOT skipped on `not is_connected()`: a wedged CCXT provider drops its
+            # Must NOT be gated on `is_connected()`: a wedged CCXT provider drops its
             # stream-enabled flag before it blocks, so it reports not-connected exactly when this
-            # watchdog is needed most - that self-disarmed the last recovery path on 2026-07-28.
+            # watchdog is needed - gating here disarms the last recovery path.
             if data_provider.is_simulation:
                 continue
-            # Iterate the provider's OWN keys rather than the bare base types: a fleet bot is
-            # subscribed as "orderbook(0, 1)", and get_subscribed_instruments/unsubscribe/subscribe
-            # are all exact-key lookups, so asking for "orderbook" collects nothing and recovery
-            # early-returns. Health is keyed by base type, the provider by full key - carry both.
+            # Iterate the provider's OWN subscription keys, not the bare base types: a subscription
+            # may carry parameters ("orderbook(0, 1)") and get_subscribed_instruments / subscribe /
+            # unsubscribe are all exact-key lookups, so "orderbook" would match nothing. Health is
+            # keyed by base type, the provider by full key - carry both.
             for sub in data_provider.get_subscriptions():
                 base_type = DataType.from_str(sub)[0]
                 if base_type not in _WATCHDOG_DATA_TYPES:

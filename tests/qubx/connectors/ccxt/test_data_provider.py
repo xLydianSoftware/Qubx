@@ -332,8 +332,8 @@ def test_stale_recovery_does_not_collapse_bulk_subscription_set(data_provider):
 def test_a_concurrent_universe_change_cannot_interleave_with_a_transition(data_provider):
     """The stale-data watchdog thread and the strategy thread both drive subscriptions. Computing
     the instrument set and rebuilding the stream that serves it is one read-modify-write: a churn
-    that lands in the middle of it rebuilds from a half-updated set, which was observed emptying a
-    subscription type outright ("No active subscription for ...") with no resubscribe to follow.
+    landing in the middle rebuilds from a half-updated set and can empty a subscription type
+    outright, with no resubscribe to follow.
     """
     instruments = [_make_instrument(i) for i in range(6)]
     parked = threading.Event()

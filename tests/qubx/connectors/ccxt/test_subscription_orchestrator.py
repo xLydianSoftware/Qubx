@@ -477,7 +477,7 @@ class TestIndividualSubscriptions:
 class TestConcurrentTransitions:
     """The stale-data watchdog thread and the strategy thread both drive subscriptions for the
     same (exchange, data_type), and `_sub_to_name` is the only handle to a started bulk stream.
-    An interleaved read-stop-swap used to leave one stream live with nothing left to stop it.
+    An interleaved read-stop-swap must not leave a stream live with nothing left to stop it.
     """
 
     @staticmethod
@@ -593,9 +593,9 @@ class TestConcurrentTransitions:
 class TestStreamRegistryIsArmedBeforeSubmit:
     """The orchestrator - not the stream coroutine - owns the enabled flag and the unsubscriber.
 
-    `listen_to_stream` used to write both on its first (synchronous) step, which runs on the
-    exchange loop. A `stop_stream` that popped them while the task was merely queued was then
-    silently undone, leaving `is_connected()` reporting True off a dead stream forever.
+    If the coroutine wrote them on its first (synchronous, on-loop) step, a `stop_stream` that
+    popped them while the task was merely queued would be silently undone, leaving
+    `is_connected()` reporting True off a dead stream.
     """
 
     def _config_factory(self, unsubscriber):

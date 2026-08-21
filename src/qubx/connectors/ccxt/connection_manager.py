@@ -3,14 +3,6 @@ Connection management for CCXT data provider.
 
 This module handles WebSocket connections, retry logic, and stream lifecycle management,
 separating connection concerns from subscription state and data handling.
-
-BACKPORT HAZARD (v1.7.0 and earlier): `SubscriptionManager.lock` is safe on main only because
-no code path acquires it from the exchange event loop thread. v1.7.0's
-`CcxtAccountProcessor._subscribe_instruments` calls `SubscriptionManager.commit()` inside a
-coroutine submitted with `self._loop.submit` (`account.py:431`), i.e. ON the loop. Backporting
-the lock without first moving that `commit()` off-loop turns an off-loop `_wait` into a bounded
-stall of the whole exchange loop (~cleanup_timeout per stream, per subscription type). Move the
-poller's `commit()` off the loop in the same backport commit.
 """
 
 import asyncio
@@ -82,9 +74,8 @@ class ConnectionManager:
         self._subscription_manager = subscription_manager
         self._cleanup_timeout = cleanup_timeout
 
-        # Stream state management. A plain dict on purpose: the orchestrator inserts a key before
-        # it submits the stream task and stop_stream pops it, so membership means "this stream is
-        # meant to be running". A defaultdict would silently re-create a popped key on read.
+        # Plain dict on purpose: membership means "this stream is meant to be running", and a
+        # defaultdict would silently re-create a popped key on read.
         self._is_stream_enabled: dict[str, bool] = {}
         self._stream_to_unsubscriber: dict[str, Callable[[], Awaitable[None]]] = {}
 
@@ -121,11 +112,10 @@ class ConnectionManager:
         """
         Listen to a WebSocket stream with error handling and retry logic.
 
-        This coroutine only ever READS the stream registry. The orchestrator arms the enabled flag
-        and the unsubscriber under the subscription lock before submitting this task, so a
-        stop_stream that pops them is final: `concurrent.Future.cancel()` returning True does not
-        prevent an already-queued first step from running, and a task that writes the flag on that
-        step would resurrect a stopped stream and make is_connected() lie forever.
+        Only ever READS the stream registry: the orchestrator arms the enabled flag and the
+        unsubscriber before submitting this task. A task that wrote the flag on its first step
+        would resurrect a stream `stop_stream` already popped, because cancelling a queued future
+        does not stop that first step from running.
 
         Args:
             subscriber: Async function that handles the stream data
@@ -133,6 +123,8 @@ class ConnectionManager:
             channel: Control channel for data flow
             stream_name: Unique name for this stream
         """
+        # "Listening to" is matched literally by the BotExchangeRecreationWedged Loki alert in
+        # xlydian-platform (k8s/apps/*/loki.yaml). Do not reword this line.
         logger.info(f"<yellow>{self._exchange_id}</yellow> Listening to {stream_name}")
 
         n_retry = 0
@@ -232,20 +224,18 @@ class ConnectionManager:
         logger.debug(f"Stopping stream: {stream_name}, wait={wait}")
 
         if wait and self._on_exchange_loop_thread():
-            # Blocking here would park the exchange loop on a coroutine that only that same loop
-            # can run - the self-deadlock that froze a live bot for 18 days on 2026-07-28. Never
-            # raise for this: callers up the synchronous subscription pipeline treat an exception
-            # as a fault and would kill their own poller.
+            # Blocking here would park the exchange loop on a coroutine only that loop can run.
+            # Degrade rather than raise: callers up the synchronous subscription pipeline treat an
+            # exception as a fault and would kill their own poller.
             logger.info(
                 f"[{self._exchange_id}] stop_stream({stream_name}) called from the exchange loop thread - "
                 "degrading to non-blocking cleanup"
             )
             wait = False
 
-        # Tear the registry down before any blocking wait: a wait that times out must not leave a
+        # Tear the registry down before any blocking wait, so a wait that times out cannot leave a
         # half-removed stream behind. Popping _is_stream_enabled is the stop signal the listen loop
-        # reads - it treats a missing key as False without reinserting it, so the dict holds exactly
-        # the live streams and is_connected() cannot report a stopped stream as connected.
+        # reads, and it is what is_connected() reports on.
         stream_future = self._stream_to_coro.pop(stream_name, None)
         unsubscriber = self._stream_to_unsubscriber.pop(stream_name, None)
         self._is_stream_enabled.pop(stream_name, None)
@@ -262,10 +252,9 @@ class ConnectionManager:
             unsub_task = self._loop.submit(unsubscriber())
             if wait and self._wait(unsub_task, f"unsubscriber for {stream_name}"):
                 # Grace period so the venue acks the unsubscribe before a new subscription reuses
-                # the same hashes. Plain wall-clock - the guarantee is elapsed time, and routing it
-                # through the loop only adds a second thing that can block. Skipped entirely when
-                # the unsubscribe wait timed out: no ack is coming, and waiting again for a loop
-                # that is already not answering just doubles the stall.
+                # the same hashes. Plain wall-clock, not routed through the loop, which would add a
+                # second thing that can block. Skipped when the unsubscribe wait timed out: no ack
+                # is coming from a loop that is already not answering.
                 time.sleep(1)
         else:
             logger.debug(f"No unsubscriber found for {stream_name}")
@@ -384,9 +373,8 @@ class ConnectionManager:
         including when it completed by raising, which callers treat as "the loop answered".
         """
         # A future from asyncio.run_coroutine_threadsafe goes PENDING -> FINISHED/CANCELLED and is
-        # NEVER in RUNNING state, so the `while future.running()` poll this replaced executed zero
-        # iterations, its timeout WARNING was unreachable, and every call fell into an unbounded
-        # result(). Do not reintroduce running() here.
+        # never RUNNING, so a `while future.running()` poll never loops and any timeout built on it
+        # is dead code. Do not reintroduce running() here.
         try:
             future.result(timeout=self._cleanup_timeout)
         except concurrent.futures.TimeoutError:
