@@ -26,6 +26,22 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
                 "options": {
                     "defaultType": "swap",
                     "positionSide": "net",
+                    # - OKX sends `checksum: 0` on every books message. Measured 2026-08-21 on
+                    #   wss://ws.okx.com:8443/ws/v5/public, BTC-USDT-SWAP and ETH-USDT-SWAP,
+                    #   snapshot and updates alike:
+                    #       action=snapshot checksum=0 seqId=335226848531 prevSeqId=-1
+                    #       action=update   checksum=0 seqId=335226848654 prevSeqId=335226848531
+                    #   A crc32 is never 0, so ccxt's check fails on the first update after the
+                    #   snapshot, always. Building the payload from the venue's own raw strings
+                    #   gives the same 846098866 as ccxt's rendering of it — the book is fine,
+                    #   there is simply nothing to compare against. Below ccxt 4.5.55 that failure
+                    #   ends the stream for good: the error reaches the connection manager, its
+                    #   retry re-awaits the same watch and never returns (twice on the prod
+                    #   reversals config, dead 1.4s after subscribing, quotes frozen six minutes
+                    #   later). ccxt deleted the check in 4.5.55; this carries that to older
+                    #   builds and is a no-op on newer ones. seqId/prevSeqId continuity still runs
+                    #   and is the real guard on this stream.
+                    "watchOrderBook": {"checksum": False},
                 },
             },
         )

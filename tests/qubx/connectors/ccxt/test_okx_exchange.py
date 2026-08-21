@@ -337,20 +337,37 @@ class TestOrderBookChecksumFailure:
     def test_the_base_class_raises_typeerror_instead_of_the_checksum_error(self):
         exchange = cxp.okx()
         exchange.set_markets([_swap_market()])
+        self._checksums_on(exchange)
         with pytest.raises(TypeError):
             exchange.handle_order_book(_FakeWsClient(self.MESSAGE_HASH), _snapshot(checksum=1))
 
+    @staticmethod
+    def _checksums_on(exchange) -> None:
+        # - OkxFutures ships with them off (see TestOrderBookChecksumDisabled); these two
+        #   cover the guard for anyone who turns them back on, and for other venues
+        exchange.options["watchOrderBook"]["checksum"] = True
+
     def test_a_bad_checksum_rejects_the_waiter(self, offline_okx):
+        self._checksums_on(offline_okx)
         client = _FakeWsClient(self.MESSAGE_HASH)
         offline_okx.handle_order_book(client, _snapshot(checksum=1))
         assert len(client.rejected) == 1
         assert isinstance(client.rejected[0], ChecksumError)
 
     def test_a_bad_checksum_drops_the_subscription_and_the_stale_book(self, offline_okx):
+        self._checksums_on(offline_okx)
         client = _FakeWsClient(self.MESSAGE_HASH)
         offline_okx.handle_order_book(client, _snapshot(checksum=1))
         assert self.MESSAGE_HASH not in client.subscriptions
         assert "BTC/USDT:USDT" not in offline_okx.orderbooks
+
+    def test_by_default_a_bad_checksum_is_ignored(self, offline_okx):
+        # - what keeps the stream alive: nothing is raised, nothing is torn down
+        client = _FakeWsClient(self.MESSAGE_HASH)
+        offline_okx.handle_order_book(client, _snapshot(checksum=1))
+        assert client.rejected == []
+        assert self.MESSAGE_HASH in client.subscriptions
+        assert "BTC/USDT:USDT" in offline_okx.orderbooks
 
     def test_the_error_is_retried_by_the_connection_manager(self):
         # - ChecksumError is a NetworkError, which listen_to_stream retries; the TypeError was
@@ -459,3 +476,25 @@ class TestLeverageReads:
         connector = self._connector(exchange)
         asyncio.new_event_loop().run_until_complete(connector._refresh_leverage_cache())
         assert exchange.fetch_leverage.await_count == 0
+
+
+class TestOrderBookChecksumDisabled:
+    """
+    OKX sends `checksum: 0` on every books message (measured 2026-08-21, BTC and ETH swaps,
+    snapshot and updates), and a crc32 is never 0 — so ccxt's check fails on the first update
+    after the snapshot, always. Below ccxt 4.5.55 that ended the stream 1.4s after subscribing
+    on the prod reversals config: the error reached the connection manager, whose retry
+    re-awaits the same watch and never returns. ccxt deleted the check in 4.5.55.
+    """
+
+    def test_okx_futures_turns_the_checksum_off(self):
+        assert OkxFutures().describe()["options"]["watchOrderBook"]["checksum"] is False
+
+    def test_the_base_class_leaves_it_on(self):
+        # - so the override cannot quietly stop mattering on a ccxt that still checksums
+        base = cxp.okx().describe()["options"].get("watchOrderBook", {})
+        assert base.get("checksum", True) is not False
+
+    def test_the_book_depth_is_untouched(self):
+        options = OkxFutures().describe()["options"]["watchOrderBook"]
+        assert options.get("depth") == cxp.okx().describe()["options"].get("watchOrderBook", {}).get("depth")
