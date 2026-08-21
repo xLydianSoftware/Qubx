@@ -3,6 +3,7 @@
 import asyncio
 from unittest.mock import Mock
 
+import ccxt
 import ccxt.pro as cxp
 import pytest
 from ccxt.base.errors import ChecksumError
@@ -286,3 +287,83 @@ class TestAlgoOrderStream:
     def test_algo_orders_go_through_the_same_handler(self, monkeypatch):
         streams = self._recorded_streams(monkeypatch)
         assert streams[-1]["handle"].__func__ is streams[0]["handle"].__func__
+
+
+class _FakeWsClient:
+    """The two things ccxt's orderbook error path touches on a client."""
+
+    def __init__(self, message_hash: str):
+        self.subscriptions = {message_hash: True}
+        self.rejected: list = []
+        self.resolved: list = []
+
+    def reject(self, error, message_hash=None):
+        self.rejected.append(error)
+
+    def resolve(self, result, message_hash=None):
+        self.resolved.append(result)
+
+
+def _snapshot(checksum: int) -> dict:
+    return {
+        "arg": {"channel": "books", "instId": "BTC-USDT-SWAP"},
+        "action": "snapshot",
+        "data": [
+            {
+                "asks": [["78000.1", "1", "0", "1"]],
+                "bids": [["77999.9", "2", "0", "1"]],
+                "ts": "1787305636893",
+                "checksum": checksum,
+                "seqId": 1,
+                "prevSeqId": -1,
+            }
+        ],
+    }
+
+
+class TestOrderBookChecksumFailure:
+    """
+    Prod, 2026-08-04: a ping-pong timeout, then the reconnect's first snapshot failed its
+    checksum and ccxt raised TypeError while building the error message. The raise happens
+    before the cleanup, so the subscription was never dropped and the waiter never rejected —
+    the stream went quiet with nothing raised to the connection manager.
+
+    ccxt's snapshot branch passes no market and the payload has no instId, so the symbol
+    resolves to None. Both master and 4.5.50 still do this.
+    """
+
+    MESSAGE_HASH = "books:BTC/USDT:USDT"
+
+    def test_the_base_class_raises_typeerror_instead_of_the_checksum_error(self):
+        exchange = cxp.okx()
+        exchange.set_markets([_swap_market()])
+        with pytest.raises(TypeError):
+            exchange.handle_order_book(_FakeWsClient(self.MESSAGE_HASH), _snapshot(checksum=1))
+
+    def test_a_bad_checksum_rejects_the_waiter(self, offline_okx):
+        client = _FakeWsClient(self.MESSAGE_HASH)
+        offline_okx.handle_order_book(client, _snapshot(checksum=1))
+        assert len(client.rejected) == 1
+        assert isinstance(client.rejected[0], ChecksumError)
+
+    def test_a_bad_checksum_drops_the_subscription_and_the_stale_book(self, offline_okx):
+        client = _FakeWsClient(self.MESSAGE_HASH)
+        offline_okx.handle_order_book(client, _snapshot(checksum=1))
+        assert self.MESSAGE_HASH not in client.subscriptions
+        assert "BTC/USDT:USDT" not in offline_okx.orderbooks
+
+    def test_the_error_is_retried_by_the_connection_manager(self):
+        # - ChecksumError is a NetworkError, which listen_to_stream retries; the TypeError was
+        #   not raised out of the watch at all, so nothing retried
+        assert issubclass(ChecksumError, ccxt.NetworkError)
+
+    def test_a_good_snapshot_keeps_the_book(self, offline_okx):
+        client = _FakeWsClient(self.MESSAGE_HASH)
+        offline_okx.handle_order_book(client, _snapshot(checksum=1))
+        good = _snapshot(checksum=1)
+        payload = "77999.9:2:78000.1:1"
+        good["data"][0]["checksum"] = offline_okx.crc32(payload, True)
+        client = _FakeWsClient(self.MESSAGE_HASH)
+        offline_okx.handle_order_book(client, good)
+        assert client.rejected == []
+        assert "BTC/USDT:USDT" in offline_okx.orderbooks

@@ -85,6 +85,18 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
             parsed["triggerPrice"] = self.safe_number_n(order, ["triggerPx", "slTriggerPx", "tpTriggerPx"])
         return parsed
 
+    def handle_order_book_message(self, client, message, orderbook, messageHash, market=None):
+        """
+        Give ccxt the market it does not pass on the snapshot path.
+
+        The per-item payload carries no ``instId`` — that sits in ``arg`` — and ccxt's snapshot
+        branch calls this without a market, so the symbol resolves to None. It is needed to drop
+        the stale book on a checksum failure, and to build the error at all.
+        """
+        if market is None and orderbook is not None:
+            market = self.markets.get(orderbook.get("symbol"))
+        return super().handle_order_book_message(client, message, orderbook, messageHash, market)
+
     def orderbook_checksum_message(self, symbol: str | None) -> str:
         """
         Build the checksum-failure message even when ccxt could not resolve the symbol.
