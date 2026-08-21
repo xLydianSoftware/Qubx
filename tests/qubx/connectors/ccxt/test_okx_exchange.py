@@ -1,7 +1,7 @@
 """Tests for OKX exchange registration and custom class."""
 
 import asyncio
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import ccxt
 import ccxt.pro as cxp
@@ -371,9 +371,10 @@ class TestOrderBookChecksumFailure:
 
 class TestLeverageReads:
     """
-    ccxt's okx has no `fetchLeverages` and no `fetchLeverageTiers` — the two whole-universe
-    calls the base connector's poller uses — so the venue cap was always None and a flat
-    instrument reported no configured leverage. Both exist per symbol.
+    ccxt's okx has neither `fetchLeverages` nor `fetchLeverageTiers` — the two whole-universe
+    calls the base poller uses — so its cache stayed empty and every getter fell through to a
+    venue round trip. Measured 2026-08-21: get_instrument_leverage took 0.93s per call on OKX
+    against 16us on Binance, where the poller fills the same cache for 872 symbols.
     """
 
     @staticmethod
@@ -387,8 +388,19 @@ class TestLeverageReads:
             exchange_manager=exchange_manager,
             data_provider=Mock(),
         )
-        connector._run_sync = lambda coro, timeout=None: coro
+        connector._run_sync = lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(coro)
         return connector
+
+    @staticmethod
+    def _exchange(**overrides) -> Mock:
+        exchange = Mock()
+        exchange.has = {}
+        exchange.fetch_positions = AsyncMock(return_value=[])
+        exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 5, "shortLeverage": 5})
+        exchange.fetch_market_leverage_tiers = AsyncMock(return_value=[{"maxLeverage": 125}, {"maxLeverage": 50}])
+        for k, v in overrides.items():
+            setattr(exchange, k, v)
+        return exchange
 
     @staticmethod
     def _instrument() -> Instrument:
@@ -403,40 +415,47 @@ class TestLeverageReads:
             tick_size=0.1,
             lot_size=0.01,
             min_size=0.01,
-            contract_size=0.01,
         )
 
-    def test_venue_cap_read_per_symbol(self):
-        exchange = Mock()
-        exchange.has = {}
-        exchange.fetch_market_leverage_tiers = Mock(
-            return_value=[{"maxLeverage": 125}, {"maxLeverage": 50}, {"maxLeverage": 10}]
-        )
-        connector = self._connector(exchange)
-        assert connector.get_max_instrument_leverage(self._instrument()) == 125.0
-        exchange.fetch_market_leverage_tiers.assert_called_once_with("BTC/USDT:USDT")
-
-    def test_venue_cap_is_cached_after_the_first_read(self):
-        exchange = Mock()
-        exchange.has = {}
-        exchange.fetch_market_leverage_tiers = Mock(return_value=[{"maxLeverage": 125}])
-        connector = self._connector(exchange)
-        instrument = self._instrument()
-        connector.get_max_instrument_leverage(instrument)
-        connector.get_max_instrument_leverage(instrument)
-        assert exchange.fetch_market_leverage_tiers.call_count == 1
-
-    def test_venue_cap_survives_a_failing_read(self):
-        exchange = Mock()
-        exchange.has = {}
-        exchange.fetch_market_leverage_tiers = Mock(side_effect=ccxt.NotSupported("nope"))
-        assert self._connector(exchange).get_max_instrument_leverage(self._instrument()) is None
-
-    def test_configured_leverage_falls_back_to_fetch_leverage(self):
-        exchange = Mock()
-        exchange.has = {}
-        exchange.fetch_positions = Mock(return_value=[])
-        exchange.fetch_leverage = Mock(return_value={"longLeverage": 5, "shortLeverage": 5})
+    def test_configured_leverage_read_per_symbol(self):
+        exchange = self._exchange()
         connector = self._connector(exchange)
         assert connector.get_instrument_leverage(self._instrument()) == 5.0
-        exchange.fetch_leverage.assert_called_once_with("BTC/USDT:USDT")
+        exchange.fetch_leverage.assert_awaited_once_with("BTC/USDT:USDT")
+
+    def test_venue_cap_read_per_symbol(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        assert connector.get_max_instrument_leverage(self._instrument()) == 125.0
+        exchange.fetch_market_leverage_tiers.assert_awaited_once_with("BTC/USDT:USDT")
+
+    def test_the_second_read_costs_no_venue_call(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        instrument = self._instrument()
+        for _ in range(3):
+            connector.get_instrument_leverage(instrument)
+            connector.get_max_instrument_leverage(instrument)
+        assert exchange.fetch_leverage.await_count == 1
+        assert exchange.fetch_market_leverage_tiers.await_count == 1
+
+    def test_a_failing_read_returns_none_and_caches_nothing(self):
+        exchange = self._exchange(fetch_market_leverage_tiers=AsyncMock(side_effect=ccxt.NotSupported("nope")))
+        connector = self._connector(exchange)
+        assert connector.get_max_instrument_leverage(self._instrument()) is None
+        assert connector._leverage_cache == {}
+
+    def test_the_poller_refreshes_what_the_cache_holds(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector.get_instrument_leverage(self._instrument())
+        exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 7, "shortLeverage": 7})
+        asyncio.new_event_loop().run_until_complete(connector._refresh_leverage_cache())
+        cached = connector._leverage_cache["BTC/USDT:USDT"]
+        assert (cached.configured, cached.maximum) == (7, 125)
+
+    def test_the_poller_reads_nothing_when_the_cache_is_empty(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        asyncio.new_event_loop().run_until_complete(connector._refresh_leverage_cache())
+        assert exchange.fetch_leverage.await_count == 0
