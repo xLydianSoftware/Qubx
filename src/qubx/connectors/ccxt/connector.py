@@ -553,14 +553,19 @@ class CcxtConnector(ChannelEmitter):
         """Venue-specific triage of one failed cancel attempt (mirrors the
         ``_extract_venue_figures`` seam): ``"retry"`` when the venue may still produce a
         definitive answer, ``"reject"`` on a definitive refusal, ``"gone"`` when the order
-        provably no longer exists at the venue. The base impl matches Binance's error
-        strings; venue subclasses override.
+        provably no longer exists at the venue. The base impl reads ccxt's typed errors and
+        falls back to Binance's error strings; venue subclasses override.
 
         ``acked`` = the order had a venue id (so it WAS accepted). An "unknown order" then
         means it is already gone (filled/expired/canceled), not the submit/cancel race —
         retrying is pointless. Without an ack it IS the race (the order may appear shortly).
         """
         msg = str(err).lower()
+        if isinstance(err, ccxt.OrderNotFound):
+            # - ccxt's per-venue error-code map is the authority on "not there any more", and its
+            #   wording often misses the strings below: OKX 51400 reads "Order cancellation failed
+            #   as the order has been filled, canceled or does not exist."
+            return "gone" if acked else "retry"
         if "unknown order" in msg or "order does not exist" in msg or "order not found" in msg:
             return "gone" if acked else "retry"
         if isinstance(err, ccxt.OperationRejected):
