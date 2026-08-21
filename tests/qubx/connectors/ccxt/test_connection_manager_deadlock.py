@@ -413,3 +413,44 @@ class TestEnabledStreamRegistry:
         assert manager._is_stream_enabled == {}
         assert manager._stream_to_unsubscriber == {}
         assert subscriber_ran.is_set() is False
+
+
+class TestRejectedVenueCallDoesNotLeakItsCoroutine:
+    """CcxtConnector._run_sync's guard rejects before awaiting, so it must close the coroutine.
+
+    Otherwise every rejected on-loop venue call leaves an un-awaited coroutine behind, which
+    surfaces as a RuntimeWarning whenever the GC happens to get to it.
+    """
+
+    def test_run_sync_closes_the_coroutine_when_the_guard_rejects(self):
+        import inspect
+        from types import SimpleNamespace
+
+        from qubx.connectors.ccxt.connector import CcxtConnector
+        from qubx.utils.misc import AsyncThreadLoop, BackgroundEventLoop
+
+        loop = BackgroundEventLoop(name="guard-reject-test")
+        try:
+            stub = SimpleNamespace(_loop=AsyncThreadLoop(loop.loop))
+            run_sync = CcxtConnector._run_sync.__get__(stub, CcxtConnector)
+            captured: dict[str, object] = {}
+
+            async def venue_call():  # pragma: no cover - must never be awaited
+                return "unreachable"
+
+            async def on_loop() -> None:
+                # Built here, exactly as the real callers do, then handed to _run_sync.
+                coro = venue_call()
+                captured["coro"] = coro
+                try:
+                    run_sync(coro, timeout=1.0)
+                except RuntimeError as e:
+                    captured["error"] = e
+
+            loop.submit(on_loop()).result(timeout=5.0)
+
+            assert "error" in captured, "the loop-thread guard should have rejected the on-loop call"
+            state = inspect.getcoroutinestate(captured["coro"])
+            assert state == inspect.CORO_CLOSED, f"_run_sync left the rejected coroutine {state}, want CORO_CLOSED"
+        finally:
+            loop.stop()
