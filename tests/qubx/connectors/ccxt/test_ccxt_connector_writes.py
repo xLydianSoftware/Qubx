@@ -1186,3 +1186,35 @@ class TestOrderRateLimiting:
         assert isinstance(sent[0], OrderRejectedEvent)
 
 
+class TestCancelErrorClassification:
+    """
+    An acked order the venue says is not there is "gone" — cancel is done, not rejected.
+    ccxt's per-venue code map is what knows this (OKX 51400/51401/51402/51603 all map to
+    OrderNotFound); its wording does not match the venue-string fallbacks. Before this,
+    an OKX close retried the cancel for 32s and then reported CANCEL_REJECTED with
+    "order is STILL ALIVE at the venue" for an order that had already been cancelled.
+    """
+
+    OKX_51400 = (
+        'okx {"code":"1","data":[{"algoClOrdId":"","algoId":"3852136948044693504","clOrdId":"",'
+        '"sCode":"51400","sMsg":"Order cancellation failed as the order has been filled, canceled '
+        'or does not exist.","tag":""}],"msg":""}'
+    )
+
+    def test_acked_order_not_found_is_gone(self) -> None:
+        conn, _, _ = _make_connector()
+        assert conn._classify_cancel_error(ccxt.OrderNotFound(self.OKX_51400), acked=True) == "gone"
+
+    def test_unacked_order_not_found_still_retries(self) -> None:
+        # - without a venue id it is the submit/cancel race: the order may appear shortly
+        conn, _, _ = _make_connector()
+        assert conn._classify_cancel_error(ccxt.OrderNotFound(self.OKX_51400), acked=False) == "retry"
+
+    def test_the_okx_message_alone_does_not_match_the_string_fallbacks(self) -> None:
+        # - so the typed check is what does the work here, not the wording
+        conn, _, _ = _make_connector()
+        assert conn._classify_cancel_error(ccxt.ExchangeError(self.OKX_51400), acked=True) == "retry"
+
+    def test_binance_wording_still_classifies(self) -> None:
+        conn, _, _ = _make_connector()
+        assert conn._classify_cancel_error(ccxt.ExchangeError("Unknown order sent."), acked=True) == "gone"

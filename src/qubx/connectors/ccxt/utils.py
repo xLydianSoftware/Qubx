@@ -90,16 +90,23 @@ def ccxt_status_to_order_status(raw: str | None, info: dict[str, Any] | None = N
     ``info.status`` — that refinement is applied before mapping. A genuinely unknown
     status is logged (so it surfaces) and mapped to the non-terminal ``ACCEPTED``: it
     is never fabricated into a terminal state, and AM's reconcile heals the true one.
+    An absent status maps the same way but only at debug level — a submit ack legitimately
+    carries none on some venues.
     """
     status = (raw or "").lower()
     # For an open order, prefer the venue-specific info.status (it may say partially_filled).
     if status == "open" and info is not None:
         status = str(info.get("status", status)).lower()
     mapped = _CCXT_STATUS_MAP.get(status)
-    if mapped is None:
+    if mapped is not None:
+        return mapped
+    if status:
         logger.warning(f"Unknown ccxt order status '{raw}' (refined '{status}'); defaulting to ACCEPTED")
-        return OrderStatus.ACCEPTED
-    return mapped
+    else:
+        # - a submit ack carries no state on some venues (OKX answers with ordId/sCode only),
+        #   so an absent status is the expected shape there rather than something to flag
+        logger.debug("Venue order payload carries no status; defaulting to ACCEPTED")
+    return OrderStatus.ACCEPTED
 
 
 def ccxt_convert_order_info(

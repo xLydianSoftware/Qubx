@@ -7,6 +7,8 @@ Adds the OKX-specific behavior on top of the generic ``CcxtConnector``:
   ``watch_my_trades`` stream. The base runs both concurrently — status events ride
   with ``fill=None`` and each trade arrives as a ``DealEvent``; the AccountManager
   correlates them by trade id (see the two-stream base docstring).
+- **Third stream for the algo book**: trigger/conditional orders are pushed on OKX's
+  "orders-algo" channel, not "orders" — see ``_account_streams``.
 - **Balance extraction**: ccxt's OKX balance mapping is wrong for the framework — see
   ``_convert_balances``.
 - **Venue account figures**: OKX's trading-balance payload carries account-level
@@ -22,7 +24,8 @@ balance refresh.
 """
 
 import re
-from typing import Any
+from functools import partial
+from typing import Any, Coroutine
 
 from qubx.core.basics import FRAMEWORK_CID_PREFIX, Balance
 
@@ -58,6 +61,26 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
     # producer and classifier can never drift. Residual caveat: an external cid that
     # happens to start with "qubx" reads as RECOVERED (unavoidable given the charset).
     cid_framework_prefix = _OKX_CLIENT_ID_RE.sub("", FRAMEWORK_CID_PREFIX)
+
+    def _account_streams(self) -> list[Coroutine[Any, Any, None]]:
+        """
+        Watch the algo book as well: OKX streams trigger/conditional orders on their own channel.
+
+        ``watch_orders`` covers channel "orders" only, so a stop's terminal state never arrives
+        over the socket and the order sits in PENDING_CANCEL until the next order-bearing
+        snapshot resolves it — measured at 43s on a live close. ccxt subscribes to
+        "orders-algo" when the watch is asked for trigger orders.
+        """
+        streams = super()._account_streams()
+        streams.append(
+            self._run_ws_loop(
+                watch=partial(self._em.exchange.watch_orders, params={"trigger": True}),
+                handle=self._handle_ws_order,
+                stream="orders_algo",
+                mark_ready=False,
+            )
+        )
+        return streams
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         """Use OKX ``cashBal``/``frozenBal`` per currency from the raw response.
