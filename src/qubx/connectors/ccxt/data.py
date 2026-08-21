@@ -133,56 +133,60 @@ class CcxtDataProvider(IDataProvider):
             # In case of no instruments, do nothing, unsubscribe should handle this case
             return
 
-        # Delegate to subscription manager for state management
-        _updated_instruments = self._subscription_manager.add_subscription(subscription_type, instruments, reset)
+        # The instrument set and the stream that serves it must move together - see
+        # SubscriptionManager.lock.
+        with self._subscription_manager.lock:
+            # Delegate to subscription manager for state management
+            _updated_instruments = self._subscription_manager.add_subscription(subscription_type, instruments, reset)
 
-        # Get handler from factory
-        _sub_type, _params = DataType.from_str(subscription_type)
-        handler = self._data_type_handler_factory.get_handler(_sub_type)
-        if handler is None:
-            raise ValueError(f"{self._exchange_id}: Subscription type {subscription_type} is not supported")
+            # Get handler from factory
+            _sub_type, _params = DataType.from_str(subscription_type)
+            handler = self._data_type_handler_factory.get_handler(_sub_type)
+            if handler is None:
+                raise ValueError(f"{self._exchange_id}: Subscription type {subscription_type} is not supported")
 
-        # Delegate to orchestrator for complex subscription logic (clean facade pattern)
-        self._subscription_orchestrator.execute_subscription(
-            subscription_type=subscription_type,
-            instruments=_updated_instruments,
-            handler=handler,
-            exchange=self._exchange_manager.exchange,
-            channel=self.channel,
-            **_params,
-        )
+            # Delegate to orchestrator for complex subscription logic (clean facade pattern)
+            self._subscription_orchestrator.execute_subscription(
+                subscription_type=subscription_type,
+                instruments=_updated_instruments,
+                handler=handler,
+                exchange=self._exchange_manager.exchange,
+                channel=self.channel,
+                **_params,
+            )
 
     def unsubscribe(self, subscription_type: str, instruments: list[Instrument]) -> None:
         """Unsubscribe from instruments and handle partial/complete unsubscription."""
-        # Get current instruments before removal (check both active and pending)
-        current_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
+        with self._subscription_manager.lock:
+            # Get current instruments before removal (check both active and pending)
+            current_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
 
-        # Early exit if no subscription exists
-        if not current_instruments:
-            logger.debug(f"No active subscription for {subscription_type}")
-            return
+            # Early exit if no subscription exists
+            if not current_instruments:
+                logger.debug(f"No active subscription for {subscription_type}")
+                return
 
-        # Remove instruments from subscription manager
-        self._subscription_manager.remove_subscription(subscription_type, instruments)
+            # Remove instruments from subscription manager
+            self._subscription_manager.remove_subscription(subscription_type, instruments)
 
-        # Get remaining instruments after removal
-        remaining_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
+            # Get remaining instruments after removal
+            remaining_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
 
-        if not remaining_instruments:
-            # Complete unsubscription - no instruments left
-            config = SubscriptionConfiguration(
-                subscription_type=subscription_type,
-                channel=self.channel,
-                stream_name=f"cleanup_{subscription_type}",
-            )
-            self._subscription_orchestrator.execute_unsubscription(config)
-        elif remaining_instruments != current_instruments:
-            # Partial unsubscription - resubscribe with remaining instruments
-            logger.info(
-                f"Partial unsubscription for {subscription_type}, resubscribing with {len(remaining_instruments)} instruments"
-            )
-            # important to update subscription manager
-            self.subscribe(subscription_type, list(remaining_instruments), reset=True)
+            if not remaining_instruments:
+                # Complete unsubscription - no instruments left
+                config = SubscriptionConfiguration(
+                    subscription_type=subscription_type,
+                    channel=self.channel,
+                    stream_name=f"cleanup_{subscription_type}",
+                )
+                self._subscription_orchestrator.execute_unsubscription(config)
+            elif remaining_instruments != current_instruments:
+                # Partial unsubscription - resubscribe with remaining instruments
+                logger.info(
+                    f"Partial unsubscription for {subscription_type}, resubscribing with {len(remaining_instruments)} instruments"
+                )
+                # important to update subscription manager
+                self.subscribe(subscription_type, list(remaining_instruments), reset=True)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """Get list of active subscription types (delegated to subscription manager)."""

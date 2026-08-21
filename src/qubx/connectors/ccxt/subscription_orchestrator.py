@@ -74,51 +74,53 @@ class SubscriptionOrchestrator:
             logger.debug(f"<yellow>{self._exchange_id}</yellow> No instruments to subscribe to for {subscription_type}")
             return
 
-        # Prepare subscription configuration
-        subscription_config = self._prepare_subscription_config(
-            subscription_type,
-            instruments,
-            handler,
-            channel,
-            **subscriber_params,
-        )
+        with self._subscription_manager.lock:
+            # Prepare subscription configuration
+            subscription_config = self._prepare_subscription_config(
+                subscription_type,
+                instruments,
+                handler,
+                channel,
+                **subscriber_params,
+            )
 
-        # Start subscription (unsubscription handled internally based on mode)
-        self._start_subscription(
-            subscription_config=subscription_config,
-            exchange=exchange,
-        )
+            # Start subscription (unsubscription handled internally based on mode)
+            self._start_subscription(
+                subscription_config=subscription_config,
+                exchange=exchange,
+            )
 
     def execute_unsubscription(self, subscription_config: SubscriptionConfiguration):
         """Clean up existing subscription if it exists."""
-        subscription_type = subscription_config.subscription_type
+        with self._subscription_manager.lock:
+            subscription_type = subscription_config.subscription_type
 
-        # For bulk subscriptions, use the main stream name
-        if not subscription_config.use_instrument_streams:
-            existing_stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
-            new_stream_name = subscription_config.stream_name
+            # For bulk subscriptions, use the main stream name
+            if not subscription_config.use_instrument_streams:
+                existing_stream_name = self._subscription_manager.get_subscription_stream(subscription_type)
+                new_stream_name = subscription_config.stream_name
 
-            # Skip unsubscription if stream names match (same instruments)
-            if existing_stream_name == new_stream_name:
-                logger.debug(
-                    f"[{self._exchange_id}] Reusing existing {subscription_type} stream: {existing_stream_name}"
-                )
-                return  # Skip unsubscription - reuse existing stream
-
-            # Different instruments - proceed with cleanup
-            if existing_stream_name:
-                stream_future = self._connection_manager.get_stream_future(existing_stream_name)
-                if stream_future:
+                # Skip unsubscription if stream names match (same instruments)
+                if existing_stream_name == new_stream_name:
                     logger.debug(
-                        f"[{self._exchange_id}] Canceling existing {subscription_type} subscription: {existing_stream_name}"
+                        f"[{self._exchange_id}] Reusing existing {subscription_type} stream: {existing_stream_name}"
                     )
-                    self._connection_manager.stop_stream(existing_stream_name)
-        else:
-            # For individual subscriptions, stop all individual streams
-            individual_streams = self._subscription_manager.get_individual_streams(subscription_type)
-            self._stop_individual_streams(individual_streams)
+                    return  # Skip unsubscription - reuse existing stream
 
-        self._subscription_manager.clear_subscription_state(subscription_type)
+                # Different instruments - proceed with cleanup
+                if existing_stream_name:
+                    stream_future = self._connection_manager.get_stream_future(existing_stream_name)
+                    if stream_future:
+                        logger.debug(
+                            f"[{self._exchange_id}] Canceling existing {subscription_type} subscription: {existing_stream_name}"
+                        )
+                        self._connection_manager.stop_stream(existing_stream_name)
+            else:
+                # For individual subscriptions, stop all individual streams
+                individual_streams = self._subscription_manager.get_individual_streams(subscription_type)
+                self._stop_individual_streams(individual_streams)
+
+            self._subscription_manager.clear_subscription_state(subscription_type)
 
     def _prepare_subscription_config(
         self,

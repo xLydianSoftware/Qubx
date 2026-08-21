@@ -130,7 +130,7 @@ class ConnectionManager:
         n_retry = 0
         connection_established = False
 
-        while channel.control.is_set() and self._is_stream_enabled[stream_name]:
+        while channel.control.is_set() and self._is_stream_enabled.get(stream_name, False):
             try:
                 await subscriber()
                 n_retry = 0  # Reset retry counter on success
@@ -141,7 +141,7 @@ class ConnectionManager:
                     connection_established = True
 
                 # Check if stream was disabled during subscriber execution
-                if not self._is_stream_enabled[stream_name]:
+                if not self._is_stream_enabled.get(stream_name, False):
                     break
 
             except CcxtSymbolNotRecognized:
@@ -188,7 +188,7 @@ class ConnectionManager:
                 continue
             except Exception as e:
                 # Unexpected errors
-                if not channel.control.is_set() or not self._is_stream_enabled[stream_name]:
+                if not channel.control.is_set() or not self._is_stream_enabled.get(stream_name, False):
                     # Channel closed or stream disabled, exit gracefully
                     break
 
@@ -236,7 +236,8 @@ class ConnectionManager:
 
         # Tear the registry down before any blocking wait: a wait that times out must not leave a
         # half-removed stream behind. Popping _is_stream_enabled is the stop signal the listen loop
-        # reads - the defaultdict yields False for a missing key.
+        # reads - it treats a missing key as False without reinserting it, so the dict holds exactly
+        # the live streams and is_connected() cannot report a stopped stream as connected.
         stream_future = self._stream_to_coro.pop(stream_name, None)
         unsubscriber = self._stream_to_unsubscriber.pop(stream_name, None)
         self._is_stream_enabled.pop(stream_name, None)

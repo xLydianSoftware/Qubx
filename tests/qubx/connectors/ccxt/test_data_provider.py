@@ -2,6 +2,7 @@
 
 import asyncio
 import concurrent.futures
+import threading
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
@@ -326,6 +327,47 @@ def test_stale_recovery_does_not_collapse_bulk_subscription_set(data_provider):
 
             # Provider state should also reflect the full desired set.
             assert len(data_provider.get_subscribed_instruments("quote")) == 40
+
+
+def test_a_concurrent_universe_change_cannot_interleave_with_a_transition(data_provider):
+    """The stale-data watchdog thread and the strategy thread both drive subscriptions. Computing
+    the instrument set and rebuilding the stream that serves it is one read-modify-write: a churn
+    that lands in the middle of it rebuilds from a half-updated set, which was observed emptying a
+    subscription type outright ("No active subscription for ...") with no resubscribe to follow.
+    """
+    instruments = [_make_instrument(i) for i in range(6)]
+    parked = threading.Event()
+    release = threading.Event()
+
+    def park(**kwargs):
+        if not parked.is_set():
+            parked.set()
+            release.wait(2.0)
+
+    with patch.object(data_provider._data_type_handler_factory, "get_handler", return_value=Mock()):
+        with patch.object(data_provider._subscription_orchestrator, "execute_subscription", side_effect=park):
+            first = threading.Thread(target=lambda: data_provider.subscribe("quote", instruments), daemon=True)
+            first.start()
+            assert parked.wait(5.0), "the first transition never started"
+
+            churn_done = threading.Event()
+
+            def churn():
+                data_provider.unsubscribe("quote", instruments[:2])
+                churn_done.set()
+
+            second = threading.Thread(target=churn, daemon=True)
+            second.start()
+
+            assert not churn_done.wait(0.3), (
+                "a universe change mutated the subscription set while another transition was mid-flight"
+            )
+
+            release.set()
+            assert churn_done.wait(5.0)
+            first.join(5.0)
+            second.join(5.0)
+            assert not first.is_alive() and not second.is_alive()
 
 
 class TestDelegation:

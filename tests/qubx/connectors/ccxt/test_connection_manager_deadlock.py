@@ -296,3 +296,35 @@ def test_cleanup_timeout_is_actually_used(exchange_manager, bg_loop):
 
     assert 0.4 < elapsed < 1.5
     assert isinstance(concurrent.futures.TimeoutError(), Exception)
+
+
+class TestEnabledStreamRegistry:
+    """`_is_stream_enabled` is what CcxtDataProvider.is_connected() reads, so it must hold exactly
+    the live streams - an entry left behind for a stopped stream is a false-healthy signal."""
+
+    def test_the_stop_signal_read_does_not_resurrect_a_popped_stream(self, manager, bg_loop):
+        """stop_stream pops the flag while the listen loop is still in flight; the loop's next read
+        of it must not put the key back (`defaultdict.__getitem__` on a missing key inserts)."""
+        stream_name = "trade:2:registry"
+        channel = MagicMock()
+        channel.control.is_set.return_value = True
+        running = threading.Event()
+        popped = threading.Event()
+
+        async def subscriber() -> None:
+            running.set()
+            # Park inside the subscriber so the pop lands mid-iteration, exactly as it does when
+            # stop_stream races a subscriber that is about to return with data.
+            while not popped.is_set():
+                await asyncio.sleep(0.01)
+
+        future = bg_loop.submit(manager.listen_to_stream(subscriber, MagicMock(), channel, "trade", stream_name, None))
+        assert running.wait(2.0)
+        assert manager._is_stream_enabled.get(stream_name) is True
+
+        manager._is_stream_enabled.pop(stream_name, None)  # the first thing stop_stream does
+        popped.set()
+
+        assert wait_until(future.done, 2.0)
+        assert stream_name not in manager._is_stream_enabled
+        assert manager._is_stream_enabled == {}

@@ -5,6 +5,7 @@ This module handles the lifecycle and state tracking of data subscriptions,
 separating subscription concerns from connection management and data handling.
 """
 
+import threading
 from collections import defaultdict
 from typing import Dict, List, Set
 
@@ -23,6 +24,13 @@ class SubscriptionManager:
     """
 
     def __init__(self):
+        # Held across a whole subscription transition - computing the new instrument set, stopping
+        # the old stream and installing the new name is one read-modify-write, and the stale-data
+        # watchdog thread and the strategy thread both run it. Per-method locking is not enough.
+        # Reentrant: unsubscribe resubscribes the remainder, and a handler may unsubscribe while
+        # preparing.
+        self.lock = threading.RLock()
+
         # Active subscriptions (connection established and receiving data)
         self._subscriptions: dict[str, set[Instrument]] = defaultdict(set)
 
