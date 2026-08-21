@@ -73,6 +73,10 @@ class OpenInterestDataHandler(BaseDataTypeHandler):
         # Track if this is the first poll for initial data
         first_poll = True
 
+        # Deliberately late-bound (`self._exchange_manager.exchange` read inside the closures):
+        # this is a REST poller with no unsubscriber, so it should always use the current
+        # exchange. See BaseDataTypeHandler - the WS handlers bind at prepare time instead.
+
         async def poll_open_interest_once():
             """Single polling operation - called repeatedly by _listen_to_stream"""
             nonlocal first_poll

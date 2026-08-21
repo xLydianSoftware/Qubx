@@ -197,14 +197,19 @@ class SubscriptionOrchestrator:
         # 4. Register new stream with subscription manager
         self._subscription_manager.set_subscription_name(subscription_type, subscription_config.stream_name)
 
-        # 5. Create and start new subscription task
+        # 5. Arm the stream registry BEFORE submitting, still under the subscription lock.
+        #    listen_to_stream only reads the enabled flag, so this is what makes a later
+        #    stop_stream pop final - see ConnectionManager.listen_to_stream.
+        self._arm_stream(subscription_config.stream_name, subscription_config.unsubscriber_func)
+
+        # 6. Create and start new subscription task
         subscription_task = self._create_subscription_task(
             subscription_config=subscription_config,
             exchange=exchange,
         )
         future = self._loop.submit(subscription_task())
 
-        # 6. Register with connection manager
+        # 7. Register with connection manager
         self._connection_manager.register_stream_future(subscription_config.stream_name, future)
 
     def _start_instrument_streams(
@@ -246,6 +251,12 @@ class SubscriptionOrchestrator:
                     futures[instrument] = existing_streams[instrument]
                     continue
 
+            # Arm the registry before submitting - see _start_bulk_stream step 5.
+            self._arm_stream(
+                instrument_stream_name,
+                (subscription_config.instrument_unsubscribers or {}).get(instrument),
+            )
+
             # Start the individual stream
             task_coroutine = self._create_instrument_subscription_task(
                 instrument=instrument,
@@ -268,6 +279,12 @@ class SubscriptionOrchestrator:
 
         # Store individual stream mapping for future resubscriptions
         self._subscription_manager.set_individual_streams(subscription_type, futures)
+
+    def _arm_stream(self, stream_name: str, unsubscriber: Callable[[], Awaitable[None]] | None) -> None:
+        """Register a stream as enabled (and its unsubscriber) before its task is submitted."""
+        self._connection_manager.enable_stream(stream_name)
+        if unsubscriber is not None:
+            self._connection_manager.set_stream_unsubscriber(stream_name, unsubscriber)
 
     def _stop_individual_streams(self, streams: dict[Instrument, str]) -> None:
         """Stop individual streams for the given instruments."""
@@ -334,7 +351,6 @@ class SubscriptionOrchestrator:
                 channel=subscription_config.channel,
                 subscription_type=subscription_config.subscription_type,
                 stream_name=subscription_config.stream_name,
-                unsubscriber=subscription_config.unsubscriber_func,
             )
             logger.info(f"listen_to_stream finished for stream {subscription_config.stream_name}")
 
@@ -353,10 +369,6 @@ class SubscriptionOrchestrator:
         assert subscriber is not None
         assert subscription_config.channel is not None, "Channel must be set before creating task"
 
-        unsubscriber = None
-        if subscription_config.instrument_unsubscribers:
-            unsubscriber = subscription_config.instrument_unsubscribers.get(instrument)
-
         # Create subscription task for this instrument
         async def subscription_task():
             assert subscription_config.channel is not None, "Channel must be set before creating task"
@@ -366,7 +378,6 @@ class SubscriptionOrchestrator:
                 channel=subscription_config.channel,
                 subscription_type=subscription_config.subscription_type,
                 stream_name=stream_name,
-                unsubscriber=unsubscriber,
             )
             logger.info(f"listen_to_stream finished for stream {stream_name}")
 

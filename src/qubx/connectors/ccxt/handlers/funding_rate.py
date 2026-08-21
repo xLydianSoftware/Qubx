@@ -40,9 +40,6 @@ class FundingRateDataHandler(BaseDataTypeHandler):
         Both funding_rate and funding_payment subscriptions use the same underlying
         WebSocket stream and emit both data types when appropriate.
         """
-        # Bind the exchange here, not inside the closures: recreation swaps
-        # `exchange_manager.exchange`, and an unsubscriber resolved at call time would be aimed at
-        # a different exchange than the one the stream was established on.
         exchange = self._exchange_manager.exchange
         # Convert to CCXT symbols
         symbols = [instrument_to_ccxt_symbol(instr) for instr in instruments]

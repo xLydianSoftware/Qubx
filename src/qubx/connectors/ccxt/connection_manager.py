@@ -3,12 +3,20 @@ Connection management for CCXT data provider.
 
 This module handles WebSocket connections, retry logic, and stream lifecycle management,
 separating connection concerns from subscription state and data handling.
+
+BACKPORT HAZARD (v1.7.0 and earlier): `SubscriptionManager.lock` is safe on main only because
+no code path acquires it from the exchange event loop thread. v1.7.0's
+`CcxtAccountProcessor._subscribe_instruments` calls `SubscriptionManager.commit()` inside a
+coroutine submitted with `self._loop.submit` (`account.py:431`), i.e. ON the loop. Backporting
+the lock without first moving that `commit()` off-loop turns an off-loop `_wait` into a bounded
+stall of the whole exchange loop (~cleanup_timeout per stream, per subscription type). Move the
+poller's `commit()` off the loop in the same backport commit.
 """
 
 import asyncio
 import concurrent.futures
+import time
 from asyncio.exceptions import CancelledError
-from collections import defaultdict
 from typing import Awaitable, Callable
 
 from ccxt import (
@@ -74,8 +82,10 @@ class ConnectionManager:
         self._subscription_manager = subscription_manager
         self._cleanup_timeout = cleanup_timeout
 
-        # Stream state management
-        self._is_stream_enabled: dict[str, bool] = defaultdict(lambda: False)
+        # Stream state management. A plain dict on purpose: the orchestrator inserts a key before
+        # it submits the stream task and stop_stream pops it, so membership means "this stream is
+        # meant to be running". A defaultdict would silently re-create a popped key on read.
+        self._is_stream_enabled: dict[str, bool] = {}
         self._stream_to_unsubscriber: dict[str, Callable[[], Awaitable[None]]] = {}
 
         # Connection tracking
@@ -107,26 +117,24 @@ class ConnectionManager:
         channel: CtrlChannel,
         subscription_type: str,
         stream_name: str,
-        unsubscriber: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """
         Listen to a WebSocket stream with error handling and retry logic.
+
+        This coroutine only ever READS the stream registry. The orchestrator arms the enabled flag
+        and the unsubscriber under the subscription lock before submitting this task, so a
+        stop_stream that pops them is final: `concurrent.Future.cancel()` returning True does not
+        prevent an already-queued first step from running, and a task that writes the flag on that
+        step would resurrect a stopped stream and make is_connected() lie forever.
 
         Args:
             subscriber: Async function that handles the stream data
             exchange: CCXT exchange instance
             channel: Control channel for data flow
             stream_name: Unique name for this stream
-            unsubscriber: Optional cleanup function for graceful unsubscription
         """
         logger.info(f"<yellow>{self._exchange_id}</yellow> Listening to {stream_name}")
 
-        # Register unsubscriber for cleanup
-        if unsubscriber is not None:
-            self._stream_to_unsubscriber[stream_name] = unsubscriber
-
-        # Enable the stream
-        self._is_stream_enabled[stream_name] = True
         n_retry = 0
         connection_established = False
 
@@ -252,11 +260,13 @@ class ConnectionManager:
         if unsubscriber is not None:
             logger.debug(f"Calling unsubscriber for {stream_name}")
             unsub_task = self._loop.submit(unsubscriber())
-            if wait:
-                self._wait(unsub_task, f"unsubscriber for {stream_name}")
+            if wait and self._wait(unsub_task, f"unsubscriber for {stream_name}"):
                 # Grace period so the venue acks the unsubscribe before a new subscription reuses
-                # the same hashes. Bounded like every other wait here.
-                self._wait(self._loop.submit(asyncio.sleep(1)), f"unsubscribe grace period for {stream_name}")
+                # the same hashes. Plain wall-clock - the guarantee is elapsed time, and routing it
+                # through the loop only adds a second thing that can block. Skipped entirely when
+                # the unsubscribe wait timed out: no ack is coming, and waiting again for a loop
+                # that is already not answering just doubles the stall.
+                time.sleep(1)
         else:
             logger.debug(f"No unsubscriber found for {stream_name}")
 
@@ -367,8 +377,12 @@ class ConnectionManager:
             else:
                 logger.debug(f"[{self._exchange_id}] {stream_name} finished with {e!r}")
 
-    def _wait(self, future: concurrent.futures.Future, context: str) -> None:
-        """Wait for future completion with timeout and exception handling."""
+    def _wait(self, future: concurrent.futures.Future, context: str) -> bool:
+        """Wait for future completion with timeout and exception handling.
+
+        Returns False iff the wait timed out (the coroutine was abandoned), True otherwise -
+        including when it completed by raising, which callers treat as "the loop answered".
+        """
         # A future from asyncio.run_coroutine_threadsafe goes PENDING -> FINISHED/CANCELLED and is
         # NEVER in RUNNING state, so the `while future.running()` poll this replaced executed zero
         # iterations, its timeout WARNING was unreachable, and every call fell into an unbounded
@@ -382,5 +396,7 @@ class ConnectionManager:
                 f"[{self._exchange_id}] {context} did not complete in {self._cleanup_timeout}s - abandoning it"
             )
             future.cancel()
+            return False
         except Exception as e:
             logger.debug(f"[{self._exchange_id}] {context} finished with {e!r}")
+        return True

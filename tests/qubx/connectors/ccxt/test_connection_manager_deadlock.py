@@ -6,7 +6,6 @@ test instead of hanging CI forever.
 """
 
 import asyncio
-import concurrent.futures
 import threading
 import time
 from types import SimpleNamespace
@@ -265,6 +264,50 @@ class TestStopStreamIsBounded:
         assert called.wait(2.0)
 
 
+class TestUnsubscribeGracePeriod:
+    """The 1s grace lets the venue ack the unsubscribe before a new subscription reuses the same
+    hashes. It is a pure wall-clock guarantee, and it is worthless once the unsubscribe wait has
+    already timed out - the ack is not coming and waiting again doubles the worst-case stall."""
+
+    def test_no_grace_period_when_the_unsubscribe_wait_timed_out(self, exchange_manager, bg_loop):
+        manager = make_manager(exchange_manager, cleanup_timeout=0.3)
+        stream_name = "orderbook(0, 1):9:timeout-no-grace"
+        manager.enable_stream(stream_name)
+        manager.register_stream_future(stream_name, bg_loop.submit(_hang_forever()))
+        manager.set_stream_unsubscriber(stream_name, _hang_forever)
+
+        slept: list[float] = []
+        with patch("qubx.connectors.ccxt.connection_manager.time.sleep", slept.append):
+            with patch("qubx.connectors.ccxt.connection_manager.logger", MagicMock()) as log:
+                run_with_deadline(lambda: manager.stop_stream(stream_name, wait=True), 3.0)
+                warnings = " ".join(str(c) for c in log.warning.call_args_list)
+
+        assert slept == []
+        assert "grace period" not in warnings
+
+    def test_the_grace_period_is_a_plain_sleep_when_the_unsubscribe_completed(self, exchange_manager, bg_loop):
+        manager = make_manager(exchange_manager, cleanup_timeout=0.3)
+        stream_name = "orderbook(0, 1):9:grace"
+
+        async def quick_unsubscriber() -> None:
+            return None
+
+        manager.enable_stream(stream_name)
+        manager.register_stream_future(stream_name, bg_loop.submit(_hang_forever()))
+        manager.set_stream_unsubscriber(stream_name, quick_unsubscriber)
+
+        slept: list[float] = []
+        with patch("qubx.connectors.ccxt.connection_manager.time.sleep", slept.append):
+            with patch("qubx.connectors.ccxt.connection_manager.logger", MagicMock()) as log:
+                run_with_deadline(lambda: manager.stop_stream(stream_name, wait=True), 3.0)
+                warnings = " ".join(str(c) for c in log.warning.call_args_list)
+
+        # - routed through the loop, a healthy 1s grace is itself "abandoned" whenever
+        #   cleanup_timeout < 1s, which is a lie in the log and proves nothing about the venue
+        assert slept == [1]
+        assert "grace period" not in warnings
+
+
 class TestLoopThreadDetection:
     def test_detects_the_exchange_loop_thread(self, manager, bg_loop):
         async def check() -> bool:
@@ -294,8 +337,10 @@ def test_cleanup_timeout_is_actually_used(exchange_manager, bg_loop):
 
     elapsed = run_with_deadline(lambda: manager._wait(future, "timing check"), 3.0)
 
-    assert 0.4 < elapsed < 1.5
-    assert isinstance(concurrent.futures.TimeoutError(), Exception)
+    # Upper bound deliberately loose: this is the only wall-clock assert in the file and a loaded
+    # CI runner can add seconds of scheduling delay. It only needs to catch "the timeout is dead
+    # code again", i.e. an unbounded wait.
+    assert 0.4 < elapsed < 2.5
 
 
 class TestEnabledStreamRegistry:
@@ -318,7 +363,8 @@ class TestEnabledStreamRegistry:
             while not popped.is_set():
                 await asyncio.sleep(0.01)
 
-        future = bg_loop.submit(manager.listen_to_stream(subscriber, MagicMock(), channel, "trade", stream_name, None))
+        manager.enable_stream(stream_name)  # the orchestrator arms the flag before submitting
+        future = bg_loop.submit(manager.listen_to_stream(subscriber, MagicMock(), channel, "trade", stream_name))
         assert running.wait(2.0)
         assert manager._is_stream_enabled.get(stream_name) is True
 
@@ -328,3 +374,42 @@ class TestEnabledStreamRegistry:
         assert wait_until(future.done, 2.0)
         assert stream_name not in manager._is_stream_enabled
         assert manager._is_stream_enabled == {}
+
+    def test_a_task_that_starts_after_the_pop_does_not_resurrect_the_stream(self, manager, bg_loop):
+        """The other half of the race: the stream task takes its FIRST step after stop_stream popped.
+
+        `stop_stream` pops the registry before it cancels/waits, and cancelling a
+        `run_coroutine_threadsafe` future does not reliably prevent the coroutine's synchronous
+        prefix from running (the chained `task.cancel()` lands behind an already-queued
+        `Task.__step`). While that prefix wrote the enabled flag and the unsubscriber, a stopped
+        stream came back to life: `is_connected()` reported True off a dead stream forever and the
+        entry leaked. The prefix must only READ the flag.
+        """
+        stream_name = "trade:2:start-after-pop"
+        channel = MagicMock()
+        channel.control.is_set.return_value = True
+        subscriber_ran = threading.Event()
+        release_loop = threading.Event()
+
+        async def subscriber() -> None:
+            subscriber_ran.set()
+            await asyncio.sleep(0.01)
+
+        # Park the loop so the submitted task cannot start before the pop below.
+        bg_loop.loop.call_soon_threadsafe(release_loop.wait)
+        time.sleep(0.1)
+
+        manager.enable_stream(stream_name)  # the orchestrator arms the flag before submitting
+        manager.set_stream_unsubscriber(stream_name, _ping)
+        future = bg_loop.submit(manager.listen_to_stream(subscriber, MagicMock(), channel, "trade", stream_name))
+
+        # ... exactly what stop_stream does first, while the task is still queued
+        manager._is_stream_enabled.pop(stream_name, None)
+        manager._stream_to_unsubscriber.pop(stream_name, None)
+
+        release_loop.set()
+        assert wait_until(future.done, 2.0), "the stream task should exit immediately on a popped flag"
+
+        assert manager._is_stream_enabled == {}
+        assert manager._stream_to_unsubscriber == {}
+        assert subscriber_ran.is_set() is False

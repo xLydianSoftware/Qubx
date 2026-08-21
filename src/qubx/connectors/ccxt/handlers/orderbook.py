@@ -118,9 +118,6 @@ class OrderBookDataHandler(BaseDataTypeHandler):
         depth: int,
     ) -> SubscriptionConfiguration:
         """Prepare subscription configuration for multiple instruments using bulk API."""
-        # Bind the exchange here, not inside the closures: recreation swaps
-        # `exchange_manager.exchange`, and an unsubscriber resolved at call time would be aimed at
-        # a different exchange than the one the stream was established on.
         exchange = self._exchange_manager.exchange
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}

@@ -590,6 +590,95 @@ class TestConcurrentTransitions:
         assert done.wait(5.0), "reentrant unsubscription deadlocked the subscription transition"
 
 
+class TestStreamRegistryIsArmedBeforeSubmit:
+    """The orchestrator - not the stream coroutine - owns the enabled flag and the unsubscriber.
+
+    `listen_to_stream` used to write both on its first (synchronous) step, which runs on the
+    exchange loop. A `stop_stream` that popped them while the task was merely queued was then
+    silently undone, leaving `is_connected()` reporting True off a dead stream forever.
+    """
+
+    def _config_factory(self, unsubscriber):
+        def mock_prepare(name, sub_type, channel, instruments, **kwargs):
+            return SubscriptionConfiguration(
+                subscription_type=sub_type,
+                channel=None,
+                subscriber_func=AsyncMock(),
+                unsubscriber_func=unsubscriber,
+                stream_name=name,
+            )
+
+        return mock_prepare
+
+    def test_bulk_stream_is_enabled_before_its_task_is_submitted(
+        self, orchestrator, connection_manager, btc_instrument, mock_exchange, ctrl_channel
+    ):
+        seen_at_submit = {}
+        original_submit = orchestrator._loop.submit.side_effect
+
+        def submit(coro):
+            name = orchestrator._subscription_manager.get_subscription_stream("orderbook(0, 1)")
+            seen_at_submit["enabled"] = connection_manager.is_stream_enabled(name)
+            seen_at_submit["unsubscriber"] = connection_manager.get_stream_unsubscriber(name)
+            return original_submit(coro)
+
+        orchestrator._loop.submit = Mock(side_effect=submit)
+
+        unsubscriber = AsyncMock()
+        handler = Mock()
+        handler.prepare_subscription.side_effect = self._config_factory(unsubscriber)
+
+        orchestrator.execute_subscription(
+            subscription_type="orderbook(0, 1)",
+            instruments={btc_instrument},
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+
+        assert seen_at_submit["enabled"] is True
+        assert seen_at_submit["unsubscriber"] is unsubscriber
+
+    def test_individual_streams_are_enabled_before_their_tasks_are_submitted(
+        self, orchestrator, connection_manager, btc_instrument, eth_instrument, mock_exchange, ctrl_channel
+    ):
+        unsubscribers = {btc_instrument: AsyncMock(), eth_instrument: AsyncMock()}
+        seen_at_submit = []
+        original_submit = orchestrator._loop.submit.side_effect
+
+        def submit(coro):
+            seen_at_submit.append(dict(connection_manager._is_stream_enabled))
+            return original_submit(coro)
+
+        orchestrator._loop.submit = Mock(side_effect=submit)
+
+        def mock_prepare(name, sub_type, channel, instruments, **kwargs):
+            return SubscriptionConfiguration(
+                subscription_type=sub_type,
+                channel=None,
+                instrument_subscribers={i: AsyncMock() for i in instruments},
+                instrument_unsubscribers=unsubscribers,
+            )
+
+        handler = Mock()
+        handler.prepare_subscription.side_effect = mock_prepare
+
+        orchestrator.execute_subscription(
+            subscription_type="trade",
+            instruments={btc_instrument, eth_instrument},
+            handler=handler,
+            exchange=mock_exchange,
+            channel=ctrl_channel,
+        )
+
+        # each submit already sees its own stream armed
+        assert len(seen_at_submit) == 2
+        assert seen_at_submit[0] == {"BTCUSDT:trade": True} or seen_at_submit[0] == {"ETHUSDT:trade": True}
+        assert len(seen_at_submit[1]) == 2
+        assert connection_manager.get_stream_unsubscriber("BTCUSDT:trade") is unsubscribers[btc_instrument]
+        assert connection_manager.get_stream_unsubscriber("ETHUSDT:trade") is unsubscribers[eth_instrument]
+
+
 class TestEdgeCases:
     """Test edge cases and error conditions."""
 
