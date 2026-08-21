@@ -133,9 +133,7 @@ class CcxtDataProvider(IDataProvider):
             # In case of no instruments, do nothing, unsubscribe should handle this case
             return
 
-        # The instrument set and the stream that serves it must move together - see
-        # SubscriptionManager.lock.
-        with self._subscription_manager.lock:
+        with self._subscription_manager.transition():
             # Delegate to subscription manager for state management
             _updated_instruments = self._subscription_manager.add_subscription(subscription_type, instruments, reset)
 
@@ -157,7 +155,7 @@ class CcxtDataProvider(IDataProvider):
 
     def unsubscribe(self, subscription_type: str, instruments: list[Instrument]) -> None:
         """Unsubscribe from instruments and handle partial/complete unsubscription."""
-        with self._subscription_manager.lock:
+        with self._subscription_manager.transition():
             # Get current instruments before removal (check both active and pending)
             current_instruments = set(self._subscription_manager.get_subscribed_instruments(subscription_type))
 

@@ -74,7 +74,7 @@ class SubscriptionOrchestrator:
             logger.debug(f"<yellow>{self._exchange_id}</yellow> No instruments to subscribe to for {subscription_type}")
             return
 
-        with self._subscription_manager.lock:
+        with self._subscription_manager.transition():
             # Prepare subscription configuration
             subscription_config = self._prepare_subscription_config(
                 subscription_type,
@@ -92,7 +92,7 @@ class SubscriptionOrchestrator:
 
     def execute_unsubscription(self, subscription_config: SubscriptionConfiguration):
         """Clean up existing subscription if it exists."""
-        with self._subscription_manager.lock:
+        with self._subscription_manager.transition():
             subscription_type = subscription_config.subscription_type
 
             # For bulk subscriptions, use the main stream name
