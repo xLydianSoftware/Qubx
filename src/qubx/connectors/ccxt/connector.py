@@ -104,6 +104,9 @@ from .utils import (
 # venue call it is treated as a venue verdict and emitted.)
 # How often the connector re-reads the venue's configured / maximum leverage.
 LEVERAGE_REFRESH_INTERVAL_S = 3600.0
+# Default bound for the synchronous venue calls below. An unbounded wait on the exchange
+# loop from the strategy/account thread is the deadlock this connector must never allow.
+DEFAULT_VENUE_CALL_TIMEOUT_SECONDS = 15.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -229,7 +232,7 @@ class CcxtConnector(ChannelEmitter):
 
     def _log_spawn_error(self, future: Any) -> None:
         try:
-            exc = future.exception()
+            exc = future.exception()  # unbounded-result-ok: done-callback, the future is finished
         except Exception:  # noqa: BLE001 — cancelled/loop-teardown; nothing to surface
             return
         if exc is not None:
@@ -244,8 +247,17 @@ class CcxtConnector(ChannelEmitter):
         Used by the synchronous leverage / margin / disconnect paths. Factored
         out (mirroring ``_spawn``) so tests can drive the coroutine without a
         real loop/thread boundary.
+
+        Always bounded, and routed through ``run_sync`` so being called from the exchange loop's
+        own thread raises instead of parking that loop on itself.
         """
-        return self._loop.submit(coro).result(timeout=timeout)
+        try:
+            return self._loop.run_sync(coro, timeout=DEFAULT_VENUE_CALL_TIMEOUT_SECONDS if timeout is None else timeout)
+        except RuntimeError:
+            # The loop-thread guard (or a closed loop) rejected before the coroutine was ever
+            # awaited; close it so it does not surface as "coroutine was never awaited".
+            coro.close()
+            raise
 
     async def _acquire_endpoint_budget(self, endpoint: str) -> None:
         """Charge whatever budget this endpoint draws beyond IP weight, which the throttle already took."""

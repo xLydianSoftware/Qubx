@@ -355,7 +355,9 @@ class BaseHealthMonitor(IHealthMonitor):
     def get_last_event_times_by_exchange(self, exchange: str) -> dict[str, dt_64]:
         """Get all last event times for a specific exchange."""
         result = {}
-        for (instrument, event_type), event_time in self._last_event_time.items():
+        # Snapshot: the processor thread writes this dict on every event, and this is read from the
+        # stale monitor and the control server.
+        for (instrument, event_type), event_time in list(self._last_event_time.items()):
             if instrument.exchange == exchange:
                 if event_type not in result:
                     result[event_type] = event_time

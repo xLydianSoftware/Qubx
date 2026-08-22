@@ -5,8 +5,10 @@ This module handles the lifecycle and state tracking of data subscriptions,
 separating subscription concerns from connection management and data handling.
 """
 
+import threading
 from collections import defaultdict
-from typing import Dict, List, Set
+from contextlib import contextmanager
+from typing import Dict, Iterator, List, Set
 
 from qubx.core.basics import DataType, Instrument
 
@@ -23,6 +25,10 @@ class SubscriptionManager:
     """
 
     def __init__(self):
+        # Reentrant: unsubscribe resubscribes the remainder, and a handler may unsubscribe while
+        # preparing a subscription.
+        self._transition_lock = threading.RLock()
+
         # Active subscriptions (connection established and receiving data)
         self._subscriptions: dict[str, set[Instrument]] = defaultdict(set)
 
@@ -40,6 +46,20 @@ class SubscriptionManager:
 
         # Individual stream mappings: {subscription_type: {instrument: stream_name}}
         self._individual_streams: dict[str, dict[Instrument, str]] = defaultdict(dict)
+
+    @contextmanager
+    def transition(self) -> Iterator[None]:
+        """Serialise a whole subscription transition against this manager's state.
+
+        Computing the new instrument set, stopping the old stream and installing the new name is
+        one read-modify-write, and the strategy thread and the stale-data watchdog both drive it.
+        Interleaving them strands a live stream that nothing ever stop-requests.
+
+        INVARIANT: never enter this from the exchange event loop thread. Holders block on that loop
+        (stream teardown, unsubscribe), so taking it on-loop parks the loop on itself.
+        """
+        with self._transition_lock:
+            yield
 
     def add_subscription(
         self, subscription_type: str, instruments: list[Instrument], reset: bool = False

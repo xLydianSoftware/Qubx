@@ -53,15 +53,16 @@ class QuoteDataHandler(BaseDataTypeHandler):
                 stream_name=name,
             )
 
+        exchange = self._exchange_manager.exchange
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
 
         async def watch_quote(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            ccxt_tickers: dict[str, dict] = await self._exchange_manager.exchange.watch_bids_asks(symbols)
+            ccxt_tickers: dict[str, dict] = await exchange.watch_bids_asks(symbols)
 
             for exch_symbol, ccxt_ticker in ccxt_tickers.items():
-                instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
+                instrument = ccxt_find_instrument(exch_symbol, exchange, _symbol_to_instrument)
                 quote = ccxt_convert_ticker(ccxt_ticker)
 
                 if not (
@@ -85,10 +86,10 @@ class QuoteDataHandler(BaseDataTypeHandler):
 
         async def un_watch_quote(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            if hasattr(self._exchange_manager.exchange, "un_watch_bids_asks"):
-                await getattr(self._exchange_manager.exchange, "un_watch_bids_asks")(symbols)
+            if hasattr(exchange, "un_watch_bids_asks"):
+                await getattr(exchange, "un_watch_bids_asks")(symbols)
             else:
-                await self._exchange_manager.exchange.un_watch_tickers(symbols)
+                await exchange.un_watch_tickers(symbols)
 
         # Return subscription configuration instead of calling _listen_to_stream directly
         return SubscriptionConfiguration(

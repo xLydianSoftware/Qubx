@@ -85,22 +85,23 @@ class TradeDataHandler(BaseDataTypeHandler):
         instruments: set[Instrument],
     ) -> SubscriptionConfiguration:
         """Prepare subscription configuration for multiple instruments using bulk API."""
+        exchange = self._exchange_manager.exchange
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
         _symbol_to_instrument = {_instr_to_ccxt_symbol[i]: i for i in instruments}
 
         async def watch_trades(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            trades = await self._exchange_manager.exchange.watch_trades_for_symbols(symbols)
+            trades = await exchange.watch_trades_for_symbols(symbols)
 
             exch_symbol = trades[0]["symbol"]
-            instrument = ccxt_find_instrument(exch_symbol, self._exchange_manager.exchange, _symbol_to_instrument)
+            instrument = ccxt_find_instrument(exch_symbol, exchange, _symbol_to_instrument)
 
             # Use private processing method to avoid duplication
             self._process_trade(trades, instrument, sub_type, channel)
 
         async def un_watch_trades(instruments_batch: list[Instrument]):
             symbols = [_instr_to_ccxt_symbol[i] for i in instruments_batch]
-            await self._exchange_manager.exchange.un_watch_trades_for_symbols(symbols)
+            await exchange.un_watch_trades_for_symbols(symbols)
 
         return SubscriptionConfiguration(
             subscription_type=sub_type,
@@ -124,6 +125,7 @@ class TradeDataHandler(BaseDataTypeHandler):
         WebSocket streams without waiting for all instruments. This follows the same
         pattern as the orderbook handler for proper individual stream management.
         """
+        exchange = self._exchange_manager.exchange
         _instr_to_ccxt_symbol = {i: instrument_to_ccxt_symbol(i) for i in instruments}
 
         individual_subscribers = {}
@@ -137,7 +139,7 @@ class TradeDataHandler(BaseDataTypeHandler):
                 async def individual_subscriber():
                     try:
                         # Watch trades for single instrument
-                        trades = await self._exchange_manager.exchange.watch_trades(symbol)
+                        trades = await exchange.watch_trades(symbol)
 
                         # Use private processing method to avoid duplication
                         self._process_trade(trades, inst, sub_type, channel)
@@ -153,13 +155,13 @@ class TradeDataHandler(BaseDataTypeHandler):
             individual_subscribers[instrument] = create_individual_subscriber()
 
             # Create individual unsubscriber if exchange supports it
-            un_watch_method = getattr(self._exchange_manager.exchange, "un_watch_trades", None)
+            un_watch_method = getattr(exchange, "un_watch_trades", None)
             if un_watch_method is not None and callable(un_watch_method):
 
                 def create_individual_unsubscriber(symbol=ccxt_symbol, exchange_id=self._exchange_id):
                     async def individual_unsubscriber():
                         try:
-                            await self._exchange_manager.exchange.un_watch_trades(symbol)
+                            await exchange.un_watch_trades(symbol)
                         except Exception as e:
                             logger.error(f"<yellow>{exchange_id}</yellow> Error unsubscribing trades for {symbol}: {e}")
 
