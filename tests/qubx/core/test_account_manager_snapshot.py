@@ -161,7 +161,8 @@ def test_out_of_order_snapshot_skipped():
 
 
 def test_external_order_materialized_from_snapshot():
-    # Producer-classified EXTERNAL (AccountSnapshot contract) -> synthesized ext:<vid> cid.
+    # Producer-classified EXTERNAL (AccountSnapshot contract) keeps the client id the venue
+    # reported — on venues that cancel by client id it is the only handle.
     am = _am()
     state = am._states["binance"]
     inst = _instrument()
@@ -178,7 +179,7 @@ def test_external_order_materialized_from_snapshot():
     materialized = state.get_order_by_venue_id("VX")
     assert materialized is not None
     assert materialized.origin is OrderOrigin.EXTERNAL
-    assert materialized.client_order_id == "ext:VX"
+    assert materialized.client_order_id == "manual-123"
 
 
 def test_recovered_order_materialized_from_snapshot():
@@ -719,3 +720,21 @@ def test_sim_capital_getters_derive_consistently():
     assert am.get_total_capital("binance") == 1000.0
     assert am.get_available_margin("binance") == 900.0
     assert am.get_withdrawable_balance("binance") == am.get_available_margin("binance") == 900.0
+
+
+def test_external_order_with_no_client_id_gets_synthesized_cid():
+    # The venue reported no client id: fall back to the stable ext:<vid> convention.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    snap_order = _order(
+        "ext:VY",
+        OrderStatus.ACCEPTED,
+        "2026-05-28T00:00:00",
+        vid="VY",
+        origin=OrderOrigin.EXTERNAL,
+        instrument=inst,
+    )
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+    assert state.get_order_by_venue_id("VY").client_order_id == "ext:VY"

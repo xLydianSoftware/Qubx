@@ -391,7 +391,8 @@ def test_deal_event_on_unknown_order_materializes_external():
     assert r.position is not None and r.position.quantity == 0.3
     o = am.get_state("binance").get_order_by_venue_id("VX")
     assert o is not None
-    assert o.client_order_id == "ext:VX"
+    # - the venue reported a client id: it is the handle a cancel addresses, so it is kept
+    assert o.client_order_id == "alien"
     assert o.origin is OrderOrigin.EXTERNAL
     assert o.status is OrderStatus.ACCEPTED
     assert o.filled_quantity == 0.3
@@ -694,7 +695,7 @@ def test_materialize_external_for_unknown_cid_and_venue():
     o = state.get_order_by_venue_id("VX")
     assert o is not None
     assert o.origin is OrderOrigin.EXTERNAL
-    assert o.client_order_id == "ext:VX"
+    assert o.client_order_id == "alien"
     assert o.filled_quantity == 0.5
 
 

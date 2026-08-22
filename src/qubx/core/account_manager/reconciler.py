@@ -31,7 +31,14 @@ from qubx.core.account_manager.diffs import (
 )
 from qubx.core.account_manager.state import AccountState, VenueAccountFigures
 from qubx.core.account_manager.state_machine import can_transition
-from qubx.core.basics import EXTERNAL_CID_PREFIX, Instrument, Order, OrderOrigin, OrderStatus, Position
+from qubx.core.basics import (
+    Instrument,
+    Order,
+    OrderOrigin,
+    OrderStatus,
+    Position,
+    external_client_id,
+)
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
@@ -495,9 +502,10 @@ class Reconciler:
         #   any replayed fills (situation II).
         if snap_order.origin is OrderOrigin.EXTERNAL:
             origin = OrderOrigin.EXTERNAL
-            cid = snap_order.client_order_id
-            if not cid.startswith(EXTERNAL_CID_PREFIX):
-                cid = f"{EXTERNAL_CID_PREFIX}{snap_order.venue_order_id}"
+            # - keep the client id the venue reported (external_client_id); it is what a cancel
+            #   addresses on venues that take one. A cid already held locally never reaches here:
+            #   the differ counts such a snapshot order as matched (diffs.py:331).
+            cid = external_client_id(snap_order.client_order_id, snap_order.venue_order_id)
         else:
             origin = OrderOrigin.RECOVERED
             cid = snap_order.client_order_id
