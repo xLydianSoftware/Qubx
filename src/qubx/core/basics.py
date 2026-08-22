@@ -13,8 +13,8 @@ import pandas as pd
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
 from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
-from qubx.utils.misc import Stopwatch
 from qubx.utils.clock import start_clock_discipline, time_now
+from qubx.utils.misc import Stopwatch
 from qubx.utils.time import to_timedelta
 
 dt_64 = np.datetime64
@@ -734,6 +734,23 @@ _PENDING_ORDER_STATUSES = frozenset(
 # framework discovered at the venue but never placed.
 FRAMEWORK_CID_PREFIX = "qubx_"
 EXTERNAL_CID_PREFIX = "ext:"
+
+
+def external_client_id(client_order_id: str | None, venue_order_id: str | None) -> str:
+    """
+    The identity to track a venue order the framework did not place under.
+
+    A client id the venue reported is kept as-is. On venues that address cancel and modify by
+    client id — Lighter takes nothing else — it is the only handle the order has, and replacing
+    it leaves the order unmanageable for the life of the process. Classifying an order as
+    EXTERNAL is a judgement about who placed it; the client id is a fact about how to reach it,
+    and the judgement must not overwrite the fact.
+
+    Only when the venue reports no client id is a stable ``ext:<venue_order_id>`` synthesised.
+    """
+    if client_order_id:
+        return str(client_order_id)
+    return f"{EXTERNAL_CID_PREFIX}{venue_order_id}"
 
 
 class OrderOrigin(StrEnum):

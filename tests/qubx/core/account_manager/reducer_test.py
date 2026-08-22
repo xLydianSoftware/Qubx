@@ -758,7 +758,7 @@ def test_external_fill_materializes_books_and_fires_all():
     )
     assert r.order is not None
     assert r.order.origin is OrderOrigin.EXTERNAL
-    assert r.order.client_order_id == "ext:EXT1"
+    assert r.order.client_order_id == "x"
     assert r.order.status is OrderStatus.FILLED
     assert r.deal is not None
     assert r.position is not None and r.position.quantity == 0.5
@@ -775,7 +775,7 @@ def test_external_order_resolves_same_on_second_event():
     apply(state, DealEvent(instrument=BTC, client_order_id="x", venue_order_id="EXT1", deal=_fill("t1", 0.3)), T1)
     apply(state, DealEvent(instrument=BTC, client_order_id="x", venue_order_id="EXT1", deal=_fill("t2", 0.2)), T1)
     order = state.get_order_by_venue_id("EXT1")
-    assert order is not None and order.client_order_id == "ext:EXT1"
+    assert order is not None and order.client_order_id == "x"
     assert _present(state.get_position(BTC)).quantity == 0.5  # accumulated on one external order
 
 

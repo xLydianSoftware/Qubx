@@ -18,7 +18,6 @@ from qubx import area_logger
 from qubx.core.account_manager.state import AccountState
 from qubx.core.account_manager.state_machine import can_transition, validate_transition
 from qubx.core.basics import (
-    EXTERNAL_CID_PREFIX,
     Balance,
     Deal,
     Instrument,
@@ -29,6 +28,7 @@ from qubx.core.basics import (
     OrderStatus,
     OrderType,
     Position,
+    external_client_id,
 )
 from qubx.core.events import (
     AccountMessage,
@@ -139,14 +139,16 @@ def _materialize_external(
     status: OrderStatus = OrderStatus.ACCEPTED,
 ) -> Order:
     # Unknown to us => external order (manual UI / another bot / pre-existing, or a recovered
-    # historical trade). A venue lifecycle event always carries the id the venue assigned; fall
-    # back to the cid for a stable identity only in the (malformed) case where it doesn't.
+    # historical trade). The client id the event carries is kept when there is one — see
+    # external_client_id; ext:<venue id> is the fallback, not the default.
     # status defaults to ACCEPTED (a live external order exists at the venue); a recovered
     # historical deal passes FILLED so the order is terminal (audit record, never chased as
     # a missing open order). Terminal orders require last_update_time for eviction.
     venue_id = event.venue_order_id
+    # - no cid collision to guard here: _resolve matches an existing order by cid first, so
+    #   materialization only runs for a cid the state does not hold
     order = Order(
-        client_order_id=f"{EXTERNAL_CID_PREFIX}{venue_id or event.client_order_id}",
+        client_order_id=external_client_id(event.client_order_id, venue_id),
         venue_order_id=venue_id,
         origin=OrderOrigin.EXTERNAL,
         type=OrderType.LIMIT,
