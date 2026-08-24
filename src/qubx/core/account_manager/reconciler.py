@@ -231,6 +231,7 @@ class AwaitOrderConfirm(Task):
         self._wait = wait
         self._max_retries = max_retries
         self._retries = 0
+        self._armed_at = now
         self._next_fetch_at = now + wait
         self._done = False
 
@@ -262,6 +263,13 @@ class AwaitOrderConfirm(Task):
         order = state.get_order(self._cid)
 
         if order is None or not order.status.is_inflight:
+            # - the venue answered on its own: log what state ended the wait and after how long,
+            #   so a slow stream is visible as a number rather than an absence
+            _log.debug(
+                f"[{state.exchange}] confirm {self._cid} ended by venue state "
+                f"status={order.status if order is not None else 'gone'} "
+                f"after {(now - self._armed_at) / np.timedelta64(1, 'ms'):.0f}ms, no fetch needed"
+            )
             self._done = True  # - confirmed (ACCEPTED), terminal, or gone
             return []
 
@@ -273,6 +281,11 @@ class AwaitOrderConfirm(Task):
         if self._retries < self._max_retries:
             self._retries += 1
             self._next_fetch_at = now + self._wait
+            _log.debug(
+                f"[{state.exchange}] confirm {self._cid} no venue answer in "
+                f"{(now - self._armed_at) / np.timedelta64(1, 'ms'):.0f}ms — asking the venue "
+                f"(status={order.status}, retry {self._retries}/{self._max_retries})"
+            )
             return [RequestStatus(cid=self._cid, venue_id=self._venue_id, instrument=self._instrument)]
 
         # - budget exhausted → route LOST via the bus (same as ResolveMissingOrder give-up)

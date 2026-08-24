@@ -244,8 +244,25 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             return ApplyResult()
         now = self._time.time()
         result = self._apply_to_state(state, event, now)
+        self._trace_event(state, event, result)
         self._maybe_sweep_evictions(now)
         return result
+
+    def _trace_event(self, state: AccountState, event: AccountMessage, result: ApplyResult) -> None:
+        # - one line per venue event and what it did to the order. Reconstructs an order's whole
+        #   life from the log, which is the only way to tell a message the venue never sent from
+        #   one we received and mishandled. DEBUG on the account_manager area.
+        if not isinstance(event, OrderEvent):
+            return
+        order = result.order
+        age = ""
+        if order is not None and order.submitted_at is not None:
+            age = f" age={(self._time.time() - order.submitted_at) / np.timedelta64(1, 's'):.3f}s"
+        logger.debug(
+            f"[{state.exchange}] event {type(event).__name__} cid={event.client_order_id} "
+            f"vid={event.venue_order_id} -> change={result.order_change} "
+            f"status={order.status if order is not None else None}{age}"
+        )
 
     def _apply_to_state(self, state: AccountState, event: AccountMessage, now: np.datetime64) -> ApplyResult:
         rec = self._reconcilers[state.exchange]
