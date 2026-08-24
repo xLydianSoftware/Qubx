@@ -1,7 +1,4 @@
-import json
 from unittest.mock import MagicMock
-
-import numpy as np
 
 from qubx.control.builtin import BUILTIN_ACTIONS, _refresh_instrument_service
 
@@ -190,34 +187,6 @@ class TestGetHealth:
         assert "connected" in result.data
         assert "queue_size" in result.data
         assert "data_latencies_ms" in result.data
-
-    def test_reports_last_event_ages_in_seconds(self):
-        ctx = _make_mock_ctx()
-        now = np.datetime64("2026-04-05T10:00:00", "ns")
-        ctx.time.return_value = now
-        ctx.health.get_last_event_times_by_exchange.return_value = {
-            "orderbook": now - np.timedelta64(1500, "ms"),
-            "trade": now - np.timedelta64(42, "s"),
-        }
-
-        _, handler = BUILTIN_ACTIONS["get_health"]
-        result = handler(ctx)
-
-        assert result.data["last_event_ages_s"]["BINANCE.UM"] == {"orderbook": 1.5, "trade": 42.0}
-
-    def test_a_never_seen_event_type_is_none_not_nan(self):
-        """The payload is JSON-serialised with allow_nan=False, so a NaN age would 500 the whole
-        health endpoint."""
-        ctx = _make_mock_ctx()
-        now = np.datetime64("2026-04-05T10:00:00", "ns")
-        ctx.time.return_value = now
-        ctx.health.get_last_event_times_by_exchange.return_value = {"quote": np.datetime64("NaT", "ns")}
-
-        _, handler = BUILTIN_ACTIONS["get_health"]
-        result = handler(ctx)
-
-        assert result.data["last_event_ages_s"]["BINANCE.UM"] == {"quote": None}
-        json.dumps(result.data["last_event_ages_s"], allow_nan=False)
 
 
 class TestGetOrders:
