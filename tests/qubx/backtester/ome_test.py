@@ -5,7 +5,7 @@ from qubx.backtester.simulated_data import EmulatedTickSequence
 from qubx.core.basics import ZERO_COSTS, ITimeProvider, OrderStatus
 from qubx.core.exceptions import SimulationError
 from qubx.core.lookups import lookup
-from qubx.core.series import Quote, Trade, TradeArray
+from qubx.core.series import OrderBook, Quote, Trade, TradeArray
 from qubx.core.utils import recognize_time
 from qubx.data import CsvStorage
 
@@ -25,6 +25,18 @@ class _TimeService(ITimeProvider):
 
 def Q(time: str, bid: float, ask: float) -> Quote:
     return Quote(recognize_time(time), bid, ask, 0, 0)
+
+
+def OB(time: str, bid: float, ask: float, tick_size: float = 0.1) -> OrderBook:
+    """Top-of-book snapshot in the shape connectors emit for `orderbook(0, 1)`."""
+    return OrderBook(
+        recognize_time(time),
+        bid,
+        ask,
+        tick_size,
+        np.array([1.0], dtype=np.float64),
+        np.array([1.0], dtype=np.float64),
+    )
 
 
 class TestOrderManagementEngineSimulation:
@@ -378,3 +390,69 @@ class TestOrderManagementEngineSimulation:
             assert False
         except SimulationError:
             pass
+
+    def test_orderbook_updates_bbo_for_market_orders(self):
+        """An OrderBook tick must refresh the BBO that market orders fill against.
+
+        Regression: only the Quote branch of process_market_data used to assign `bbo`, so on a
+        venue whose live feed is order books (e.g. `live_base_subscription: orderbook(0, 1)`)
+        every market order kept filling at whatever quote happened to seed the OME at startup —
+        the book stayed frozen while marks moved, silently corrupting simulated PnL.
+        """
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr
+        ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
+
+        # - seed the OME the way warmup does: a single synthetic quote
+        ome.process_market_data(t.g(Q("2020-01-01 10:00", 32000, 32001)))
+
+        # - market moves and is reported as an order book, not a quote
+        ob = OB("2020-01-01 11:00", 40000, 40001)
+        t._time = ob.time  # type: ignore
+        ome.process_market_data(ob)
+
+        assert ome.get_quote().bid == 40000
+        assert ome.get_quote().ask == 40001
+
+        buy = ome.place_order("BUY", "MARKET", 0.1, None, "buy-after-ob")
+        assert buy.exec is not None
+        assert buy.exec.price == 40001, "market BUY must fill at the order book's ask, not a stale quote"
+
+        sell = ome.place_order("SELL", "MARKET", 0.1, None, "sell-after-ob")
+        assert sell.exec is not None
+        assert sell.exec.price == 40000, "market SELL must fill at the order book's bid, not a stale quote"
+
+    def test_market_order_fills_on_orderbook_only_feed(self):
+        """A feed that only ever produces order books must still be tradeable.
+
+        Before the fix `bbo` stayed None on such venues and place_order raised
+        "Simulator is not ready for order management - no quote".
+        """
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr
+        ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
+
+        ob = OB("2020-01-01 10:00", 32000, 32001)
+        t._time = ob.time  # type: ignore
+        ome.process_market_data(ob)
+
+        r = ome.place_order("BUY", "MARKET", 0.1, None, "ob-only")
+        assert r.order.status == OrderStatus.FILLED
+        assert r.exec is not None
+        assert r.exec.price == 32001
+
+    def test_orderbook_does_not_rewind_bbo_on_stale_tick(self):
+        """Out-of-order order books are dropped before they can rewind the BBO."""
+        instr = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert instr
+        ome = OrdersManagementEngine(instr, t := _TimeService(), tcc=ZERO_COSTS)
+
+        fresh = OB("2020-01-01 12:00", 40000, 40001)
+        t._time = fresh.time  # type: ignore
+        ome.process_market_data(fresh)
+
+        stale = OB("2020-01-01 11:00", 32000, 32001)
+        ome.process_market_data(stale)
+
+        assert ome.get_quote().bid == 40000
+        assert ome.get_quote().ask == 40001
