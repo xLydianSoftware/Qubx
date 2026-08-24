@@ -9,8 +9,6 @@ from collections import defaultdict
 from types import FunctionType
 from typing import Any, Callable
 
-import numpy as np
-
 from qubx import logger
 from qubx.core.account_manager import AccountManager
 from qubx.core.account_manager.reducer import ApplyResult
@@ -1450,10 +1448,11 @@ class ProcessingManager(IProcessingManager):
         snapshot = {
             "timestamp": str(self._time_provider.time()),
             "exchanges": exchanges_snapshot,
-            # Seconds since the last event of each type. A fresh snapshot only proves this thread is
-            # running; these ages prove data is still arriving. `None` for a type never seen, so a
-            # warming-up bot is not reported as infinitely stale.
-            "data_ages_s": {exchange: self._last_event_ages(exchange) for exchange in exchanges},
+            # When each event type last arrived. A fresh `timestamp` only proves this thread is
+            # running; these prove data is still arriving. Same format as `timestamp`, so the reader
+            # computes freshness at read time rather than trusting an age measured here. `None` for
+            # a type never seen, so a warming-up bot is not read as infinitely stale.
+            "last_event_times": {exchange: self._last_event_times(exchange) for exchange in exchanges},
         }
 
         try:
@@ -1461,12 +1460,11 @@ class ProcessingManager(IProcessingManager):
         except Exception as e:
             logger.warning(f"Failed to save state snapshot: {e}")
 
-    def _last_event_ages(self, exchange: str) -> dict[str, float | None]:
-        now = self._time_provider.time()
-        ages: dict[str, float | None] = {}
+    def _last_event_times(self, exchange: str) -> dict[str, str | None]:
+        times: dict[str, str | None] = {}
         for event_type, last in self._health_monitor.get_last_event_times_by_exchange(exchange).items():
-            ages[event_type] = None if last is None else round(float((now - last) / np.timedelta64(1, "s")), 2)
-        return ages
+            times[event_type] = None if last is None else str(last)
+        return times
 
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
