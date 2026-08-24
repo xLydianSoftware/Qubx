@@ -156,6 +156,13 @@ class OrdersManagementEngine:
             _bs, _as = _b, _a
             _mkt_state = "OB: " + str(mdata)
 
+            # - a book carries a real top-of-book, so refresh the BBO market orders fill against.
+            #   Without this, a venue whose live feed is books only (no quote stream) never moves
+            #   `bbo` off whatever quote happened to seed the OME, and every market order forever
+            #   fills at that startup price while positions mark at live prices.
+            self.__prev_bbo = self.bbo
+            self.bbo = mdata.to_quote()
+
         else:
             raise SimulationError(f"Invalid market data type: {type(mdata)} for update OME({self.instrument.symbol})")
 
