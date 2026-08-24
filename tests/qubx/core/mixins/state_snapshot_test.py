@@ -26,11 +26,19 @@ class TestSnapshotLastEventTimes:
 
         assert m._last_event_times("BINANCE.UM") == {"orderbook": str(ob), "trade": str(tr)}
 
-    def test_a_never_seen_type_is_none(self):
-        """A warming-up bot has no events yet; a sentinel age would page on every start."""
-        m = self._manager({"orderbook": None})
+    def test_event_driven_feeds_are_excluded(self):
+        """funding_payment and liquidation arrive on venue events, so their age measures the market,
+        not the connection. Reporting them would page on every quiet period."""
+        t = np.datetime64("2026-04-05T10:00:00", "ns")
+        m = self._manager({"orderbook": t, "funding_payment": t, "liquidation": t})
 
-        assert m._last_event_times("BINANCE.UM") == {"orderbook": None}
+        assert set(m._last_event_times("BINANCE.UM")) == {"orderbook"}
+
+    def test_a_type_never_seen_is_simply_absent(self):
+        """A warming-up bot has no events yet; the reader sees no entry rather than a sentinel."""
+        m = self._manager({})
+
+        assert m._last_event_times("BINANCE.UM") == {}
 
     def test_timestamps_match_the_snapshot_timestamp_format(self):
         """The reader parses these with the same parser it uses for the snapshot's own timestamp."""
@@ -44,6 +52,6 @@ class TestSnapshotLastEventTimes:
         import json
 
         t = np.datetime64("2026-04-05T10:00:00", "ns")
-        m = self._manager({"orderbook": t, "trade": None})
+        m = self._manager({"orderbook": t})
 
-        assert json.loads(json.dumps(m._last_event_times("BINANCE.UM"))) == {"orderbook": str(t), "trade": None}
+        assert json.loads(json.dumps(m._last_event_times("BINANCE.UM"))) == {"orderbook": str(t)}
