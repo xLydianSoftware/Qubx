@@ -199,9 +199,16 @@ class CSVMetricEmitter(BaseMetricEmitter):
         symbol_columns: Sequence[str] = (),
         dedup_keys: Sequence[str] | None = None,
         partition_by: str = "DAY",
+        max_ttl: str | None = None,
     ) -> None:
         """
         Declare a strategy-owned table as one CSV file beside the metrics file.
+
+        `max_ttl` is accepted and ignored: a CSV file has no retention to set. It is in the
+        signature so a caller can declare a table without knowing which emitter it holds —
+        without it, a caller that passes `max_ttl` gets a TypeError here and has to either skip
+        declaring the table (losing the schema, so the first row's columns become the schema and
+        every later column is dropped) or drop `max_ttl` from the call for everyone.
         """
         try:
             if isinstance(symbol_columns, str):

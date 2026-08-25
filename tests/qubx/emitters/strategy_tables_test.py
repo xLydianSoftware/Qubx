@@ -263,6 +263,25 @@ class TestCSVRecords:
         # a column the row does not carry stays blank rather than shifting the line
         assert rows[1]["price"] == ""
 
+    def test_ensure_table_accepts_max_ttl_and_ignores_it(self, tmp_path):
+        # a caller that declares a table without knowing which emitter it holds passes max_ttl;
+        # a TypeError here would make it skip declaring, and the first row's columns would then
+        # become the schema for every later row
+        em = self._emitter(tmp_path)
+        em.ensure_table("loe.execution", {"price": "DOUBLE"}, symbol_columns=("kind",), max_ttl="90 days")
+
+        header = (tmp_path / "loe.execution.csv").read_text().splitlines()[0].split(",")
+        assert {"kind", "price"} <= set(header)
+
+    def test_a_declared_table_keeps_columns_absent_from_the_first_row(self, tmp_path):
+        em = self._emitter(tmp_path)
+        em.ensure_table("loe.execution", {"price": "DOUBLE", "filled_qty": "DOUBLE"}, max_ttl=None)
+        em.emit_record("loe.execution", {"price": 0.1})          # first row lacks filled_qty
+        em.emit_record("loe.execution", {"filled_qty": 100.0})
+
+        rows = list(csv_mod.DictReader((tmp_path / "loe.execution.csv").read_text().splitlines()))
+        assert rows[1]["filled_qty"] == "100.0"
+
     def test_emit_record_without_ensure_table_still_writes(self, tmp_path):
         em = self._emitter(tmp_path)
         em.emit_record("adhoc.table", {"a": 1.0})
