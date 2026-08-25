@@ -40,6 +40,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
         Both funding_rate and funding_payment subscriptions use the same underlying
         WebSocket stream and emit both data types when appropriate.
         """
+        exchange = self._exchange_manager.exchange
         # Convert to CCXT symbols
         symbols = [instrument_to_ccxt_symbol(instr) for instr in instruments]
         if _params.pop("__all__", False):
@@ -49,9 +50,9 @@ class FundingRateDataHandler(BaseDataTypeHandler):
             """Unified subscriber that handles both funding rates and payments."""
             try:
                 if _params:
-                    funding_rates = await self._exchange_manager.exchange.watch_funding_rates(symbols, _params)  # type: ignore
+                    funding_rates = await exchange.watch_funding_rates(symbols, _params)  # type: ignore
                 else:
-                    funding_rates = await self._exchange_manager.exchange.watch_funding_rates(symbols)  # type: ignore
+                    funding_rates = await exchange.watch_funding_rates(symbols)  # type: ignore
 
                 current_time = self._data_provider.time_provider.time()
 
@@ -59,7 +60,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
                 if funding_rates:
                     for symbol, info in funding_rates.items():
                         try:
-                            instrument = ccxt_find_instrument(symbol, self._exchange_manager.exchange)
+                            instrument = ccxt_find_instrument(symbol, exchange)
                             funding_rate = ccxt_convert_funding_rate(info)
 
                             channel.send((instrument, DataType.FUNDING_RATE, funding_rate, False))
@@ -78,7 +79,7 @@ class FundingRateDataHandler(BaseDataTypeHandler):
 
         async def cleanup_funding():
             """Simple cleanup - just call exchange unwatch if available."""
-            unwatch_func = getattr(self._exchange_manager.exchange, "un_watch_funding_rates", None)
+            unwatch_func = getattr(exchange, "un_watch_funding_rates", None)
             if unwatch_func and callable(unwatch_func):
                 try:
                     unwatch_result = unwatch_func()

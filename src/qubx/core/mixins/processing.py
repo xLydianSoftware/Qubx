@@ -103,6 +103,13 @@ def validate_account_callback_signatures(strategy: IStrategy) -> None:
             )
 
 
+# Feeds that arrive on venue events rather than continuously: their age measures the market, not the
+# connection, so reporting it invites a staleness alert that fires on every quiet period. Qubx
+# already excludes funding payments from latency percentiles for the same reason
+# (health/base.py DATA_FEED_LATENCY_EXCLUDE); liquidations are just as bursty.
+_EVENT_DRIVEN_TYPES = frozenset({DataType.FUNDING_PAYMENT, DataType.LIQUIDATION})
+
+
 class ProcessingManager(IProcessingManager):
     MAX_NUMBER_OF_STRATEGY_FAILURES: int = 10
     DATA_READY_TIMEOUT: td_64 = td_64(60, "s")
@@ -1448,12 +1455,23 @@ class ProcessingManager(IProcessingManager):
         snapshot = {
             "timestamp": str(self._time_provider.time()),
             "exchanges": exchanges_snapshot,
+            # When each continuous feed last arrived. A fresh `timestamp` only proves this thread
+            # is running; these prove data is still arriving. Same format as `timestamp`, so the
+            # reader computes freshness at read time rather than trusting an age measured here.
+            "last_event_times": {exchange: self._last_event_times(exchange) for exchange in exchanges},
         }
 
         try:
             self._context.persistence.save("state", snapshot)
         except Exception as e:
             logger.warning(f"Failed to save state snapshot: {e}")
+
+    def _last_event_times(self, exchange: str) -> dict[str, str]:
+        return {
+            event_type: str(last)
+            for event_type, last in self._health_monitor.get_last_event_times_by_exchange(exchange).items()
+            if event_type not in _EVENT_DRIVEN_TYPES
+        }
 
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)

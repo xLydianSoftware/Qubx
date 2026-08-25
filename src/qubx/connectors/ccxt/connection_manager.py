@@ -9,7 +9,6 @@ import asyncio
 import concurrent.futures
 import time
 from asyncio.exceptions import CancelledError
-from collections import defaultdict
 from typing import Awaitable, Callable
 
 from ccxt import (
@@ -56,6 +55,9 @@ class ConnectionManager:
     - Implement retry logic and error handling
     - Manage stream lifecycle (start, stop, cleanup)
     - Coordinate with SubscriptionManager for state updates
+
+    Invariant: nothing here may block a thread on the exchange event loop without a bound, and
+    nothing running *on* that loop may block waiting for it.
     """
 
     def __init__(
@@ -72,8 +74,9 @@ class ConnectionManager:
         self._subscription_manager = subscription_manager
         self._cleanup_timeout = cleanup_timeout
 
-        # Stream state management
-        self._is_stream_enabled: dict[str, bool] = defaultdict(lambda: False)
+        # Plain dict on purpose: membership means "this stream is meant to be running", and a
+        # defaultdict would silently re-create a popped key on read.
+        self._is_stream_enabled: dict[str, bool] = {}
         self._stream_to_unsubscriber: dict[str, Callable[[], Awaitable[None]]] = {}
 
         # Connection tracking
@@ -83,6 +86,16 @@ class ConnectionManager:
     def _loop(self) -> AsyncThreadLoop:
         """Get current AsyncThreadLoop from exchange manager."""
         return AsyncThreadLoop(self._exchange_manager.exchange.asyncio_loop)
+
+    def _on_exchange_loop_thread(self) -> bool:
+        """True when the caller is running *on* the exchange event loop.
+
+        Anything that blocks waiting for that loop from this thread deadlocks the loop on itself.
+        """
+        try:
+            return asyncio.get_running_loop() is self._exchange_manager.exchange.asyncio_loop
+        except RuntimeError:
+            return False
 
     def set_subscription_manager(self, subscription_manager: SubscriptionManager) -> None:
         """Set the subscription manager for state coordination."""
@@ -95,30 +108,29 @@ class ConnectionManager:
         channel: CtrlChannel,
         subscription_type: str,
         stream_name: str,
-        unsubscriber: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         """
         Listen to a WebSocket stream with error handling and retry logic.
+
+        Only ever READS the stream registry: the orchestrator arms the enabled flag and the
+        unsubscriber before submitting this task. A task that wrote the flag on its first step
+        would resurrect a stream `stop_stream` already popped, because cancelling a queued future
+        does not stop that first step from running.
 
         Args:
             subscriber: Async function that handles the stream data
             exchange: CCXT exchange instance
             channel: Control channel for data flow
             stream_name: Unique name for this stream
-            unsubscriber: Optional cleanup function for graceful unsubscription
         """
+        # "Listening to" is matched literally by the BotExchangeRecreationWedged Loki alert in
+        # xlydian-platform (k8s/apps/*/loki.yaml). Do not reword this line.
         logger.info(f"<yellow>{self._exchange_id}</yellow> Listening to {stream_name}")
 
-        # Register unsubscriber for cleanup
-        if unsubscriber is not None:
-            self._stream_to_unsubscriber[stream_name] = unsubscriber
-
-        # Enable the stream
-        self._is_stream_enabled[stream_name] = True
         n_retry = 0
         connection_established = False
 
-        while channel.control.is_set() and self._is_stream_enabled[stream_name]:
+        while channel.control.is_set() and self._is_stream_enabled.get(stream_name, False):
             try:
                 await subscriber()
                 n_retry = 0  # Reset retry counter on success
@@ -129,7 +141,7 @@ class ConnectionManager:
                     connection_established = True
 
                 # Check if stream was disabled during subscriber execution
-                if not self._is_stream_enabled[stream_name]:
+                if not self._is_stream_enabled.get(stream_name, False):
                     break
 
             except CcxtSymbolNotRecognized:
@@ -176,7 +188,7 @@ class ConnectionManager:
                 continue
             except Exception as e:
                 # Unexpected errors
-                if not channel.control.is_set() or not self._is_stream_enabled[stream_name]:
+                if not channel.control.is_set() or not self._is_stream_enabled.get(stream_name, False):
                     # Channel closed or stream disabled, exit gracefully
                     break
 
@@ -211,30 +223,41 @@ class ConnectionManager:
 
         logger.debug(f"Stopping stream: {stream_name}, wait={wait}")
 
-        self._is_stream_enabled[stream_name] = False
+        if wait and self._on_exchange_loop_thread():
+            # Blocking here would park the exchange loop on a coroutine only that loop can run.
+            # Degrade rather than raise: callers up the synchronous subscription pipeline treat an
+            # exception as a fault and would kill their own poller.
+            logger.info(
+                f"[{self._exchange_id}] stop_stream({stream_name}) called from the exchange loop thread - "
+                "degrading to non-blocking cleanup"
+            )
+            wait = False
 
-        stream_future = self.get_stream_future(stream_name)
-        if stream_future:
+        # Tear the registry down before any blocking wait, so a wait that times out cannot leave a
+        # half-removed stream behind. Popping _is_stream_enabled is the stop signal the listen loop
+        # reads, and it is what is_connected() reports on.
+        stream_future = self._stream_to_coro.pop(stream_name, None)
+        unsubscriber = self._stream_to_unsubscriber.pop(stream_name, None)
+        self._is_stream_enabled.pop(stream_name, None)
+
+        if stream_future is not None:
             stream_future.cancel()
             if wait:
                 self._wait(stream_future, stream_name)
         else:
             logger.warning(f"[CONNECTION] No stream future found for {stream_name}")
 
-        unsubscriber = self.get_stream_unsubscriber(stream_name)
-        if unsubscriber:
+        if unsubscriber is not None:
             logger.debug(f"Calling unsubscriber for {stream_name}")
             unsub_task = self._loop.submit(unsubscriber())
-            if wait:
-                self._wait(unsub_task, f"unsubscriber for {stream_name}")
-                # Wait for 1 second just in case
-                self._loop.submit(asyncio.sleep(1)).result()
+            if wait and self._wait(unsub_task, f"unsubscriber for {stream_name}"):
+                # Grace period so the venue acks the unsubscribe before a new subscription reuses
+                # the same hashes. Plain wall-clock, not routed through the loop, which would add a
+                # second thing that can block. Skipped when the unsubscribe wait timed out: no ack
+                # is coming from a loop that is already not answering.
+                time.sleep(1)
         else:
             logger.debug(f"No unsubscriber found for {stream_name}")
-
-        self._is_stream_enabled.pop(stream_name, None)
-        self._stream_to_coro.pop(stream_name, None)
-        self._stream_to_unsubscriber.pop(stream_name, None)
 
     def register_stream_future(self, stream_name: str, future: concurrent.futures.Future) -> None:
         """
@@ -334,21 +357,34 @@ class ConnectionManager:
             stream_name: Name of the stream for logging
         """
         try:
-            future.result()  # Retrieve result to handle any exceptions
-        except Exception:
-            pass  # Silent handling to prevent "Future exception was never retrieved"
+            future.result(timeout=0)  # the future is done here, this only re-raises
+        except concurrent.futures.CancelledError:
+            return
+        except BaseException as e:  # noqa: BLE001 - a done-callback must never propagate onto the loop
+            if self._is_stream_enabled.get(stream_name, False):
+                logger.warning(f"[{self._exchange_id}] {stream_name} stopped while still subscribed: {e!r}")
+            else:
+                logger.debug(f"[{self._exchange_id}] {stream_name} finished with {e!r}")
 
-    def _wait(self, future: concurrent.futures.Future, context: str) -> None:
-        """Wait for future completion with timeout and exception handling."""
-        start_wait = time.time()
-        while future.running() and (time.time() - start_wait) < self._cleanup_timeout:
-            time.sleep(0.1)
+    def _wait(self, future: concurrent.futures.Future, context: str) -> bool:
+        """Wait for future completion with timeout and exception handling.
 
-        if future.running():
-            logger.warning(f"[{self._exchange_id}] {context} still running after {self._cleanup_timeout}s timeout")
-        else:
-            # Always retrieve result to handle exceptions properly and prevent "Future exception was never retrieved"
-            try:
-                future.result()  # This will raise any exception that occurred
-            except Exception:
-                pass  # Silent handling during cleanup - UnsubscribeError is expected
+        Returns False iff the wait timed out (the coroutine was abandoned), True otherwise -
+        including when it completed by raising, which callers treat as "the loop answered".
+        """
+        # A future from asyncio.run_coroutine_threadsafe goes PENDING -> FINISHED/CANCELLED and is
+        # never RUNNING, so a `while future.running()` poll never loops and any timeout built on it
+        # is dead code. Do not reintroduce running() here.
+        try:
+            future.result(timeout=self._cleanup_timeout)
+        except concurrent.futures.TimeoutError:
+            # Must precede `except Exception` - TimeoutError is an Exception subclass. The abandoned
+            # coroutine keeps running on the loop; we only stop waiting for it.
+            logger.warning(
+                f"[{self._exchange_id}] {context} did not complete in {self._cleanup_timeout}s - abandoning it"
+            )
+            future.cancel()
+            return False
+        except Exception as e:
+            logger.debug(f"[{self._exchange_id}] {context} finished with {e!r}")
+        return True

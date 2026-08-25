@@ -65,6 +65,12 @@ class BaseDataTypeHandler(IDataTypeHandler):
     Base implementation providing common functionality for data type handlers.
 
     Handles common CCXT operations and provides helper methods for data conversion.
+
+    Convention for `prepare_subscription`: bind `exchange = self._exchange_manager.exchange` once
+    at prepare time and close over that local. Exchange recreation swaps the attribute, so a
+    late-bound unsubscriber targets an exchange the stream was never established on and can only
+    time out. One-shot REST paths (`warmup`, `get_historical_ohlc`, the open_interest poller) read
+    the attribute late on purpose - they should follow recreation.
     """
 
     def __init__(self, data_provider, exchange_manager: ExchangeManager, exchange_id: str):

@@ -1,11 +1,13 @@
 """Simple unit tests for CcxtDataProvider focusing on core functionality."""
 
 import asyncio
+import concurrent.futures
+import threading
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
 
-from qubx.connectors.ccxt.data import CcxtDataProvider
+from qubx.connectors.ccxt.data import MARKETS_LOAD_TIMEOUT_SECONDS, CcxtDataProvider
 from qubx.connectors.ccxt.handlers.ohlc import OhlcDataHandler
 from qubx.connectors.plugin import BuildContext
 from qubx.core.basics import CtrlChannel, Instrument, MarketType
@@ -193,31 +195,30 @@ class TestBasicFunctionality:
                 data_provider.get_ohlc(btc_instrument, "1m", 10)
 
     def test_start_loads_markets(self, data_provider):
-        """start() should eagerly load markets via the async loop."""
+        """start() should eagerly load markets via the async loop, with a timeout."""
         data_provider._exchange_manager.exchange.load_markets = Mock(return_value="markets_coro")
         data_provider._exchange_manager.exchange.markets = {"BTC/USDT:USDT": {}}
 
-        # - _loop is a property; patch it so submit(...).result() is fully mocked
+        # - _loop is a property; patch it so run_sync(...) is fully mocked
         mock_loop = Mock()
         with patch.object(type(data_provider), "_loop", new_callable=PropertyMock, return_value=mock_loop):
             data_provider.start()
 
-        # - load_markets coroutine must have been created and submitted to the loop
+        # - load_markets coroutine must have been created and run on the loop, bounded
         data_provider._exchange_manager.exchange.load_markets.assert_called_once()
-        mock_loop.submit.assert_called_once_with("markets_coro")
-        mock_loop.submit.return_value.result.assert_called_once()
+        mock_loop.run_sync.assert_called_once_with("markets_coro", timeout=MARKETS_LOAD_TIMEOUT_SECONDS)
 
     def test_start_swallows_load_markets_error(self, data_provider):
-        """start() must not raise if markets load fails (listing checks fail-open)."""
+        """start() must not raise if markets load fails or times out (listing checks fail-open)."""
         mock_loop = Mock()
-        mock_loop.submit.return_value.result.side_effect = Exception("boom")
+        mock_loop.run_sync.side_effect = concurrent.futures.TimeoutError()
         data_provider._exchange_manager.exchange.load_markets = Mock(return_value="markets_coro")
 
         with patch.object(type(data_provider), "_loop", new_callable=PropertyMock, return_value=mock_loop):
             # - should not raise
             data_provider.start()
 
-        mock_loop.submit.return_value.result.assert_called_once()
+        mock_loop.run_sync.assert_called_once()
 
     def test_close_calls_exchange_close(self, data_provider):
         """Test that close method calls exchange close."""
@@ -326,6 +327,47 @@ def test_stale_recovery_does_not_collapse_bulk_subscription_set(data_provider):
 
             # Provider state should also reflect the full desired set.
             assert len(data_provider.get_subscribed_instruments("quote")) == 40
+
+
+def test_a_concurrent_universe_change_cannot_interleave_with_a_transition(data_provider):
+    """The stale-data watchdog thread and the strategy thread both drive subscriptions. Computing
+    the instrument set and rebuilding the stream that serves it is one read-modify-write: a churn
+    landing in the middle rebuilds from a half-updated set and can empty a subscription type
+    outright, with no resubscribe to follow.
+    """
+    instruments = [_make_instrument(i) for i in range(6)]
+    parked = threading.Event()
+    release = threading.Event()
+
+    def park(**kwargs):
+        if not parked.is_set():
+            parked.set()
+            release.wait(2.0)
+
+    with patch.object(data_provider._data_type_handler_factory, "get_handler", return_value=Mock()):
+        with patch.object(data_provider._subscription_orchestrator, "execute_subscription", side_effect=park):
+            first = threading.Thread(target=lambda: data_provider.subscribe("quote", instruments), daemon=True)
+            first.start()
+            assert parked.wait(5.0), "the first transition never started"
+
+            churn_done = threading.Event()
+
+            def churn():
+                data_provider.unsubscribe("quote", instruments[:2])
+                churn_done.set()
+
+            second = threading.Thread(target=churn, daemon=True)
+            second.start()
+
+            assert not churn_done.wait(0.3), (
+                "a universe change mutated the subscription set while another transition was mid-flight"
+            )
+
+            release.set()
+            assert churn_done.wait(5.0)
+            first.join(5.0)
+            second.join(5.0)
+            assert not first.is_alive() and not second.is_alive()
 
 
 class TestDelegation:

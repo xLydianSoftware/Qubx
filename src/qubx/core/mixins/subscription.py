@@ -22,6 +22,10 @@ from .utils import EXCHANGE_MAPPINGS
 # and applied on the ProcessorThread.
 SUBSCRIPTION_SWAP_EVENT = "subscription_swap"
 
+# Data types the stale-data watchdog polices. Base types: a subscription may carry parameters
+# ("orderbook(0, 1)"), and only the base type has a staleness threshold in the health monitor.
+_WATCHDOG_DATA_TYPES = frozenset({DataType.QUOTE, DataType.ORDERBOOK, DataType.TRADE})
+
 
 @dataclass(frozen=True, slots=True)
 class _CommitPlan:
@@ -450,14 +454,23 @@ class SubscriptionManager(ISubscriptionManager):
 
     def _monitor_subscription_status(self) -> None:
         exch_sub_to_stale_instr = defaultdict(lambda: defaultdict(set))
-        for data_type in ["quote", "orderbook", "trade"]:
-            for data_provider in self._data_providers:
-                if data_provider.is_simulation or not data_provider.is_connected():
+        for data_provider in self._data_providers:
+            # Must NOT be gated on `is_connected()`: a wedged CCXT provider drops its
+            # stream-enabled flag before it blocks, so it reports not-connected exactly when this
+            # watchdog is needed - gating here disarms the last recovery path.
+            if data_provider.is_simulation:
+                continue
+            # Iterate the provider's OWN subscription keys, not the bare base types: a subscription
+            # may carry parameters ("orderbook(0, 1)") and get_subscribed_instruments / subscribe /
+            # unsubscribe are all exact-key lookups, so "orderbook" would match nothing. Health is
+            # keyed by base type, the provider by full key - carry both.
+            for sub in data_provider.get_subscriptions():
+                base_type = DataType.from_str(sub)[0]
+                if base_type not in _WATCHDOG_DATA_TYPES:
                     continue
-                instruments = data_provider.get_subscribed_instruments(data_type)
-                for instrument in instruments:
-                    if self._health_monitor.is_stale(instrument, data_type):
-                        exch_sub_to_stale_instr[data_provider.exchange()][data_type].add(instrument)
+                for instrument in data_provider.get_subscribed_instruments(sub):
+                    if self._health_monitor.is_stale(instrument, str(base_type)):
+                        exch_sub_to_stale_instr[data_provider.exchange()][sub].add(instrument)
 
         if not exch_sub_to_stale_instr:
             return
@@ -468,14 +481,14 @@ class SubscriptionManager(ISubscriptionManager):
             )
             logger.info("[1/4] Unsubscribing stale instruments..")
             data_provider = self._get_data_provider(exchange)
-            # - unsubscribe stale instruments
-            for data_type, stale_instruments in sub_to_stale_instr.items():
-                data_provider.unsubscribe(data_type, stale_instruments)
+            # - unsubscribe stale instruments (full subscription key, not the base type)
+            for sub, stale_instruments in sub_to_stale_instr.items():
+                data_provider.unsubscribe(sub, stale_instruments)
             logger.info("[2/4] Waiting for 3 seconds before resubscribing..")
             # - wait for 3 seconds before resubscribing
             time.sleep(3)
             logger.info("[3/4] Resubscribing stale instruments..")
             # - resubscribe stale instruments
-            for data_type, stale_instruments in sub_to_stale_instr.items():
-                data_provider.subscribe(data_type, stale_instruments)
+            for sub, stale_instruments in sub_to_stale_instr.items():
+                data_provider.subscribe(sub, stale_instruments)
             logger.info("[4/4] Resubscription complete")

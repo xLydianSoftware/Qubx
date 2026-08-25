@@ -5,13 +5,12 @@ Tests the WebSocket connection handling, retry logic, and stream lifecycle
 management functionality in isolation.
 """
 
-import asyncio
 import concurrent.futures
 from asyncio.exceptions import CancelledError
-from unittest.mock import AsyncMock, MagicMock, call, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from ccxt import BadSymbol, ExchangeClosedByUser, ExchangeError, ExchangeNotAvailable, NetworkError
+from ccxt import BadSymbol, ExchangeClosedByUser, NetworkError
 
 from qubx.connectors.ccxt.connection_manager import ConnectionManager
 from qubx.connectors.ccxt.exceptions import CcxtSymbolNotRecognized
@@ -111,6 +110,7 @@ class TestConnectionManager:
         mock_ctrl_channel.control.is_set.return_value = False  # Will exit the loop immediately
         stream_name = "test_stream"
         subscription_type = "ohlc"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         # Execute
         await connection_manager.listen_to_stream(
@@ -140,6 +140,7 @@ class TestConnectionManager:
 
         stream_name = "test_stream"
         subscription_type = "ohlc"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             # Execute
@@ -168,6 +169,7 @@ class TestConnectionManager:
 
         stream_name = "test_stream"
         subscription_type = "ohlc"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             # Execute
@@ -199,6 +201,7 @@ class TestConnectionManager:
 
         stream_name = "test_stream"
         subscription_type = "ohlc"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         # Execute
         await connection_manager.listen_to_stream(
@@ -224,6 +227,7 @@ class TestConnectionManager:
 
         stream_name = "test_stream"
         subscription_type = "ohlc"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         # Execute
         await connection_manager.listen_to_stream(
@@ -249,6 +253,7 @@ class TestConnectionManager:
 
         stream_name = "ohlc:200:DGBUSDT"
         subscription_type = "ohlc"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             await connection_manager.listen_to_stream(
@@ -282,6 +287,7 @@ class TestConnectionManager:
 
         stream_name = "funding_payment:200:DGBUSDT"
         subscription_type = "funding_payment"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         with patch("asyncio.sleep", new_callable=AsyncMock):
             await connection_manager.listen_to_stream(
@@ -307,6 +313,7 @@ class TestConnectionManager:
 
         stream_name = "test_stream"
         subscription_type = "ohlc"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         # Execute
         await connection_manager.listen_to_stream(
@@ -320,30 +327,29 @@ class TestConnectionManager:
         # Should exit gracefully after one call
         assert mock_subscriber.call_count == 1
 
-    async def test_listen_to_stream_with_unsubscriber(self, connection_manager, mock_async_loop):
-        """Test stream listening registers unsubscriber."""
+    async def test_listen_to_stream_registers_nothing(self, connection_manager, mock_async_loop):
+        """listen_to_stream must only READ the registry - see the resurrection regression tests."""
         # Setup
         mock_subscriber = AsyncMock()
-        mock_unsubscriber = AsyncMock()
         mock_exchange = MagicMock()
         mock_ctrl_channel = MagicMock()
-        mock_ctrl_channel.control.is_set.return_value = False  # Exit immediately
+        mock_ctrl_channel.control.is_set.return_value = True
 
         stream_name = "test_stream"
         subscription_type = "ohlc"
 
-        # Execute
+        # Execute - nobody armed this stream, so the listen loop must not run at all
         await connection_manager.listen_to_stream(
             subscriber=mock_subscriber,
             exchange=mock_exchange,
             channel=mock_ctrl_channel,
             subscription_type=subscription_type,
             stream_name=stream_name,
-            unsubscriber=mock_unsubscriber,
         )
 
-        # Verify unsubscriber was registered
-        assert connection_manager.get_stream_unsubscriber(stream_name) is mock_unsubscriber
+        mock_subscriber.assert_not_called()
+        assert connection_manager._is_stream_enabled == {}
+        assert connection_manager._stream_to_unsubscriber == {}
 
     def test_stop_stream_with_unsubscriber(self, connection_manager):
         """Test stopping stream calls unsubscriber."""
@@ -456,6 +462,7 @@ class TestConnectionManager:
 
         stream_name = "test_stream"
         subscription_type = "ohlc"
+        connection_manager.enable_stream(stream_name)  # the orchestrator arms it before submitting
 
         with patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
             # Execute
