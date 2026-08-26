@@ -97,6 +97,32 @@ class TestBinancePmBalanceParse:
         finally:
             run(ex.close())
 
+    def test_pm_total_is_whole_account_not_a_sub_wallet(self):
+        # PM_BALANCE_ROW above omits crossMarginAsset, so it only catches a swap back to
+        # upstream's cross-wallet field via the derived-total fallback. This row carries
+        # every wallet figure, all distinct, so the assertion pins the whole-account one
+        # directly — the invariant disabling the WS push relies on (with no push, the
+        # papi snapshot is the only balance source on PM).
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "10000.0",  # whole account
+            "crossMarginAsset": "9990.0",  # cross sub-wallet (upstream ccxt reads this)
+            "crossMarginFree": "9980.0",
+            "crossMarginLocked": "10.0",
+            "crossMarginBorrowed": "0",
+            "crossMarginInterest": "0",
+            "umWalletBalance": "10.0",  # UM sub-wallet — what /pm/ws pushes as `wb`
+            "umUnrealizedPNL": "3.0",
+            "cmWalletBalance": "0",
+            "cmUnrealizedPNL": "0",
+        }
+        ex = _pm_exchange()
+        try:
+            parsed = ex.parse_balance_custom([row], "linear", None, True)
+            assert parsed["USDT"]["total"] == 10000.0
+        finally:
+            run(ex.close())
+
     def test_non_pm_passthrough(self):
         ex = _pm_exchange()
         try:
