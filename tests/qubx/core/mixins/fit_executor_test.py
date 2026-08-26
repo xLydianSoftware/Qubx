@@ -578,6 +578,11 @@ class TestStashedContextTripwires:
         ctx._processing_manager = MagicMock()
         ctx._trading_manager = MagicMock()
         ctx._transfer_manager = MagicMock()
+        # - set_universe/add_instruments also request the default instrument leverage, which
+        #   reads is_live and the read-only flag before it touches the account manager
+        ctx._data_providers = [MagicMock(is_simulation=True)]
+        ctx._account_manager = MagicMock()
+        ctx._read_only = False
         return ctx
 
     def test_stashed_ctx_mutators_raise_from_fit_thread(self):

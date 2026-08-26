@@ -623,6 +623,7 @@ def create_strategy_context(
         cfg=AccountManagerConfig(**config.live.account_manager.model_dump()),
         account_id=stg_name,
         tcc=_exchange_to_tcc,
+        default_instrument_leverage=config.live.default_instrument_leverage,
     )
     # Paper seeds the configured initial capital per exchange (no venue to query); live seeds
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions

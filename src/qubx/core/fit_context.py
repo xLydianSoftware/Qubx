@@ -357,6 +357,7 @@ class FitContext(ITimeProvider):
     settle_position = _denied("settle_position")
     # venue/account configuration writes
     set_instrument_leverage = _denied("set_instrument_leverage")
+    set_default_instrument_leverage = _denied("set_default_instrument_leverage")
     set_margin_mode = _denied("set_margin_mode")
     transfer_funds = _denied("transfer_funds")
     # subscription/schedule plumbing with no deferred story (on_init-time concerns)

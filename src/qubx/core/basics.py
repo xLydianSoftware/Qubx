@@ -985,6 +985,11 @@ class Transfer:
 
 DEFAULT_MAINTENANCE_MARGIN = 0.05
 
+# - venue leverage applied to every perp on universe add unless the config or the strategy says
+#   otherwise. Not the same as "off": an unset leverage is whatever the venue last had, which is
+#   how an account ends up opening positions at a leverage nobody chose.
+DEFAULT_INSTRUMENT_LEVERAGE = 3.0
+
 
 class Position:
     instrument: Instrument  # instrument for this position

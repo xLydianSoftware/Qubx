@@ -364,6 +364,11 @@ class StrategyContext(IStrategyContext):
 
         self._trading_manager.set_deny_trading_when_degraded(self.initializer.get_deny_trading_when_degraded())
 
+        # - only when on_init actually set one: the account manager already holds
+        #   live.default_instrument_leverage, passed by the runner at construction
+        if (leverage := self.initializer.get_default_instrument_leverage()) is not None:
+            self._account_manager.set_default_instrument_leverage(leverage)
+
         # Configure stale data detection based on strategy settings
         stale_data_config = self.initializer.get_stale_data_detection_config()
         self._processing_manager.configure_stale_data_detection(*stale_data_config)
@@ -744,6 +749,24 @@ class StrategyContext(IStrategyContext):
             raise ReadOnlyConnector("account configuration is read-only — write rejected")
         self._account_manager.set_instrument_leverage(instrument, leverage)
 
+    def set_default_instrument_leverage(self, leverage: float | None) -> None:
+        """
+        Change the leverage applied to instruments added to the universe, and apply it now to
+        the ones already there. None leaves every venue's own leverage alone from here on.
+        """
+        self._assert_not_fit_thread("set_default_instrument_leverage")
+        if self._read_only:
+            raise ReadOnlyConnector("account configuration is read-only — write rejected")
+        # - refuse rather than clamp: a sub-1 leverage is a typo or a percentage, and silently
+        #   turning it into 1 would trade a size nobody asked for
+        if leverage is not None and leverage < 1:
+            logger.error(
+                f"[StrategyContext] default instrument leverage must be >= 1, got {leverage} — "
+                f"keeping {self._account_manager.get_default_instrument_leverage()}"
+            )
+            return
+        self._account_manager.set_default_instrument_leverage(leverage)
+
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         self._assert_not_fit_thread("set_margin_mode")
         if self._read_only:
@@ -884,11 +907,23 @@ class StrategyContext(IStrategyContext):
         self, instruments: list[Instrument], skip_callback: bool = False, if_has_position_then: RemovalPolicy = "close"
     ):
         self._assert_not_fit_thread("set_universe")
-        return self._universe_manager.set_universe(instruments, skip_callback, if_has_position_then)
+        result = self._universe_manager.set_universe(instruments, skip_callback, if_has_position_then)
+        self._apply_default_leverage(instruments)
+        return result
 
     def add_instruments(self, instruments: list[Instrument]):
         self._assert_not_fit_thread("add_instruments")
-        return self._universe_manager.add_instruments(instruments)
+        result = self._universe_manager.add_instruments(instruments)
+        self._apply_default_leverage(instruments)
+        return result
+
+    def _apply_default_leverage(self, instruments: list[Instrument]) -> None:
+        # - the initial universe arrives here too (start() calls set_universe with
+        #   skip_callback=True), so this is the only place that sees every instrument the bot
+        #   trades before it trades them. set_universe passes the whole new universe because the
+        #   added ones are only known inside UniverseManager; add_instruments passes just those.
+        if self.is_live and not self._read_only:
+            self._account_manager.apply_default_instrument_leverage(instruments)
 
     def remove_instruments(self, instruments: list[Instrument], if_has_position_then: RemovalPolicy = "close"):
         self._assert_not_fit_thread("remove_instruments")
