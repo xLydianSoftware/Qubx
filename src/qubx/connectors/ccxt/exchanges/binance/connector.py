@@ -10,6 +10,9 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   ``GET /papi/v1/account`` into ``info`` — see ``_extract_venue_figures``. The papi
   figures are USD-denominated (vs USDT on fapi); the difference is treated as
   negligible, same as the base class treats fapi's USDT figures.
+- **WS balance push**: disabled (``_wants_ws_balance_push``). The papi user-data
+  ACCOUNT_UPDATE carries the UM sub-wallet in ``wb``, not the account wallet — see
+  the class attribute. Balance refresh rides the papi snapshot instead.
 - **ADL level**: papi positionRisk carries no adl field; PM exposes it on a dedicated
   bulk ``GET /papi/v1/um/adlQuantile`` endpoint. One account-wide call per snapshot
   stamps ``Position.adl_level`` (so ``ctx.get_adl_level`` — an AccountManager dict
@@ -53,6 +56,14 @@ def _parse_adl_quantiles(rows: Any) -> dict[str, int]:
 
 class BinancePmCcxtConnector(CcxtConnector):
     """BINANCE.PM connector: papi account figures + papi ADL on top of the base."""
+
+    # PM has no usable WS balance push. The papi /pm/ws ACCOUNT_UPDATE reports the UM
+    # SUB-wallet in `a.B[].wb`, not the account: PM collateral sits in the cross-margin
+    # wallet, so wb tracks cumulative UM realized PnL/fees (~0 on a fresh account) and
+    # an absolute push overwrites the real balance until the next snapshot. Same trap
+    # the REST path already sidesteps in BinanceQV.parse_balance_custom, which reads
+    # whole-account totalWalletBalance. Snapshot-only here.
+    _wants_ws_balance_push = False
 
     _adl_levels: dict[str, int]
 

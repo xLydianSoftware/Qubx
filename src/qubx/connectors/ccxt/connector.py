@@ -159,6 +159,13 @@ class CcxtConnector(ChannelEmitter):
     # make_client_id actually produces, so producer and classifier can never drift.
     cid_framework_prefix: str = FRAMEWORK_CID_PREFIX
 
+    # Whether the venue's ACCOUNT_UPDATE `a.B[].wb` is the ACCOUNT wallet balance.
+    # True on plain UM/CM, where the futures wallet is the account. False on venues
+    # whose stream reports a SUB-wallet (Binance PM) — there an absolute push would
+    # overwrite the account balance with the sub-wallet figure, so they stay
+    # snapshot-only.
+    _wants_ws_balance_push: bool = True
+
     def __init__(
         self,
         *,
@@ -1076,7 +1083,7 @@ class CcxtConnector(ChannelEmitter):
         # snapshot-only until ported.
         if not isinstance(ex, ccxt.pro.binance) or not self._is_derivatives_venue():
             return streams
-        if ex.has.get("watchBalance"):
+        if ex.has.get("watchBalance") and self._wants_ws_balance_push:
             streams.append(
                 self._run_ws_loop(
                     watch=ex.watch_balance,

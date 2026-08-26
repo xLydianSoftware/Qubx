@@ -20,6 +20,7 @@ import pytest
 from qubx import logger
 from qubx.connectors.ccxt.connector import CcxtConnector
 from qubx.connectors.ccxt.exchanges._two_stream import _TwoStreamCcxtConnector
+from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
 from qubx.core.account_manager import SimulatedAccountManager
 from qubx.core.basics import (
     Balance,
@@ -1088,6 +1089,24 @@ async def test_account_streams_derivatives_venue_adds_balance_loop() -> None:
     assert [k["mark_ready"] for k in recorded] == [True, False]
     assert [k.get("iterate", True) for k in recorded] == [True, False]
     assert recorded[1]["handle"] == conn._handle_ws_balances
+
+
+@pytest.mark.asyncio
+async def test_portfolio_margin_venue_omits_balance_push_loop() -> None:
+    # A PM ACCOUNT_UPDATE's `a.B[].wb` is the UM SUB-WALLET balance, not the account:
+    # PM collateral lives in the cross-margin wallet, so wb reads ~0 (cumulative UM
+    # realized PnL/fees) and an absolute push would wipe the real balance. PM stays
+    # snapshot-only — the papi snapshot reads whole-account totalWalletBalance.
+    exchange = _binance_exchange(
+        has={"watchBalance": True},
+        options={"defaultType": "swap", "portfolioMargin": True},
+    )
+    conn, _, _ = _make_connector(exchange=exchange, cls=BinancePmCcxtConnector)
+    recorded = _record_streams(conn)
+
+    await conn._subscribe_executions()
+
+    assert [k["stream"] for k in recorded] == ["executions"]
 
 
 @pytest.mark.asyncio
