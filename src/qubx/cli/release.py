@@ -843,6 +843,13 @@ def _lock_constraint_dependencies(uv_lock_path: str) -> list[str]:
     what bots run (see issue #398). Names that appear with multiple versions in
     the lock (platform-forked resolutions) are skipped: a single == constraint
     could make the wrapper unresolvable.
+
+    Only registry-sourced entries (`source = { registry = ... }`) are eligible.
+    Git, editable, path, directory, and URL sources are pinned by their own
+    ref / bundled wheel already — emitting an `==` constraint for them is wrong
+    and unsatisfiable, since uv can only satisfy a bare `==` constraint from an
+    index, and that exact version was never published to one. If ANY lock
+    entry for a given name is non-registry, the name is excluded entirely.
     """
     import toml
 
@@ -854,18 +861,28 @@ def _lock_constraint_dependencies(uv_lock_path: str) -> list[str]:
         lock_data = toml.load(f)
 
     versions_by_name: dict[str, set[str]] = {}
+    non_registry_names: set[str] = set()
     for pkg in lock_data.get("package", []):
         name = pkg.get("name", "")
         version = pkg.get("version", "")
-        if name and version:
-            versions_by_name.setdefault(name, set()).add(version)
+        if not name or not version:
+            continue
+        versions_by_name.setdefault(name, set()).add(version)
+        if "registry" not in pkg.get("source", {}):
+            non_registry_names.add(name)
 
-    skipped = sorted(name for name, versions in versions_by_name.items() if len(versions) > 1)
-    if skipped:
-        logger.debug(f"Skipping constraint-dependencies for multi-version packages: {skipped}")
+    skipped_multi = sorted(name for name, versions in versions_by_name.items() if len(versions) > 1)
+    if skipped_multi:
+        logger.debug(f"Skipping constraint-dependencies for multi-version packages: {skipped_multi}")
+
+    skipped_non_registry = sorted(non_registry_names)
+    if skipped_non_registry:
+        logger.debug(f"Skipping constraint-dependencies for non-registry-sourced packages: {skipped_non_registry}")
 
     return sorted(
-        f"{name}=={next(iter(versions))}" for name, versions in versions_by_name.items() if len(versions) == 1
+        f"{name}=={next(iter(versions))}"
+        for name, versions in versions_by_name.items()
+        if len(versions) == 1 and name not in non_registry_names
     )
 
 

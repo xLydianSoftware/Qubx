@@ -648,9 +648,14 @@ class TestResolveSourceLockfile:
 
 
 class TestLockConstraintDependencies:
-    """Tests for `_lock_constraint_dependencies` (issue #398)."""
+    """Tests for `_lock_constraint_dependencies` (issue #398).
 
-    def test_single_version_packages_become_constraints(self, tmp_path: Path):
+    Covers the registry-only rule (issue #398 follow-up): git/editable/path
+    sources are pinned by ref or bundled wheel already, and an `==` constraint
+    for them is unsatisfiable since uv can only satisfy `==` from an index.
+    """
+
+    def test_single_version_registry_packages_become_constraints(self, tmp_path: Path):
         lock_path = tmp_path / "uv.lock"
         lock_path.write_text(
             "\n".join(
@@ -658,20 +663,24 @@ class TestLockConstraintDependencies:
                     '[[package]]',
                     'name = "foo"',
                     'version = "1.2.3"',
+                    'source = { registry = "https://pypi.org/simple" }',
                     "",
                     '[[package]]',
                     'name = "bar"',
                     'version = "0.5.0"',
+                    'source = { registry = "https://pypi.org/simple" }',
                     "",
                     # "baz" appears with two versions (e.g. a platform-forked
                     # resolution) — must be skipped entirely.
                     '[[package]]',
                     'name = "baz"',
                     'version = "1.0.0"',
+                    'source = { registry = "https://pypi.org/simple" }',
                     "",
                     '[[package]]',
                     'name = "baz"',
                     'version = "2.0.0"',
+                    'source = { registry = "https://pypi.org/simple" }',
                 ]
             )
         )
@@ -679,6 +688,52 @@ class TestLockConstraintDependencies:
         result = _lock_constraint_dependencies(str(lock_path))
 
         assert result == ["bar==0.5.0", "foo==1.2.3"]
+
+    def test_git_sourced_package_excluded(self, tmp_path: Path):
+        """A git-sourced dep (e.g. quantkit pinned by tag) must not get an == constraint."""
+        lock_path = tmp_path / "uv.lock"
+        lock_path.write_text(
+            "\n".join(
+                [
+                    '[[package]]',
+                    'name = "foo"',
+                    'version = "1.2.3"',
+                    'source = { registry = "https://pypi.org/simple" }',
+                    "",
+                    '[[package]]',
+                    'name = "quantkit"',
+                    'version = "4.1.1"',
+                    'source = { git = "https://github.com/example/quantkit?tag=v4.1.1#deadbeef" }',
+                ]
+            )
+        )
+
+        result = _lock_constraint_dependencies(str(lock_path))
+
+        assert result == ["foo==1.2.3"]
+
+    def test_editable_sourced_package_excluded(self, tmp_path: Path):
+        """An editable/local dep (e.g. the strategy package itself) must not get an == constraint."""
+        lock_path = tmp_path / "uv.lock"
+        lock_path.write_text(
+            "\n".join(
+                [
+                    '[[package]]',
+                    'name = "foo"',
+                    'version = "1.2.3"',
+                    'source = { registry = "https://pypi.org/simple" }',
+                    "",
+                    '[[package]]',
+                    'name = "factors"',
+                    'version = "0.1.0"',
+                    'source = { editable = "." }',
+                ]
+            )
+        )
+
+        result = _lock_constraint_dependencies(str(lock_path))
+
+        assert result == ["foo==1.2.3"]
 
     def test_missing_lock_file_returns_empty_list(self, tmp_path: Path):
         missing_path = tmp_path / "does-not-exist" / "uv.lock"
