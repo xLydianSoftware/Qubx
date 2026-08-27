@@ -4,6 +4,7 @@ import os
 import platform
 import re
 import shutil
+import tempfile
 import urllib.request
 from base64 import b64encode
 from collections import namedtuple
@@ -835,6 +836,57 @@ def _parse_uv_lock_git_commits(uv_lock_path: str) -> dict[str, str]:
     return commits
 
 
+def _lock_constraint_dependencies(uv_lock_path: str) -> list[str]:
+    """Build `name==version` constraints from the source repo's uv.lock.
+
+    The wrapper's fresh resolution must reproduce the source repo's tested
+    resolution — otherwise a same-day PyPI publish of any transitive dep changes
+    what bots run (see issue #398). Names that appear with multiple versions in
+    the lock (platform-forked resolutions) are skipped: a single == constraint
+    could make the wrapper unresolvable.
+
+    Only registry-sourced entries (`source = { registry = ... }`) are eligible.
+    Git, editable, path, directory, and URL sources are pinned by their own
+    ref / bundled wheel already — emitting an `==` constraint for them is wrong
+    and unsatisfiable, since uv can only satisfy a bare `==` constraint from an
+    index, and that exact version was never published to one. If ANY lock
+    entry for a given name is non-registry, the name is excluded entirely.
+    """
+    import toml
+
+    if not os.path.exists(uv_lock_path):
+        logger.warning(f"uv.lock not found at {uv_lock_path}")
+        return []
+
+    with open(uv_lock_path) as f:
+        lock_data = toml.load(f)
+
+    versions_by_name: dict[str, set[str]] = {}
+    non_registry_names: set[str] = set()
+    for pkg in lock_data.get("package", []):
+        name = pkg.get("name", "")
+        version = pkg.get("version", "")
+        if not name or not version:
+            continue
+        versions_by_name.setdefault(name, set()).add(version)
+        if "registry" not in pkg.get("source", {}):
+            non_registry_names.add(name)
+
+    skipped_multi = sorted(name for name, versions in versions_by_name.items() if len(versions) > 1)
+    if skipped_multi:
+        logger.debug(f"Skipping constraint-dependencies for multi-version packages: {skipped_multi}")
+
+    skipped_non_registry = sorted(non_registry_names)
+    if skipped_non_registry:
+        logger.debug(f"Skipping constraint-dependencies for non-registry-sourced packages: {skipped_non_registry}")
+
+    return sorted(
+        f"{name}=={next(iter(versions))}"
+        for name, versions in versions_by_name.items()
+        if len(versions) == 1 and name not in non_registry_names
+    )
+
+
 def _find_uv_git_checkout(commit_sha: str) -> str | None:
     """
     Find the uv git cache checkout directory for a given commit SHA.
@@ -921,6 +973,7 @@ def _generate_release_pyproject(
     plugin_deps: list[str] | None = None,
     external_deps: list[str] | None = None,
     pyproject_data: dict | None = None,
+    constraint_dependencies: list[str] | None = None,
 ) -> None:
     """
     Generate a minimal pyproject.toml for the release package.
@@ -940,6 +993,9 @@ def _generate_release_pyproject(
         plugin_deps: Plugin dependency specs to include
         external_deps: External package dependency specs (for no-code configs)
         pyproject_data: Original pyproject data for preserving index config
+        constraint_dependencies: `name==version` pins from the source repo's uv.lock,
+            written to `tool.uv.constraint-dependencies` so the wrapper's fresh
+            resolution reproduces the tested one (see issue #398)
     """
     import toml
 
@@ -986,11 +1042,22 @@ def _generate_release_pyproject(
         if index_sources:
             uv_config["sources"] = index_sources
 
+    if constraint_dependencies:
+        uv_config["constraint-dependencies"] = constraint_dependencies
+
+    # The wrapper only ever runs inside the deploy image (Dockerfile: FROM
+    # python:3.12-slim, linux/amd64) — never resolved for anything else. Pin
+    # both requires-python and the resolution environment to exactly that
+    # target so `uv lock` doesn't try (and fail) to find candidates for other
+    # Python versions/platforms; the bundled first-party wheels are
+    # cp312-linux_x86_64-only anyway. Must move together with the Dockerfile.
+    uv_config["environments"] = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
     release_pyproject: dict = {
         "project": {
             "name": "strategy-release",
             "version": "0.1.0",
-            "requires-python": ">=3.12",
+            "requires-python": "==3.12.*",
             "dependencies": deps,
         },
         "tool": {
@@ -1128,6 +1195,9 @@ def create_released_pack(
             for whl in sorted(wheel_files):
                 logger.info(f"  {whl}")
 
+    constraint_dependencies = _lock_constraint_dependencies(uv_lock_path)
+    logger.info(f"Constraining wrapper resolution to {len(constraint_dependencies)} pin(s) from source uv.lock")
+
     _generate_release_pyproject(
         release_dir=release_dir,
         strategy_wheel_name=strategy_wheel_name,
@@ -1135,6 +1205,7 @@ def create_released_pack(
         plugin_deps=plugin_deps,
         external_deps=external_deps,
         pyproject_data=pyproject_data,
+        constraint_dependencies=constraint_dependencies,
     )
 
     # --- Save config + metadata ---
@@ -1588,10 +1659,24 @@ def _bundle_source_overrides(
 
             logger.info(f"  Bundling {pkg_name}=={pkg_ver} from {build_cwd} ...")
             os.makedirs(wheels_dir, exist_ok=True)
+
+            # `uv build` refuses to build a project that lives inside uv's own
+            # cache dir ("The project directory `.` is inside the cache
+            # directory"), which is exactly where a cache-hit git checkout
+            # lives. Always build from a fresh temp copy — this also keeps
+            # build artifacts out of the shared uv cache checkout. `.git` is
+            # copied along with everything else: build backends that derive
+            # the version from VCS metadata (e.g. hatch-vcs, as quantkit
+            # uses) need it to produce a real version instead of "0.0.0".
+            build_tmp_root = tempfile.mkdtemp(prefix="qubx-release-build-")
             try:
+                build_copy = os.path.join(build_tmp_root, "src")
+                shutil.copytree(checkout_dir, build_copy, dirs_exist_ok=True)
+                copy_build_cwd = os.path.join(build_copy, subdir) if subdir else build_copy
+
                 result = subprocess.run(
                     ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
-                    cwd=build_cwd,
+                    cwd=copy_build_cwd,
                     check=True,
                     capture_output=True,
                     text=True,
@@ -1608,6 +1693,7 @@ def _bundle_source_overrides(
             except subprocess.CalledProcessError as e:
                 logger.opt(colors=False).warning(f"  Failed to build wheel for {pkg_name}: {e.stderr or e}")
             finally:
+                shutil.rmtree(build_tmp_root, ignore_errors=True)
                 if cloned_locally and os.path.isdir(checkout_dir):
                     shutil.rmtree(checkout_dir, ignore_errors=True)
 
