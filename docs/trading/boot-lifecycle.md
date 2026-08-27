@@ -187,7 +187,10 @@ intended book at boot. Its contract:
   book alone and lets the first live fit reconcile through the tracker.
 
 Custom resolvers (frab's pair-book resolver, factors' resolver) receive the same
-arguments and are unaffected by any of this — they always ran and always will.
+arguments and are unaffected by any of this — they now run at every live boot with no
+empty-guard applied. Before this release, a registered custom resolver was silently
+skipped at boot whenever warmup was disabled (#363); that gap is what this release
+closes.
 
 ### Recommended patterns
 

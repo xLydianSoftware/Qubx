@@ -1136,8 +1136,6 @@ class ProcessingManager(IProcessingManager):
                     raise
             return False
 
-        return boot.is_trading
-
     def _report_boot_fit(self, ok: bool) -> None:
         """Hand a fit outcome to the boot machine — only while it still owns the fit
         (BOOT_FIT) or waits for a self-heal (BLOCKED). A fit triggered mid-boot (handlers
