@@ -1126,7 +1126,14 @@ class ProcessingManager(IProcessingManager):
                 if not self._is_ready():
                     return False
                 boot.record_fit_attempt()
-                self._handle_fit(None, "fit", (None, self._time_provider.time()))
+                try:
+                    self._handle_fit(None, "fit", (None, self._time_provider.time()))
+                except Exception:
+                    # - framework raise (cache finalize, health monitor, executor submit):
+                    #   stays loud, but the attempt must arm the retry deadline like any
+                    #   other failure instead of hot-looping on an unaccounted budget
+                    self._report_boot_fit(False)
+                    raise
             return False
 
         return boot.is_trading

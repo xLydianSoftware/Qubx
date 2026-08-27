@@ -3,6 +3,7 @@
 from unittest.mock import MagicMock
 
 import numpy as np
+import pytest
 
 from qubx.core.basics import CtrlChannel, TriggerEvent
 from qubx.core.boot import BootPhase
@@ -267,7 +268,9 @@ class TestBootFitFailure:
         assert pm._boot.is_blocked
         pm._health_monitor.record_gauge.assert_any_call("boot.fit_failed", 1.0)
 
-        drive(pm)  # blocked: no on_event, no more attempts
+        # blocked: a real event is dropped — no on_event, no more attempts
+        event = TriggerEvent(time=tp.time.return_value, type="time", instrument=None, data=None)
+        assert pm._run_strategy_pipeline(event) is False
         assert strategy.on_fit.call_count == 3
         strategy.on_event.assert_not_called()
 
@@ -282,11 +285,18 @@ class TestBootFitFailure:
         drive(pm)
         assert pm._boot.is_blocked
 
+        event = TriggerEvent(time=tp.time.return_value, type="time", instrument=None, data=None)
+        pm._run_strategy_pipeline(event)
+        strategy.on_event.assert_not_called()  # blocked: the event never reaches the strategy
+
         strategy.on_fit.side_effect = None  # a scheduled fit arrives via _handle_fit
         pm._handle_fit(None, "fit", (None, tp.time.return_value))
         assert ctx._strategy_state.is_on_fit_called
         assert pm._boot.is_trading
         pm._health_monitor.record_gauge.assert_any_call("boot.fit_failed", 0.0)
+
+        pm._run_strategy_pipeline(event)  # released: the same event now flows through
+        strategy.on_event.assert_called_once()
 
     def test_warmup_finished_failure_latches_and_gauges(self):
         pm, ctx, strategy = make_pm()
@@ -325,6 +335,29 @@ class TestBootFitFailure:
         drive(pm)
         assert pm._boot.is_trading
         assert strategy.on_fit.call_count == 2
+
+    def test_framework_raise_on_the_boot_fit_pass_arms_the_retry_deadline(self):
+        # a raise before on_fit (cache finalize here) stays loud, but must still count as a
+        # failed attempt: otherwise the pass retries hot and poisons the retry budget
+        pm, ctx, strategy = make_pm()
+        tp = pm._time_provider
+        pm._cache.finalize_ohlc_for_instruments.side_effect = RuntimeError("cache boom")
+
+        with pytest.raises(RuntimeError, match="cache boom"):
+            drive(pm)
+        strategy.on_fit.assert_not_called()
+        assert pm._boot.fit_attempts == 1
+
+        drive(pm)  # deadline armed: no immediate re-attempt
+        assert pm._boot.fit_attempts == 1
+        strategy.on_fit.assert_not_called()
+
+        pm._cache.finalize_ohlc_for_instruments.side_effect = None
+        tp.time.return_value = T0 + np.timedelta64(61, "s")
+        drive(pm)
+        strategy.on_fit.assert_called_once()
+        assert pm._boot.fit_attempts == 2
+        assert pm._boot.is_trading
 
     def test_mid_boot_scheduled_fit_does_not_skip_the_boot_steps(self):
         # a fit trigger dispatched before the machine owns the fit (handlers run ahead of
