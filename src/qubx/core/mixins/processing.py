@@ -167,7 +167,6 @@ class ProcessingManager(IProcessingManager):
     _last_data_ready_log_time: dt_64 | None = None
     _all_instruments_ready_logged: bool = False
     _account_sync_deadline: dt_64 | None = None  # - startup: bound the wait for the initial snapshot
-    _account_sync_timeout_logged: bool = False
     _boot: BootStateMachine
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
@@ -243,7 +242,6 @@ class ProcessingManager(IProcessingManager):
         self._last_data_ready_log_time = None
         self._all_instruments_ready_logged = False
         self._account_sync_deadline = None
-        self._account_sync_timeout_logged = False
         self._emitted_signals = []
         self._boot = BootStateMachine(self._health_monitor)
 
@@ -891,27 +889,25 @@ class ProcessingManager(IProcessingManager):
         Gates on_start / on_fit / state-resolution / restore so those callbacks see REAL capital +
         venue positions instead of the pre-sync zero state (which would produce 0-capital sizing and
         transiently-flat restored positions). No account requirement in simulation (no venue snapshot).
-        Falls through after ACCOUNT_SYNC_TIMEOUT so a missing/failed snapshot never hangs the strategy
-        — mirrors the data-ready two-phase timeout; the reconciler heals state on the next snapshot.
+        Never falls through: trading against phantom-zero positions can double-open the book.
+        ACCOUNT_SYNC_TIMEOUT only arms an alert (once), the boot keeps holding until synced.
         """
         if not self._is_data_ready():
             return False
         # - simulation & paper have a locally-seeded account (no venue snapshot to wait for)
-        if self._context.is_simulation or self._context.is_paper_trading or self._account_manager.is_synced():
+        if self._context.is_simulation or self._context.is_paper_trading:
             return True
-        # - data ready but the initial venue snapshot hasn't applied yet: wait, bounded.
+        if self._account_manager.is_synced():
+            self._boot.account_synced()
+            return True
+        # - data ready but the initial venue snapshot hasn't applied: hold the boot.
+        #   ACCOUNT_SYNC_TIMEOUT is the alert threshold, not a fall-through — trading
+        #   against phantom-zero positions can double-open the book.
         now = self._time_provider.time()
         if self._account_sync_deadline is None:
             self._account_sync_deadline = now + self.ACCOUNT_SYNC_TIMEOUT
-            return False
-        if now >= self._account_sync_deadline:
-            if not self._account_sync_timeout_logged:
-                logger.warning(
-                    "Initial account snapshot not applied within timeout — starting without it; "
-                    "capital/positions may be incomplete until the next reconcile"
-                )
-                self._account_sync_timeout_logged = True
-            return True
+        elif now >= self._account_sync_deadline:
+            self._boot.account_sync_alert()
         return False
 
     def __update_base_data(

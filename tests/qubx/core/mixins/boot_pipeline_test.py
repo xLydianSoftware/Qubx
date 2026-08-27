@@ -188,3 +188,32 @@ class TestSimulationParity:
         ctx.get_restored_state.assert_not_called()
         assert pm._boot.is_trading
         assert not ctx._strategy_state.is_on_warmup_finished_called
+
+
+class TestStrictAccountSyncGate:
+    def test_boot_holds_until_synced_and_alerts_after_timeout(self):
+        pm, ctx, strategy = make_pm()
+        pm._account_manager.is_synced.return_value = False
+        tp = pm._time_provider
+
+        drive(pm)  # arms the deadline
+        assert pm._boot.phase == BootPhase.WAIT_READY
+        strategy.on_start.assert_not_called()
+
+        tp.time.return_value = T0 + np.timedelta64(20, "s")  # past ACCOUNT_SYNC_TIMEOUT (15s)
+        drive(pm)
+        assert pm._boot.phase == BootPhase.WAIT_READY
+        strategy.on_start.assert_not_called()
+        pm._health_monitor.record_gauge.assert_any_call("boot.account_sync_blocked", 1.0)
+
+    def test_boot_proceeds_when_snapshot_lands_late(self):
+        pm, ctx, strategy = make_pm()
+        pm._account_manager.is_synced.return_value = False
+        tp = pm._time_provider
+        drive(pm)
+        tp.time.return_value = T0 + np.timedelta64(30, "s")
+        drive(pm)
+        pm._account_manager.is_synced.return_value = True
+        drive(pm)
+        strategy.on_start.assert_called_once()
+        pm._health_monitor.record_gauge.assert_any_call("boot.account_sync_blocked", 0.0)
