@@ -4,6 +4,7 @@ import os
 import platform
 import re
 import shutil
+import tempfile
 import urllib.request
 from base64 import b64encode
 from collections import namedtuple
@@ -1658,10 +1659,24 @@ def _bundle_source_overrides(
 
             logger.info(f"  Bundling {pkg_name}=={pkg_ver} from {build_cwd} ...")
             os.makedirs(wheels_dir, exist_ok=True)
+
+            # `uv build` refuses to build a project that lives inside uv's own
+            # cache dir ("The project directory `.` is inside the cache
+            # directory"), which is exactly where a cache-hit git checkout
+            # lives. Always build from a fresh temp copy — this also keeps
+            # build artifacts out of the shared uv cache checkout. `.git` is
+            # copied along with everything else: build backends that derive
+            # the version from VCS metadata (e.g. hatch-vcs, as quantkit
+            # uses) need it to produce a real version instead of "0.0.0".
+            build_tmp_root = tempfile.mkdtemp(prefix="qubx-release-build-")
             try:
+                build_copy = os.path.join(build_tmp_root, "src")
+                shutil.copytree(checkout_dir, build_copy, dirs_exist_ok=True)
+                copy_build_cwd = os.path.join(build_copy, subdir) if subdir else build_copy
+
                 result = subprocess.run(
                     ["uv", "build", "--wheel", ".", "--out-dir", wheels_dir],
-                    cwd=build_cwd,
+                    cwd=copy_build_cwd,
                     check=True,
                     capture_output=True,
                     text=True,
@@ -1678,6 +1693,7 @@ def _bundle_source_overrides(
             except subprocess.CalledProcessError as e:
                 logger.opt(colors=False).warning(f"  Failed to build wheel for {pkg_name}: {e.stderr or e}")
             finally:
+                shutil.rmtree(build_tmp_root, ignore_errors=True)
                 if cloned_locally and os.path.isdir(checkout_dir):
                     shutil.rmtree(checkout_dir, ignore_errors=True)
 

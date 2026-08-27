@@ -270,7 +270,12 @@ class TestCreateReleasedPack:
 
 
 class TestBundleSourceOverrides:
-    """Verify [tool.uv.sources] git source bundling — including monorepo `subdirectory`."""
+    """Verify [tool.uv.sources] git source bundling — including monorepo `subdirectory`.
+
+    `uv build` refuses to run inside uv's own cache dir (where a cache-hit git
+    checkout lives), so the git-source path must build from a fresh temp copy
+    of the checkout rather than the checkout itself (see issue #398 follow-up).
+    """
 
     def _make_pyproject(self, *, subdirectory: str | None = None) -> dict:
         source: dict = {
@@ -281,14 +286,33 @@ class TestBundleSourceOverrides:
             source["subdirectory"] = subdirectory
         return {"tool": {"uv": {"sources": {"sample-pkg": source}}}}
 
+    @staticmethod
+    def _build_tmp_root(cwd: str) -> Path:
+        """Walk up from the build cwd to the `qubx-release-build-*` temp root."""
+        for parent in Path(cwd).parents:
+            if parent.name.startswith("qubx-release-build-"):
+                return parent
+        raise AssertionError(f"cwd {cwd!r} was not built under a qubx-release-build- temp dir")
+
     @patch("qubx.cli.release._find_uv_git_checkout")
     @patch("subprocess.run")
     def test_git_source_with_subdirectory_builds_from_subdir(self, mock_run, mock_find_checkout, tmp_path):
-        """Git source with `subdirectory` must run `uv build` from <checkout>/<subdirectory>."""
+        """Git source with `subdirectory` must run `uv build` from a temp copy's <subdirectory>."""
         checkout_root = tmp_path / "cache" / "deadbeef"
-        checkout_root.mkdir(parents=True)
+        (checkout_root / "qubx-xdata").mkdir(parents=True)
+        (checkout_root / "qubx-xdata" / "pyproject.toml").write_text('[project]\nname = "sample-pkg"\n')
         mock_find_checkout.return_value = str(checkout_root)
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        # The temp copy is cleaned up in a `finally` before _bundle_source_overrides
+        # returns, so inspect it from inside the mocked build call itself.
+        seen: dict = {}
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            seen["cwd"] = cwd
+            seen["pyproject_copied"] = os.path.isfile(os.path.join(cwd, "pyproject.toml"))
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
 
         release_dir = tmp_path / "release"
         release_dir.mkdir()
@@ -303,18 +327,32 @@ class TestBundleSourceOverrides:
         )
 
         assert mock_run.called, "uv build should be invoked for the git source"
-        kwargs = mock_run.call_args.kwargs
-        expected_cwd = str(checkout_root / "qubx-xdata")
-        assert kwargs["cwd"] == expected_cwd, f"Expected build cwd={expected_cwd!r}, got {kwargs['cwd']!r}"
+
+        # Must NOT build from the original uv-cache checkout path.
+        assert seen["cwd"] != str(checkout_root / "qubx-xdata")
+        assert seen["cwd"].endswith(os.sep + "qubx-xdata")
+
+        # Temp copy must actually contain the subdir's contents (a real copy,
+        # not just a matching path).
+        assert seen["pyproject_copied"] is True
 
     @patch("qubx.cli.release._find_uv_git_checkout")
     @patch("subprocess.run")
-    def test_git_source_without_subdirectory_builds_from_root(self, mock_run, mock_find_checkout, tmp_path):
-        """Without `subdirectory`, `uv build` must run from the checkout root (unchanged)."""
+    def test_git_source_without_subdirectory_builds_from_root_copy(self, mock_run, mock_find_checkout, tmp_path):
+        """Without `subdirectory`, `uv build` must run from a temp copy of the checkout root."""
         checkout_root = tmp_path / "cache" / "deadbeef"
         checkout_root.mkdir(parents=True)
+        (checkout_root / "pyproject.toml").write_text('[project]\nname = "sample-pkg"\n')
         mock_find_checkout.return_value = str(checkout_root)
-        mock_run.return_value = MagicMock(returncode=0, stdout="", stderr="")
+
+        seen: dict = {}
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            seen["cwd"] = cwd
+            seen["pyproject_copied"] = os.path.isfile(os.path.join(cwd, "pyproject.toml"))
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
 
         release_dir = tmp_path / "release"
         release_dir.mkdir()
@@ -328,8 +366,85 @@ class TestBundleSourceOverrides:
             git_commits={"sample_pkg": "deadbeefcafebabe"},
         )
 
+        assert seen["cwd"] != str(checkout_root)
+        assert seen["pyproject_copied"] is True
+
+    @patch("qubx.cli.release._find_uv_git_checkout")
+    @patch("subprocess.run")
+    def test_git_source_build_copies_git_metadata_and_cleans_up(self, mock_run, mock_find_checkout, tmp_path):
+        """`.git` must be copied (hatch-vcs-style build backends need it), and the temp
+        copy must be removed again once the build finishes."""
+        checkout_root = tmp_path / "cache" / "deadbeef"
+        checkout_root.mkdir(parents=True)
+        (checkout_root / "pyproject.toml").write_text('[project]\nname = "sample-pkg"\n')
+        (checkout_root / ".git").mkdir()
+        (checkout_root / ".git" / "HEAD").write_text("ref: refs/heads/main\n")
+        mock_find_checkout.return_value = str(checkout_root)
+
+        # copytree runs for real (only subprocess.run for the build itself is
+        # mocked) — capture whether .git made it into the copy at the moment
+        # `uv build` would have run, before the try/finally cleans it up.
+        seen_git_dir_present = {}
+
+        def fake_run(cmd, cwd=None, **kwargs):
+            seen_git_dir_present["value"] = os.path.isdir(os.path.join(cwd, ".git"))
+            seen_git_dir_present["head"] = os.path.isfile(os.path.join(cwd, ".git", "HEAD"))
+            return MagicMock(returncode=0, stdout="", stderr="")
+
+        mock_run.side_effect = fake_run
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        _bundle_source_overrides(
+            pyproject_data=self._make_pyproject(subdirectory=None),
+            pyproject_root=str(tmp_path),
+            release_dir=str(release_dir),
+            required_packages={"sample-pkg"},
+            lock_versions={"sample_pkg": "0.2.0"},
+            git_commits={"sample_pkg": "deadbeefcafebabe"},
+        )
+
+        assert seen_git_dir_present.get("value") is True, ".git must be present in the temp build copy"
+        assert seen_git_dir_present.get("head") is True
+
+        # The source checkout itself must be untouched.
+        assert os.path.isdir(checkout_root / ".git")
+
+        # The temp build root must be cleaned up (try/finally) after the call
+        # returns.
         kwargs = mock_run.call_args.kwargs
-        assert kwargs["cwd"] == str(checkout_root)
+        build_tmp_root = self._build_tmp_root(kwargs["cwd"])
+        assert not build_tmp_root.exists(), f"{build_tmp_root} should have been removed after the build"
+
+    @patch("qubx.cli.release._find_uv_git_checkout")
+    @patch("subprocess.run")
+    def test_git_source_build_failure_still_cleans_up_temp_copy(self, mock_run, mock_find_checkout, tmp_path):
+        """A failed build must not leak the temp copy."""
+        import subprocess as subprocess_mod
+
+        checkout_root = tmp_path / "cache" / "deadbeef"
+        checkout_root.mkdir(parents=True)
+        (checkout_root / "pyproject.toml").write_text('[project]\nname = "sample-pkg"\n')
+        mock_find_checkout.return_value = str(checkout_root)
+        mock_run.side_effect = subprocess_mod.CalledProcessError(1, "uv build", stderr="boom")
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        bundled = _bundle_source_overrides(
+            pyproject_data=self._make_pyproject(subdirectory=None),
+            pyproject_root=str(tmp_path),
+            release_dir=str(release_dir),
+            required_packages={"sample-pkg"},
+            lock_versions={"sample_pkg": "0.2.0"},
+            git_commits={"sample_pkg": "deadbeefcafebabe"},
+        )
+
+        assert bundled == []
+        kwargs = mock_run.call_args.kwargs
+        build_tmp_root = self._build_tmp_root(kwargs["cwd"])
+        assert not build_tmp_root.exists()
 
 
 class TestReleaseSourceConfigSubdirectory:
