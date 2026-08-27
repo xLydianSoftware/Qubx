@@ -9,6 +9,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any, Callable
 
+from qubx import logger
 from qubx.core.basics import Instrument, td_64
 from qubx.core.interfaces import IStrategyInitializer, ITransferManager, StartTimeFinderProtocol, StateResolverProtocol
 from qubx.core.utils import recognize_timeframe
@@ -32,6 +33,8 @@ class BasicStrategyInitializer(IStrategyInitializer):
     fit_schedule: str | None = None
     event_schedule: str | None = None
     warmup_period: str | None = None
+    # - None means on_init said nothing, so live.default_instrument_leverage stands
+    default_instrument_leverage: float | None = None
     start_time_finder: StartTimeFinderProtocol | None = None
     mismatch_resolver: StateResolverProtocol | None = None
     auto_subscribe: bool | None = None
@@ -102,6 +105,19 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     def get_warmup(self) -> td_64 | None:
         return td_64(recognize_timeframe(self.warmup_period), "ns") if self.warmup_period else None
+
+    def set_default_instrument_leverage(self, leverage: float | None) -> None:
+        # - refuse rather than clamp: a sub-1 leverage is a typo or a percentage, and silently
+        #   turning it into 1 would trade a size nobody asked for
+        if leverage is not None and leverage < 1:
+            logger.error(
+                f"default instrument leverage must be >= 1, got {leverage} — keeping {self.default_instrument_leverage}"
+            )
+            return
+        self.default_instrument_leverage = leverage
+
+    def get_default_instrument_leverage(self) -> float | None:
+        return self.default_instrument_leverage
 
     def set_start_time_finder(self, finder: StartTimeFinderProtocol) -> None:
         self.start_time_finder = finder

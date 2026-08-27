@@ -5,6 +5,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
+from qubx.core.basics import DEFAULT_INSTRUMENT_LEVERAGE
 from qubx.core.fit_executor import FitExecutorMode
 from qubx.core.interfaces import IStrategy
 
@@ -234,6 +235,10 @@ class MarketCacheConfig(StrictBaseModel):
 
 class LiveConfig(StrictBaseModel):
     read_only: bool = False
+    # - venue leverage applied to every perp on universe add. Omit for the 3x default; set null
+    #   to leave the venue's own leverage alone. A strategy can override it in on_init via
+    #   initializer.set_default_instrument_leverage().
+    default_instrument_leverage: float | None = DEFAULT_INSTRUMENT_LEVERAGE
     base_currency: str | None = None
     exchanges: dict[str, ExchangeConfig]
     logging: LoggingConfig

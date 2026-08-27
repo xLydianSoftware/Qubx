@@ -1524,6 +1524,17 @@ class IStrategyContext(
         """Check if the warmup is in progress."""
         return self._strategy_state.is_warmup_in_progress
 
+    def set_default_instrument_leverage(self, leverage: float | None) -> None:
+        """
+        Change the leverage applied to perps added to the universe, and apply it now to the ones
+        already there. None leaves every venue's own leverage alone from here on.
+
+        Seeded from ``live.default_instrument_leverage`` and overridable in ``on_init`` via
+        ``initializer.set_default_instrument_leverage``. Raises on a read-only account; refuses a
+        value below 1 with an error and changes nothing.
+        """
+        ...
+
     @property
     def is_simulation(self) -> bool:
         """Check if the strategy context is running in simulation mode."""
@@ -2245,6 +2256,22 @@ class IStrategyInitializer:
     def get_warmup(self) -> td_64 | None:
         """
         Get the warmup period for the strategy.
+        """
+        ...
+
+    def set_default_instrument_leverage(self, leverage: float | None) -> None:
+        """
+        Set the venue leverage applied to every perp added to the universe.
+
+        Overrides ``live.default_instrument_leverage`` from the config, which seeds this before
+        ``on_init`` runs. ``None`` means leave the venue's own leverage alone; a value below 1 is
+        refused with an error and changes nothing.
+        """
+        ...
+
+    def get_default_instrument_leverage(self) -> float | None:
+        """
+        The venue leverage to apply on universe add, or None to leave the venue alone.
         """
         ...
 

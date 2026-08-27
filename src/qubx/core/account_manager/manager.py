@@ -6,6 +6,7 @@ Periodic ticks (reconcile, sweep, liveness) call the reconcile.py decision helpe
 fire the connector requests — connector calls stay manager-only, as does PM wiring.
 """
 
+from collections.abc import Iterable
 from typing import Callable, Literal
 
 import numpy as np
@@ -30,6 +31,7 @@ from qubx.core.basics import (
     FundingPayment,
     Instrument,
     ITimeProvider,
+    MarketType,
     Order,
     OrderOrigin,
     OrderStatus,
@@ -55,6 +57,17 @@ def liveness_overdue(unready_since: np.datetime64, now: np.datetime64, threshold
     return (now - unready_since) >= threshold  # type: ignore
 
 
+# - market types that carry leverage.
+_LEVERAGED_MARKET_TYPES = (
+    MarketType.SWAP,
+    MarketType.FUTURE,
+    MarketType.MARGIN,
+    MarketType.FOREX,
+    MarketType.STOCK,
+    MarketType.CFD,
+)
+
+
 class AccountManager(IAccountViewer, IAccountConfigurator):
     account_id: str
 
@@ -71,6 +84,8 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
     _liveness_unready_since: dict[str, np.datetime64]
     _last_eviction_sweep: np.datetime64
     _reconcilers: dict[str, Reconciler]
+    # - None leaves every venue's own leverage alone; seeded from the config via the context
+    _default_instrument_leverage: float | None
 
     def __init__(
         self,
@@ -82,6 +97,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         cfg: AccountManagerConfig | None = None,
         account_id: str = "AccountManager",
         tcc: dict[str, TransactionCostsCalculator] | None = None,
+        default_instrument_leverage: float | None = None,
     ):
         self._pm = pm
         self._init_state(
@@ -91,6 +107,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             cfg=cfg,
             account_id=account_id,
             tcc=tcc,
+            default_instrument_leverage=default_instrument_leverage,
         )
         # Live passes pm=None and registers the ticks later — see set_processing_manager.
         if self._pm is not None:
@@ -116,10 +133,12 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         cfg: AccountManagerConfig | None,
         account_id: str,
         tcc: dict[str, TransactionCostsCalculator] | None,
+        default_instrument_leverage: float | None,
     ) -> None:
         # Shared field init for both the live and simulation managers, so the
         # subclass can't silently drift from the parent's field set.
         self._connectors = connectors
+        self._default_instrument_leverage = default_instrument_leverage
         self._time = time
         self._cfg = cfg or AccountManagerConfig()
         self.account_id = account_id
@@ -582,6 +601,39 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             return
         connector.set_instrument_leverage(instrument, leverage)
 
+    def set_default_instrument_leverage(self, leverage: float | None) -> None:
+        """Set the leverage leveraged instruments should run at, and apply it to everything this
+        manager knows about. None leaves each venue's own setting alone from here on.
+        """
+        self._default_instrument_leverage = leverage
+        self.apply_default_instrument_leverage(self.positions)
+
+    def apply_default_instrument_leverage(self, instruments: Iterable[Instrument]) -> None:
+        """Set the current default leverage on these instruments.
+
+        Setting it again on an instrument that already has it costs nothing: connectors
+        either skip it from cache (ccxt, lighter) or send it because reading the current value
+        is dearer than writing (hyperliquid).
+
+        Never raises — the universe calls this when instruments are added, and one venue
+        refusing must not stop an instrument joining.
+        """
+        leverage = self._default_instrument_leverage
+        if leverage is None:
+            return
+        leveraged = [i for i in instruments if i.market_type in _LEVERAGED_MARKET_TYPES]
+        if not leveraged:
+            return
+        for instrument in leveraged:
+            try:
+                self.set_instrument_leverage(instrument, leverage)
+            except Exception as exc:  # noqa: BLE001 — one refusal must not block the rest
+                logger.error(f"leverage {leverage}x for {instrument.symbol} failed: {exc}")
+        logger.info(f"set {leverage}x leverage on {len(leveraged)} instrument(s)")
+
+    def get_default_instrument_leverage(self) -> float | None:
+        return self._default_instrument_leverage
+
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         connector = self._connectors.get(instrument.exchange)
         if connector is None:
@@ -649,6 +701,7 @@ class SimulatedAccountManager(AccountManager):
         cfg: AccountManagerConfig | None = None,
         account_id: str = "SimulatedAccountManager",
         tcc: dict[str, TransactionCostsCalculator] | None = None,
+        default_instrument_leverage: float | None = None,
     ):
         super().__init__(
             connectors=connectors,
@@ -657,6 +710,7 @@ class SimulatedAccountManager(AccountManager):
             cfg=cfg,
             account_id=account_id,
             tcc=tcc,
+            default_instrument_leverage=default_instrument_leverage,
         )
 
     def set_processing_manager(self, pm: IProcessingManager) -> None:
