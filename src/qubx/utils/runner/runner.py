@@ -53,7 +53,6 @@ from qubx.data.storages.stub import NoConfiguredStorage
 from qubx.health import BaseHealthMonitor
 from qubx.loggers import create_logs_writer
 from qubx.rate_limiting.manager import RateLimitManager
-from qubx.restarts.state_resolvers import StateResolver
 from qubx.restarts.time_finders import TimeFinder
 from qubx.restorers import create_state_restorer
 from qubx.utils.misc import class_import, green, install_uvloop, makedirs, red
@@ -1015,9 +1014,6 @@ def _run_warmup(
     # - find start time for warmup
     if (start_time_finder := initializer.get_start_time_finder()) is None:
         initializer.set_start_time_finder(start_time_finder := TimeFinder.LAST_SIGNAL)
-
-    if initializer.get_state_resolver() is None:
-        initializer.set_state_resolver(StateResolver.REDUCE_ONLY)
 
     current_time = ctx.time()
     warmup_start_time = current_time

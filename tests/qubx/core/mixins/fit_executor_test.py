@@ -65,6 +65,7 @@ def make_thread_pm(fit_executor: str = "thread", is_simulation: bool = False, **
     context._data_providers = [MagicMock(channel=channel)]
     context.emitter = None
     context._market_data_provider = MagicMock()  # FitContext snapshot reads
+    context.initializer.get_fit_on_start.return_value = False  # a MagicMock would read as the knob being on
 
     strategy = MagicMock()
     strategy.__class__.__name__ = "TestStrategy"

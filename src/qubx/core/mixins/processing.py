@@ -28,6 +28,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.boot import BootPhase, BootStateMachine
 from qubx.core.connector import IConnector, IMarketDataSink
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
@@ -59,6 +60,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.restarts.state_resolvers import StateResolver
 from qubx.state.dummy import DummyStatePersistence
 from qubx.trackers.riskctrl import _InitializationStageTracker
 from qubx.utils.throttler import InstrumentThrottler
@@ -166,6 +168,7 @@ class ProcessingManager(IProcessingManager):
     _all_instruments_ready_logged: bool = False
     _account_sync_deadline: dt_64 | None = None  # - startup: bound the wait for the initial snapshot
     _account_sync_timeout_logged: bool = False
+    _boot: BootStateMachine
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
     _pending_no_quote_signals: dict[Instrument, Signal] = {}  # signals waiting for quote to arrive
@@ -242,6 +245,7 @@ class ProcessingManager(IProcessingManager):
         self._account_sync_deadline = None
         self._account_sync_timeout_logged = False
         self._emitted_signals = []
+        self._boot = BootStateMachine(self._health_monitor)
 
         # - special tracker for post-warmup initialization signals
         self._init_stage_position_tracker = _InitializationStageTracker()
@@ -497,46 +501,12 @@ class ProcessingManager(IProcessingManager):
         return self._run_strategy_pipeline(event)
 
     def _run_strategy_pipeline(self, event: Any) -> bool:
-        """Warmup/fit checks, strategy callback firing and signal processing — the
+        """Boot advance, strategy callback firing and signal processing — the
         shared tail of the tuple data path (__process_data)."""
-        if not self._context._strategy_state.is_on_start_called:
-            self._handle_start()
-
-        if (
-            not self._context._strategy_state.is_on_warmup_finished_called
-            and not self._context._strategy_state.is_warmup_in_progress
-            and not self._warmup_finished_is_running
-        ):
-            if self._context.get_warmup_positions() or self._context.get_warmup_orders():
-                self._handle_state_resolution()
-
-            # Restore tracker and gatherer state if available
-            restored_state = self._context.get_restored_state()
-            if restored_state is not None:
-                self._restore_tracker_and_gatherer_state(restored_state)
-
-            self._handle_warmup_finished()
-
-        # - check if it still didn't call on_fit() for first time
-        if (
-            not self._context._strategy_state.is_on_fit_called
-            and not self._fit_is_running
-            and not self._warmup_finished_is_running
-        ):
-            self._handle_fit(None, "fit", (None, self._time_provider.time()))
+        if not self._advance_boot():
             return False
 
         if not event and not self._emitted_signals:
-            return False
-
-        # - if fit was not called - skip on_event call
-        if not self._context._strategy_state.is_on_fit_called or (
-            not self._is_simulation and not self._context._strategy_state.is_on_warmup_finished_called
-        ):
-            return False
-
-        # - warmup-finished still running (inline): skip on_event call
-        if self._warmup_finished_is_running:
             return False
 
         # - strategy still fitting: inline mode (and simulation) skips the strategy
@@ -1087,21 +1057,77 @@ class ProcessingManager(IProcessingManager):
         """It is used by simulation as a dummy to trigger actual time events."""
         pass
 
-    def _handle_start(self) -> None:
-        if not self._is_ready():
-            return
-        self._strategy.on_start(self._context)
-        self._context._strategy_state.is_on_start_called = True
+    def _advance_boot(self) -> bool:
+        """Drive the boot machine one pipeline pass. True ⇔ the strategy may trade.
+
+        Linearizes the old flag checks: WAIT_READY → ON_START → RESOLVE → RESTORE →
+        WARMUP_FINISHED → BOOT_FIT → TRADING. RESOLVE/RESTORE/WARMUP_FINISHED are
+        live-boot steps: skipped in simulation (RESOLVE) and while the warmup sim is
+        running this pipeline (is_warmup_in_progress). The boot-fit pass returns False
+        so no event is processed on it.
+        """
+        boot = self._boot
+        if boot.is_trading:
+            return True
+        if boot.is_blocked:
+            return False
+        state = self._context._strategy_state
+
+        if boot.phase == BootPhase.WAIT_READY:
+            if not self._is_ready():
+                return False
+            boot.advance(BootPhase.ON_START)
+
+        if boot.phase == BootPhase.ON_START:
+            if not state.is_on_start_called:
+                self._strategy.on_start(self._context)
+                state.is_on_start_called = True
+            boot.advance(BootPhase.RESOLVE)
+
+        if boot.phase == BootPhase.RESOLVE:
+            if not self._is_simulation and not state.is_on_warmup_finished_called:
+                self._handle_state_resolution()
+            boot.advance(BootPhase.RESTORE)
+
+        if boot.phase == BootPhase.RESTORE:
+            if not state.is_warmup_in_progress and not state.is_on_warmup_finished_called:
+                restored_state = self._context.get_restored_state()
+                if restored_state is not None:
+                    self._restore_tracker_and_gatherer_state(restored_state)
+            boot.advance(BootPhase.WARMUP_FINISHED)
+
+        if boot.phase == BootPhase.WARMUP_FINISHED:
+            if state.is_warmup_in_progress:
+                boot.advance(BootPhase.BOOT_FIT)  # warmup-sim ctx: the hook belongs to the live boot
+            else:
+                if not state.is_on_warmup_finished_called and not self._warmup_finished_is_running:
+                    self._handle_warmup_finished()
+                if not state.is_on_warmup_finished_called:
+                    return False
+                if not self._is_simulation and state.is_on_fit_called and self._context.initializer.get_fit_on_start():
+                    state.is_on_fit_called = False  # warmup fit doesn't count: force one live fit
+                boot.advance(BootPhase.BOOT_FIT)
+
+        if boot.phase == BootPhase.BOOT_FIT:
+            if state.is_on_fit_called:
+                boot.record_fit_success()
+                return True
+            if self._fit_is_running or self._warmup_finished_is_running:
+                return False
+            if boot.fit_attempt_allowed(self._time_provider.time()):
+                boot.record_fit_attempt()
+                self._handle_fit(None, "fit", (None, self._time_provider.time()))
+                if state.is_on_fit_called:
+                    boot.record_fit_success()
+            return False
+
+        return boot.is_trading
 
     def _handle_state_resolution(self) -> None:
-        if not self._is_ready():
-            return
-
         _ctx = self._context
         resolver = _ctx.initializer.get_state_resolver()
         if resolver is None:
-            logger.warning("No state resolver found, skipping state resolution")
-            return
+            resolver = StateResolver.REDUCE_ONLY
 
         self._log_state_mismatch()
 
@@ -1122,9 +1148,6 @@ class ProcessingManager(IProcessingManager):
         Args:
             restored_state: The restored state containing signals and target positions
         """
-        if not self._is_ready():
-            return
-
         # Restore tracker state from signals.
         # NB: unlike targets below, signals are NOT re-persisted on restart, so a run that
         # hasn't re-emitted yet restores no signals (state restore is run-scoped). Harmless
@@ -1159,8 +1182,6 @@ class ProcessingManager(IProcessingManager):
             self._logging.save_targets(latest_targets)
 
     def _handle_warmup_finished(self) -> None:
-        if not self._is_ready():
-            return
         # The flag reset lives in an outer finally so no raise (health monitor included)
         # can strand it True — a stranded flag silently disables the strategy forever.
         self._warmup_finished_is_running = True
