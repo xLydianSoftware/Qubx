@@ -217,3 +217,30 @@ class TestStrictAccountSyncGate:
         drive(pm)
         strategy.on_start.assert_called_once()
         pm._health_monitor.record_gauge.assert_any_call("boot.account_sync_blocked", 0.0)
+
+
+class TestFitOnStart:
+    def test_knob_forces_exactly_one_live_fit_after_warmup(self):
+        pm, ctx, strategy = make_pm(is_on_fit_called=True, fit_on_start=True)
+        drive(pm, passes=3)
+        strategy.on_fit.assert_called_once()
+        assert pm._boot.is_trading
+
+    def test_knob_off_no_live_fit_when_warmup_fit_ran(self):
+        pm, ctx, strategy = make_pm(is_on_fit_called=True, fit_on_start=False)
+        drive(pm, passes=3)
+        strategy.on_fit.assert_not_called()
+        assert pm._boot.is_trading
+
+    def test_no_double_fit_when_warmup_ran_no_fit(self):
+        # LIGHTER case: flag unset after warmup; knob on must still yield exactly one fit
+        pm, ctx, strategy = make_pm(is_on_fit_called=False, fit_on_start=True)
+        drive(pm, passes=3)
+        strategy.on_fit.assert_called_once()
+        assert pm._boot.is_trading
+
+    def test_knob_ignored_in_simulation(self):
+        pm, ctx, strategy = make_pm(is_simulation=True, is_on_fit_called=True, fit_on_start=True)
+        drive(pm, passes=3)
+        strategy.on_fit.assert_not_called()
+        assert pm._boot.is_trading
