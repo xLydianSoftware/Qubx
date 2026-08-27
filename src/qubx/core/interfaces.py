@@ -2284,6 +2284,22 @@ class IStrategyInitializer:
         """
         ...
 
+    def set_fit_on_start(self, enabled: bool = True) -> None:
+        """
+        Force the first on_fit to run in the live context even when a warmup-sim fit ran.
+
+        The warmup simulation fits against sim state; strategies that reconcile positions
+        through their tracker on fit (e.g. buffered trackers) need the first fit to run
+        live, against live positions. Opting in guarantees exactly one live fit after
+        on_warmup_finished and replaces calling ctx.trigger_fit() there (doing both
+        double-fits). No-op when no warmup sim runs — the first fit is live anyway.
+        """
+        ...
+
+    def get_fit_on_start(self) -> bool:
+        """Whether the first on_fit is forced to run in the live context (default False)."""
+        ...
+
     def set_config(self, key: str, value: Any) -> None:
         """
         Set an additional configuration value.

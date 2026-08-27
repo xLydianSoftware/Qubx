@@ -34,6 +34,7 @@ class BasicStrategyInitializer(IStrategyInitializer):
     warmup_period: str | None = None
     start_time_finder: StartTimeFinderProtocol | None = None
     mismatch_resolver: StateResolverProtocol | None = None
+    _fit_on_start: bool = False
     auto_subscribe: bool | None = None
     simulation: bool | None = None
     subscription_warmup: dict[Any, str] | None = None
@@ -114,6 +115,12 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     def set_state_resolver(self, resolver: StateResolverProtocol) -> None:
         self.mismatch_resolver = resolver
+
+    def set_fit_on_start(self, enabled: bool = True) -> None:
+        self._fit_on_start = enabled
+
+    def get_fit_on_start(self) -> bool:
+        return self._fit_on_start
 
     def set_config(self, key: str, value: Any) -> None:
         self.config[key] = value
