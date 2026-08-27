@@ -1,0 +1,1942 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Qubx - Quantitative Trading Framework">
+      
+      
+      
+        <link rel="canonical" href="https://xlydian.com/stable/superpowers/specs/2026-08-19-safe-state-persistence-design/">
+      
+      
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.5">
+    
+    
+      
+        <title>Safe state persistence & bounded outbound I/O - Qubx</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.8608ea7d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../stylesheets/qx.extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#safe-state-persistence-bounded-outbound-io" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Qubx" class="md-header__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Qubx
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Safe state persistence &amp; bounded outbound I/O
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+
+<!-- Main navigation -->
+
+
+<div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Qubx" class="md-nav__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Qubx
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quick Start Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/configuration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Core Concepts
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Core Concepts
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/backtesting-framework/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtesting Framework
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/strategies/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategies
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/data-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/release-deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release & Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Backtesting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Backtesting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/simulations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Simulations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtest Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/scheduling/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Scheduling
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/performance-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Metrics
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Trading
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Trading
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/paper-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Paper Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/live-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Live Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/control-protocol/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Bot Control Protocol
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/risk-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Risk Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Analysis and Reporting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Analysis and Reporting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../analysis/visualization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Visualization
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../analysis/reporting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reporting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    API Reference
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            API Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/core-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Core API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/strategy-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategy API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/data-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Tutorials and Examples
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Tutorials and Examples
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/basic/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Basic
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/data-preparation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Preparation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/questdb-setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    QuestDB setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/signal-export/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Signal Export
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../connectors/creating-connectors/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Creating Connectors
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../connectors/rate-limiting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Rate Limiting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Development
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Development
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Development Setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/release/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release Process
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../about/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    About
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+        </div>
+    </div>
+</div>
+
+
+<!-- Table of contents -->
+<!-- 
+
+<div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      Problem
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-principle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Design principle
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decisions-agreed-with-yuriy-2026-08-19" class="md-nav__link">
+    <span class="md-ellipsis">
+      Decisions (agreed with Yuriy, 2026-08-19)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#components" class="md-nav__link">
+    <span class="md-ellipsis">
+      Components
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-qubxstatesafepy-safestatepersistenceistatepersistence-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. qubx/state/safe.py — SafeStatePersistence(IStatePersistence) (new)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-qubxstateredispy-modified" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. qubx/state/redis.py (modified)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-qubxutilsthreadingpy-boundedworker-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. qubx/utils/threading.py — BoundedWorker (new)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-qubxexportersredis_streamspy-modified" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. qubx/exporters/redis_streams.py (modified)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-qubxemittersquestdbpy-modified" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. qubx/emitters/questdb.py (modified)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-qubxutilsrunnerfactorypy-modified" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. qubx/utils/runner/factory.py (modified)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-health-integration-qubxcorestatuspy-qubxhealthbasepy" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. Health integration (qubx/core/status.py, qubx/health/base.py)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#8-unchanged-on-purpose" class="md-nav__link">
+    <span class="md-ellipsis">
+      8. Unchanged on purpose
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#failure-timeline-the-incident-replayed-against-this-design" class="md-nav__link">
+    <span class="md-ellipsis">
+      Failure timeline (the incident, replayed against this design)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rollout" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rollout
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#related-platform-work-out-of-scope-here-tracked-in-374" class="md-nav__link">
+    <span class="md-ellipsis">
+      Related platform work (out of scope here, tracked in #374)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rate-limit-backend-resilience-increment-2-agreed-with-yuriy-2026-08-19" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rate-limit backend resilience (increment 2, agreed with Yuriy 2026-08-19)
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Rate-limit backend resilience (increment 2, agreed with Yuriy 2026-08-19)">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#decisions" class="md-nav__link">
+    <span class="md-ellipsis">
+      Decisions
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#failure-timeline-target" class="md-nav__link">
+    <span class="md-ellipsis">
+      Failure timeline (target)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#testing_1" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+        </div>
+    </div>
+</div>
+ -->
+
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="safe-state-persistence-bounded-outbound-io">Safe state persistence &amp; bounded outbound I/O<a class="headerlink" href="#safe-state-persistence-bounded-outbound-io" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-08-19
+<strong>Issue:</strong> xLydianSoftware/xlydian-platform#375 (epic #374 — incident 2026-08-19)
+<strong>Status:</strong> approved design, pre-implementation</p>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>A hard power-cycle of the prod platform node (2026-08-19) killed TCP peers without
+RST and exposed that qubx performs <strong>unbounded blocking network I/O on the event
+path</strong>:</p>
+<ol>
+<li><code>RedisStatePersistence</code> builds its client as bare <code>redis.from_url(url)</code> — no
+   socket timeouts, no keepalive, no retry policy (<code>state/redis.py</code>).</li>
+<li>The periodic state snapshot (<code>_handle_state_snapshot</code>, <code>processing.py</code>) runs on
+   <strong>ProcessorThread</strong> — the single event loop — and calls <code>persistence.save()</code>
+   inline. With a half-open socket the synchronous <code>SET</code> sat in TCP retransmission
+   for ~15 minutes. Four high-frequency bots (two real-money) froze completely:
+   event queues grew to 280–430k, positions unmanaged, balance reconciles stopped.
+   Two more real-money bots had the same call wedge past self-heal and needed pod
+   restarts. Same failure class as the earlier okx-am-agg zombie (18 days
+   undetected pre-health-panel).</li>
+<li><code>RedisStreamsExporter</code> and <code>QuestDBMetricEmitter</code> are already off the event
+   path (ThreadPoolExecutor) but share two flaws: their clients also lack
+   timeouts (a worker task can hang ~15 min, serializing the pool), and the
+   executor queues are <strong>unbounded</strong> — outages accumulate tasks in memory and
+   flush as a burst on recovery (implicated in the QuestDB O3 merge storm and a
+   pod OOM during the incident).</li>
+</ol>
+<h2 id="design-principle">Design principle<a class="headerlink" href="#design-principle" title="Permanent link">&para;</a></h2>
+<p><strong>The event loop never performs network I/O, and every network call anywhere is
+bounded in time; every buffer is bounded in space.</strong></p>
+<h2 id="decisions-agreed-with-yuriy-2026-08-19">Decisions (agreed with Yuriy, 2026-08-19)<a class="headerlink" href="#decisions-agreed-with-yuriy-2026-08-19" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1</td>
+<td>Scope covers all three layers: client timeouts, async state persistence, bounded exporter/emitter queues — one change.</td>
+</tr>
+<tr>
+<td>D2</td>
+<td>Contract A: <em>all</em> persistence calls are async with read-your-writes; no caller ever blocks on the network.</td>
+</tr>
+<tr>
+<td>D3</td>
+<td>If persistence is enabled and unreachable/unreadable at startup: <strong>exit the bot</strong> (running with potentially lost state is worse than crash-looping). Grace: ~60s exponential backoff, then exit non-zero. Corrupt stored JSON at startup is equally fatal; a missing key is not.</td>
+</tr>
+<tr>
+<td>D4</td>
+<td>Implementation shape: wrapper layer (<code>SafeStatePersistence</code>) + shared <code>BoundedWorker</code> primitive; transports stay dumb and synchronous.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
+<h3 id="1-qubxstatesafepy-safestatepersistenceistatepersistence-new">1. <code>qubx/state/safe.py</code> — <code>SafeStatePersistence(IStatePersistence)</code> (new)<a class="headerlink" href="#1-qubxstatesafepy-safestatepersistenceistatepersistence-new" title="Permanent link">&para;</a></h3>
+<p>Wraps any real backend. Owns:</p>
+<ul>
+<li><strong>Pending buffer</strong>: <code>dict[key -&gt; value | _Tombstone]</code> under a lock — per-key
+  latest-wins. Bounded by construction (one value per key).</li>
+<li><strong>Writer thread</strong> (daemon, named <code>StatePersistenceWriter</code>): waits on an event,
+  swaps the pending dict out, writes each entry through the backend
+  (<code>save</code>/<code>delete</code>). On failure, merges failed keys back (newer pending values
+  win) and retries with exponential backoff (1s → 30s cap). Tracks
+  <code>last_success_ts</code> and <code>consecutive_failures</code>; failure logging throttled.</li>
+<li><strong>API semantics</strong>:<ul>
+<li><code>save(key, value)</code>: eager <code>json.dumps</code> <strong>dry-run in the caller's thread</strong> so
+  <code>TypeError</code>/<code>ValueError</code> on unserializable values still raise at the call
+  site (programming errors stay loud); then buffer + wake writer. Never blocks
+  on network; never raises network errors.</li>
+<li><code>load(key, default)</code>: pending buffer first (read-your-writes, tombstones
+  honored), then backend (bounded by client timeouts). Mid-run network failure
+  raises to the caller — existing strategy code (frab) already documents
+  graceful degradation.</li>
+<li><code>delete(key)</code> / <code>exists(key)</code>: tombstone in pending; <code>exists</code> consults
+  pending (incl. tombstones) before the backend.</li>
+<li><code>stop()</code>: bounded flush (default 5s) so clean shutdowns persist final state.</li>
+<li><code>last_success_age() -&gt; float | None</code>: seconds since last successful write
+  (None until first write) — consumed by the health monitor.</li>
+</ul>
+</li>
+<li><strong>Startup validation</strong> (called by the factory before the context starts):
+  probe the backend (<code>exists("__qubx_probe__")</code>) with exponential backoff
+  (0.5s, 1, 2, 4, 8, then 10s steps) up to a <strong>60s budget</strong>; on exhaustion raise
+  <code>StatePersistenceUnavailable</code> — the runner treats this as fatal and the
+  process exits non-zero (D3). Corrupt-JSON on any load during startup
+  propagates (fatal); <code>None</code>/missing key does not.</li>
+</ul>
+<p><code>DummyStatePersistence</code> is never wrapped.</p>
+<h3 id="2-qubxstateredispy-modified">2. <code>qubx/state/redis.py</code> (modified)<a class="headerlink" href="#2-qubxstateredispy-modified" title="Permanent link">&para;</a></h3>
+<p>Stays synchronous and dumb. Client construction gains bounded-failure defaults,
+all overridable through the existing <code>StatePersistenceConfig.parameters</code>
+passthrough (zero config changes required for deployed bots):</p>
+<div class="highlight"><pre><span></span><code><span class="n">redis</span><span class="o">.</span><span class="n">from_url</span><span class="p">(</span>
+    <span class="n">url</span><span class="p">,</span>
+    <span class="n">socket_connect_timeout</span><span class="o">=</span><span class="mf">2.0</span><span class="p">,</span>
+    <span class="n">socket_timeout</span><span class="o">=</span><span class="mf">5.0</span><span class="p">,</span>
+    <span class="n">socket_keepalive</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span>
+    <span class="n">health_check_interval</span><span class="o">=</span><span class="mi">30</span><span class="p">,</span>
+<span class="p">)</span>
+</code></pre></div>
+<p>No client-level retry (the wrapper owns retry policy).</p>
+<h3 id="3-qubxutilsthreadingpy-boundedworker-new">3. <code>qubx/utils/threading.py</code> — <code>BoundedWorker</code> (new)<a class="headerlink" href="#3-qubxutilsthreadingpy-boundedworker-new" title="Permanent link">&para;</a></h3>
+<p>The shared layer-3 primitive: single daemon worker thread + <code>deque(maxlen=N)</code>
+(<strong>drop-oldest</strong>) + dropped-item counter + throttled warning (at most one per
+30s: "dropped M items since last report"). <code>submit(fn, *args)</code> never blocks.
+<code>stop(flush_timeout)</code> drains best-effort.</p>
+<p>Single worker per instance is deliberate: it also restores FIFO ordering for
+redis-stream exports (the current 2-worker pool can reorder <code>XADD</code>s — a latent
+bug for downstream target consumers).</p>
+<h3 id="4-qubxexportersredis_streamspy-modified">4. <code>qubx/exporters/redis_streams.py</code> (modified)<a class="headerlink" href="#4-qubxexportersredis_streamspy-modified" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>ThreadPoolExecutor(max_workers=2)</code> → one <code>BoundedWorker(maxlen=1000)</code>.</li>
+<li>Client gains the same timeout/keepalive kwargs as §2.</li>
+<li>Behavior change to document: under a prolonged outage, oldest queued exports
+  are dropped (counted + warned). For target streams this is <em>safer</em> than the
+  status quo — replaying stale targets to a live executor after recovery is
+  worse than skipping them.</li>
+</ul>
+<h3 id="5-qubxemittersquestdbpy-modified">5. <code>qubx/emitters/questdb.py</code> (modified)<a class="headerlink" href="#5-qubxemittersquestdbpy-modified" title="Permanent link">&para;</a></h3>
+<ul>
+<li><code>ThreadPoolExecutor(max_workers=1)</code> → <code>BoundedWorker(maxlen=10_000)</code> (metrics
+  are cheap and numerous; dropping oldest under outage is free).</li>
+<li><code>Sender</code> construction gains bounded timeouts (verified against the installed
+  client API): <code>request_timeout=5000</code>, <code>retry_timeout=5000</code> (ms; client default
+  retry_timeout is 10000 — halved so a dead server costs ≤10s per flush attempt
+  instead of stacking).</li>
+</ul>
+<h3 id="6-qubxutilsrunnerfactorypy-modified">6. <code>qubx/utils/runner/factory.py</code> (modified)<a class="headerlink" href="#6-qubxutilsrunnerfactorypy-modified" title="Permanent link">&para;</a></h3>
+<p><code>create_state_persistence()</code> wraps any real backend:
+<code>SafeStatePersistence(backend)</code> + startup validation (D3) before returning.</p>
+<h3 id="7-health-integration-qubxcorestatuspy-qubxhealthbasepy">7. Health integration (<code>qubx/core/status.py</code>, <code>qubx/health/base.py</code>)<a class="headerlink" href="#7-health-integration-qubxcorestatuspy-qubxhealthbasepy" title="Permanent link">&para;</a></h3>
+<ul>
+<li>New <code>DegradeReason.STATE_PERSISTENCE_STALE</code>.</li>
+<li>The existing health-monitor thread (which survived the incident and detected
+  the queue overflow) additionally polls <code>persistence.last_success_age()</code> when
+  the context's persistence is a <code>SafeStatePersistence</code>:<ul>
+<li>age &gt; <code>max(3 × snapshot_interval, 60s)</code> → set
+  <code>DEGRADED(STATE_PERSISTENCE_STALE, scope="state")</code>;</li>
+<li>recovery → clear, log.</li>
+</ul>
+</li>
+<li>Emit gauge <code>state_persistence_lag</code> via the metric emitter (feeds the
+  platform-side staleness alert, xlydian-platform#379).</li>
+</ul>
+<h3 id="8-unchanged-on-purpose">8. Unchanged on purpose<a class="headerlink" href="#8-unchanged-on-purpose" title="Permanent link">&para;</a></h3>
+<p><code>_handle_state_snapshot</code> keeps building the snapshot dict on ProcessorThread —
+that is where the consistent view of positions/orders/balances lives — and its
+existing <code>persistence.save("state", snapshot)</code> call becomes non-blocking purely
+via the wrapper. <code>IStatePersistence</code> protocol is unchanged; all consumers
+(frab <code>AssetOverrides</code>/<code>RebalancerState</code>, quantkit drawdown tracker, control-api
+readers) keep working with strictly better failure behavior.</p>
+<h2 id="failure-timeline-the-incident-replayed-against-this-design">Failure timeline (the incident, replayed against this design)<a class="headerlink" href="#failure-timeline-the-incident-replayed-against-this-design" title="Permanent link">&para;</a></h2>
+<p>Node power-cycles; redis peer half-open:</p>
+<ol>
+<li>Next snapshot tick: build on ProcessorThread (~ms), <code>save()</code> buffers, returns.
+   <strong>Event loop never blocks.</strong> Quotes keep processing.</li>
+<li>Writer thread hits <code>socket_timeout=5s</code>, logs, backs off, retries. Pending
+   holds exactly one latest snapshot + any dirty strategy keys.</li>
+<li>After 60s of staleness: context → DEGRADED(STATE_PERSISTENCE_STALE); the
+   <code>state_persistence_lag</code> gauge climbs; platform alert fires (#379).</li>
+<li>Redis returns (≤ backoff lag ≈ 30s): one write per dirty key — no burst, no
+   memory growth, no O3 storm. DEGRADED clears.</li>
+<li>If instead the <em>bot</em> restarts mid-outage: startup probe fails for 60s →
+   exit non-zero → crash-loop until redis is back (loud, safe; no amnesia).</li>
+</ol>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<p>Unit (fake backend with scripted delays/failures/permanent hangs):
+- <code>save()</code> returns &lt;1ms while backend hangs forever; loop-liveness invariant.
+- Read-your-writes incl. tombstones; latest-wins under repeated failure; failed
+  batch re-merge does not clobber newer pending values.
+- Backoff schedule; <code>last_success_age</code> accounting; throttled logging.
+- Startup validation: success inside the budget after N failures; exhaustion
+  raises; corrupt-JSON fatal; missing key benign.
+- <code>BoundedWorker</code>: drop-oldest, counters, warn throttling, FIFO order, bounded
+  stop/flush.
+- Exporter: ordering preserved (single worker); drops counted under a hung fake.</p>
+<p>Integration (docker redis, CI marker): mid-run <code>SIGSTOP</code> of redis-server →
+assert event processing continues, DEGRADED flips, recovery re-persists, and a
+subsequent cold start against the stopped server exits within ~70s.</p>
+<p>Manual platform acceptance (per #375): kill redis under a live paper bot; event
+loop continues within seconds; state writes resume on reconnect.</p>
+<h2 id="rollout">Rollout<a class="headerlink" href="#rollout" title="Permanent link">&para;</a></h2>
+<p>Lands on Qubx <code>dev</code> (full CI → dev PyPI release). Bots inherit it when their
+releases rebuild against the new qubx. No config changes required; timeout
+overrides available via <code>StatePersistenceConfig.parameters</code> if ever needed.
+Deployed old-release bots (factors v0.1.x etc.) remain on the old behavior until
+their next release bump — worth prioritizing the paper feeders and real-money
+books when bumping.</p>
+<h2 id="related-platform-work-out-of-scope-here-tracked-in-374">Related platform work (out of scope here, tracked in #374)<a class="headerlink" href="#related-platform-work-out-of-scope-here-tracked-in-374" title="Permanent link">&para;</a></h2>
+<ul>
+<li>xlydian-platform#379: per-bot staleness alert on the redis <code>state:{bot}:state</code>
+  timestamp (&gt;60s), superseding the metrics-based BotMetricsStale approach of
+  PR #365 — the snapshot is <em>built on the event loop</em>, so its freshness is a
+  direct liveness probe of the exact thread that froze; this design's
+  <code>state_persistence_lag</code> gauge and DEGRADED reason are the in-bot halves of the
+  same signal.</li>
+<li>control-api redis retry + QuestDB circuit breaker (#376), Postgres/QuestDB
+  server-side keepalives and caps (#377, #378).</li>
+</ul>
+<h2 id="rate-limit-backend-resilience-increment-2-agreed-with-yuriy-2026-08-19">Rate-limit backend resilience (increment 2, agreed with Yuriy 2026-08-19)<a class="headerlink" href="#rate-limit-backend-resilience-increment-2-agreed-with-yuriy-2026-08-19" title="Permanent link">&para;</a></h2>
+<p>The redis rate-limit backend (<code>qubx/rate_limiting/redis_backend.py</code>) shares the
+incident's root cause and — via control-api's <code>BuiltinDefaults</code> → <code>redis-ratelimit</code>
+preset (<code>env:REDIS_URL</code>, the same redis as state persistence) — is enabled for
+every platform-deployed bot:</p>
+<ul>
+<li><code>aioredis.from_url(url, decode_responses=True, single_connection_client=True)</code>
+  with <strong>no socket timeouts</strong> → a half-open socket hangs each script call ~15 min.</li>
+<li><code>RatePool.acquire</code>'s backend await is unbounded (<code>gate_max_wait</code> bounds only the
+  gate) and unprotected: after the hang, <code>ConnectionError</code> propagates into order
+  placement (ccxt REST throttle hook; qubx_lighter <code>send_tx</code>/<code>ws_subscribe</code>/REST).</li>
+<li><code>single_connection_client=True</code> serializes every script call behind the hung one.</li>
+</ul>
+<p>Net effect of a redis outage today: a silent multi-minute trading halt per bot.</p>
+<h3 id="decisions">Decisions<a class="headerlink" href="#decisions" title="Permanent link">&para;</a></h3>
+<ul>
+<li><strong>RL-D1 — client timeouts.</strong> <code>RedisBackend</code> gains keyword-only ctor params
+  forwarded to <code>from_url</code>: <code>socket_connect_timeout=2.0</code>, <code>socket_timeout=5.0</code>,
+  <code>socket_keepalive=True</code>, <code>health_check_interval=30</code> (mirroring
+  <code>RedisStatePersistence</code>). Safe: every command is a fast Lua eval — no blocking
+  commands — so <code>socket_timeout</code> cannot false-positive on a healthy server.</li>
+<li><strong>RL-D2 — fail-open to local buckets.</strong> New composite
+  <code>ResilientRateLimitBackend(IRateLimitBackend)</code> in
+  <code>src/qubx/rate_limiting/resilient.py</code>: primary (redis) + fallback
+  (<code>InMemoryBackend</code>, same per-key capacity/refill params). Trading never blocks
+  on rate-limit redis. Accepted degradation: each bot self-paces at the full
+  budget without cross-bot coordination; in-process 429 gates
+  (<code>report_limit_hit</code>) and ccxt's own throttler contain the residual venue risk.
+  Recovery needs no state reconciliation: expired redis keys re-init full and
+  header syncs recalibrate from venue-reported usage (the ground truth).
+  <code>InMemoryBackend</code> is a safe cross-loop fallback — <code>TokenBucketRateLimiter</code>
+  deliberately uses <code>threading.Lock</code> + monotonic time, no loop-bound primitives.</li>
+<li><strong>RL-D3 — circuit breaker, 30 s.</strong> First primary failure opens the breaker:
+  all calls go straight to the fallback (no per-call timeout tax). When the
+  cooldown expires, exactly one caller probes the primary (a probe-in-flight
+  flag keeps concurrent callers on the fallback); probe failure re-opens for
+  another 30 s, success closes. Breaker state lives on the composite (shared
+  across the per-loop redis clients) as plain monotonic floats — benign races
+  (worst case: two probes) are acceptable.</li>
+<li><strong>RL-D4 — observability: logs only.</strong> WARNING on the open transition
+  ("falling back to local buckets"), INFO on recovery. No new metric, no
+  <code>DegradeReason</code> — a redis outage already surfaces via
+  <code>state_persistence_stale</code>, and double-flagging one root cause is noise.
+  Transition-only logging is naturally throttled (≤2 lines per cooldown).</li>
+<li><strong>Errors caught:</strong> <code>(redis.exceptions.RedisError, OSError)</code> — covers redis
+  <code>TimeoutError</code>/<code>ConnectionError</code> and the builtin <code>ConnectionError</code>/<code>TimeoutError</code>
+  (both <code>OSError</code> subclasses). <code>asyncio.CancelledError</code> (<code>BaseException</code>)
+  propagates untouched.</li>
+<li><strong><code>close()</code> joins the <code>IRateLimitBackend</code> contract</strong> as a non-abstract
+  <code>async def close(self) -&gt; None</code> no-op default (no hasattr probing);
+  <code>RedisBackend</code> already overrides it; the composite closes primary then
+  fallback.</li>
+<li><strong>Wiring:</strong> <code>RateLimitManager._create_backend</code> returns
+  <code>ResilientRateLimitBackend(RedisBackend(url))</code> for <code>backend == "redis"</code>;
+  the existing creation-failure fallback to plain <code>InMemoryBackend</code> stays.</li>
+<li><strong>No config schema changes</strong> (<code>breaker_cooldown_s: float = 30.0</code> is a ctor
+  default, not YAML) and <strong>no platform-repo changes</strong>: same preset contract,
+  no metric renames (the bot-health dashboard reads <code>rate_limit.utilization</code>,
+  unchanged — and during outages pool metrics now flow from local state
+  instead of timing out).</li>
+</ul>
+<h3 id="failure-timeline-target">Failure timeline (target)<a class="headerlink" href="#failure-timeline-target" title="Permanent link">&para;</a></h3>
+<p>t0: redis dies half-open → first acquire hangs ≤5 s (socket_timeout) → error →
+breaker opens (WARNING), call served from the local bucket. t0+ε…t0+30 s: all
+calls local, sub-ms overhead, orders unaffected. t0+30 s: one probe pays ≤5 s,
+fails, re-opens. … redis recovers → next probe succeeds → INFO, primary resumes,
+cross-bot coordination restored.</p>
+<h3 id="testing_1">Testing<a class="headerlink" href="#testing_1" title="Permanent link">&para;</a></h3>
+<p>Unit (<code>tests/qubx/rate_limiting/test_resilient.py</code>, fake primary): pass-through
+on success (fallback untouched); error → fallback + breaker opens; no primary
+calls during cooldown; exactly one probe after cooldown with concurrent callers
+staying local (Event-synchronized, no sleeps); probe success/failure
+transitions; <code>get_remaining</code>/<code>set_remaining</code> follow the same policy;
+CancelledError propagates. Client-options test asserting the <code>from_url</code> timeout
+kwargs (mirrors <code>tests/qubx/state/test_redis_client_options.py</code>). Integration
+(docker <code>pause</code>, mirrors <code>test_safe_integration.py</code>): acquire returns quickly
+via fallback while redis is paused; unpause → recovery to primary.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+
+<!-- Place this tag in your head or just before your close body tag. -->
+<script async defer src="https://buttons.github.io/buttons.js"></script>
+<script src="https://code.jquery.com/jquery-3.4.1.min.js"
+    integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
+
+
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["content.code.annotate", "search.share", "content.code.copy", "navigation.top", "navigation.footer"], "search": "../../../assets/javascripts/workers/search.f8cc74c7.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.f1b6f286.min.js"></script>
+      
+        <script src="../../../javascripts/config.js"></script>
+      
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
