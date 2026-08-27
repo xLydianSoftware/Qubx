@@ -120,7 +120,12 @@ def ensure_lock_exists(output_dir: str) -> bool:
     """
     uv_lock_path = os.path.join(output_dir, "uv.lock")
     if not os.path.exists(uv_lock_path):
-        logger.warning("uv.lock not found in the zip file. Attempting to generate it.")
+        logger.warning(
+            "uv.lock not found in the zip file. Attempting to generate it. "
+            "This is a legacy release built without a shipped lock — resolving here, in the pod, "
+            "is non-hermetic: transitive deps can float to whatever is newest on PyPI at deploy "
+            "time (see issue #398). Re-release with a current qubx to ship a lock instead."
+        )
         try:
             subprocess.run(["uv", "lock"], cwd=output_dir, check=True, capture_output=True, text=True)
             return True
@@ -155,6 +160,11 @@ def setup_uv_environment(output_dir: str) -> bool:
         logger.info("Installing dependencies")
 
         install_cmd = ["uv", "sync"]
+        if os.path.exists(os.path.join(output_dir, "uv.lock")):
+            # Shipped lock is authoritative: never re-resolve in the pod
+            # (the runtime image cannot build sdists; see issue #398).
+            install_cmd.append("--frozen")
+
         if in_venv:
             # Force uv to create a new environment even if we're in an active one
             env = os.environ.copy()
