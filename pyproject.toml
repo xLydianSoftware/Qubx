@@ -56,7 +56,11 @@ dependencies = [
     "jinja2>=3.1.0,<4",
     "rich>=13.9.4,<14",
     "click>=8.1.7,<9",
-    "statsmodels>=0.14.6,<1",
+    # 0.15.0 ships no cp310/311/312 manylinux x86_64 wheels (only cp313) despite
+    # declaring requires-python >=3.10, so on our 3.12 runtime it resolves to the sdist
+    # and needs a meson source build. Bot containers have no compiler, so any release
+    # ZIP locked after 2026-08-27T10:34Z fails at startup. Lift once 0.15.0 has wheels.
+    "statsmodels>=0.14.6,!=0.15.0,<1",
 
     # - - - Database backends - - - 
     "pymongo>=4.6.1,<5",
