@@ -56,7 +56,10 @@ dependencies = [
     "jinja2>=3.1.0,<4",
     "rich>=13.9.4,<14",
     "click>=8.1.7,<9",
-    "statsmodels>=0.14.6,<1",
+    # 0.15.0 (2026-08-27) ships no cp312 manylinux wheels — fresh resolutions (Docker image
+    # pip install, cibuildwheel test-install, downstream consumers) fall back to a meson sdist
+    # build that needs a compiler. Drop the <0.15 cap when 0.15.x publishes cp312 linux wheels.
+    "statsmodels>=0.14.6,<0.15",
 
     # - - - Database backends - - - 
     "pymongo>=4.6.1,<5",
