@@ -51,7 +51,7 @@ class TestStateResolverReduceOnly(TestStateResolverBase):
         StateResolver.REDUCE_ONLY(self.ctx, sim_positions, sim_orders, {})
 
         # Verify
-        self.ctx.get_positions.assert_called_once()
+        self.ctx.get_positions.assert_not_called()
         self.ctx.emit_signal.assert_not_called()
 
     def test_reduce_only_with_matching_positions(self):
@@ -228,8 +228,8 @@ class TestStateResolverSyncState(TestStateResolverBase):
         # Execute
         StateResolver.SYNC_STATE(self.ctx, sim_positions, sim_orders, {})
 
-        # Verify
-        self.ctx.get_positions.assert_called_once()
+        # Verify: all-empty sim args -> empty-warmup guard holds, no venue reads
+        self.ctx.get_positions.assert_not_called()
         self.ctx.emit_signal.assert_not_called()
 
     def test_sync_state_with_matching_positions(self):
@@ -539,3 +539,44 @@ class TestStateResolverCloseAll(TestStateResolverBase):
         assert isinstance(signal_call, InitializingSignal)
         assert signal_call.signal == 0.0  # Close position
         assert signal_call.instrument == eth_instrument
+
+
+class TestStateResolverEmptyGuards(TestStateResolverBase):
+    """All-empty sim args mean 'no warmup output' -> hold the live book, touch nothing."""
+
+    def test_reduce_only_all_empty_holds(self):
+        StateResolver.REDUCE_ONLY(self.ctx, {}, {}, {})
+        self.ctx.get_positions.assert_not_called()
+        self.ctx.emit_signal.assert_not_called()
+
+    def test_sync_state_all_empty_holds(self):
+        StateResolver.SYNC_STATE(self.ctx, {}, {}, {})
+        self.ctx.get_positions.assert_not_called()
+        self.ctx.emit_signal.assert_not_called()
+        self.ctx.cancel_orders.assert_not_called()
+
+    def test_close_all_ignores_empty_sim_args(self):
+        instr = self._find_instrument("BINANCE.UM", "BTCUSDT")
+        pos = MagicMock()
+        pos.quantity = 1.0
+        self.ctx.get_orders.return_value = {}
+        self.ctx.get_positions.return_value = {instr: pos}
+        StateResolver.CLOSE_ALL(self.ctx, {}, {}, {})
+        self.ctx.emit_signal.assert_called_once()
+
+
+class TestStateResolverHold(TestStateResolverBase):
+    def test_hold_cancels_orders_keeps_positions(self):
+        order = MagicMock()
+        order.venue_order_id = "v-1"
+        order.client_order_id = "c-1"
+        self.ctx.get_orders.return_value = {"v-1": order}
+        StateResolver.HOLD(self.ctx, {}, {}, {})
+        self.ctx.cancel_order.assert_called_once_with(order_id="v-1")
+        self.ctx.emit_signal.assert_not_called()
+
+    def test_hold_no_orders_does_nothing(self):
+        self.ctx.get_orders.return_value = {}
+        StateResolver.HOLD(self.ctx, {}, {}, {})
+        self.ctx.cancel_order.assert_not_called()
+        self.ctx.emit_signal.assert_not_called()
