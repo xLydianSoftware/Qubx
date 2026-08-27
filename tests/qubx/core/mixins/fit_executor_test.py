@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 
 from qubx.core.basics import CtrlChannel, DataType, FundingPayment, Instrument, ITimeProvider, Signal
+from qubx.core.boot import BootPhase
 from qubx.core.context import StrategyContext
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.fit_context import FitContext, UnclassifiedFitContextAccess
@@ -264,6 +265,7 @@ class TestThreadedFitExecution:
 
     def test_exception_in_fit_still_posts_commit_and_clears_flags(self):
         pm, context, channel = make_thread_pm()
+        pm._boot.advance(BootPhase.TRADING)  # a scheduled re-fit, boot long done
         applied: list[str] = []
 
         def failing_fit(ctx):
@@ -274,7 +276,8 @@ class TestThreadedFitExecution:
         pm._handle_fit(None, "fit", (None, T0))
         drain_until_committed(pm, channel)
 
-        assert context._strategy_state.is_on_fit_called is True
+        # - live never latches a failed fit: the strategy stays unfitted, the next fit retries
+        assert context._strategy_state.is_on_fit_called is False
         assert pm._fit_is_running is False
         # - ops recorded before the raise are applied, mirroring inline semantics
         #   (mutations before an inline raise stay applied)
@@ -295,6 +298,72 @@ class TestThreadedFitExecution:
         drain_until_committed(pm, channel)
         time.sleep(0.05)  # give a mis-armed timer a chance to fire
         pm._warn_fit_soft_deadline.assert_not_called()
+
+
+class TestThreadedBootFitOutcome:
+    """The boot machine sees the threaded fit's outcome through the FitCommit."""
+
+    def test_threaded_fit_failure_does_not_latch_and_reports_boot_failure(self):
+        pm, context, channel = make_thread_pm()
+        pm._strategy.on_fit.side_effect = RuntimeError("thread boom")
+        pm._boot.advance(BootPhase.BOOT_FIT)
+        pm._boot.record_fit_attempt()
+
+        pm._handle_fit(None, "fit", (None, T0))
+        drain_until_committed(pm, channel)
+
+        assert not context._strategy_state.is_on_fit_called
+        assert pm._boot.phase == BootPhase.BOOT_FIT  # retry pending, not blocked (attempt 1/3)
+
+    def test_threaded_fit_success_latches_and_reaches_trading(self):
+        pm, context, channel = make_thread_pm()
+        pm._strategy.on_fit.side_effect = None
+        pm._boot.advance(BootPhase.BOOT_FIT)
+        pm._boot.record_fit_attempt()
+
+        pm._handle_fit(None, "fit", (None, T0))
+        drain_until_committed(pm, channel)
+
+        assert context._strategy_state.is_on_fit_called
+        assert pm._boot.is_trading
+
+    def test_threaded_boot_fit_blocks_when_attempts_exhausted(self):
+        pm, context, channel = make_thread_pm()
+        pm._strategy.on_fit.side_effect = RuntimeError("thread boom")
+        pm._boot.advance(BootPhase.BOOT_FIT)
+
+        for attempt in range(3):
+            pm._time_provider.time.return_value = T0 + np.timedelta64(61 * attempt, "s")
+            pm._boot.record_fit_attempt()
+            pm._handle_fit(None, "fit", (None, T0))
+            drain_until_committed(pm, channel)
+
+        assert pm._boot.is_blocked
+        assert not context._strategy_state.is_on_fit_called
+        pm._health_monitor.record_gauge.assert_any_call("boot.fit_failed", 1.0)
+
+        # - self-heal: a later successful fit releases the block
+        pm._strategy.on_fit.side_effect = None
+        pm._handle_fit(None, "fit", (None, T0))
+        drain_until_committed(pm, channel)
+        assert pm._boot.is_trading
+        pm._health_monitor.record_gauge.assert_any_call("boot.fit_failed", 0.0)
+
+    def test_framework_failure_before_the_fit_body_does_not_latch(self, monkeypatch):
+        pm, context, channel = make_thread_pm()
+        monkeypatch.setattr(
+            "qubx.core.mixins.processing.FitContext",
+            MagicMock(side_effect=RuntimeError("boom at proxy construction")),
+        )
+        pm._boot.advance(BootPhase.BOOT_FIT)
+        pm._boot.record_fit_attempt()
+
+        pm._handle_fit(None, "fit", (None, T0))
+        drain_until_committed(pm, channel)
+
+        # - on_fit never ran: the strategy is not fitted and the boot fit is not done
+        assert not context._strategy_state.is_on_fit_called
+        assert pm._boot.phase == BootPhase.BOOT_FIT
 
 
 class TestDeferredMutationsAndSignals:

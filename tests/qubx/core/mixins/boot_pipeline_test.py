@@ -244,3 +244,97 @@ class TestFitOnStart:
         drive(pm, passes=3)
         strategy.on_fit.assert_not_called()
         assert pm._boot.is_trading
+
+
+class TestBootFitFailure:
+    def test_failed_boot_fit_retries_then_blocks(self):
+        pm, ctx, strategy = make_pm()
+        strategy.on_fit.side_effect = RuntimeError("boom")
+        tp = pm._time_provider
+
+        drive(pm)  # attempt 1
+        assert not ctx._strategy_state.is_on_fit_called
+        assert pm._boot.phase == BootPhase.BOOT_FIT
+
+        drive(pm)  # before the retry deadline: no new attempt
+        assert strategy.on_fit.call_count == 1
+
+        tp.time.return_value = T0 + np.timedelta64(61, "s")
+        drive(pm)  # attempt 2
+        tp.time.return_value = T0 + np.timedelta64(122, "s")
+        drive(pm)  # attempt 3 -> exhausted
+        assert strategy.on_fit.call_count == 3
+        assert pm._boot.is_blocked
+        pm._health_monitor.record_gauge.assert_any_call("boot.fit_failed", 1.0)
+
+        drive(pm)  # blocked: no on_event, no more attempts
+        assert strategy.on_fit.call_count == 3
+        strategy.on_event.assert_not_called()
+
+    def test_blocked_self_heals_on_later_successful_fit(self):
+        pm, ctx, strategy = make_pm()
+        strategy.on_fit.side_effect = RuntimeError("boom")
+        tp = pm._time_provider
+        drive(pm)
+        tp.time.return_value = T0 + np.timedelta64(61, "s")
+        drive(pm)
+        tp.time.return_value = T0 + np.timedelta64(122, "s")
+        drive(pm)
+        assert pm._boot.is_blocked
+
+        strategy.on_fit.side_effect = None  # a scheduled fit arrives via _handle_fit
+        pm._handle_fit(None, "fit", (None, tp.time.return_value))
+        assert ctx._strategy_state.is_on_fit_called
+        assert pm._boot.is_trading
+        pm._health_monitor.record_gauge.assert_any_call("boot.fit_failed", 0.0)
+
+    def test_warmup_finished_failure_latches_and_gauges(self):
+        pm, ctx, strategy = make_pm()
+        strategy.on_warmup_finished.side_effect = RuntimeError("hook boom")
+        drive(pm, passes=2)
+        assert ctx._strategy_state.is_on_warmup_finished_called  # latched as before
+        pm._health_monitor.record_gauge.assert_any_call("boot.warmup_finished_failed", 1.0)
+        assert pm._boot.is_trading  # boot continued to the fit
+
+    def test_simulation_keeps_latch_on_failure(self):
+        pm, ctx, strategy = make_pm(is_simulation=True)
+        strategy.on_fit.side_effect = RuntimeError("boom")
+        drive(pm, passes=2)
+        assert ctx._strategy_state.is_on_fit_called  # sim: latch-in-finally preserved
+
+    def test_not_ready_boot_fit_pass_consumes_no_attempt(self):
+        # a pass that cannot fit (account went out of sync after the first attempt) must
+        # not burn attempts — otherwise three such no-ops would block a never-run fit
+        pm, ctx, strategy = make_pm()
+        strategy.on_fit.side_effect = RuntimeError("boom")
+        tp = pm._time_provider
+        drive(pm)
+        assert pm._boot.phase == BootPhase.BOOT_FIT
+        assert pm._boot.fit_attempts == 1
+
+        pm._account_manager.is_synced.return_value = False
+        for n in range(1, 5):
+            tp.time.return_value = T0 + np.timedelta64(61 * n, "s")
+            drive(pm)
+        assert strategy.on_fit.call_count == 1
+        assert pm._boot.fit_attempts == 1
+        assert not pm._boot.is_blocked
+
+        pm._account_manager.is_synced.return_value = True
+        strategy.on_fit.side_effect = None
+        drive(pm)
+        assert pm._boot.is_trading
+        assert strategy.on_fit.call_count == 2
+
+    def test_mid_boot_scheduled_fit_does_not_skip_the_boot_steps(self):
+        # a fit trigger dispatched before the machine owns the fit (handlers run ahead of
+        # the pipeline) must not report an outcome and jump the machine to TRADING
+        pm, ctx, strategy = make_pm()
+        pm._handle_fit(None, "fit", (None, T0))
+        assert pm._boot.phase == BootPhase.WAIT_READY
+        assert not pm._boot.is_trading
+
+        drive(pm)
+        strategy.on_start.assert_called_once()
+        strategy.on_warmup_finished.assert_called_once()
+        assert pm._boot.is_trading

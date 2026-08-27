@@ -698,7 +698,8 @@ class ProcessingManager(IProcessingManager):
                 self._time_provider.time(), signals, self._account_manager, _targets_from_trackers
             )
 
-    def __invoke_on_fit(self) -> None:
+    def __invoke_on_fit(self) -> bool:
+        """Run on_fit inline. True ⇔ it completed without raising."""
         with self._health_monitor("ctx.on_fit"):
             try:
                 # - enforce the blacklist before fitting: refresh the cache AND force-close
@@ -711,15 +712,21 @@ class ProcessingManager(IProcessingManager):
                 self._strategy.on_fit(self._context)
                 self._subscription_manager.commit()  # apply pending operations
                 logger.debug(f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> is fitted")
+                self._context._strategy_state.is_on_fit_called = True
+                return True
             except Exception as strat_error:
                 logger.error(
                     f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_fit raised an exception: {strat_error}"
                 )
                 logger.opt(colors=False).error(traceback.format_exc())
-            finally:
-                self._context._strategy_state.is_on_fit_called = True
+                # - simulation keeps the latch: no retry machinery there, and a raising fit
+                #   must not re-fire on every tick
+                if self._is_simulation:
+                    self._context._strategy_state.is_on_fit_called = True
+                return False
 
-    def __invoke_on_warmup_finished(self) -> None:
+    def __invoke_on_warmup_finished(self) -> bool:
+        """Run on_warmup_finished inline. True ⇔ it completed without raising."""
         with self._health_monitor("ctx.on_warmup_finished"):
             try:
                 logger.debug(
@@ -730,12 +737,15 @@ class ProcessingManager(IProcessingManager):
                 logger.debug(
                     f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> warmup finished completed"
                 )
+                return True
             except Exception as strat_error:
                 logger.error(
                     f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_warmup_finished raised an exception: {strat_error}"
                 )
                 logger.opt(colors=False).error(traceback.format_exc())
+                return False
             finally:
+                # - the hook is not guaranteed idempotent: latch it either way, no auto-retry
                 self._context._strategy_state.is_on_warmup_finished_called = True
 
     def __preprocess_and_log_target_positions(self, target_positions: list[TargetPosition]) -> list[TargetPosition]:
@@ -1111,13 +1121,29 @@ class ProcessingManager(IProcessingManager):
             if self._fit_is_running or self._warmup_finished_is_running:
                 return False
             if boot.fit_attempt_allowed(self._time_provider.time()):
+                # - _handle_fit no-ops when readiness lapsed (account desync): such a pass
+                #   must not consume an attempt, or three of them would block an unrun fit
+                if not self._is_ready():
+                    return False
                 boot.record_fit_attempt()
                 self._handle_fit(None, "fit", (None, self._time_provider.time()))
-                if state.is_on_fit_called:
-                    boot.record_fit_success()
             return False
 
         return boot.is_trading
+
+    def _report_boot_fit(self, ok: bool) -> None:
+        """Hand a fit outcome to the boot machine — only while it still owns the fit
+        (BOOT_FIT) or waits for a self-heal (BLOCKED). A fit triggered mid-boot (handlers
+        run ahead of the pipeline) would otherwise jump the machine straight to TRADING.
+        Failures are live-only: simulation latches instead of retrying.
+        """
+        boot = self._boot
+        if boot.phase != BootPhase.BOOT_FIT and not boot.is_blocked:
+            return
+        if ok:
+            boot.record_fit_success()
+        elif not self._is_simulation:
+            boot.record_fit_failure(self._time_provider.time())
 
     def _handle_state_resolution(self) -> None:
         _ctx = self._context
@@ -1184,7 +1210,8 @@ class ProcessingManager(IProcessingManager):
         try:
             # Runs inline on the processing thread (single-mutator invariant): account events
             # queue in the channel until the callback returns.
-            self.__invoke_on_warmup_finished()
+            if not self.__invoke_on_warmup_finished():
+                self._boot.record_warmup_finished_failure()
         finally:
             self._warmup_finished_is_running = False
 
@@ -1208,9 +1235,10 @@ class ProcessingManager(IProcessingManager):
             self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
             # Runs inline on the processing thread (single-mutator invariant): a long fit
             # blocks event processing until it returns.
-            self.__invoke_on_fit()
+            ok = self.__invoke_on_fit()
         finally:
             self._fit_is_running = False
+        self._report_boot_fit(ok)
 
     def _submit_threaded_fit(self, data: tuple[dt_64 | None, dt_64]) -> None:
         """Thread-mode fit (live only): submit the fit body to the single-thread
@@ -1253,6 +1281,7 @@ class ProcessingManager(IProcessingManager):
         _t_start = time.monotonic()
         _deadline_timer: threading.Timer | None = None
         fit_ctx: FitContext | None = None
+        _fit_error: BaseException | None = None
         try:
             # Everything from here — including proxy construction and the timer start
             # (Timer.start can raise "can't start new thread" under resource pressure) —
@@ -1274,10 +1303,16 @@ class ProcessingManager(IProcessingManager):
                     self._strategy.on_fit(fit_ctx)  # type: ignore[arg-type]
                     logger.debug(f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> is fitted")
                 except Exception as strat_error:
+                    _fit_error = strat_error
                     logger.error(
                         f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_fit raised an exception: {strat_error}"
                     )
                     logger.opt(colors=False).error(traceback.format_exc())
+        except BaseException as framework_error:
+            # - the body never ran (proxy/timer/health-monitor raise): report it as a
+            #   failed fit too, so nothing latches as fitted
+            _fit_error = framework_error
+            raise
         finally:
             if _deadline_timer is not None:
                 _deadline_timer.cancel()
@@ -1294,7 +1329,14 @@ class ProcessingManager(IProcessingManager):
             except Exception:
                 logger.exception("failed to record fit_duration_s gauge")
             _ops, _signals = self._fit_state.end()
-            channel.send((None, FIT_COMMIT_EVENT, FitCommitData(ops=_ops, signals=_signals, duration_s=_duration_s), False))
+            channel.send(
+                (
+                    None,
+                    FIT_COMMIT_EVENT,
+                    FitCommitData(ops=_ops, signals=_signals, duration_s=_duration_s, error=_fit_error),
+                    False,
+                )
+            )
 
     def _warn_fit_soft_deadline(self) -> None:
         logger.warning(
@@ -1312,8 +1354,9 @@ class ProcessingManager(IProcessingManager):
         by the subscription commit to its background worker, so the replay stays fast and
         the added instruments go live only after their history landed), commit any
         remaining deferred subscriptions, then — in a finally so no replay failure can
-        strand the flag — drain fit-emitted signals into the normal pipeline, set
-        is_on_fit_called and clear _fit_is_running. Returning None hands control to
+        strand the flag — drain fit-emitted signals into the normal pipeline, latch
+        is_on_fit_called (only when the fit itself did not fail) and clear
+        _fit_is_running. Returning None hands control to
         _run_strategy_pipeline, which processes the drained signals immediately.
         """
         try:
@@ -1331,8 +1374,10 @@ class ProcessingManager(IProcessingManager):
         finally:
             if commit.signals:
                 self._emitted_signals.extend(commit.signals)
-            self._context._strategy_state.is_on_fit_called = True
+            if commit.error is None:
+                self._context._strategy_state.is_on_fit_called = True
             self._fit_is_running = False
+            self._report_boot_fit(commit.error is None)
 
     def _handle_subscription_swap(self, instrument: Instrument | None, event_type: str, apply_swap: Callable) -> None:
         """Apply a deferred subscription commit's swap on the ProcessorThread. Posted by
