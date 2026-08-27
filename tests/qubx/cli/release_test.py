@@ -17,6 +17,8 @@ from qubx.cli.release import (
     _bundle_source_overrides,
     _find_uv_workspace_root,
     _find_workspace_member_for_package,
+    _generate_release_pyproject,
+    _lock_constraint_dependencies,
     _resolve_source_lockfile,
     create_released_pack,
 )
@@ -643,3 +645,102 @@ class TestResolveSourceLockfile:
 
         assert mock_gen.called
         assert result == str(member_lock)
+
+
+class TestLockConstraintDependencies:
+    """Tests for `_lock_constraint_dependencies` (issue #398)."""
+
+    def test_single_version_packages_become_constraints(self, tmp_path: Path):
+        lock_path = tmp_path / "uv.lock"
+        lock_path.write_text(
+            "\n".join(
+                [
+                    '[[package]]',
+                    'name = "foo"',
+                    'version = "1.2.3"',
+                    "",
+                    '[[package]]',
+                    'name = "bar"',
+                    'version = "0.5.0"',
+                    "",
+                    # "baz" appears with two versions (e.g. a platform-forked
+                    # resolution) — must be skipped entirely.
+                    '[[package]]',
+                    'name = "baz"',
+                    'version = "1.0.0"',
+                    "",
+                    '[[package]]',
+                    'name = "baz"',
+                    'version = "2.0.0"',
+                ]
+            )
+        )
+
+        result = _lock_constraint_dependencies(str(lock_path))
+
+        assert result == ["bar==0.5.0", "foo==1.2.3"]
+
+    def test_missing_lock_file_returns_empty_list(self, tmp_path: Path):
+        missing_path = tmp_path / "does-not-exist" / "uv.lock"
+        assert _lock_constraint_dependencies(str(missing_path)) == []
+
+
+class TestGenerateReleasePyprojectConstraints:
+    """Tests for `constraint_dependencies` wiring in `_generate_release_pyproject` (issue #398)."""
+
+    def test_constraint_dependencies_written_to_pyproject(self, tmp_path: Path):
+        import toml
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        _generate_release_pyproject(
+            release_dir=str(release_dir),
+            strategy_wheel_name=None,
+            has_strategy_code=False,
+            external_deps=["quantkit>=1.3.0"],
+            constraint_dependencies=["foo==1.2.3"],
+        )
+
+        with open(release_dir / "pyproject.toml") as f:
+            data = toml.load(f)
+
+        assert data["tool"]["uv"]["constraint-dependencies"] == ["foo==1.2.3"]
+
+    def test_no_constraint_dependencies_key_absent(self, tmp_path: Path):
+        import toml
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        _generate_release_pyproject(
+            release_dir=str(release_dir),
+            strategy_wheel_name=None,
+            has_strategy_code=False,
+            external_deps=["quantkit>=1.3.0"],
+            constraint_dependencies=None,
+        )
+
+        with open(release_dir / "pyproject.toml") as f:
+            data = toml.load(f)
+
+        assert "constraint-dependencies" not in data["tool"]["uv"]
+
+    def test_empty_constraint_dependencies_key_absent(self, tmp_path: Path):
+        import toml
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        _generate_release_pyproject(
+            release_dir=str(release_dir),
+            strategy_wheel_name=None,
+            has_strategy_code=False,
+            external_deps=["quantkit>=1.3.0"],
+            constraint_dependencies=[],
+        )
+
+        with open(release_dir / "pyproject.toml") as f:
+            data = toml.load(f)
+
+        assert "constraint-dependencies" not in data["tool"]["uv"]

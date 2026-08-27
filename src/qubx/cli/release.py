@@ -835,6 +835,40 @@ def _parse_uv_lock_git_commits(uv_lock_path: str) -> dict[str, str]:
     return commits
 
 
+def _lock_constraint_dependencies(uv_lock_path: str) -> list[str]:
+    """Build `name==version` constraints from the source repo's uv.lock.
+
+    The wrapper's fresh resolution must reproduce the source repo's tested
+    resolution — otherwise a same-day PyPI publish of any transitive dep changes
+    what bots run (see issue #398). Names that appear with multiple versions in
+    the lock (platform-forked resolutions) are skipped: a single == constraint
+    could make the wrapper unresolvable.
+    """
+    import toml
+
+    if not os.path.exists(uv_lock_path):
+        logger.warning(f"uv.lock not found at {uv_lock_path}")
+        return []
+
+    with open(uv_lock_path) as f:
+        lock_data = toml.load(f)
+
+    versions_by_name: dict[str, set[str]] = {}
+    for pkg in lock_data.get("package", []):
+        name = pkg.get("name", "")
+        version = pkg.get("version", "")
+        if name and version:
+            versions_by_name.setdefault(name, set()).add(version)
+
+    skipped = sorted(name for name, versions in versions_by_name.items() if len(versions) > 1)
+    if skipped:
+        logger.debug(f"Skipping constraint-dependencies for multi-version packages: {skipped}")
+
+    return sorted(
+        f"{name}=={next(iter(versions))}" for name, versions in versions_by_name.items() if len(versions) == 1
+    )
+
+
 def _find_uv_git_checkout(commit_sha: str) -> str | None:
     """
     Find the uv git cache checkout directory for a given commit SHA.
@@ -921,6 +955,7 @@ def _generate_release_pyproject(
     plugin_deps: list[str] | None = None,
     external_deps: list[str] | None = None,
     pyproject_data: dict | None = None,
+    constraint_dependencies: list[str] | None = None,
 ) -> None:
     """
     Generate a minimal pyproject.toml for the release package.
@@ -940,6 +975,9 @@ def _generate_release_pyproject(
         plugin_deps: Plugin dependency specs to include
         external_deps: External package dependency specs (for no-code configs)
         pyproject_data: Original pyproject data for preserving index config
+        constraint_dependencies: `name==version` pins from the source repo's uv.lock,
+            written to `tool.uv.constraint-dependencies` so the wrapper's fresh
+            resolution reproduces the tested one (see issue #398)
     """
     import toml
 
@@ -985,6 +1023,9 @@ def _generate_release_pyproject(
         index_sources = {k: v for k, v in sources.items() if "index" in v and k.lower() in dep_names}
         if index_sources:
             uv_config["sources"] = index_sources
+
+    if constraint_dependencies:
+        uv_config["constraint-dependencies"] = constraint_dependencies
 
     release_pyproject: dict = {
         "project": {
@@ -1128,6 +1169,9 @@ def create_released_pack(
             for whl in sorted(wheel_files):
                 logger.info(f"  {whl}")
 
+    constraint_dependencies = _lock_constraint_dependencies(uv_lock_path)
+    logger.info(f"Constraining wrapper resolution to {len(constraint_dependencies)} pin(s) from source uv.lock")
+
     _generate_release_pyproject(
         release_dir=release_dir,
         strategy_wheel_name=strategy_wheel_name,
@@ -1135,6 +1179,7 @@ def create_released_pack(
         plugin_deps=plugin_deps,
         external_deps=external_deps,
         pyproject_data=pyproject_data,
+        constraint_dependencies=constraint_dependencies,
     )
 
     # --- Save config + metadata ---
