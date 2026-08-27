@@ -1044,11 +1044,19 @@ def _generate_release_pyproject(
     if constraint_dependencies:
         uv_config["constraint-dependencies"] = constraint_dependencies
 
+    # The wrapper only ever runs inside the deploy image (Dockerfile: FROM
+    # python:3.12-slim, linux/amd64) — never resolved for anything else. Pin
+    # both requires-python and the resolution environment to exactly that
+    # target so `uv lock` doesn't try (and fail) to find candidates for other
+    # Python versions/platforms; the bundled first-party wheels are
+    # cp312-linux_x86_64-only anyway. Must move together with the Dockerfile.
+    uv_config["environments"] = ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
+
     release_pyproject: dict = {
         "project": {
             "name": "strategy-release",
             "version": "0.1.0",
-            "requires-python": ">=3.12",
+            "requires-python": "==3.12.*",
             "dependencies": deps,
         },
         "tool": {

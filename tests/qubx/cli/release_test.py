@@ -799,3 +799,48 @@ class TestGenerateReleasePyprojectConstraints:
             data = toml.load(f)
 
         assert "constraint-dependencies" not in data["tool"]["uv"]
+
+
+class TestGenerateReleasePyprojectDeployTarget:
+    """The wrapper only ever runs inside the deploy image (python:3.12-slim, linux/amd64).
+
+    `uv lock` must resolve for exactly that target, not universally — otherwise
+    it fails (or silently drops) on Python versions/platforms the cp312-linux
+    bundled wheels were never built for.
+    """
+
+    def test_requires_python_pinned_to_deploy_image_version(self, tmp_path: Path):
+        import toml
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        _generate_release_pyproject(
+            release_dir=str(release_dir),
+            strategy_wheel_name=None,
+            has_strategy_code=False,
+            external_deps=["quantkit>=1.3.0"],
+        )
+
+        with open(release_dir / "pyproject.toml") as f:
+            data = toml.load(f)
+
+        assert data["project"]["requires-python"] == "==3.12.*"
+
+    def test_environments_scoped_to_linux_x86_64(self, tmp_path: Path):
+        import toml
+
+        release_dir = tmp_path / "release"
+        release_dir.mkdir()
+
+        _generate_release_pyproject(
+            release_dir=str(release_dir),
+            strategy_wheel_name=None,
+            has_strategy_code=False,
+            external_deps=["quantkit>=1.3.0"],
+        )
+
+        with open(release_dir / "pyproject.toml") as f:
+            data = toml.load(f)
+
+        assert data["tool"]["uv"]["environments"] == ["sys_platform == 'linux' and platform_machine == 'x86_64'"]
