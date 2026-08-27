@@ -154,11 +154,16 @@ class TestLiveBoot:
         assert pm._boot.is_trading
 
     def test_restore_called_with_restored_state(self):
+        instr, signal, target = MagicMock(), MagicMock(), MagicMock()
+        target.time = 1
         restored = MagicMock()
-        restored.instrument_to_signal_positions = {}
-        restored.instrument_to_target_positions = {}
+        restored.instrument_to_signal_positions = {instr: [signal]}
+        restored.instrument_to_target_positions = {instr: [target]}
         pm, ctx, _ = make_pm(restored_state=restored)
         drive(pm)
+        ctx.get_restored_state.assert_called()
+        pm._position_tracker.restore_position_from_signals.assert_called_once_with(ctx, [signal])
+        pm._position_gathering.restore_from_target_positions.assert_called_once_with(ctx, [target])
         assert pm._boot.is_trading
 
 
