@@ -3,6 +3,8 @@ import numpy as np
 cimport numpy as np
 import pandas as pd
 import datetime
+from libc.float cimport DBL_EPSILON
+from libc.math cimport ceil, copysign, fabs, floor, fmax, pow, round
 
 NS = 1_000_000_000 
 
@@ -82,9 +84,31 @@ cpdef recognize_timeframe(timeframe):
     return tf
 
 
+cdef inline double _snap_tick_noise(double x) noexcept:
+    """
+    Snap x to the nearest integer when it is already within float noise of one. 0.29 * 100 is
+    28.999999999999996, which would otherwise floor to 28. The tolerance is relative because
+    float error scales with magnitude: 3.6e-15 at x=29, 3.7e-9 at x=2.9e7.
+    """
+    cdef double nearest = round(x)
+    cdef double tolerance = 16.0 * DBL_EPSILON * fmax(1.0, fabs(x))
+    if fabs(x - nearest) <= tolerance:
+        return nearest
+    return x
+
+
+# - previous implementation rounded the SCALED value to `precision` decimals before the floor.
+#   At precision 0 that window is half a lot, so prec_floor(3.7, 0) gave 4.0 and
+#   prec_ceil(3.4, 0) gave 3.0 — neither was a floor or a ceil any more.
+#   return np.sign(a) * np.true_divide(np.ceil(round(abs(a) * 10**precision, precision)), 10**precision)
+#   return np.sign(a) * np.true_divide(np.floor(round(abs(a) * 10**precision, precision)), 10**precision)
 cpdef double prec_ceil(double a, int precision):
-    return np.sign(a) * np.true_divide(np.ceil(round(abs(a) * 10**precision, precision)), 10**precision)
+    cdef double scale = pow(10.0, precision)
+    cdef double ticks = _snap_tick_noise(fabs(a) * scale)
+    return copysign(ceil(ticks) / scale, a)
 
 
 cpdef double prec_floor(double a, int precision):
-    return np.sign(a) * np.true_divide(np.floor(round(abs(a) * 10**precision, precision)), 10**precision)
+    cdef double scale = pow(10.0, precision)
+    cdef double ticks = _snap_tick_noise(fabs(a) * scale)
+    return copysign(floor(ticks) / scale, a)
