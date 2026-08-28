@@ -10,9 +10,10 @@ from typing import Any, Literal, TypeAlias
 import numpy as np
 import pandas as pd
 
+from qubx import logger
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
+from qubx.core.utils import add_in_lots, is_lot_multiple, prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.clock import start_clock_discipline, time_now
 from qubx.utils.misc import Stopwatch
 from qubx.utils.time import to_timedelta
@@ -1212,9 +1213,21 @@ class Position:
         *,
         realize_only: bool = False,
     ) -> tuple[float, float]:
+        # - both operands are lot multiples, so add in whole lots: 28.2 + (-28.1) is 282 + (-281)
+        #   ticks, exactly one tick. Flooring the float sum loses a lot whenever subtraction leaves
+        #   the result a few ulp short of the grid, which is how a position reached 0.0 locally
+        #   while the venue still held one lot.
+        lot = self.instrument.lot_size
+        if not is_lot_multiple(self.quantity, lot) or not is_lot_multiple(amount, lot):
+            # - stale instrument metadata or a connector fault. Reported, then booked to the
+            #   nearest lot: dropping the deal is the worse error.
+            logger.error(
+                f"[{self.instrument.symbol}] booking {self.quantity} + {amount} is not on the "
+                f"lot grid (lot_size {lot}) — rounding to the nearest lot"
+            )
         return self.update_position(
             timestamp,
-            self.instrument.round_size_down(self.quantity + amount),
+            add_in_lots(self.quantity, amount, lot),
             exec_price,
             fee_amount,
             conversion_rate=conversion_rate,

@@ -28,6 +28,12 @@ RTOL = 1e-9
 # under 1 cent is not a reconcilable difference. Absolute, because "1 cent" is absolute.
 BALANCE_ABS_TOL = 0.01
 
+# Maintenance margin is size x mark x fraction, and the venue's mark is not ours, so it differs on
+# almost every snapshot by an amount that carries no information. Measured over one live run: 175
+# diffs, median $0.000052, only one above a cent — and that one was a real position change.
+# Absolute, for the same reason balances are.
+MARGIN_ABS_TOL = 0.01
+
 
 # - Diff atoms ------------------------------------------------------------------ #
 @dataclass_transform(frozen_default=True, kw_only_default=True)
@@ -377,7 +383,7 @@ class Differ:
             if abs(lp.position_avg_price - sp.position_avg_price) > _peps(sp.instrument):
                 diffs.append(PositionAvgPriceMismatch(local=lp, origin=sp))
 
-            if not _close_rel(lp.maint_margin, sp.maint_margin):
+            if abs(lp.maint_margin - sp.maint_margin) > MARGIN_ABS_TOL:
                 diffs.append(PositionMarginMismatch(local=lp, origin=sp))
 
         for inst, lp in local_pos.items():

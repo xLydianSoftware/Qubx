@@ -19,6 +19,7 @@ import numpy as np
 from qubx import area_logger
 from qubx.core.account_manager.diffs import (
     BalanceMismatch,
+    Diff,
     Differ,
     LocalOrderMissing,
     LocalPositionMissing,
@@ -433,8 +434,30 @@ class Reconciler:
         state.mark_snapshot_applied(snap.as_of)
         changed = changed_positions if changed_positions is not None else []
         actions: list[Action] = []
-        for difference in self._differ.diff(state, snap):
+        differences = self._differ.diff(state, snap)
+        # - a snapshot requested before a deal was booked cannot contain that deal, so letting it
+        #   write the position rewinds a real fill. The decision is per instrument, not per diff:
+        #   a size change always brings a margin change, and PositionFieldMismatch routes through
+        #   reconcile_position_from_snapshot, which is authoritative for size and avg-price too.
+        #   Measured LIGHTER 2026-08-28 (ENAUSDC 272.6 -> 181.8, 84ms after the deal booked) and
+        #   BINANCE.UM (TRXUSDT 146 -> 127 against a snapshot 1.58s stale); on ALGOUSDT the
+        #   executor sized its next clip off the rewound number and overshot by 16.9%.
+        stale_for = {
+            instr
+            for instr in {self._position_instrument(d) for d in differences}
+            if instr is not None
+            and (booked := state.get_position_deal_booked_at(instr)) is not None
+            and booked > snap.as_of
+        }
+        for instr in stale_for:
+            _log.info(
+                f"[{state.exchange}] reconcile: <y>{instr}</y> snapshot as_of={snap.as_of} predates a deal "
+                f"booked at {state.get_position_deal_booked_at(instr)} — keeping the local position"
+            )
+        for difference in differences:
             _log.debug(difference.describe())
+            if self._position_instrument(difference) in stale_for:
+                continue
             # - each atom is applied in isolation: a handler that raises (e.g. a venue/state
             #   surprise) must not sink the rest of the snapshot reconcile (balances/figures/
             #   other positions). Log and move on; the next snapshot re-derives the diff.
@@ -493,6 +516,18 @@ class Reconciler:
             )
 
         return actions + self._dispatch(SnapshotIn(snap), state, now)
+
+    @staticmethod
+    def _position_instrument(difference: Diff) -> Instrument | None:
+        """
+        The instrument a position diff is about, or None for the order and balance diffs.
+        """
+        match difference:
+            case PositionFieldMismatch(origin=pos):
+                return pos.instrument
+            case OriginalPositionMissing(position=pos) | LocalPositionMissing(position=pos):
+                return pos.instrument
+        return None
 
     @staticmethod
     def _recover_order(state: AccountState, snap_order: Order, as_of: np.datetime64) -> Order:

@@ -300,7 +300,7 @@ def _reconciled_past(state: AccountState, instrument: Instrument, deal: Deal) ->
     return watermark is not None and deal.time <= watermark
 
 
-def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Position:
+def _book_deal(state: AccountState, instrument: Instrument, deal: Deal, now: np.datetime64) -> Position:
     """Apply a deal's effect to the position and balances. Caller dedups first.
 
     Futures/swap: credits realized PnL and debits the fee to the settle-currency
@@ -314,6 +314,8 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal) -> Posit
     _before = pos.quantity
     realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
     logger.debug("deal {} amt={} {}->{} tid={}", instrument.symbol, deal.amount, _before, pos.quantity, deal.trade_id)
+    # - a position snapshot requested before this moment cannot contain this deal
+    state.mark_position_deal_booked(instrument, now)
     if instrument.is_futures():
         state.mark_cash_currency(instrument.settle)
         # TODO(account-mgmt): fee is folded into settle here (correct when
@@ -387,11 +389,13 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
         if event.fill is not None
         else None
     )
-    position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
+    position = (
+        _book_deal(state, order.instrument, deal, now) if deal is not None and order.instrument is not None else None
+    )
     # Terminal fill-gap: book executions the venue counted but never delivered as deals so
     # position AND realized PnL converge now, not size-only at the next snapshot.
     if (gap := _reconcile_fill_gap(state, order, event, now)) is not None and order.instrument is not None:
-        position = _book_deal(state, order.instrument, gap)
+        position = _book_deal(state, order.instrument, gap, now)
         deal = deal or gap
     order = transition(state, order.client_order_id, OrderStatus.FILLED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
@@ -410,7 +414,9 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
         if event.fill is not None
         else None
     )
-    position = _book_deal(state, order.instrument, deal) if deal is not None and order.instrument is not None else None
+    position = (
+        _book_deal(state, order.instrument, deal, now) if deal is not None and order.instrument is not None else None
+    )
     # a pending cancel/update is resolved by the venue separately — don't disturb its status
     pending = order.status.is_pending
     if pending:
@@ -460,7 +466,7 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
         pos = state.ensure_position(order.instrument)
         pos.update_position_by_deal(deal, state.conversion_rate(order.instrument), realize_only=True)
         return ApplyResult(deal=deal, position=pos)
-    return ApplyResult(deal=deal, position=_book_deal(state, order.instrument, deal))
+    return ApplyResult(deal=deal, position=_book_deal(state, order.instrument, deal, now))
 
 
 def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datetime64) -> ApplyResult:

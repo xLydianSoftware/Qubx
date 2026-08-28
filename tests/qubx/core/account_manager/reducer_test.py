@@ -43,6 +43,8 @@ from qubx.core.events import (
 )
 from qubx.core.lookups import lookup
 
+_BOOKED_AT = np.datetime64("2026-08-28T00:00:00", "ns")
+
 T0 = np.datetime64("2026-05-28T00:00:00", "ns")
 T1 = np.datetime64("2026-05-28T00:01:00", "ns")
 
@@ -814,8 +816,8 @@ USDC_PERP = Instrument(
 def test_futures_deal_marks_settle_currency_as_cash():
     # Round trip on a USDC-settled perp inside a USDT-based state: buy 1 @ 100, sell 1 @ 110.
     state = AccountState("hyperliquid", "USDT")
-    reducer._book_deal(state, USDC_PERP, _fill(amount=1.0, price=100.0))
-    reducer._book_deal(state, USDC_PERP, _fill(trade_id="t2", amount=-1.0, price=110.0))
+    reducer._book_deal(state, USDC_PERP, _fill(amount=1.0, price=100.0), _BOOKED_AT)
+    reducer._book_deal(state, USDC_PERP, _fill(trade_id="t2", amount=-1.0, price=110.0), _BOOKED_AT)
 
     assert state.conversion_rate_to_base("USDC") == 1.0
     assert state.get_balance("USDC").total == pytest.approx(10.0)
@@ -840,8 +842,8 @@ BTC_PERP = Instrument(
 def test_btc_settled_deal_does_not_become_cash():
     # BINANCE.UM:ETHBTC is BTC-settled; 0.01 BTC of realized PnL is not 0.01 of capital.
     state = AccountState("binance.um", "USDT")
-    reducer._book_deal(state, BTC_PERP, _fill(amount=1.0, price=0.05))
-    reducer._book_deal(state, BTC_PERP, _fill(trade_id="t2", amount=-1.0, price=0.06))
+    reducer._book_deal(state, BTC_PERP, _fill(amount=1.0, price=0.05), _BOOKED_AT)
+    reducer._book_deal(state, BTC_PERP, _fill(trade_id="t2", amount=-1.0, price=0.06), _BOOKED_AT)
 
     assert state.conversion_rate_to_base("BTC") is None
     assert state.get_balance("BTC").total == pytest.approx(0.01)

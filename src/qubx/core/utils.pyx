@@ -112,3 +112,18 @@ cpdef double prec_floor(double a, int precision):
     cdef double scale = pow(10.0, precision)
     cdef double ticks = _snap_tick_noise(fabs(a) * scale)
     return copysign(floor(ticks) / scale, a)
+
+
+cpdef double add_in_lots(double quantity, double amount, double lot_size) noexcept:
+    """
+    Sum two lot multiples in whole lots, so a subtraction cannot land a few ulp off the grid.
+    """
+    return (round(quantity / lot_size) + round(amount / lot_size)) * lot_size
+
+
+cpdef bint is_lot_multiple(double quantity, double lot_size) noexcept:
+    """
+    True when quantity sits on the lot grid, within the float noise of one division.
+    """
+    cdef double raw = quantity / lot_size
+    return fabs(raw - round(raw)) <= 16.0 * DBL_EPSILON * fmax(1.0, fabs(raw))

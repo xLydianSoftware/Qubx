@@ -65,6 +65,7 @@ class AccountState:
         "_applied_funding_buckets",
         "_balance_push_as_of",
         "_position_reconcile_as_of",
+        "_position_deal_booked_at",
     )
 
     def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
@@ -113,6 +114,11 @@ class AccountState:
         # - watermark: snapshot reconciled the size up to this venue time; a deal at/under it is
         #   already in that size → reducer records but doesn't re-book it
         self._position_reconcile_as_of: dict[Instrument, np.datetime64] = {}
+        # - local clock of the most recent deal booked into the size, per instrument. A position
+        #   snapshot requested before it cannot contain that deal, so it must not overwrite the
+        #   size. Same domain as AccountSnapshot.as_of, which both connectors stamp before the
+        #   fetch (ccxt connector.py:1708, lighter connector.py:487).
+        self._position_deal_booked_at: dict[Instrument, np.datetime64] = {}
 
     def __repr__(self) -> str:
         return (
@@ -174,6 +180,12 @@ class AccountState:
 
     def get_balance_push_as_of(self, currency: str) -> np.datetime64 | None:
         return self._balance_push_as_of.get(currency)
+
+    def get_position_deal_booked_at(self, instrument: Instrument) -> np.datetime64 | None:
+        return self._position_deal_booked_at.get(instrument)
+
+    def mark_position_deal_booked(self, instrument: Instrument, at: np.datetime64) -> None:
+        self._position_deal_booked_at[instrument] = at
 
     def get_transition_counts(self) -> dict[str, int]:
         """Audit counter snapshot: status.value -> number of transitions into it."""
@@ -453,9 +465,7 @@ class AccountState:
                 f"[{self.exchange}] reconcile: position <y>{snapshot.instrument}</y> from snapshot -> "
                 f"size {existing.quantity}->{snapshot.quantity} avg {existing.position_avg_price}->{snapshot.position_avg_price}"
             )
-            existing.reconcile_size(
-                snapshot.quantity, snapshot.position_avg_price, timestamp=snapshot.last_update_time
-            )
+            existing.reconcile_size(snapshot.quantity, snapshot.position_avg_price, timestamp=snapshot.last_update_time)
 
         # external margins first, so the mark refresh below skips recalculating them
         if snapshot._maint_margin_external:
