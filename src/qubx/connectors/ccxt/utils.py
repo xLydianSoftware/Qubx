@@ -22,6 +22,7 @@ from qubx.core.basics import (
     OrderSide,
     OrderStatus,
     Position,
+    RejectCause,
     classify_origin,
     dt_64,
 )
@@ -56,6 +57,19 @@ _CCXT_STATUS_MAP: dict[str, OrderStatus] = {
     "cancelled": OrderStatus.CANCELED,
     "expired": OrderStatus.EXPIRED,
     "rejected": OrderStatus.REJECTED,
+}
+
+# - ccxt normalises every venue's error into its own exception classes, so the class name is
+#   already a portable vocabulary; this is the reading of it the framework acts on. Names, not
+#   classes, so a ccxt version that drops one does not break the import.
+_REJECT_CAUSE_BY_CCXT_ERROR: dict[str, RejectCause] = {
+    "InsufficientFunds": RejectCause.INSUFFICIENT_MARGIN,
+    "OrderNotFillable": RejectCause.NOT_FILLABLE,
+    "OrderImmediatelyFillable": RejectCause.NOT_FILLABLE,
+    "RateLimitExceeded": RejectCause.RATE_LIMITED,
+    "DDoSProtection": RejectCause.RATE_LIMITED,
+    "OrderNotFound": RejectCause.NOT_FOUND,
+    "InvalidOrder": RejectCause.TOO_SMALL,
 }
 
 
@@ -693,3 +707,10 @@ def ccxt_convert_timeframe_to_exchange_format(timeframe: str) -> str | None:
         _t = re.match(r"(\d+)(\w+)", timeframe)
         timeframe = f"{_t[1]}{_t[2][0].lower()}" if _t and len(_t.groups()) > 1 else timeframe
     return timeframe
+
+
+def reject_cause_of(error: Exception) -> RejectCause:
+    """
+    Classify a ccxt error for callers that cannot read venue codes. UNKNOWN when unmapped.
+    """
+    return _REJECT_CAUSE_BY_CCXT_ERROR.get(type(error).__name__, RejectCause.UNKNOWN)

@@ -731,7 +731,20 @@ class BinancePortfolioMargin(BinanceQVUSDM):
                     "defaultType": "swap",
                     "portfolioMargin": True,
                     "fetchMarkets": ["spot", "linear", "inverse"],
-                }
+                },
+                # ccxt's handle_errors reads the URL-scoped map BEFORE the global one, and its
+                # portfolioMargin group maps -2019 to OperationFailed — so a papi order refused
+                # for margin never reached BinanceQV's global "-2019": InsufficientFunds. It has
+                # to sit here, in the LAST describe of the chain: binanceusdm's own describe runs
+                # after BinanceQV's and would overwrite the group. Measured on BINANCE.PM: 105
+                # margin refusals arrived as OperationFailed and were logged as unexpected errors.
+                "exceptions": {
+                    "portfolioMargin": {
+                        "exact": {
+                            "-2019": InsufficientFunds,
+                        },
+                    },
+                },
             },
         )
 

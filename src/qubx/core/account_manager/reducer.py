@@ -280,6 +280,7 @@ def _handle_rejected(state: AccountState, event: OrderRejectedEvent, now: np.dat
         return ApplyResult()
     order.rejected_reason = event.reason
     order.error_code = event.code
+    order.reject_cause = event.cause
     order = transition(state, order.client_order_id, OrderStatus.REJECTED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.REJECTED)
 

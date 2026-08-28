@@ -790,6 +790,25 @@ def resolve_reduce_only(options: dict[str, Any]) -> bool | None:
     return None
 
 
+class RejectCause(StrEnum):
+    """
+    Why a venue refused an order, cancel or update, in terms a caller can act on.
+
+    ``OrderRejectedEvent.code`` keeps the venue's own value — a ccxt exception class, a Lighter
+    numeric code — which is what a log reader wants. This is the portable reading of it, so a
+    strategy can say "give up on repeated INSUFFICIENT_MARGIN, keep retrying NOT_FILLABLE"
+    without a per-venue lookup table. Anything a connector does not map stays UNKNOWN.
+    """
+
+    INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
+    NOT_FILLABLE = "NOT_FILLABLE"  # - post-only that would have crossed
+    RATE_LIMITED = "RATE_LIMITED"
+    TOO_SMALL = "TOO_SMALL"  # - below min size / min notional
+    NOT_FOUND = "NOT_FOUND"  # - cancel/update of an order the venue does not have
+    SEQUENCE = "SEQUENCE"  # - venue-ordering refusal; the connector rewrites it
+    UNKNOWN = "UNKNOWN"
+
+
 class OrderChange(StrEnum):
     """What happened to an order, paired with it on ApplyResult. Covers the cases
     order.status can't express on its own: UPDATED (status unchanged), CANCEL_REJECTED/
@@ -871,6 +890,8 @@ class Order:
     # venue/connector error code accompanying a reject (e.g. the ccxt error class name);
     # None when the reject path carries no code (synthetic reconcile rejects).
     error_code: str | None = None
+    # the portable reading of that code; UNKNOWN when the connector does not map it
+    reject_cause: RejectCause = RejectCause.UNKNOWN
     reduce_only: bool = False
     post_only: bool = False
     # Defaults to FRAMEWORK (the common case); the snapshot/external materialization
