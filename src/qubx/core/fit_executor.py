@@ -47,11 +47,14 @@ class FitCommitData:
     order (they run on the ProcessorThread, where the fit-thread interception no
     longer triggers, so each takes today's normal path). ``signals`` are the
     fit-emitted signals, drained into the normal pipeline in emission order.
+    ``error`` carries whatever made the fit fail (strategy raise or framework raise):
+    the ProcessorThread latches ``is_on_fit_called`` only when it is None.
     """
 
     ops: tuple[Callable[[], None], ...] = ()
     signals: tuple[Signal, ...] = ()
     duration_s: float = 0.0
+    error: BaseException | None = None
 
 
 class FitCycleState:

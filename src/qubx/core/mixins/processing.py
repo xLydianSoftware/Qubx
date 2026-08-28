@@ -28,6 +28,7 @@ from qubx.core.basics import (
     dt_64,
     td_64,
 )
+from qubx.core.boot import BootPhase, BootStateMachine
 from qubx.core.connector import IConnector, IMarketDataSink
 from qubx.core.detectors import DelistingDetector, StaleDataDetector
 from qubx.core.errors import BaseErrorEvent
@@ -59,6 +60,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.restarts.state_resolvers import StateResolver
 from qubx.state.dummy import DummyStatePersistence
 from qubx.trackers.riskctrl import _InitializationStageTracker
 from qubx.utils.throttler import InstrumentThrottler
@@ -165,7 +167,7 @@ class ProcessingManager(IProcessingManager):
     _last_data_ready_log_time: dt_64 | None = None
     _all_instruments_ready_logged: bool = False
     _account_sync_deadline: dt_64 | None = None  # - startup: bound the wait for the initial snapshot
-    _account_sync_timeout_logged: bool = False
+    _boot: BootStateMachine
     _emitted_signals: list[Signal] = []  # signals that were emitted
     _active_targets: dict[Instrument, TargetPosition] = {}
     _pending_no_quote_signals: dict[Instrument, Signal] = {}  # signals waiting for quote to arrive
@@ -240,8 +242,8 @@ class ProcessingManager(IProcessingManager):
         self._last_data_ready_log_time = None
         self._all_instruments_ready_logged = False
         self._account_sync_deadline = None
-        self._account_sync_timeout_logged = False
         self._emitted_signals = []
+        self._boot = BootStateMachine(self._health_monitor)
 
         # - special tracker for post-warmup initialization signals
         self._init_stage_position_tracker = _InitializationStageTracker()
@@ -497,46 +499,12 @@ class ProcessingManager(IProcessingManager):
         return self._run_strategy_pipeline(event)
 
     def _run_strategy_pipeline(self, event: Any) -> bool:
-        """Warmup/fit checks, strategy callback firing and signal processing — the
+        """Boot advance, strategy callback firing and signal processing — the
         shared tail of the tuple data path (__process_data)."""
-        if not self._context._strategy_state.is_on_start_called:
-            self._handle_start()
-
-        if (
-            not self._context._strategy_state.is_on_warmup_finished_called
-            and not self._context._strategy_state.is_warmup_in_progress
-            and not self._warmup_finished_is_running
-        ):
-            if self._context.get_warmup_positions() or self._context.get_warmup_orders():
-                self._handle_state_resolution()
-
-            # Restore tracker and gatherer state if available
-            restored_state = self._context.get_restored_state()
-            if restored_state is not None:
-                self._restore_tracker_and_gatherer_state(restored_state)
-
-            self._handle_warmup_finished()
-
-        # - check if it still didn't call on_fit() for first time
-        if (
-            not self._context._strategy_state.is_on_fit_called
-            and not self._fit_is_running
-            and not self._warmup_finished_is_running
-        ):
-            self._handle_fit(None, "fit", (None, self._time_provider.time()))
+        if not self._advance_boot():
             return False
 
         if not event and not self._emitted_signals:
-            return False
-
-        # - if fit was not called - skip on_event call
-        if not self._context._strategy_state.is_on_fit_called or (
-            not self._is_simulation and not self._context._strategy_state.is_on_warmup_finished_called
-        ):
-            return False
-
-        # - warmup-finished still running (inline): skip on_event call
-        if self._warmup_finished_is_running:
             return False
 
         # - strategy still fitting: inline mode (and simulation) skips the strategy
@@ -730,7 +698,8 @@ class ProcessingManager(IProcessingManager):
                 self._time_provider.time(), signals, self._account_manager, _targets_from_trackers
             )
 
-    def __invoke_on_fit(self) -> None:
+    def __invoke_on_fit(self) -> bool:
+        """Run on_fit inline. True ⇔ it completed without raising."""
         with self._health_monitor("ctx.on_fit"):
             try:
                 # - enforce the blacklist before fitting: refresh the cache AND force-close
@@ -743,15 +712,21 @@ class ProcessingManager(IProcessingManager):
                 self._strategy.on_fit(self._context)
                 self._subscription_manager.commit()  # apply pending operations
                 logger.debug(f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> is fitted")
+                self._context._strategy_state.is_on_fit_called = True
+                return True
             except Exception as strat_error:
                 logger.error(
                     f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_fit raised an exception: {strat_error}"
                 )
                 logger.opt(colors=False).error(traceback.format_exc())
-            finally:
-                self._context._strategy_state.is_on_fit_called = True
+                # - simulation keeps the latch: no retry machinery there, and a raising fit
+                #   must not re-fire on every tick
+                if self._is_simulation:
+                    self._context._strategy_state.is_on_fit_called = True
+                return False
 
-    def __invoke_on_warmup_finished(self) -> None:
+    def __invoke_on_warmup_finished(self) -> bool:
+        """Run on_warmup_finished inline. True ⇔ it completed without raising."""
         with self._health_monitor("ctx.on_warmup_finished"):
             try:
                 logger.debug(
@@ -762,12 +737,15 @@ class ProcessingManager(IProcessingManager):
                 logger.debug(
                     f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> warmup finished completed"
                 )
+                return True
             except Exception as strat_error:
                 logger.error(
                     f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_warmup_finished raised an exception: {strat_error}"
                 )
                 logger.opt(colors=False).error(traceback.format_exc())
+                return False
             finally:
+                # - the hook is not guaranteed idempotent: latch it either way, no auto-retry
                 self._context._strategy_state.is_on_warmup_finished_called = True
 
     def __preprocess_and_log_target_positions(self, target_positions: list[TargetPosition]) -> list[TargetPosition]:
@@ -921,27 +899,25 @@ class ProcessingManager(IProcessingManager):
         Gates on_start / on_fit / state-resolution / restore so those callbacks see REAL capital +
         venue positions instead of the pre-sync zero state (which would produce 0-capital sizing and
         transiently-flat restored positions). No account requirement in simulation (no venue snapshot).
-        Falls through after ACCOUNT_SYNC_TIMEOUT so a missing/failed snapshot never hangs the strategy
-        — mirrors the data-ready two-phase timeout; the reconciler heals state on the next snapshot.
+        Never falls through: trading against phantom-zero positions can double-open the book.
+        ACCOUNT_SYNC_TIMEOUT only arms an alert (once), the boot keeps holding until synced.
         """
         if not self._is_data_ready():
             return False
         # - simulation & paper have a locally-seeded account (no venue snapshot to wait for)
-        if self._context.is_simulation or self._context.is_paper_trading or self._account_manager.is_synced():
+        if self._context.is_simulation or self._context.is_paper_trading:
             return True
-        # - data ready but the initial venue snapshot hasn't applied yet: wait, bounded.
+        if self._account_manager.is_synced():
+            self._boot.account_synced()
+            return True
+        # - data ready but the initial venue snapshot hasn't applied: hold the boot.
+        #   ACCOUNT_SYNC_TIMEOUT is the alert threshold, not a fall-through — trading
+        #   against phantom-zero positions can double-open the book.
         now = self._time_provider.time()
         if self._account_sync_deadline is None:
             self._account_sync_deadline = now + self.ACCOUNT_SYNC_TIMEOUT
-            return False
-        if now >= self._account_sync_deadline:
-            if not self._account_sync_timeout_logged:
-                logger.warning(
-                    "Initial account snapshot not applied within timeout — starting without it; "
-                    "capital/positions may be incomplete until the next reconcile"
-                )
-                self._account_sync_timeout_logged = True
-            return True
+        elif now >= self._account_sync_deadline:
+            self._boot.account_sync_alert()
         return False
 
     def __update_base_data(
@@ -1087,21 +1063,98 @@ class ProcessingManager(IProcessingManager):
         """It is used by simulation as a dummy to trigger actual time events."""
         pass
 
-    def _handle_start(self) -> None:
-        if not self._is_ready():
+    def _advance_boot(self) -> bool:
+        """Drive the boot machine one pipeline pass. True ⇔ the strategy may trade.
+
+        Linearizes the old flag checks: WAIT_READY → ON_START → RESOLVE → RESTORE →
+        WARMUP_FINISHED → BOOT_FIT → TRADING. RESOLVE/RESTORE/WARMUP_FINISHED are
+        live-boot steps: skipped in simulation (RESOLVE) and while the warmup sim is
+        running this pipeline (is_warmup_in_progress). The boot-fit pass returns False
+        so no event is processed on it.
+        """
+        boot = self._boot
+        if boot.is_trading:
+            return True
+        if boot.is_blocked:
+            return False
+        state = self._context._strategy_state
+
+        if boot.phase == BootPhase.WAIT_READY:
+            if not self._is_ready():
+                return False
+            boot.advance(BootPhase.ON_START)
+
+        if boot.phase == BootPhase.ON_START:
+            if not state.is_on_start_called:
+                self._strategy.on_start(self._context)
+                state.is_on_start_called = True
+            boot.advance(BootPhase.RESOLVE)
+
+        if boot.phase == BootPhase.RESOLVE:
+            if not self._is_simulation and not state.is_on_warmup_finished_called:
+                self._handle_state_resolution()
+            boot.advance(BootPhase.RESTORE)
+
+        if boot.phase == BootPhase.RESTORE:
+            if not state.is_warmup_in_progress and not state.is_on_warmup_finished_called:
+                restored_state = self._context.get_restored_state()
+                if restored_state is not None:
+                    self._restore_tracker_and_gatherer_state(restored_state)
+            boot.advance(BootPhase.WARMUP_FINISHED)
+
+        if boot.phase == BootPhase.WARMUP_FINISHED:
+            if state.is_warmup_in_progress:
+                boot.advance(BootPhase.BOOT_FIT)  # warmup-sim ctx: the hook belongs to the live boot
+            else:
+                if not state.is_on_warmup_finished_called and not self._warmup_finished_is_running:
+                    self._handle_warmup_finished()
+                if not state.is_on_warmup_finished_called:
+                    return False
+                if not self._is_simulation and state.is_on_fit_called and self._context.initializer.get_fit_on_start():
+                    state.is_on_fit_called = False  # warmup fit doesn't count: force one live fit
+                boot.advance(BootPhase.BOOT_FIT)
+
+        if boot.phase == BootPhase.BOOT_FIT:
+            if state.is_on_fit_called:
+                boot.record_fit_success()
+                return True
+            if self._fit_is_running or self._warmup_finished_is_running:
+                return False
+            if boot.fit_attempt_allowed(self._time_provider.time()):
+                # - _handle_fit no-ops when readiness lapsed (account desync): such a pass
+                #   must not consume an attempt, or three of them would block an unrun fit
+                if not self._is_ready():
+                    return False
+                boot.record_fit_attempt()
+                try:
+                    self._handle_fit(None, "fit", (None, self._time_provider.time()))
+                except Exception:
+                    # - framework raise (cache finalize, health monitor, executor submit):
+                    #   stays loud, but the attempt must arm the retry deadline like any
+                    #   other failure instead of hot-looping on an unaccounted budget
+                    self._report_boot_fit(False)
+                    raise
+            return False
+
+    def _report_boot_fit(self, ok: bool) -> None:
+        """Hand a fit outcome to the boot machine — only while it still owns the fit
+        (BOOT_FIT) or waits for a self-heal (BLOCKED). A fit triggered mid-boot (handlers
+        run ahead of the pipeline) would otherwise jump the machine straight to TRADING.
+        Failures are live-only: simulation latches instead of retrying.
+        """
+        boot = self._boot
+        if boot.phase != BootPhase.BOOT_FIT and not boot.is_blocked:
             return
-        self._strategy.on_start(self._context)
-        self._context._strategy_state.is_on_start_called = True
+        if ok:
+            boot.record_fit_success()
+        elif not self._is_simulation:
+            boot.record_fit_failure(self._time_provider.time())
 
     def _handle_state_resolution(self) -> None:
-        if not self._is_ready():
-            return
-
         _ctx = self._context
         resolver = _ctx.initializer.get_state_resolver()
         if resolver is None:
-            logger.warning("No state resolver found, skipping state resolution")
-            return
+            resolver = StateResolver.REDUCE_ONLY
 
         self._log_state_mismatch()
 
@@ -1122,9 +1175,6 @@ class ProcessingManager(IProcessingManager):
         Args:
             restored_state: The restored state containing signals and target positions
         """
-        if not self._is_ready():
-            return
-
         # Restore tracker state from signals.
         # NB: unlike targets below, signals are NOT re-persisted on restart, so a run that
         # hasn't re-emitted yet restores no signals (state restore is run-scoped). Harmless
@@ -1159,15 +1209,14 @@ class ProcessingManager(IProcessingManager):
             self._logging.save_targets(latest_targets)
 
     def _handle_warmup_finished(self) -> None:
-        if not self._is_ready():
-            return
         # The flag reset lives in an outer finally so no raise (health monitor included)
         # can strand it True — a stranded flag silently disables the strategy forever.
         self._warmup_finished_is_running = True
         try:
             # Runs inline on the processing thread (single-mutator invariant): account events
             # queue in the channel until the callback returns.
-            self.__invoke_on_warmup_finished()
+            if not self.__invoke_on_warmup_finished():
+                self._boot.record_warmup_finished_failure()
         finally:
             self._warmup_finished_is_running = False
 
@@ -1191,9 +1240,10 @@ class ProcessingManager(IProcessingManager):
             self._cache.finalize_ohlc_for_instruments(current_time, self._context.instruments)
             # Runs inline on the processing thread (single-mutator invariant): a long fit
             # blocks event processing until it returns.
-            self.__invoke_on_fit()
+            ok = self.__invoke_on_fit()
         finally:
             self._fit_is_running = False
+        self._report_boot_fit(ok)
 
     def _submit_threaded_fit(self, data: tuple[dt_64 | None, dt_64]) -> None:
         """Thread-mode fit (live only): submit the fit body to the single-thread
@@ -1236,6 +1286,7 @@ class ProcessingManager(IProcessingManager):
         _t_start = time.monotonic()
         _deadline_timer: threading.Timer | None = None
         fit_ctx: FitContext | None = None
+        _fit_error: BaseException | None = None
         try:
             # Everything from here — including proxy construction and the timer start
             # (Timer.start can raise "can't start new thread" under resource pressure) —
@@ -1257,10 +1308,16 @@ class ProcessingManager(IProcessingManager):
                     self._strategy.on_fit(fit_ctx)  # type: ignore[arg-type]
                     logger.debug(f"[<y>{self.__class__.__name__}</y>] :: <g>{self._strategy_name}</g> is fitted")
                 except Exception as strat_error:
+                    _fit_error = strat_error
                     logger.error(
                         f"[{self.__class__.__name__}] :: Strategy {self._strategy_name} on_fit raised an exception: {strat_error}"
                     )
                     logger.opt(colors=False).error(traceback.format_exc())
+        except BaseException as framework_error:
+            # - the body never ran (proxy/timer/health-monitor raise): report it as a
+            #   failed fit too, so nothing latches as fitted
+            _fit_error = framework_error
+            raise
         finally:
             if _deadline_timer is not None:
                 _deadline_timer.cancel()
@@ -1277,7 +1334,14 @@ class ProcessingManager(IProcessingManager):
             except Exception:
                 logger.exception("failed to record fit_duration_s gauge")
             _ops, _signals = self._fit_state.end()
-            channel.send((None, FIT_COMMIT_EVENT, FitCommitData(ops=_ops, signals=_signals, duration_s=_duration_s), False))
+            channel.send(
+                (
+                    None,
+                    FIT_COMMIT_EVENT,
+                    FitCommitData(ops=_ops, signals=_signals, duration_s=_duration_s, error=_fit_error),
+                    False,
+                )
+            )
 
     def _warn_fit_soft_deadline(self) -> None:
         logger.warning(
@@ -1295,8 +1359,9 @@ class ProcessingManager(IProcessingManager):
         by the subscription commit to its background worker, so the replay stays fast and
         the added instruments go live only after their history landed), commit any
         remaining deferred subscriptions, then — in a finally so no replay failure can
-        strand the flag — drain fit-emitted signals into the normal pipeline, set
-        is_on_fit_called and clear _fit_is_running. Returning None hands control to
+        strand the flag — drain fit-emitted signals into the normal pipeline, latch
+        is_on_fit_called (only when the fit itself did not fail) and clear
+        _fit_is_running. Returning None hands control to
         _run_strategy_pipeline, which processes the drained signals immediately.
         """
         try:
@@ -1314,8 +1379,10 @@ class ProcessingManager(IProcessingManager):
         finally:
             if commit.signals:
                 self._emitted_signals.extend(commit.signals)
-            self._context._strategy_state.is_on_fit_called = True
+            if commit.error is None:
+                self._context._strategy_state.is_on_fit_called = True
             self._fit_is_running = False
+            self._report_boot_fit(commit.error is None)
 
     def _handle_subscription_swap(self, instrument: Instrument | None, event_type: str, apply_swap: Callable) -> None:
         """Apply a deferred subscription commit's swap on the ProcessorThread. Posted by

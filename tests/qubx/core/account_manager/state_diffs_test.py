@@ -313,6 +313,19 @@ def test_position_margin_drift_emits_margin_mismatch():
     assert [type(d) for d in _differ().diff(local, origin)] == [PositionMarginMismatch]
 
 
+def test_position_margin_mark_noise_yields_no_diff():
+    # sub-0.5% mark-to-market drift re-marks maint margin every snapshot — not a diff
+    local = _state(positions=[_pos(maint_margin=100.0)])
+    origin = _snap(positions=[_pos(maint_margin=100.4)])
+    assert _differ().diff(local, origin) == []
+
+
+def test_position_margin_subcent_near_zero_yields_no_diff():
+    local = _state(positions=[_pos(maint_margin=0.002)])
+    origin = _snap(positions=[_pos(maint_margin=0.009)])
+    assert _differ().diff(local, origin) == []
+
+
 def test_position_multi_field_emits_one_atom_per_field():
     local = _state(positions=[_pos(quantity=1.5, maint_margin=100.0)])
     origin = _snap(positions=[_pos(quantity=1.2, maint_margin=120.0)])

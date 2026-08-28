@@ -2,6 +2,7 @@
 
 from unittest.mock import MagicMock
 
+from qubx.core.boot import BootStateMachine
 from qubx.core.mixins.processing import ProcessingManager
 
 
@@ -15,6 +16,8 @@ def make_pm(**overrides) -> ProcessingManager:
     pm._account_manager = MagicMock()
     pm._context = MagicMock()
     pm._context.emitter = None
+    pm._context.initializer.get_fit_on_start.return_value = False  # a MagicMock would read as the knob being on
+    pm._boot = BootStateMachine(MagicMock())  # __new__ skips __init__, which builds it
     pm._position_gathering = MagicMock()
     pm._exporter = None
     pm._universe_manager = MagicMock()

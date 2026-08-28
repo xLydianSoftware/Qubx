@@ -482,6 +482,31 @@ def test_snapshot_does_not_clobber_push_balance_ts():
     assert state.get_balance("USDT").last_update_time == T1  # push E preserved, not T2
 
 
+def test_snapshot_balance_free_locked_reshuffle_logs_debug_not_info():
+    # margin mark-to-market reshuffles free/locked every poll with total unchanged — that
+    # must not land at INFO; a real total move must
+    from qubx import logger
+
+    state = AccountState("binance", "USDT")
+    state.apply_balance_snapshot(Balance(exchange="binance", currency="USDT", total=100.0, free=100.0), T1)
+
+    records: list = []
+    sink_id = logger.add(lambda msg: records.append(msg.record), level="DEBUG")
+    try:
+        # reshuffle: total identical, free/locked move
+        state.apply_balance_snapshot(
+            Balance(exchange="binance", currency="USDT", total=100.0, free=80.0, locked=20.0), T2
+        )
+        # real move: total changes by more than a cent
+        state.apply_balance_snapshot(
+            Balance(exchange="binance", currency="USDT", total=105.0, free=85.0, locked=20.0), T2
+        )
+    finally:
+        logger.remove(sink_id)
+    levels = [r["level"].name for r in records if "reconcile: balance" in r["message"]]
+    assert levels == ["DEBUG", "INFO"]
+
+
 def test_snapshot_balance_no_push_uses_as_of_without_ratchet():
     state = AccountState("binance", "USDT")
     state.apply_balance_snapshot(Balance(exchange="binance", currency="USDT", total=50.0, free=50.0), T1)
