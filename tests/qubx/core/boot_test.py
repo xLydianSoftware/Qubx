@@ -23,6 +23,24 @@ def test_initial_phase_and_advance_emits_state_gauge():
     health.record_gauge.assert_called_with("boot.state", float(BootPhase.ON_START))
 
 
+def test_advance_logs_each_transition_once():
+    from qubx import logger
+
+    lines: list[str] = []
+    sink_id = logger.add(lambda msg: lines.append(str(msg)), level="INFO")
+    try:
+        m, _ = make_machine()
+        m.advance(BootPhase.ON_START)
+        m.advance(BootPhase.ON_START)  # same phase: no log
+        m.advance(BootPhase.RESOLVE)
+    finally:
+        logger.remove(sink_id)
+    transitions = [ln for ln in lines if "boot" in ln and "->" in ln]
+    assert len(transitions) == 2
+    assert "WAIT_READY -> " in transitions[0] and "ON_START" in transitions[0]
+    assert "ON_START -> " in transitions[1] and "RESOLVE" in transitions[1]
+
+
 def test_account_sync_alert_emits_once_and_clears():
     m, health = make_machine()
     m.account_sync_alert()

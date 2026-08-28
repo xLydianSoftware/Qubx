@@ -44,6 +44,7 @@ class BootStateMachine:
     def advance(self, phase: BootPhase) -> None:
         if phase == self.phase:
             return
+        logger.info(f"<yellow>boot</yellow> :: {self.phase.name} -> <green>{phase.name}</green>")
         self.phase = phase
         self._gauge("boot.state", float(phase))
 
