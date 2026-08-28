@@ -20,6 +20,22 @@ def _no_warmup_output(
     return True
 
 
+def _cancel_all_orders(ctx: IStrategyContext) -> None:
+    orders = ctx.get_orders()
+    if not orders:
+        return
+    logger.info(f"Cancelling {len(orders)} live orders ...")
+    for order in orders.values():
+        try:
+            # - route by the id we actually hold: venue id when acked, else the client id
+            if order.venue_order_id:
+                ctx.cancel_order(order_id=order.venue_order_id)
+            else:
+                ctx.cancel_order(client_order_id=order.client_order_id)
+        except OrderNotFound:
+            logger.debug(f"Order {order.venue_order_id or order.client_order_id} already cancelled or doesn't exist")
+
+
 class StateResolver:
     """
     Collection of static methods for resolving position mismatches between
@@ -53,16 +69,7 @@ class StateResolver:
         The recommended partner of initializer.set_fit_on_start(True): let the first
         live fit reconcile positions through the strategy's own tracker.
         """
-        orders = ctx.get_orders()
-        if not orders:
-            return
-        logger.info(f"HOLD resolver: cancelling {len(orders)} live orders, keeping positions")
-        for order in orders.values():
-            oid = order.venue_order_id or order.client_order_id
-            try:
-                ctx.cancel_order(order_id=oid)
-            except OrderNotFound:
-                logger.debug(f"Order {oid} already cancelled or doesn't exist")
+        _cancel_all_orders(ctx)
 
     @staticmethod
     def REDUCE_ONLY(
@@ -136,15 +143,7 @@ class StateResolver:
             sim_active_targets (dict[Instrument, list[TargetPosition]]): Active targets from the simulation
         """
         # TODO: optimize with batch requests
-        orders = ctx.get_orders()
-        if orders:
-            logger.info(f"Cancelling {len(orders)} live orders ...")
-            for order in orders.values():
-                oid = order.venue_order_id or order.client_order_id
-                try:
-                    ctx.cancel_order(order_id=oid)
-                except OrderNotFound:
-                    logger.debug(f"Order {oid} already cancelled or doesn't exist")
+        _cancel_all_orders(ctx)
 
         # Get current live positions
         live_positions = ctx.get_positions()

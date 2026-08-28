@@ -467,9 +467,9 @@ class TestStateResolverCloseAll(TestStateResolverBase):
             assert signal.signal == 0.0  # All positions should be closed
 
     def test_close_all_with_unacked_order_reaches_connector_cancel(self):
-        """An order without a venue id (fire-and-forget, not acked yet) makes CLOSE_ALL pass
-        its cid as order_id; the TradingManager venue->cid fallback must still resolve it and
-        deliver the cancel to the connector."""
+        """An order without a venue id (fire-and-forget, not acked yet) makes CLOSE_ALL cancel
+        by client_order_id; the TradingManager must resolve it and deliver the cancel to the
+        connector."""
         btc = self._find_instrument("BINANCE.UM", "BTCUSDT")
         unacked = Order(
             client_order_id="qubx_BTCUSDT_1",
@@ -573,6 +573,15 @@ class TestStateResolverHold(TestStateResolverBase):
         self.ctx.get_orders.return_value = {"v-1": order}
         StateResolver.HOLD(self.ctx, {}, {}, {})
         self.ctx.cancel_order.assert_called_once_with(order_id="v-1")
+        self.ctx.emit_signal.assert_not_called()
+
+    def test_hold_unacked_order_cancelled_by_client_id(self):
+        order = MagicMock()
+        order.venue_order_id = None
+        order.client_order_id = "c-1"
+        self.ctx.get_orders.return_value = {"c-1": order}
+        StateResolver.HOLD(self.ctx, {}, {}, {})
+        self.ctx.cancel_order.assert_called_once_with(client_order_id="c-1")
         self.ctx.emit_signal.assert_not_called()
 
     def test_hold_no_orders_does_nothing(self):
