@@ -168,3 +168,13 @@ class TestBasicStrategyInitializer:
 
         # Get a non-existent config value without default
         assert initializer.get_config("non_existent") is None
+
+    def test_fit_on_start_defaults_false_and_toggles(self):
+        """Test the fit_on_start default and toggling."""
+        initializer = BasicStrategyInitializer()
+
+        assert initializer.get_fit_on_start() is False
+        initializer.set_fit_on_start(True)
+        assert initializer.get_fit_on_start() is True
+        initializer.set_fit_on_start(False)
+        assert initializer.get_fit_on_start() is False

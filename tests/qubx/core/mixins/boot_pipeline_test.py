@@ -1,0 +1,373 @@
+"""Boot state machine driving the strategy pipeline: live boot ordering and simulation parity."""
+
+from unittest.mock import MagicMock
+
+import numpy as np
+import pytest
+
+from qubx.core.basics import CtrlChannel, TriggerEvent
+from qubx.core.boot import BootPhase
+from qubx.core.interfaces import StrategyState
+from qubx.core.mixins.processing import ProcessingManager
+
+T0 = np.datetime64("2025-01-01T00:00:00", "ns")
+
+
+def make_pm(
+    *,
+    is_simulation: bool = False,
+    is_warmup_in_progress: bool = False,
+    is_on_fit_called: bool = False,
+    warmup_positions: dict | None = None,
+    restored_state=None,
+    resolver=None,
+    fit_on_start: bool = False,
+):
+    channel = CtrlChannel("test-databus")
+    context = MagicMock()
+    context.is_simulation = is_simulation
+    context.is_paper_trading = False
+    context.instruments = []
+    context._strategy_state = StrategyState(
+        is_on_init_called=True,
+        is_on_start_called=False,
+        is_on_warmup_finished_called=False,
+        is_on_fit_called=is_on_fit_called,
+        is_warmup_in_progress=is_warmup_in_progress,
+    )
+    context._data_providers = [MagicMock(channel=channel)]
+    context.emitter = None
+    context._market_data_provider = MagicMock()
+    context.get_warmup_positions.return_value = warmup_positions or {}
+    context.get_warmup_orders.return_value = {}
+    context.get_warmup_active_targets.return_value = {}
+    context.get_restored_state.return_value = restored_state
+    context.initializer.get_state_resolver.return_value = resolver
+    context.initializer.get_fit_on_start.return_value = fit_on_start
+
+    strategy = MagicMock()
+    strategy.__class__.__name__ = "TestStrategy"
+    strategy.on_fit.return_value = None
+    strategy.on_event.return_value = []
+    strategy.on_market_data.return_value = []
+
+    cache = MagicMock()
+    cache.default_timeframe = "1h"
+    market_data = MagicMock()
+    market_data.get_market_data_cache.return_value = cache
+
+    subscription_manager = MagicMock()
+    subscription_manager.get_base_subscription.return_value = "quote"
+    time_provider = MagicMock()
+    time_provider.time.return_value = T0
+    position_tracker = MagicMock()
+    position_tracker.process_signals.return_value = []
+    position_tracker.update.return_value = []
+    universe_manager = MagicMock()
+    universe_manager.is_trading_allowed.return_value = True
+    health_monitor = MagicMock()
+    health_monitor.return_value.__enter__ = MagicMock(return_value=None)
+    health_monitor.return_value.__exit__ = MagicMock(return_value=False)
+    account_manager = MagicMock()
+    account_manager.is_synced.return_value = True
+    account_manager.get_positions.return_value = {}
+    account_manager.get_orders.return_value = {}  # _log_state_mismatch iterates these
+
+    pm = ProcessingManager(
+        context=context,
+        strategy=strategy,
+        logging=MagicMock(),
+        market_data=market_data,
+        subscription_manager=subscription_manager,
+        time_provider=time_provider,
+        account_manager=account_manager,
+        connectors={},
+        position_tracker=position_tracker,
+        position_gathering=MagicMock(),
+        universe_manager=universe_manager,
+        scheduler=MagicMock(),
+        is_simulation=is_simulation,
+        health_monitor=health_monitor,
+        delisting_detector=MagicMock(),
+        fit_executor="inline",
+    )
+    pm._is_data_ready = lambda: True  # type: ignore[method-assign]
+    pm._init_stage_position_tracker = MagicMock()
+    pm._init_stage_position_tracker.process_signals.return_value = []
+    pm._init_stage_position_tracker.update.return_value = []
+    context._processing_manager = pm
+    return pm, context, strategy
+
+
+def drive(pm, passes: int = 1):
+    for _ in range(passes):
+        pm._run_strategy_pipeline(None)
+
+
+class TestLiveBoot:
+    def test_resolution_runs_without_warmup_output(self):
+        resolver = MagicMock()
+        resolver.__name__ = "custom"
+        pm, ctx, _ = make_pm(resolver=resolver)
+        drive(pm)
+        resolver.assert_called_once_with(ctx, {}, {}, {})
+
+    def test_default_resolver_installed_when_none_registered(self):
+        pm, ctx, _ = make_pm(resolver=None)
+        drive(pm)  # REDUCE_ONLY with empty args -> guard: must not read live positions
+        ctx.get_positions.assert_not_called()
+        assert pm._boot.phase in (BootPhase.BOOT_FIT, BootPhase.TRADING)
+
+    def test_resolution_receives_warmup_output(self):
+        resolver = MagicMock()
+        resolver.__name__ = "custom"
+        instr = MagicMock()
+        instr.symbol = "BTCUSDT"
+        pos = MagicMock()
+        pos.quantity = 1.0  # real float: _log_state_mismatch formats it with :.6f
+        wp = {instr: pos}
+        pm, ctx, _ = make_pm(resolver=resolver, warmup_positions=wp)
+        drive(pm)
+        resolver.assert_called_once_with(ctx, wp, {}, {})
+
+    def test_boot_sequence_reaches_trading_and_fit_pass_returns_false(self):
+        pm, ctx, strategy = make_pm()
+        assert pm._run_strategy_pipeline(None) is False  # boot pass fires on_start..fit
+        strategy.on_start.assert_called_once()
+        strategy.on_warmup_finished.assert_called_once()
+        strategy.on_fit.assert_called_once()
+        assert ctx._strategy_state.is_on_fit_called
+        assert pm._boot.is_trading
+
+    def test_no_event_is_processed_on_the_boot_fit_pass(self):
+        pm, _, strategy = make_pm()
+        event = TriggerEvent(time=T0, type="time", instrument=None, data=None)
+        pm._run_strategy_pipeline(event)
+        strategy.on_fit.assert_called_once()
+        strategy.on_event.assert_not_called()
+        pm._run_strategy_pipeline(event)
+        strategy.on_event.assert_called_once()
+
+    def test_warmup_fit_satisfies_boot_fit_when_knob_off(self):
+        pm, ctx, strategy = make_pm(is_on_fit_called=True)
+        drive(pm)
+        strategy.on_fit.assert_not_called()
+        assert pm._boot.is_trading
+
+    def test_restore_called_with_restored_state(self):
+        instr, signal, target = MagicMock(), MagicMock(), MagicMock()
+        target.time = 1
+        restored = MagicMock()
+        restored.instrument_to_signal_positions = {instr: [signal]}
+        restored.instrument_to_target_positions = {instr: [target]}
+        pm, ctx, _ = make_pm(restored_state=restored)
+        drive(pm)
+        ctx.get_restored_state.assert_called()
+        pm._position_tracker.restore_position_from_signals.assert_called_once_with(ctx, [signal])
+        pm._position_gathering.restore_from_target_positions.assert_called_once_with(ctx, [target])
+        assert pm._boot.is_trading
+
+
+class TestSimulationParity:
+    def test_plain_simulation_boots_without_resolution(self):
+        resolver = MagicMock()
+        pm, ctx, strategy = make_pm(is_simulation=True, resolver=resolver)
+        drive(pm)
+        resolver.assert_not_called()
+        strategy.on_start.assert_called_once()
+        strategy.on_warmup_finished.assert_called_once()
+        strategy.on_fit.assert_called_once()
+        assert pm._boot.is_trading
+
+    def test_warmup_sim_context_skips_warmup_finished_and_restore(self):
+        restored = MagicMock()
+        pm, ctx, strategy = make_pm(is_simulation=True, is_warmup_in_progress=True, restored_state=restored)
+        drive(pm)
+        strategy.on_start.assert_called_once()
+        strategy.on_warmup_finished.assert_not_called()
+        strategy.on_fit.assert_called_once()
+        ctx.get_restored_state.assert_not_called()
+        assert pm._boot.is_trading
+        assert not ctx._strategy_state.is_on_warmup_finished_called
+
+
+class TestStrictAccountSyncGate:
+    def test_boot_holds_until_synced_and_alerts_after_timeout(self):
+        pm, ctx, strategy = make_pm()
+        pm._account_manager.is_synced.return_value = False
+        tp = pm._time_provider
+
+        drive(pm)  # arms the deadline
+        assert pm._boot.phase == BootPhase.WAIT_READY
+        strategy.on_start.assert_not_called()
+
+        tp.time.return_value = T0 + np.timedelta64(20, "s")  # past ACCOUNT_SYNC_TIMEOUT (15s)
+        drive(pm)
+        assert pm._boot.phase == BootPhase.WAIT_READY
+        strategy.on_start.assert_not_called()
+        pm._health_monitor.record_gauge.assert_any_call("boot.account_sync_blocked", 1.0)
+
+    def test_boot_proceeds_when_snapshot_lands_late(self):
+        pm, ctx, strategy = make_pm()
+        pm._account_manager.is_synced.return_value = False
+        tp = pm._time_provider
+        drive(pm)
+        tp.time.return_value = T0 + np.timedelta64(30, "s")
+        drive(pm)
+        pm._account_manager.is_synced.return_value = True
+        drive(pm)
+        strategy.on_start.assert_called_once()
+        pm._health_monitor.record_gauge.assert_any_call("boot.account_sync_blocked", 0.0)
+
+
+class TestFitOnStart:
+    def test_knob_forces_exactly_one_live_fit_after_warmup(self):
+        pm, ctx, strategy = make_pm(is_on_fit_called=True, fit_on_start=True)
+        drive(pm, passes=3)
+        strategy.on_fit.assert_called_once()
+        assert pm._boot.is_trading
+
+    def test_knob_off_no_live_fit_when_warmup_fit_ran(self):
+        pm, ctx, strategy = make_pm(is_on_fit_called=True, fit_on_start=False)
+        drive(pm, passes=3)
+        strategy.on_fit.assert_not_called()
+        assert pm._boot.is_trading
+
+    def test_no_double_fit_when_warmup_ran_no_fit(self):
+        # LIGHTER case: flag unset after warmup; knob on must still yield exactly one fit
+        pm, ctx, strategy = make_pm(is_on_fit_called=False, fit_on_start=True)
+        drive(pm, passes=3)
+        strategy.on_fit.assert_called_once()
+        assert pm._boot.is_trading
+
+    def test_knob_ignored_in_simulation(self):
+        pm, ctx, strategy = make_pm(is_simulation=True, is_on_fit_called=True, fit_on_start=True)
+        drive(pm, passes=3)
+        strategy.on_fit.assert_not_called()
+        assert pm._boot.is_trading
+
+
+class TestBootFitFailure:
+    def test_failed_boot_fit_retries_then_blocks(self):
+        pm, ctx, strategy = make_pm()
+        strategy.on_fit.side_effect = RuntimeError("boom")
+        tp = pm._time_provider
+
+        drive(pm)  # attempt 1
+        assert not ctx._strategy_state.is_on_fit_called
+        assert pm._boot.phase == BootPhase.BOOT_FIT
+
+        drive(pm)  # before the retry deadline: no new attempt
+        assert strategy.on_fit.call_count == 1
+
+        tp.time.return_value = T0 + np.timedelta64(61, "s")
+        drive(pm)  # attempt 2
+        tp.time.return_value = T0 + np.timedelta64(122, "s")
+        drive(pm)  # attempt 3 -> exhausted
+        assert strategy.on_fit.call_count == 3
+        assert pm._boot.is_blocked
+        pm._health_monitor.record_gauge.assert_any_call("boot.fit_failed", 1.0)
+
+        # blocked: a real event is dropped — no on_event, no more attempts
+        event = TriggerEvent(time=tp.time.return_value, type="time", instrument=None, data=None)
+        assert pm._run_strategy_pipeline(event) is False
+        assert strategy.on_fit.call_count == 3
+        strategy.on_event.assert_not_called()
+
+    def test_blocked_self_heals_on_later_successful_fit(self):
+        pm, ctx, strategy = make_pm()
+        strategy.on_fit.side_effect = RuntimeError("boom")
+        tp = pm._time_provider
+        drive(pm)
+        tp.time.return_value = T0 + np.timedelta64(61, "s")
+        drive(pm)
+        tp.time.return_value = T0 + np.timedelta64(122, "s")
+        drive(pm)
+        assert pm._boot.is_blocked
+
+        event = TriggerEvent(time=tp.time.return_value, type="time", instrument=None, data=None)
+        pm._run_strategy_pipeline(event)
+        strategy.on_event.assert_not_called()  # blocked: the event never reaches the strategy
+
+        strategy.on_fit.side_effect = None  # a scheduled fit arrives via _handle_fit
+        pm._handle_fit(None, "fit", (None, tp.time.return_value))
+        assert ctx._strategy_state.is_on_fit_called
+        assert pm._boot.is_trading
+        pm._health_monitor.record_gauge.assert_any_call("boot.fit_failed", 0.0)
+
+        pm._run_strategy_pipeline(event)  # released: the same event now flows through
+        strategy.on_event.assert_called_once()
+
+    def test_warmup_finished_failure_latches_and_gauges(self):
+        pm, ctx, strategy = make_pm()
+        strategy.on_warmup_finished.side_effect = RuntimeError("hook boom")
+        drive(pm, passes=2)
+        assert ctx._strategy_state.is_on_warmup_finished_called  # latched as before
+        pm._health_monitor.record_gauge.assert_any_call("boot.warmup_finished_failed", 1.0)
+        assert pm._boot.is_trading  # boot continued to the fit
+
+    def test_simulation_keeps_latch_on_failure(self):
+        pm, ctx, strategy = make_pm(is_simulation=True)
+        strategy.on_fit.side_effect = RuntimeError("boom")
+        drive(pm, passes=2)
+        assert ctx._strategy_state.is_on_fit_called  # sim: latch-in-finally preserved
+
+    def test_not_ready_boot_fit_pass_consumes_no_attempt(self):
+        # a pass that cannot fit (account went out of sync after the first attempt) must
+        # not burn attempts — otherwise three such no-ops would block a never-run fit
+        pm, ctx, strategy = make_pm()
+        strategy.on_fit.side_effect = RuntimeError("boom")
+        tp = pm._time_provider
+        drive(pm)
+        assert pm._boot.phase == BootPhase.BOOT_FIT
+        assert pm._boot.fit_attempts == 1
+
+        pm._account_manager.is_synced.return_value = False
+        for n in range(1, 5):
+            tp.time.return_value = T0 + np.timedelta64(61 * n, "s")
+            drive(pm)
+        assert strategy.on_fit.call_count == 1
+        assert pm._boot.fit_attempts == 1
+        assert not pm._boot.is_blocked
+
+        pm._account_manager.is_synced.return_value = True
+        strategy.on_fit.side_effect = None
+        drive(pm)
+        assert pm._boot.is_trading
+        assert strategy.on_fit.call_count == 2
+
+    def test_framework_raise_on_the_boot_fit_pass_arms_the_retry_deadline(self):
+        # a raise before on_fit (cache finalize here) stays loud, but must still count as a
+        # failed attempt: otherwise the pass retries hot and poisons the retry budget
+        pm, ctx, strategy = make_pm()
+        tp = pm._time_provider
+        pm._cache.finalize_ohlc_for_instruments.side_effect = RuntimeError("cache boom")
+
+        with pytest.raises(RuntimeError, match="cache boom"):
+            drive(pm)
+        strategy.on_fit.assert_not_called()
+        assert pm._boot.fit_attempts == 1
+
+        drive(pm)  # deadline armed: no immediate re-attempt
+        assert pm._boot.fit_attempts == 1
+        strategy.on_fit.assert_not_called()
+
+        pm._cache.finalize_ohlc_for_instruments.side_effect = None
+        tp.time.return_value = T0 + np.timedelta64(61, "s")
+        drive(pm)
+        strategy.on_fit.assert_called_once()
+        assert pm._boot.fit_attempts == 2
+        assert pm._boot.is_trading
+
+    def test_mid_boot_scheduled_fit_does_not_skip_the_boot_steps(self):
+        # a fit trigger dispatched before the machine owns the fit (handlers run ahead of
+        # the pipeline) must not report an outcome and jump the machine to TRADING
+        pm, ctx, strategy = make_pm()
+        pm._handle_fit(None, "fit", (None, T0))
+        assert pm._boot.phase == BootPhase.WAIT_READY
+        assert not pm._boot.is_trading
+
+        drive(pm)
+        strategy.on_start.assert_called_once()
+        strategy.on_warmup_finished.assert_called_once()
+        assert pm._boot.is_trading

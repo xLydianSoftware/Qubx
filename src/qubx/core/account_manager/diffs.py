@@ -28,6 +28,11 @@ RTOL = 1e-9
 # under 1 cent is not a reconcilable difference. Absolute, because "1 cent" is absolute.
 BALANCE_ABS_TOL = 0.01
 
+# Maintenance margin re-marks with every snapshot's mark price, so RTOL-tight comparison
+# emits a diff per position per poll. Only a material move (leverage/size change) is worth
+# re-syncing; sub-0.5% (and sub-cent) drift is mark noise.
+MARGIN_RTOL = 5e-3
+
 
 # - Diff atoms ------------------------------------------------------------------ #
 @dataclass_transform(frozen_default=True, kw_only_default=True)
@@ -67,6 +72,10 @@ def _close_rel(a: float, b: float) -> bool:
 def _close_bal(a: float, b: float) -> bool:
     # balance legs: absolute 1-cent tolerance (ignore sub-cent margin/PnL float drift)
     return abs(a - b) <= BALANCE_ABS_TOL
+
+
+def _close_margin(a: float, b: float) -> bool:
+    return abs(a - b) <= max(BALANCE_ABS_TOL, MARGIN_RTOL * max(abs(a), abs(b)))
 
 
 def _material_pos(position: Position) -> bool:
@@ -377,7 +386,7 @@ class Differ:
             if abs(lp.position_avg_price - sp.position_avg_price) > _peps(sp.instrument):
                 diffs.append(PositionAvgPriceMismatch(local=lp, origin=sp))
 
-            if not _close_rel(lp.maint_margin, sp.maint_margin):
+            if not _close_margin(lp.maint_margin, sp.maint_margin):
                 diffs.append(PositionMarginMismatch(local=lp, origin=sp))
 
         for inst, lp in local_pos.items():

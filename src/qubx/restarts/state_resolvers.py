@@ -4,11 +4,45 @@ from qubx.core.exceptions import OrderNotFound
 from qubx.core.interfaces import IStrategyContext
 
 
+def _no_warmup_output(
+    sim_positions: dict[Instrument, Position],
+    sim_orders: dict[Instrument, list[Order]],
+    sim_active_targets: dict[Instrument, TargetPosition],
+) -> bool:
+    """All-empty sim args ⇔ no warmup sim ran (a sim that ran captures a Position per
+    instrument, flat included). Resolvers that steer toward sim state must hold then."""
+    if sim_positions or sim_orders or sim_active_targets:
+        return False
+    logger.warning(
+        "<yellow>State resolver received no warmup output — holding the live book as-is. "
+        "Register a custom resolver (or StateResolver.HOLD) to silence this.</yellow>"
+    )
+    return True
+
+
+def _cancel_all_orders(ctx: IStrategyContext) -> None:
+    orders = ctx.get_orders()
+    if not orders:
+        return
+    logger.info(f"Cancelling {len(orders)} live orders ...")
+    for order in orders.values():
+        try:
+            # - route by the id we actually hold: venue id when acked, else the client id
+            if order.venue_order_id:
+                ctx.cancel_order(order_id=order.venue_order_id)
+            else:
+                ctx.cancel_order(client_order_id=order.client_order_id)
+        except OrderNotFound:
+            logger.debug(f"Order {order.venue_order_id or order.client_order_id} already cancelled or doesn't exist")
+
+
 class StateResolver:
     """
     Collection of static methods for resolving position mismatches between
     warmup simulation and live trading.
     These methods can be used with IStrategyInitializer.set_state_resolver().
+
+    sim_orders is unused by all stock resolvers; it remains in the signature for custom resolvers.
     """
 
     @staticmethod
@@ -22,6 +56,20 @@ class StateResolver:
         Do nothing.
         """
         pass
+
+    @staticmethod
+    def HOLD(
+        ctx: IStrategyContext,
+        sim_positions: dict[Instrument, Position],
+        sim_orders: dict[Instrument, list[Order]],
+        sim_active_targets: dict[Instrument, TargetPosition],
+    ) -> None:
+        """
+        Cancel all open live orders, keep all live positions untouched, emit nothing.
+        The recommended partner of initializer.set_fit_on_start(True): let the first
+        live fit reconcile positions through the strategy's own tracker.
+        """
+        _cancel_all_orders(ctx)
 
     @staticmethod
     def REDUCE_ONLY(
@@ -38,6 +86,9 @@ class StateResolver:
             sim_positions (dict[Instrument, Position]): Positions from the simulation
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
         """
+        if _no_warmup_output(sim_positions, sim_orders, sim_active_targets):
+            return
+
         # Get current live positions
         live_positions = ctx.get_positions()
 
@@ -92,15 +143,7 @@ class StateResolver:
             sim_active_targets (dict[Instrument, list[TargetPosition]]): Active targets from the simulation
         """
         # TODO: optimize with batch requests
-        orders = ctx.get_orders()
-        if orders:
-            logger.info(f"Cancelling {len(orders)} live orders ...")
-            for order in orders.values():
-                oid = order.venue_order_id or order.client_order_id
-                try:
-                    ctx.cancel_order(order_id=oid)
-                except OrderNotFound:
-                    logger.debug(f"Order {oid} already cancelled or doesn't exist")
+        _cancel_all_orders(ctx)
 
         # Get current live positions
         live_positions = ctx.get_positions()
@@ -127,16 +170,14 @@ class StateResolver:
             sim_orders (dict[Instrument, list[Order]]): Orders from the simulation
             sim_active_targets (dict[Instrument, list[TargetPosition]]): Active targets from the simulation
         """
+        if _no_warmup_output(sim_positions, sim_orders, sim_active_targets):
+            return
+
         # Get current live positions
         live_positions = ctx.get_positions()
 
         # - process last active targets from simulation and send them as initializing signals
         for instrument, a_tgt in sim_active_targets.items():
-            # - if there is no position in simulation,
-            #   but there is a target it means that position is still not open
-            #   so we need use limit order
-            use_limit_order = instrument in sim_positions and not sim_positions[instrument].is_open()
-
             s = InitializingSignal(
                 time=ctx.time(),
                 instrument=instrument,
@@ -144,7 +185,6 @@ class StateResolver:
                 price=a_tgt.price,
                 stop=a_tgt.stop,
                 take=a_tgt.take,
-                use_limit_order=use_limit_order,
             )
             ctx.emit_signal(s)
 
@@ -154,24 +194,3 @@ class StateResolver:
             if live_pos.is_open() and instrument not in sim_active_targets:
                 # - just close the position
                 ctx.emit_signal(InitializingSignal(time=ctx.time(), instrument=instrument, signal=0.0))
-
-        # for instrument, sim_pos in sim_positions.items():
-        #     live_qty = 0
-        #     if instrument in live_positions:
-        #         live_qty = live_positions[instrument].quantity
-
-        #     # Calculate the difference needed to match simulation position
-        #     qty_diff = sim_pos.quantity - live_qty
-
-        #     # Only trade if there's a difference
-        #     if abs(qty_diff) > instrument.lot_size:
-        #         logger.info(
-        #             f"Syncing position for {instrument.symbol}: {live_qty} -> {sim_pos.quantity} (diff: {qty_diff:.4f})"
-        #         )
-        #         ctx.trade(instrument, qty_diff)
-
-        # # Close positions that exist in live but not in simulation
-        # for instrument, live_pos in live_positions.items():
-        #     if instrument not in sim_positions and abs(live_pos.quantity) > instrument.lot_size:
-        #         logger.info(f"Closing position for {instrument.symbol} not in simulation: {live_pos.quantity} -> 0")
-        #         ctx.trade(instrument, -live_pos.quantity)

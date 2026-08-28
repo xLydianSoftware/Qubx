@@ -332,6 +332,9 @@ def run(
     help="Write simulation logs to a specific file path.",
     show_default=True,
 )
+@click.option(
+    "--dev", is_flag=True, default=False, help="Enable dev mode (adds ~/projects to path).", show_default=True
+)
 def simulate(
     config_file: Path,
     start: str | None,
@@ -340,6 +343,7 @@ def simulate(
     report: str | None,
     name: str | None,
     log_file: str | None,
+    dev: bool,
 ):
     """
     Simulates the strategy with the given configuration file.
@@ -347,7 +351,8 @@ def simulate(
     from qubx.utils.misc import add_project_to_system_path, logo
     from qubx.utils.runner.runner import simulate_strategy
 
-    add_project_to_system_path()
+    if dev:
+        add_project_to_system_path()  # Adds ~/projects in dev mode
     add_project_to_system_path(str(config_file.parent))
     logo()
     logger.info(f"Process PID: <g>{os.getpid()}</g>")
