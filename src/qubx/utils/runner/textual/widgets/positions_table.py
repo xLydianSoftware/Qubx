@@ -142,6 +142,13 @@ class PositionsTable(DataTable):
                 logger.warning(f"Failed to add position row {pos_key}: {e}")
 
         self._sort()
+        self._retitle(sum(1 for r in sanitized_rows if r.get("qty")))
+
+    def _retitle(self, open_positions: int) -> None:
+        # - the border lives on the containing panel, so the count goes there
+        panel = self.parent
+        if panel is not None:
+            panel.border_title = f"Positions ({open_positions})"
 
     def _get_side(self, r: dict) -> str:
         leverage = r.get("leverage", 0.0)

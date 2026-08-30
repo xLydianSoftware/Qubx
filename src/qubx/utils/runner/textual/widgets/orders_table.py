@@ -109,6 +109,14 @@ class OrdersTable(DataTable):
             except Exception as e:
                 logger.warning(f"Failed to add order row {order_id}: {e}")
 
+        self._retitle(len(new_orders))
+
+    def _retitle(self, active_orders: int) -> None:
+        # - the border lives on the containing panel, so the count goes there
+        panel = self.parent
+        if panel is not None:
+            panel.border_title = f"Orders ({active_orders})"
+
     def _get_price_precision(self, row: dict) -> int:
         """Get price precision for formatting (default to 2 decimals)."""
         # Could be enhanced to use instrument precision if available

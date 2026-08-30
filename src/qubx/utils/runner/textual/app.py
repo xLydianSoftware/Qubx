@@ -287,12 +287,14 @@ class TextualStrategyApp(App[None]):
                 with Vertical(id="tables-container", classes="tables-column"):
                     # Positions panel
                     self.positions_panel = Vertical(id="positions-panel", classes="side-panel")
+                    self.positions_panel.border_title = "Positions"
                     with self.positions_panel:
                         self.positions_table = PositionsTable(id="positions-table")
                         self.positions_table.setup_columns()
                         yield self.positions_table
                     # Orders panel
                     self.orders_panel = Vertical(id="orders-panel", classes="side-panel")
+                    self.orders_panel.border_title = "Orders"
                     with self.orders_panel:
                         self.orders_table = OrdersTable(id="orders-table")
                         self.orders_table.setup_columns()
