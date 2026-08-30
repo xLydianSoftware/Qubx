@@ -26,6 +26,10 @@ from qubx.core.basics import STABLE_CURRENCIES, Balance, Deal, Instrument, Order
 # sessions. A re-delivered funding event only needs RECENT buckets to dedup against.
 _FUNDING_BUCKET_CAP: int = 4096
 
+# Snapshot balance-apply log level: a total move above this is real money (fill/funding/
+# transfer) and logs INFO; below it (incl. pure free/locked reshuffles) logs DEBUG.
+_BALANCE_LOG_ABS_TOL: float = 0.01
+
 
 @dataclass
 class VenueAccountFigures:
@@ -537,7 +541,11 @@ class AccountState:
         )
         if changed:
             old = "—" if existing is None else f"total={existing.total} free={existing.free} locked={existing.locked}"
-            logger.info(
+            # - free/locked reshuffle with total unchanged is margin mark-to-market noise
+            #   (every poll on a leveraged book); only a real total move is INFO-worthy
+            material = existing is None or abs(balance.total - existing.total) > _BALANCE_LOG_ABS_TOL
+            log = logger.info if material else logger.debug
+            log(
                 f"[{self.exchange}] reconcile: balance <y>{balance.currency}</y> from snapshot -> "
                 f"total=<g>{balance.total}</g> free={balance.free} locked={balance.locked} (was {old})"
             )
