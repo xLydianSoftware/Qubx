@@ -475,7 +475,7 @@ class Reconciler:
                         self._recover_order(state, snap_order, snap.as_of)
 
                     case OrderFieldMismatch(origin=snap_order):
-                        if (ev := self._reconcile_order(state, snap_order)) is not None:
+                        if (ev := self._reconcile_order(state, snap_order, now)) is not None:
                             actions.append(RouteEvent(ev))
 
                     # - size diff = missed deals
@@ -627,19 +627,37 @@ class Reconciler:
             )
         return state.get_position(instrument)
 
-    def _reconcile_order(self, state: AccountState, snap_order: Order) -> Action | None:
+    def _reconcile_order(self, state: AccountState, snap_order: Order, now: np.datetime64) -> Action | None:
         """Apply a snapshot order's status/filled to local state; return the fill event to route.
 
-        Snapshot is authoritative for the order's own state. Guards: skip if locally terminal or
-        not venue-newer; never wipe an in-flight pending marker (the venue resolves that race).
+        Snapshot is authoritative for the order's own state. Skipped when the order is locally
+        terminal, and while a pending marker is still inside the confirm window — see
+        _pending_expired. For anything else the snapshot has to be venue-newer.
         """
         local = state.get_active_order(snap_order.client_order_id)
-        if local is None or local.status.is_terminal or not self._venue_newer(snap_order, local):
+        if local is None or local.status.is_terminal:
             return None
-        if local.status.is_pending and not snap_order.status.is_terminal:
+        if local.status.is_pending:
+            # - a pending marker carries the local clock while the snapshot carries the venue's, so
+            #   _venue_newer cannot judge it: the confirm window decides instead
+            if not snap_order.status.is_terminal and not self._pending_expired(local, now):
+                return None
+        elif not self._venue_newer(snap_order, local):
             return None
         self._apply_order_snapshot(state, local, snap_order)
         return self._fill_event(local)
+
+    def _pending_expired(self, local: Order, now: np.datetime64) -> bool:
+        """
+        True once a pending marker has outlived the confirm window with the venue still holding the
+        order live — the cancel or update never reached it, so the snapshot has to win.
+
+        Inside the window the marker is defended: a snapshot fetched before the cancel landed shows
+        the order alive, and reverting then would undo a correct PENDING_CANCEL. Measured cancel
+        confirm on LIGHTER is 568 ms median, so the window is ~9x headroom. Both stamps are the
+        local clock — transition_order stamps a locally-driven transition with `now`.
+        """
+        return local.last_update_time is not None and (now - local.last_update_time) >= self._order_confirm_wait  # type: ignore
 
     @staticmethod
     def _venue_newer(snap: Order, local: Order) -> bool:

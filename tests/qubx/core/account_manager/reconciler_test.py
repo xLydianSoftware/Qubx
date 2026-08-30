@@ -374,13 +374,69 @@ def test_snapshot_still_adopts_a_genuinely_higher_filled():
     assert o.filled_quantity == 0.6  # type: ignore
 
 
-def test_snapshot_does_not_wipe_pending_cancel_marker():
+def test_snapshot_does_not_wipe_a_fresh_pending_cancel_marker():
     D_ON()
-    # our cancel is in flight (PENDING_CANCEL). A snapshot poll still showing the order live
-    # (non-terminal) must NOT wipe the pending marker — the venue resolves the race itself.
-    rec = _reconciler()
-    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL))
+    # our cancel is in flight (PENDING_CANCEL) and was armed a moment ago. A snapshot poll still
+    # showing the order live was fetched before the cancel landed, so it must NOT wipe the marker.
+    rec = _reconciler()  # order_confirm_wait = 2s
+    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL, last_update_time=_passed_seconds(T0, 4)))
     a = rec.on_snapshot(
+        st,
+        _origin(
+            as_of=_passed_seconds(T0, 5),
+            open_orders=[_order("order1", status=OrderStatus.ACCEPTED, last_update_time=_passed_seconds(T0, 5))],
+        ),
+        _passed_seconds(T0, 5),  # marker is 1s old — inside the window
+    )
+    assert a == []  # nothing reconciled / routed
+    assert st.get_order("order1").status == OrderStatus.PENDING_CANCEL  # type: ignore # marker preserved
+    D_OFF()
+
+
+def test_a_pending_cancel_past_the_confirm_window_yields_to_the_venue():
+    D_ON()
+    # the cancel never reached the venue (measured on LIGHTER: both writes refused for nonce, the
+    # sender gave up). The order sat PENDING_CANCEL locally and ACCEPTED at the venue for minutes,
+    # every snapshot logging the mismatch and doing nothing. Past the window the venue wins, which
+    # is what a delivered cancel-reject would have done — and OrderManager.sync then re-cancels.
+    rec = _reconciler()  # order_confirm_wait = 2s
+    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL))  # marker stamped at SETTLED
+    rec.on_snapshot(
+        st,
+        _origin(
+            as_of=_passed_seconds(T0, 5),
+            open_orders=[_order("order1", status=OrderStatus.ACCEPTED, last_update_time=_passed_seconds(T0, 4))],
+        ),
+        _passed_seconds(T0, 5),  # marker is 35s old — past the window
+    )
+    assert st.get_order("order1").status == OrderStatus.ACCEPTED  # type: ignore
+    D_OFF()
+
+
+def test_a_pending_marker_stamped_after_the_venue_still_yields_past_the_window():
+    D_ON()
+    # measured on LIGHTER: the cancel was armed at 14:25:25 on the local clock, while the order's
+    # venue updated_at was still the 14:25:10 amend. Comparing the two made the snapshot look older
+    # than the marker, so the order never left PENDING_CANCEL and LOE stalled on it for minutes.
+    rec = _reconciler()  # order_confirm_wait = 2s
+    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL, last_update_time=_passed_seconds(T0, 4)))
+    rec.on_snapshot(
+        st,
+        _origin(
+            as_of=_passed_seconds(T0, 40),
+            open_orders=[_order("order1", status=OrderStatus.ACCEPTED, last_update_time=SETTLED)],
+        ),
+        _passed_seconds(T0, 40),  # marker is 36s old — past the window
+    )
+    assert st.get_order("order1").status == OrderStatus.ACCEPTED  # type: ignore
+    D_OFF()
+
+
+def test_a_pending_update_past_the_window_yields_the_same_way():
+    D_ON()
+    rec = _reconciler()
+    st = _local(_order("order1", status=OrderStatus.PENDING_UPDATE))  # stamped at SETTLED
+    rec.on_snapshot(
         st,
         _origin(
             as_of=_passed_seconds(T0, 5),
@@ -388,8 +444,23 @@ def test_snapshot_does_not_wipe_pending_cancel_marker():
         ),
         _passed_seconds(T0, 5),
     )
-    assert a == []  # nothing reconciled / routed
-    assert st.get_order("order1").status == OrderStatus.PENDING_CANCEL  # type: ignore # marker preserved
+    assert st.get_order("order1").status == OrderStatus.ACCEPTED  # type: ignore
+    D_OFF()
+
+
+def test_a_locally_terminal_order_is_never_reopened_by_a_snapshot():
+    D_ON()
+    rec = _reconciler()
+    st = _local(_order("order1", status=OrderStatus.CANCELED))
+    rec.on_snapshot(
+        st,
+        _origin(
+            as_of=_passed_seconds(T0, 5),
+            open_orders=[_order("order1", status=OrderStatus.ACCEPTED, last_update_time=_passed_seconds(T0, 4))],
+        ),
+        _passed_seconds(T0, 5),
+    )
+    assert st.get_order("order1").status == OrderStatus.CANCELED  # type: ignore
     D_OFF()
 
 
