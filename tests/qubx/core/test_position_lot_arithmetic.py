@@ -3,17 +3,35 @@
 import pandas as pd
 import pytest
 
-from qubx.core.basics import Position
-from qubx.core.lookups import lookup
+from qubx.core.basics import Instrument, MarketType, Position
 
 TIME = lambda x: pd.Timestamp(x, unit="ns").asm8
 T0 = TIME("2026-08-28 00:00:00")
 
+# - built here rather than looked up: the arithmetic only depends on lot_size, and reading it from
+#   the instrument store makes the test need one. LIGHTER's ETHFIUSDC and AEROUSDC both carry 0.1,
+#   which is where the live numbers below come from.
+LOT = 0.1
+
+
+def _instrument(symbol: str, lot_size: float = LOT) -> Instrument:
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SWAP,
+        exchange="LIGHTER",
+        base=symbol.replace("USDC", ""),
+        quote="USDC",
+        settle="USDC",
+        exchange_symbol=symbol,
+        tick_size=1e-05,
+        lot_size=lot_size,
+        min_size=lot_size,
+        contract_size=1.0,
+    )
+
 
 def _pos(exchange: str, symbol: str, quantity: float, price: float) -> Position:
-    instr = lookup.find_symbol(exchange, symbol)
-    assert instr is not None
-    p = Position(instr)
+    p = Position(_instrument(symbol))
     p.update_position(T0, position=quantity, exec_price=price)
     return p
 
