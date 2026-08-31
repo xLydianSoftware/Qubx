@@ -12,6 +12,8 @@ from qubx.core.basics import (
 )
 from qubx.core.events import FundingPaymentEvent
 
+_BOOKED_AT = np.datetime64("2026-08-28T00:00:00", "ns")
+
 
 class _T:
     def __init__(self, t="2026-05-28T00:00:00"):
@@ -131,13 +133,13 @@ def test_futures_realized_pnl_folds_into_total_capital():
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=100_000.0, free=100_000.0))
 
     # open long 1.0 @ 50k
-    reducer._book_deal(state, inst, _fill(trade_id="t1", amount=1.0, price=50_000.0))
+    reducer._book_deal(state, inst, _fill(trade_id="t1", amount=1.0, price=50_000.0), _BOOKED_AT)
     # opening a futures position does not touch cash
     assert state.get_balance("USDT").total == 100_000.0
     assert am.get_total_capital("binance") == 100_000.0
 
     # close 1.0 @ 60k -> realized +10k
-    reducer._book_deal(state, inst, _fill(trade_id="t2", amount=-1.0, price=60_000.0))
+    reducer._book_deal(state, inst, _fill(trade_id="t2", amount=-1.0, price=60_000.0), _BOOKED_AT)
     bal = state.get_balance("USDT")
     assert abs(bal.total - 110_000.0) < 1e-6
     assert abs(bal.free - 110_000.0) < 1e-6
@@ -153,7 +155,7 @@ def test_spot_fill_credits_base_and_debits_quote():
     state.update_balance("USDT", Balance(exchange="binance", currency="USDT", total=100_000.0, free=100_000.0))
 
     deal = _fill(trade_id="t1", amount=0.5, price=100_000.0)
-    reducer._book_deal(state, inst, deal)
+    reducer._book_deal(state, inst, deal, _BOOKED_AT)
     # mark the position so its market value contributes to total capital
     state.get_position(inst).update_market_price(am._time.time(), 100_000.0, 1.0)
 

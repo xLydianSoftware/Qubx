@@ -30,7 +30,8 @@ BALANCE_ABS_TOL = 0.01
 
 # Maintenance margin re-marks with every snapshot's mark price, so RTOL-tight comparison
 # emits a diff per position per poll. Only a material move (leverage/size change) is worth
-# re-syncing; sub-0.5% (and sub-cent) drift is mark noise.
+# re-syncing; sub-0.5% (and sub-cent) drift is mark noise. Measured over one live run: 175
+# diffs, median $0.000052, only one above a cent — and that one was a real position change.
 MARGIN_RTOL = 5e-3
 
 

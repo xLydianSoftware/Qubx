@@ -15,6 +15,7 @@ from qubx.core.basics import (
     OrderBook,
     Position,
     Quote,
+    RejectCause,
     Trade,
 )
 
@@ -71,6 +72,7 @@ class OrderAcceptedEvent(OrderEvent):
 class OrderRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
+    cause: RejectCause = RejectCause.UNKNOWN
 
 
 @msg
@@ -137,12 +139,14 @@ class OrderUpdatedEvent(OrderEvent):
 class OrderCancelRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
+    cause: RejectCause = RejectCause.UNKNOWN
 
 
 @msg
 class OrderUpdateRejectedEvent(OrderEvent):
     reason: str
     code: str | None = None
+    cause: RejectCause = RejectCause.UNKNOWN
 
 
 @msg

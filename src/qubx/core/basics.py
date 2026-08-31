@@ -10,9 +10,10 @@ from typing import Any, Literal, TypeAlias
 import numpy as np
 import pandas as pd
 
+from qubx import logger
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.core.utils import prec_ceil, prec_floor, time_delta_to_str, time_to_str
+from qubx.core.utils import add_in_lots, is_lot_multiple, prec_ceil, prec_floor, time_delta_to_str, time_to_str
 from qubx.utils.clock import start_clock_discipline, time_now
 from qubx.utils.misc import Stopwatch
 from qubx.utils.time import to_timedelta
@@ -789,6 +790,25 @@ def resolve_reduce_only(options: dict[str, Any]) -> bool | None:
     return None
 
 
+class RejectCause(StrEnum):
+    """
+    Why a venue refused an order, cancel or update, in terms a caller can act on.
+
+    ``OrderRejectedEvent.code`` keeps the venue's own value — a ccxt exception class, a Lighter
+    numeric code — which is what a log reader wants. This is the portable reading of it, so a
+    strategy can say "give up on repeated INSUFFICIENT_MARGIN, keep retrying NOT_FILLABLE"
+    without a per-venue lookup table. Anything a connector does not map stays UNKNOWN.
+    """
+
+    INSUFFICIENT_MARGIN = "INSUFFICIENT_MARGIN"
+    NOT_FILLABLE = "NOT_FILLABLE"  # - post-only that would have crossed
+    RATE_LIMITED = "RATE_LIMITED"
+    TOO_SMALL = "TOO_SMALL"  # - below min size / min notional
+    NOT_FOUND = "NOT_FOUND"  # - cancel/update of an order the venue does not have
+    SEQUENCE = "SEQUENCE"  # - venue-ordering refusal; the connector rewrites it
+    UNKNOWN = "UNKNOWN"
+
+
 class OrderChange(StrEnum):
     """What happened to an order, paired with it on ApplyResult. Covers the cases
     order.status can't express on its own: UPDATED (status unchanged), CANCEL_REJECTED/
@@ -870,6 +890,8 @@ class Order:
     # venue/connector error code accompanying a reject (e.g. the ccxt error class name);
     # None when the reject path carries no code (synthetic reconcile rejects).
     error_code: str | None = None
+    # the portable reading of that code; UNKNOWN when the connector does not map it
+    reject_cause: RejectCause = RejectCause.UNKNOWN
     reduce_only: bool = False
     post_only: bool = False
     # Defaults to FRAMEWORK (the common case); the snapshot/external materialization
@@ -1212,9 +1234,21 @@ class Position:
         *,
         realize_only: bool = False,
     ) -> tuple[float, float]:
+        # - both operands are lot multiples, so add in whole lots: 28.2 + (-28.1) is 282 + (-281)
+        #   ticks, exactly one tick. Flooring the float sum loses a lot whenever subtraction leaves
+        #   the result a few ulp short of the grid, which is how a position reached 0.0 locally
+        #   while the venue still held one lot.
+        lot = self.instrument.lot_size
+        if not is_lot_multiple(self.quantity, lot) or not is_lot_multiple(amount, lot):
+            # - stale instrument metadata or a connector fault. Reported, then booked to the
+            #   nearest lot: dropping the deal is the worse error.
+            logger.error(
+                f"[{self.instrument.symbol}] booking {self.quantity} + {amount} is not on the "
+                f"lot grid (lot_size {lot}) — rounding to the nearest lot"
+            )
         return self.update_position(
             timestamp,
-            self.instrument.round_size_down(self.quantity + amount),
+            add_in_lots(self.quantity, amount, lot),
             exec_price,
             fee_amount,
             conversion_rate=conversion_rate,

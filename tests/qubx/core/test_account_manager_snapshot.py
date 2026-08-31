@@ -367,11 +367,8 @@ def test_snapshot_terminalization_runs_full_transition_machinery():
     assert state.get_order("cid-1") is not None  # findable in the terminal-history ring
 
 
-def test_snapshot_does_not_wipe_pending_marker_with_live_status():
-    # The snapshot is a poll of venue state; an outstanding cancel may still be in flight.
-    # A live venue status (ACCEPTED) must NOT clear PENDING_CANCEL — the venue resolves
-    # the race itself (canceled, or cancel-rejected which reverts via pre_pending).
-    am = _am()
+def _pending_marker_case(am):
+    """Arm a cancel on cid-1, then poll a snapshot an hour later that still shows it live."""
     state = am._states["binance"]
     inst = _instrument()
     state.add_order(_order("cid-1", OrderStatus.ACCEPTED, "2026-05-28T00:00:00", vid="V1", instrument=inst))
@@ -380,11 +377,33 @@ def test_snapshot_does_not_wipe_pending_marker_with_live_status():
     snap_order.filled_quantity = 0.3
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
+    return state
+
+
+def test_snapshot_does_not_wipe_pending_marker_with_live_status():
+    # The snapshot is a poll of venue state; an outstanding cancel may still be in flight.
+    # A live venue status (ACCEPTED) must NOT clear PENDING_CANCEL — the venue resolves
+    # the race itself (canceled, or cancel-rejected which reverts via pre_pending).
+    # The confirm wait is widened past the hour the clock moves, so this stays inside it.
+    state = _pending_marker_case(_am(cfg=AccountManagerConfig(snapshot_grace_ms=5_000, order_confirm_wait_ms=7_200_000)))
 
     order = state.get_order("cid-1")
     assert order.status is OrderStatus.PENDING_CANCEL
     assert state.get_pre_pending("cid-1") is OrderStatus.ACCEPTED  # revert target intact
     assert len(state.get_inflight_orders()) == 1  # sweep keeps polling the cancel
+
+
+def test_snapshot_past_the_confirm_window_wipes_a_pending_marker_the_venue_never_took():
+    # Measured on LIGHTER: the cancel never reached the venue, the order sat PENDING_CANCEL
+    # locally and ACCEPTED at the venue for 5m20s, and the executor parked on it. Past the
+    # confirm wait the marker stops being defended and the venue's view wins.
+    state = _pending_marker_case(_am())  # default order_confirm_wait_ms = 5s
+
+    order = state.get_order("cid-1")
+    assert order.status is OrderStatus.ACCEPTED
+    assert order.filled_quantity == 0.3
+    assert state.get_pre_pending("cid-1") is None  # no longer pending, nothing to revert to
+    assert state.get_inflight_orders() == []
 
 
 def test_snapshot_terminal_status_resolves_pending_marker():

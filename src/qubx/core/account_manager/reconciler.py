@@ -19,6 +19,7 @@ import numpy as np
 from qubx import area_logger
 from qubx.core.account_manager.diffs import (
     BalanceMismatch,
+    Diff,
     Differ,
     LocalOrderMissing,
     LocalPositionMissing,
@@ -433,8 +434,30 @@ class Reconciler:
         state.mark_snapshot_applied(snap.as_of)
         changed = changed_positions if changed_positions is not None else []
         actions: list[Action] = []
-        for difference in self._differ.diff(state, snap):
+        differences = self._differ.diff(state, snap)
+        # - a snapshot requested before a deal was booked cannot contain that deal, so letting it
+        #   write the position rewinds a real fill. The decision is per instrument, not per diff:
+        #   a size change always brings a margin change, and PositionFieldMismatch routes through
+        #   reconcile_position_from_snapshot, which is authoritative for size and avg-price too.
+        #   Measured LIGHTER 2026-08-28 (ENAUSDC 272.6 -> 181.8, 84ms after the deal booked) and
+        #   BINANCE.UM (TRXUSDT 146 -> 127 against a snapshot 1.58s stale); on ALGOUSDT the
+        #   executor sized its next clip off the rewound number and overshot by 16.9%.
+        stale_for = {
+            instr
+            for instr in {self._position_instrument(d) for d in differences}
+            if instr is not None
+            and (booked := state.get_position_deal_booked_at(instr)) is not None
+            and booked > snap.as_of
+        }
+        for instr in stale_for:
+            _log.info(
+                f"[{state.exchange}] reconcile: <y>{instr}</y> snapshot as_of={snap.as_of} predates a deal "
+                f"booked at {state.get_position_deal_booked_at(instr)} — keeping the local position"
+            )
+        for difference in differences:
             _log.debug(difference.describe())
+            if self._position_instrument(difference) in stale_for:
+                continue
             # - each atom is applied in isolation: a handler that raises (e.g. a venue/state
             #   surprise) must not sink the rest of the snapshot reconcile (balances/figures/
             #   other positions). Log and move on; the next snapshot re-derives the diff.
@@ -452,7 +475,7 @@ class Reconciler:
                         self._recover_order(state, snap_order, snap.as_of)
 
                     case OrderFieldMismatch(origin=snap_order):
-                        if (ev := self._reconcile_order(state, snap_order)) is not None:
+                        if (ev := self._reconcile_order(state, snap_order, now)) is not None:
                             actions.append(RouteEvent(ev))
 
                     # - size diff = missed deals
@@ -493,6 +516,18 @@ class Reconciler:
             )
 
         return actions + self._dispatch(SnapshotIn(snap), state, now)
+
+    @staticmethod
+    def _position_instrument(difference: Diff) -> Instrument | None:
+        """
+        The instrument a position diff is about, or None for the order and balance diffs.
+        """
+        match difference:
+            case PositionFieldMismatch(origin=pos):
+                return pos.instrument
+            case OriginalPositionMissing(position=pos) | LocalPositionMissing(position=pos):
+                return pos.instrument
+        return None
 
     @staticmethod
     def _recover_order(state: AccountState, snap_order: Order, as_of: np.datetime64) -> Order:
@@ -592,19 +627,37 @@ class Reconciler:
             )
         return state.get_position(instrument)
 
-    def _reconcile_order(self, state: AccountState, snap_order: Order) -> Action | None:
+    def _reconcile_order(self, state: AccountState, snap_order: Order, now: np.datetime64) -> Action | None:
         """Apply a snapshot order's status/filled to local state; return the fill event to route.
 
-        Snapshot is authoritative for the order's own state. Guards: skip if locally terminal or
-        not venue-newer; never wipe an in-flight pending marker (the venue resolves that race).
+        Snapshot is authoritative for the order's own state. Skipped when the order is locally
+        terminal, and while a pending marker is still inside the confirm window — see
+        _pending_expired. For anything else the snapshot has to be venue-newer.
         """
         local = state.get_active_order(snap_order.client_order_id)
-        if local is None or local.status.is_terminal or not self._venue_newer(snap_order, local):
+        if local is None or local.status.is_terminal:
             return None
-        if local.status.is_pending and not snap_order.status.is_terminal:
+        if local.status.is_pending:
+            # - a pending marker carries the local clock while the snapshot carries the venue's, so
+            #   _venue_newer cannot judge it: the confirm window decides instead
+            if not snap_order.status.is_terminal and not self._pending_expired(local, now):
+                return None
+        elif not self._venue_newer(snap_order, local):
             return None
         self._apply_order_snapshot(state, local, snap_order)
         return self._fill_event(local)
+
+    def _pending_expired(self, local: Order, now: np.datetime64) -> bool:
+        """
+        True once a pending marker has outlived the confirm window with the venue still holding the
+        order live — the cancel or update never reached it, so the snapshot has to win.
+
+        Inside the window the marker is defended: a snapshot fetched before the cancel landed shows
+        the order alive, and reverting then would undo a correct PENDING_CANCEL. Measured cancel
+        confirm on LIGHTER is 568 ms median, so the window is ~9x headroom. Both stamps are the
+        local clock — transition_order stamps a locally-driven transition with `now`.
+        """
+        return local.last_update_time is not None and (now - local.last_update_time) >= self._order_confirm_wait  # type: ignore
 
     @staticmethod
     def _venue_newer(snap: Order, local: Order) -> bool:

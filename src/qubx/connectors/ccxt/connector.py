@@ -52,6 +52,7 @@ from qubx.core.basics import (
     OrderStatus,
     OrderType,
     Position,
+    RejectCause,
     dt_64,
     resolve_reduce_only,
 )
@@ -94,6 +95,7 @@ from .utils import (
     instrument_to_ccxt_symbol,
     normalize_margin_mode,
     prepare_ccxt_order_payload,
+    reject_cause_of,
 )
 
 # Venue-verdict exceptions: every one of these is the venue refusing the order,
@@ -380,6 +382,7 @@ class CcxtConnector(ChannelEmitter):
                 client_order_id=client_id,
                 reason=str(error),
                 code=type(error).__name__,
+                cause=reject_cause_of(error),
             )
         )
 
@@ -441,6 +444,7 @@ class CcxtConnector(ChannelEmitter):
         venue_order_id: str | None,
         reason: str | None = None,
         code: str | None = None,
+        cause: RejectCause = RejectCause.UNKNOWN,
     ) -> None:
         # Carry both ids: AM's reject handler resolves the order by cid first, then venue id,
         # so the order can revert out of PENDING_CANCEL regardless of which id the caller had.
@@ -451,6 +455,7 @@ class CcxtConnector(ChannelEmitter):
                 venue_order_id=venue_order_id,
                 reason=reason or f"venue rejected cancel for {venue_order_id or client_order_id}",
                 code=code,
+                cause=cause,
             )
         )
 
@@ -772,6 +777,7 @@ class CcxtConnector(ChannelEmitter):
                 venue_order_id=venue_order_id,
                 reason=str(error),
                 code=type(error).__name__,
+                cause=reject_cause_of(error),
             )
         )
 
