@@ -126,6 +126,16 @@ class RedisStreamsExporter(ITradeDataExport):
         except Exception as e:
             self._log_warning(f"Failed to close Redis connection: {e}")
 
+    def get_export_info(self) -> dict[str, list[str]]:
+        info: dict[str, list[str]] = {}
+        if self._export_signals:
+            info["signals"] = [self._signals_stream]
+        if self._export_targets:
+            info["targets"] = [self._targets_stream]
+        if self._export_position_changes:
+            info["position_changes"] = [self._position_changes_stream]
+        return info
+
     def _prepare_for_redis(self, data: Dict[str, Any]) -> Dict[FieldT, EncodableT]:
         """
         Prepare data for Redis by ensuring all values are strings.

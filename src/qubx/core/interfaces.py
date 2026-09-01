@@ -196,6 +196,17 @@ class ITradeDataExport:
         """
         pass
 
+    def get_export_info(self) -> dict[str, list[str]]:
+        """
+        Describe what this exporter publishes: export kind -> destination identifiers.
+
+        Kinds are "signals", "targets", "position_changes"; destinations are e.g.
+        Redis stream names. Read once at startup for the runtime-info blob, so the
+        platform can join exported streams to their consumers. Exporters that
+        publish nothing (or have nothing enabled) return an empty dict.
+        """
+        return {}
+
     def stop(self) -> None:
         """Stop the exporter and release resources.
 
