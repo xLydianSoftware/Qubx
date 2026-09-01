@@ -62,6 +62,7 @@ from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.state.dummy import DummyStatePersistence
+from qubx.state.runtime_info import RUNTIME_INFO_KEY, build_runtime_info
 from qubx.trackers.riskctrl import _InitializationStageTracker
 from qubx.utils.throttler import InstrumentThrottler
 from qubx.utils.time import interval_to_cron
@@ -133,6 +134,7 @@ class ProcessingManager(IProcessingManager):
     _scheduler: BasicScheduler
     _universe_manager: IUniverseManager
     _exporter: ITradeDataExport | None = None
+    _runtime_info_saved: bool = False
     _health_monitor: IHealthMonitor
     _stale_data_detector: StaleDataDetector
     _delisting_detector: DelistingDetector
@@ -414,6 +416,23 @@ class ProcessingManager(IProcessingManager):
                 cron_schedule = interval_to_cron(interval)
                 self._scheduler.schedule_event(cron_schedule, "state_snapshot")
                 logger.info(f"State snapshot enabled with interval: {interval}")
+                self._save_runtime_info()
+
+    def _save_runtime_info(self) -> None:
+        """
+        Persist the static runtime-info blob (package versions, exported streams)
+        once per process, under the same live+real-persistence gate as the
+        snapshot. Failure is a warning: versions are observability, never worth
+        blocking startup over.
+        """
+        if self._runtime_info_saved:
+            return
+        try:
+            info = build_runtime_info(self._strategy, self._exporter, str(self._time_provider.time()))
+            self._context.persistence.save(RUNTIME_INFO_KEY, info)
+            self._runtime_info_saved = True
+        except Exception as e:
+            logger.warning(f"Failed to save runtime info: {e}")
 
     def configure_rate_limit_metrics(self, interval: str | None) -> None:
         """
