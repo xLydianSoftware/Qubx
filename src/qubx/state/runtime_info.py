@@ -41,6 +41,15 @@ def _strategy_identity(strategy_class: type, packages: dict[str, str]) -> dict:
                 break
     except Exception:  # packages_distributions can choke on broken metadata
         pass
+    if version is None and top_module.lower() in packages:
+        # metadata.packages_distributions() reads top_level.txt / RECORD entries
+        # that uv editable installs (root project run from source, e.g. `qubx`
+        # itself or a strategy repo installed with `-e .`) don't always populate,
+        # so the loop above finds nothing even though the module name IS the
+        # distribution name. Fall back to a direct name match against the
+        # already-collected distributions before giving up on a version.
+        package = top_module.lower()
+        version = packages[top_module.lower()]
     return {
         "package": package,
         "version": version,

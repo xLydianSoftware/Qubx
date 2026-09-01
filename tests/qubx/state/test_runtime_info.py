@@ -15,6 +15,16 @@ class _FakeStrategy:
     pass
 
 
+class _EditableInstallStrategy:
+    """Simulates a strategy whose top module IS an installed distribution name
+    (e.g. `qubx` itself run from source via `uv run` in an editable checkout),
+    where importlib.metadata.packages_distributions() fails to map the module
+    to its distribution but the module/distribution names match directly."""
+
+
+_EditableInstallStrategy.__module__ = "qubx.fake_editable_module"
+
+
 class _FakeExporter(ITradeDataExport):
     def get_export_info(self) -> dict[str, list[str]]:
         return {"position_changes": ["strategy:x:position_changes"]}
@@ -55,3 +65,14 @@ def test_no_exporter_and_broken_exporter_degrade_to_empty_exports():
 
 def test_key_constant():
     assert RUNTIME_INFO_KEY == "info"
+
+
+def test_strategy_identity_matches_editable_install_by_top_module():
+    # qubx is always installed in the test env (it's the package under test), so
+    # a strategy class whose top module is "qubx" must resolve a real version —
+    # this is the from-source/editable-install path that packages_distributions()
+    # alone misses.
+    info = build_runtime_info(_EditableInstallStrategy(), None, "t")
+    assert info["strategy"]["package"] == "qubx"
+    assert info["strategy"]["version"] is not None
+    assert info["strategy"]["version"] == info["packages"]["qubx"]
