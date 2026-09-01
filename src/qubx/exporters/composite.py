@@ -93,3 +93,10 @@ class CompositeExporter(ITradeDataExport):
                 from qubx import logger
 
                 logger.error(f"[CompositeExporter] Error stopping {exporter.__class__.__name__}: {e}")
+
+    def get_export_info(self) -> dict[str, list[str]]:
+        info: dict[str, list[str]] = {}
+        for exporter in self._exporters:
+            for kind, destinations in exporter.get_export_info().items():
+                info.setdefault(kind, []).extend(destinations)
+        return info
