@@ -1,5 +1,8 @@
 from pathlib import Path
 
+import pytest
+from pydantic import ValidationError
+
 from qubx.core.account_manager import AccountManagerConfig as CoreAMConfig
 from qubx.utils.runner.configs import (
     EmissionConfig,
@@ -188,3 +191,38 @@ def test_validate_no_exchanges_config():
 
     # Should be valid but may have warnings
     assert result.valid is True
+
+
+def _release_yaml(platform_extra: str = "") -> str:
+    return f"""
+strategy: pkg.Strategy
+release:
+  source:
+    repo: xLydianSoftware/quantkit
+    ref: v1.0.0
+  platform:
+    name: lighter.aggregator
+    exchanges: [lighter]
+    image_tag: "3.9.0"
+    tags: [aggregator]
+{platform_extra}
+"""
+
+
+def test_release_platform_strategy_kind(tmp_path: Path):
+    cfg_file = tmp_path / "release.yaml"
+
+    cfg_file.write_text(_release_yaml("    strategy_kind: aggregator"))
+    config = load_strategy_config_from_yaml(cfg_file)
+    assert config.release is not None and config.release.platform is not None
+    assert config.release.platform.strategy_kind == "aggregator"
+
+    cfg_file.write_text(_release_yaml())
+    config = load_strategy_config_from_yaml(cfg_file)
+    assert config.release is not None and config.release.platform is not None
+    assert config.release.platform.strategy_kind is None
+
+    # platform block stays strict: a typo'd key is still rejected
+    cfg_file.write_text(_release_yaml("    strategy_kinds: aggregator"))
+    with pytest.raises(ValidationError, match="strategy_kinds"):
+        load_strategy_config_from_yaml(cfg_file)

@@ -347,6 +347,10 @@ class ReleasePlatformConfig(StrictBaseModel):
     tags: list[str] = Field(default_factory=list)
     """Descriptive tags for the release."""
 
+    strategy_kind: str | None = None
+    """Platform strategy kind (e.g. 'aggregator', 'funding_arbitrage'); selects the
+    portal's strategy-specific view. Metadata only — never read by the build or runtime."""
+
 
 class ReleaseConfig(StrictBaseModel):
     """Configuration for automated release packaging and platform deployment."""
