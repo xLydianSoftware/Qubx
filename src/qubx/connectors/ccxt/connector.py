@@ -1637,40 +1637,23 @@ class CcxtConnector(ChannelEmitter):
             logger.debug(f"[{self.exchange_name}] snapshot: no trigger open-orders surface ({e}); regular only")
             return []
 
-    def _merge_open_orders(self, raw_orders, raw_trigger_orders) -> list[Order] | None:
+    def _merge_open_orders(self, raw_orders: list[dict], raw_trigger_orders: list[dict]) -> list[Order]:
         """Merge regular + trigger raw open orders into framework Orders (dedup by venue id).
 
-        Returns None if EITHER order leg failed: a partial list would mark the unseen
-        leg's live orders as missing → false reconcile-away. None makes reconcile skip
-        order diffing this tick (positions/balances still apply).
+        A row on an unrecognized symbol is skipped, loudly: reconcile reads the order list as
+        venue truth, so a skipped row reads as cancelled at the venue.
         """
-        # Venue exception text goes in as positional args (may contain HTML/markup that
-        # loguru's colorizer rejects when it appears in the format string — a raised log
-        # call here would sink the whole snapshot).
-        if isinstance(raw_orders, BaseException):
-            logger.warning(
-                "[{}] snapshot: fetch_open_orders failed: {}: {} [{}]",
-                self.exchange_name,
-                type(raw_orders).__name__,
-                raw_orders,
-                self._loop_tag(),
-            )
-            return None
-        if isinstance(raw_trigger_orders, BaseException):
-            logger.warning(
-                "[{}] snapshot: fetch_open_orders(trigger) failed: {}: {} [{}]; skipping order reconcile this tick",
-                self.exchange_name,
-                type(raw_trigger_orders).__name__,
-                raw_trigger_orders,
-                self._loop_tag(),
-            )
-            return None
         open_orders: list[Order] = []
         seen: set[str] = set()
         for raw in [*raw_orders, *raw_trigger_orders]:
             try:
                 instrument = self._instrument_for_symbol(raw["symbol"])
             except CcxtSymbolNotRecognized:
+                # Venue symbol goes in as a positional arg (may contain markup loguru's
+                # colorizer rejects in the format string).
+                logger.error(
+                    "[{}] snapshot: unrecognized symbol {}; open order skipped", self.exchange_name, raw.get("symbol")
+                )
                 continue
             order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
             key = order.venue_order_id or order.client_order_id
@@ -1707,54 +1690,40 @@ class CcxtConnector(ChannelEmitter):
         (open_orders=None -> reconcile leaves order state untouched; orders are tracked via the WS
         stream + the periodic full sweep).
 
-        Network/exchange errors are logged, not raised — AM retries on its next snapshot tick.
-        ``return_exceptions=True`` keeps one failing fetch from sinking the others; a failed (or
-        skipped) leg is left None so reconcile won't wipe state it didn't actually observe.
+        Reconcile applies a snapshot as authoritative, so a leg that failed to fetch skips the
+        emit entirely and the AM asks again on its next tick. A single row that will not convert
+        is skipped instead (loudly) — one unresolvable symbol must not stall reconcile for the
+        whole exchange. Errors are logged, never raised.
         """
         ex = self._em.exchange
         as_of: dt_64 = self._time.time()
-        if include_orders:
-            raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
-                ex.fetch_open_orders(),
-                self._fetch_trigger_open_orders(),
-                ex.fetch_positions(),
-                ex.fetch_balance(),
-                return_exceptions=True,
-            )
-            open_orders = self._merge_open_orders(raw_orders, raw_trigger_orders)
-        else:
-            raw_positions, raw_balance = await asyncio.gather(
-                ex.fetch_positions(), ex.fetch_balance(), return_exceptions=True
-            )
-            open_orders = None  # - not observed this tick -> reconcile skips order diffing
-
-        positions: list[Position] | None = None
-        if isinstance(raw_positions, BaseException):
-            logger.warning(
-                "[{}] snapshot: fetch_positions failed: {}: {} [{}]",
-                self.exchange_name,
-                type(raw_positions).__name__,
-                raw_positions,
-                self._loop_tag(),
-            )
-        else:
+        try:
+            if include_orders:
+                raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
+                    ex.fetch_open_orders(),
+                    self._fetch_trigger_open_orders(),
+                    ex.fetch_positions(),
+                    ex.fetch_balance(),
+                )
+                open_orders = self._merge_open_orders(raw_orders, raw_trigger_orders)
+            else:
+                raw_positions, raw_balance = await asyncio.gather(ex.fetch_positions(), ex.fetch_balance())
+                open_orders = None  # - not observed this tick -> reconcile skips order diffing
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
-
-        balances: list[Balance] | None = None
-        equity = available_margin = margin_ratio = withdrawable = None
-        if isinstance(raw_balance, BaseException):
-            logger.warning(
-                "[{}] snapshot: fetch_balance failed: {}: {} [{}]",
-                self.exchange_name,
-                type(raw_balance).__name__,
-                raw_balance,
-                self._loop_tag(),
-            )
-        else:
             balances = self._convert_balances(raw_balance)
             equity, available_margin, margin_ratio, withdrawable = self._extract_venue_figures(raw_balance)
-
+        except Exception as e:  # noqa: BLE001 — AM retries on its next snapshot tick
+            # Venue exception text goes in as a positional arg (may contain HTML/markup that
+            # loguru's colorizer rejects when it appears in the format string).
+            logger.error(
+                "[{}] snapshot: {}: {}; not emitting a partial snapshot [{}]",
+                self.exchange_name,
+                type(e).__name__,
+                e,
+                self._loop_tag(),
+            )
+            return
         self.send(
             AccountSnapshotEvent(
                 instrument=None,

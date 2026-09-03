@@ -21,7 +21,7 @@ Everything here runs fully offline.
 
 import asyncio
 import io
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock
 
 from qubx import logger
 from qubx.connectors.ccxt.connector import CcxtConnector
@@ -401,18 +401,24 @@ class TestPmAlgoOrders:
 
 
 class TestVenueErrorLogging:
-    def test_merge_open_orders_survives_html_error_text(self):
+    def test_snapshot_failure_log_survives_html_error_text(self):
         """Venue errors can carry raw HTML (Binance 404 pages). With a colorized sink,
         f-stringing that into loguru's format string raises ValueError inside the
         snapshot task — the positional-args form must survive it."""
         connector = TestBinancePmVenueFigures._connector()
         html_error = Exception("404 Not Found <!DOCTYPE html>\n<html>\n<head></head></html>")
-        sink_id = logger.add(io.StringIO(), colorize=True, level="WARNING")
+        ex = connector._em.exchange
+        ex.fetch_open_orders = AsyncMock(side_effect=html_error)
+        ex.fetch_positions = AsyncMock(return_value=[])
+        ex.fetch_balance = AsyncMock(return_value={"total": {}, "used": {}})
+
+        sink = io.StringIO()
+        sink_id = logger.add(sink, colorize=True, level="WARNING")
         try:
-            assert connector._merge_open_orders(html_error, []) is None
-            assert connector._merge_open_orders([], html_error) is None
+            asyncio.run(connector._snapshot_async())
         finally:
             logger.remove(sink_id)
+        assert "not emitting a partial snapshot" in sink.getvalue()
 
 
 class TestPmAdlLevels:
