@@ -48,6 +48,7 @@ from qubx.core.events import (
 )
 from qubx.core.series import Quote
 from qubx.rate_limiting import RateLimitGateTimeout
+from tests.qubx.connectors.ccxt.data.ccxt_responses import BINANCE_MARKETS, POSITIONS_BINANCE_UM
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 CCXT_SYMBOL = "BTC/USDT:USDT"
@@ -324,8 +325,9 @@ async def test_request_snapshot_emits_account_snapshot() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_snapshot_failed_leg_left_none() -> None:
-    # A failing fetch leg must not sink the others: positions left None (not wiped).
+async def test_request_snapshot_failed_leg_emits_nothing() -> None:
+    # A failing fetch leg means the account was not fully observed. Reconcile applies a snapshot
+    # as venue truth, so emit nothing and let the AM ask again on its next tick.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.fetch_open_orders = AsyncMock(return_value=[])
@@ -337,10 +339,7 @@ async def test_request_snapshot_failed_leg_left_none() -> None:
     conn.request_snapshot()
     await _drive(conn)
 
-    snap = sent[0].snapshot
-    assert snap.open_orders == []
-    assert snap.positions is None  # failed leg omitted, not wiped
-    assert len(snap.balances) == 1
+    assert sent == []
 
 
 @pytest.fixture
@@ -353,8 +352,8 @@ def warnings_logged():
         logger.remove(sink_id)
 
 
-def _positions_leg_warnings(records: list) -> list[str]:
-    return [r["message"] for r in records if "fetch_positions failed" in r["message"]]
+def _snapshot_skip_errors(records: list) -> list[str]:
+    return [r["message"] for r in records if "not emitting a partial snapshot" in r["message"]]
 
 
 def _snapshot_exchange(positions_error: BaseException) -> Mock:
@@ -368,28 +367,25 @@ def _snapshot_exchange(positions_error: BaseException) -> Mock:
 
 
 @pytest.mark.asyncio
-async def test_request_snapshot_positions_gate_timeout_left_none(warnings_logged) -> None:
-    # A rate-limit gate timeout is a leg failure like any other: positions omitted, the other legs
-    # still populated. The WARNING must name the exception type — operators need to tell
-    # "we throttled ourselves" apart from "the venue is down".
+async def test_request_snapshot_positions_gate_timeout_emits_nothing(warnings_logged) -> None:
+    # A rate-limit gate timeout is a leg failure like any other: nothing is emitted. The log must
+    # name the exception type — operators need to tell "we throttled ourselves" apart from
+    # "the venue is down".
     exchange = _snapshot_exchange(RateLimitGateTimeout("gate did not reopen within 30s", pool_name="ccxt_rest"))
     conn, sent, _ = _make_connector(exchange=exchange)
 
     conn.request_snapshot()
     await _drive(conn)
 
-    snap = sent[0].snapshot
-    assert snap.positions is None
-    assert [o.venue_order_id for o in snap.open_orders] == ["V1"]
-    assert len(snap.balances) == 1
+    assert sent == []
 
-    messages = _positions_leg_warnings(warnings_logged)
+    messages = _snapshot_skip_errors(warnings_logged)
     assert len(messages) == 1, messages
     assert "RateLimitGateTimeout" in messages[0]
 
 
 @pytest.mark.asyncio
-async def test_request_snapshot_positions_network_error_warning_is_generic(warnings_logged) -> None:
+async def test_request_snapshot_positions_network_error_log_is_generic(warnings_logged) -> None:
     # negative control for the test above: a venue outage produces the same shape without the
     # rate-limit wording, so the two are distinguishable from the log alone
     exchange = _snapshot_exchange(ccxt.NetworkError("boom"))
@@ -398,15 +394,97 @@ async def test_request_snapshot_positions_network_error_warning_is_generic(warni
     conn.request_snapshot()
     await _drive(conn)
 
-    snap = sent[0].snapshot
-    assert snap.positions is None
-    assert [o.venue_order_id for o in snap.open_orders] == ["V1"]
-    assert len(snap.balances) == 1
+    assert sent == []
 
-    messages = _positions_leg_warnings(warnings_logged)
+    messages = _snapshot_skip_errors(warnings_logged)
     assert len(messages) == 1, messages
     assert "NetworkError" in messages[0]
     assert "RateLimitGateTimeout" not in messages[0]
+
+
+def _errors_logged(records: list) -> list[str]:
+    return [r["message"] for r in records if r["level"].name == "ERROR"]
+
+
+def _positions_snapshot_exchange(raw_positions: list[dict], markets: dict) -> Mock:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_open_orders = AsyncMock(return_value=[])
+    exchange.fetch_positions = AsyncMock(return_value=raw_positions)
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 9.0}, "used": {"USDT": 0.0}})
+    exchange.markets = markets
+    return exchange
+
+
+@pytest.mark.asyncio
+async def test_request_snapshot_positions_clean_payload_populated() -> None:
+    # control for the two below: a fully convertible payload still yields a list
+    exchange = _positions_snapshot_exchange(POSITIONS_BINANCE_UM, BINANCE_MARKETS)
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    snap = sent[0].snapshot
+    assert snap.positions is not None
+    assert len(snap.positions) == len(POSITIONS_BINANCE_UM)
+
+
+@pytest.mark.asyncio
+async def test_request_snapshot_unknown_position_symbol_is_skipped(warnings_logged) -> None:
+    # A symbol we cannot resolve has no local position to settle either, so skipping it costs
+    # nothing — but it must be loud, since reconcile reads the leg as venue truth.
+    exchange = _positions_snapshot_exchange([{"symbol": "XYZ/USDT:USDT"}], {})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    snap = sent[0].snapshot
+    assert snap.positions == []
+    assert len(snap.balances) == 1
+    messages = _errors_logged(warnings_logged)
+    assert len(messages) == 1, messages
+    assert "XYZ/USDT:USDT" in messages[0]
+
+
+@pytest.mark.asyncio
+async def test_request_snapshot_one_unknown_position_keeps_the_known_rows() -> None:
+    # one unresolvable row must not cost the rows that did convert
+    exchange = _positions_snapshot_exchange([*POSITIONS_BINANCE_UM, {"symbol": "XYZ/USDT:USDT"}], BINANCE_MARKETS)
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert len(sent[0].snapshot.positions) == len(POSITIONS_BINANCE_UM)
+
+
+@pytest.mark.asyncio
+async def test_request_snapshot_unknown_order_symbol_is_skipped(warnings_logged) -> None:
+    # same rule on the order leg: the resolvable order survives, the unknown one is logged
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.market = Mock(side_effect=ccxt.BadSymbol("unknown"))
+    exchange.fetch_open_orders = AsyncMock(
+        return_value=[
+            _ws_order(status="open", cid="qubx_x", venue_id="V1"),
+            dict(_ws_order(status="open", cid="qubx_y", venue_id="V2"), symbol="XYZ/USDT:USDT"),
+        ]
+    )
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 9.0}, "used": {"USDT": 0.0}})
+    exchange.markets = {}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    snap = sent[0].snapshot
+    assert [o.venue_order_id for o in snap.open_orders] == ["V1"]
+    messages = _errors_logged(warnings_logged)
+    assert messages, "expected an ERROR naming the unrecognized order symbol"
+    assert "XYZ/USDT:USDT" in messages[0]
 
 
 @pytest.mark.asyncio
@@ -462,10 +540,10 @@ async def test_request_snapshot_trigger_unsupported_uses_regular_only() -> None:
 
 
 @pytest.mark.asyncio
-async def test_request_snapshot_trigger_network_error_left_none() -> None:
+async def test_request_snapshot_trigger_network_error_emits_nothing() -> None:
     # A TRANSIENT trigger-fetch failure must NOT yield a regular-only list (that would mark
-    # live stops missing). Conservative: omit open_orders this tick (None) so reconcile
-    # skips order diffing rather than orphaning unseen trigger orders.
+    # live stops missing). Conservative: emit nothing this tick rather than orphaning
+    # unseen trigger orders.
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.markets = {}
@@ -483,8 +561,7 @@ async def test_request_snapshot_trigger_network_error_left_none() -> None:
     conn.request_snapshot()
     await _drive(conn)
 
-    snap = sent[0].snapshot
-    assert snap.open_orders is None
+    assert sent == []
 
 
 # --------------------------------------------------------------------------- #

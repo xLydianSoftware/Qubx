@@ -91,6 +91,17 @@ class TestCcxtOrderbookRelatedStuff:
         positions = ccxt_convert_positions(POSITIONS_BINANCE_UM, "BINANCE.UM", BINANCE_MARKETS)
         assert len(positions) > 0
 
+    def test_ccxt_position_unknown_symbol_is_skipped(self):
+        """An unknown symbol yields no Position rather than blowing up the caller."""
+        assert ccxt_convert_position({"symbol": "XYZ/USDT:USDT"}, "BINANCE.UM", BINANCE_MARKETS) is None
+
+    def test_ccxt_positions_skips_only_the_unknown_row(self):
+        """One unconvertible row must not cost the rows that did convert."""
+        positions = ccxt_convert_positions(
+            [*POSITIONS_BINANCE_UM, {"symbol": "XYZ/USDT:USDT"}], "BINANCE.UM", BINANCE_MARKETS
+        )
+        assert len(positions) == len(POSITIONS_BINANCE_UM)
+
     def test_ccxt_position_takes_venue_margins(self):
         """Both margins must come from the venue, which knows the leverage tier.
 

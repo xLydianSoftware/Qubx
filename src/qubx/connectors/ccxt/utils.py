@@ -265,12 +265,12 @@ def ccxt_convert_trade(trade: dict[str, Any]) -> Trade:
 
 
 def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str, dict[str, Any]]) -> Position | None:
-    """Convert one ccxt unified position dict into a Position; None when the symbol is
-    unknown to the loaded markets. Shared by the REST snapshot path (ccxt_convert_positions)
-    and WS position pushes so both produce the identical mapping."""
+    """Convert one ccxt unified position dict into a Position; None when the symbol is unknown
+    to the loaded markets. Loud, because reconcile reads the positions list as venue truth and
+    so reports a skipped row as flat."""
     symbol = info["symbol"]
     if symbol not in markets:
-        logger.warning(f"Could not find symbol {symbol}, skipping position...")
+        logger.error(f"snapshot: no market for {symbol}; position skipped")
         return None
     instr = ccxt_symbol_to_instrument(
         ccxt_exchange_name,
@@ -328,12 +328,9 @@ def ccxt_convert_position(info: dict, ccxt_exchange_name: str, markets: dict[str
 def ccxt_convert_positions(
     pos_infos: list[dict], ccxt_exchange_name: str, markets: dict[str, dict[str, Any]]
 ) -> list[Position]:
-    positions = []
-    for info in pos_infos:
-        pos = ccxt_convert_position(info, ccxt_exchange_name, markets)
-        if pos is not None:
-            positions.append(pos)
-    return positions
+    """Rows whose symbol is unknown to the loaded markets are skipped (and logged there)."""
+    converted = [ccxt_convert_position(info, ccxt_exchange_name, markets) for info in pos_infos]
+    return [p for p in converted if p is not None]
 
 
 def ccxt_extract_leverage_settings(rows: list[dict] | None) -> dict[str, tuple[float | None, float | None]]:
