@@ -11,18 +11,33 @@ import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
 from qubx.connectors.ccxt.exchanges.bybit.connector import BybitCcxtConnector, _parse_adl_ranks
-from qubx.core.basics import CtrlChannel, Instrument, Position
-from qubx.core.lookups import lookup
+from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 BTC = "BTC/USDT:USDT"
 ETH = "ETH/USDT:USDT"
 
 
+# venue specs, inline: the global lookup ships no bybit symbols, so it resolves only from a
+# machine that happens to have a cached bybit.f.json
+_SPECS = {"BTCUSDT": (0.1, 0.001), "ETHUSDT": (0.01, 0.01)}
+
+
 def _instrument(symbol: str = "BTCUSDT") -> Instrument:
-    instrument = lookup.find_symbol("BYBIT.F", symbol)
-    assert instrument is not None
-    return instrument
+    tick, lot = _SPECS[symbol]
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SWAP,
+        exchange="BYBIT.F",
+        base=symbol.removesuffix("USDT"),
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol=symbol,
+        tick_size=tick,
+        lot_size=lot,
+        min_size=lot,
+        min_notional=5.0,
+    )
 
 
 def _position(symbol: str = "BTCUSDT", quantity: float = 1.0) -> Position:

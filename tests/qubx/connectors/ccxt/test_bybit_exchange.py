@@ -16,8 +16,28 @@ from ccxt.base.errors import ArgumentsRequired, BadRequest, NotSupported, OrderN
 from qubx.connectors.ccxt.exchanges import CUSTOM_CONNECTORS, EXCHANGE_ALIASES, BybitF
 from qubx.connectors.ccxt.exchanges.bybit.connector import BybitCcxtConnector
 from qubx.connectors.ccxt.utils import ccxt_convert_funding_rate, prepare_ccxt_order_payload
-from qubx.core.basics import Quote
-from qubx.core.lookups import lookup
+from qubx.core.basics import Instrument, MarketType, Quote
+
+# venue specs, inline: the global lookup ships no bybit symbols, so it resolves only from a
+# machine that happens to have a cached bybit.f.json
+_SPECS = {"BTCUSDT": (0.1, 0.001), "ETHUSDT": (0.01, 0.01)}
+
+
+def _instrument(symbol: str = "BTCUSDT") -> Instrument:
+    tick, lot = _SPECS[symbol]
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SWAP,
+        exchange="BYBIT.F",
+        base=symbol.removesuffix("USDT"),
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol=symbol,
+        tick_size=tick,
+        lot_size=lot,
+        min_size=lot,
+        min_notional=5.0,
+    )
 
 
 def _swap_market() -> dict:
@@ -199,7 +219,7 @@ def test_get_margin_mode_reads_account_info(venue_value, expected):
     conn._em.exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": venue_value})
     conn._run_sync = lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(coro)
 
-    instrument = lookup.find_symbol("BYBIT.F", "ETHUSDT")
+    instrument = _instrument("ETHUSDT")
     assert conn.get_margin_mode(instrument) == expected
     conn._em.exchange.fetch_margin_mode.assert_awaited_once_with("ETH/USDT:USDT")
 
@@ -211,7 +231,7 @@ def test_get_margin_mode_survives_a_venue_error():
     conn._em.exchange.fetch_margin_mode = AsyncMock(side_effect=RuntimeError("boom"))
     conn._run_sync = lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(coro)
 
-    assert conn.get_margin_mode(lookup.find_symbol("BYBIT.F", "ETHUSDT")) is None
+    assert conn.get_margin_mode(_instrument("ETHUSDT")) is None
 
 
 class _StubWsClient:
@@ -308,8 +328,7 @@ def test_upstream_refuses_every_contract_trigger_order():
 @pytest.mark.parametrize("side,direction", [("BUY", 1), ("SELL", 2)])
 def test_a_riskctrl_shaped_stop_reaches_the_wire(bybit, side, direction):
     """The real payload builder's output, straight into the real request builder."""
-    instrument = lookup.find_symbol("BYBIT.F", "BTCUSDT")
-    assert instrument is not None
+    instrument = _instrument("BTCUSDT")
     payload = prepare_ccxt_order_payload(
         instrument=instrument,
         order_side=side,
