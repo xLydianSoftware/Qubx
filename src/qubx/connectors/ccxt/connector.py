@@ -43,6 +43,7 @@ from ccxt import AuthenticationError, ExchangeClosedByUser, ExchangeError, Excha
 from qubx import connector_logger, logger
 from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
+    OPTION_REPRICE_IF_CROSSING,
     Balance,
     CtrlChannel,
     Deal,
@@ -84,6 +85,7 @@ from qubx.utils.time import to_timedelta
 from .exceptions import CcxtSymbolNotRecognized
 from .exchange_manager import ExchangeManager
 from .utils import (
+    FRAMEWORK_ONLY_OPTIONS,
     ccxt_convert_balance,
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
@@ -167,6 +169,10 @@ class CcxtConnector(ChannelEmitter):
     # overwrite the account balance with the sub-wallet figure, so they stay
     # snapshot-only.
     _wants_ws_balance_push: bool = True
+
+    # Venue seam: extra params for the snapshot's whole-account reads, e.g. {"paginate": True}.
+    # Must ride params, not options — ccxt's fetch_paginated_call_cursor recurses forever otherwise.
+    _snapshot_fetch_params: dict[str, Any] = {}
 
     def __init__(
         self,
@@ -305,6 +311,8 @@ class CcxtConnector(ChannelEmitter):
 
         options = request.options or {}
         reduce_only = bool(resolve_reduce_only(options))
+        post_only = bool(options.get("post_only", False))
+        reprice_if_crossing = bool(options.get(OPTION_REPRICE_IF_CROSSING, False))
 
         # Quote lookup is the connector's only READ dependency; payload build raises
         # framework-side rejections (no quote, below min-notional, missing price).
@@ -319,11 +327,13 @@ class CcxtConnector(ChannelEmitter):
             time_in_force=request.time_in_force,
             quote=quote,
             reduce_only=reduce_only,
+            post_only=post_only,
+            reprice_if_crossing=reprice_if_crossing,
         )
         # Forward any remaining venue-specific options ccxt understands (e.g.
         # lighter_* indices) without clobbering what the payload builder set.
         for k, v in options.items():
-            if k in ("reduceOnly", "reduce_only"):
+            if k in FRAMEWORK_ONLY_OPTIONS:
                 continue
             payload["params"].setdefault(k, v)
 
@@ -738,12 +748,18 @@ class CcxtConnector(ChannelEmitter):
         # editOrder requires symbol/side/type on most venues (Binance resolves the market from
         # `symbol`) — all read straight off the order the AM passed.
         amount = abs(quantity) if quantity is not None else None
+        params: dict[str, Any] = {}
+        if order_type.startswith("stop_"):
+            # Mirror submit: the trigger rides params and `price` stays, so a STOP_LIMIT keeps
+            # trigger and limit on the one price instead of drifting apart on amend.
+            params["triggerPrice"] = price
+            order_type = order_type.split("_", 1)[1]
         if venue_order_id is None:
             # cloid-only (venue ack never seen): ccxt's client-order-id variant sends the
             # cloid as origClientOrderId — mirroring the cancel path.
             assert client_order_id is not None
             return await self._em.exchange.edit_order_with_client_order_id(
-                client_order_id, symbol, order_type, side, amount, price
+                client_order_id, symbol, order_type, side, amount, price, params
             )
         return await self._em.exchange.edit_order(
             id=venue_order_id,
@@ -752,7 +768,7 @@ class CcxtConnector(ChannelEmitter):
             side=side,
             amount=amount,
             price=price,
-            params={},
+            params=params,
         )
 
     async def _update_via_cancel_recreate(
@@ -824,19 +840,19 @@ class CcxtConnector(ChannelEmitter):
                 f"number; the venue takes integers, requesting {wanted}"
             )
         cached = self._leverage_cache.get(symbol)
-        if cached is not None:
-            if cached.maximum is not None and wanted > cached.maximum:
-                logger.warning(
-                    f"[{self.exchange_name}] {instrument.symbol}: leverage {wanted} exceeds the venue "
-                    f"maximum {cached.maximum}; requesting {cached.maximum}"
-                )
-                wanted = cached.maximum
-            if cached.configured is not None and cached.configured == wanted:
-                logger.info(
-                    f"[{self.exchange_name}] {instrument.symbol}: venue already at leverage "
-                    f"{cached.configured}, not sending {wanted}"
-                )
-                return
+        if cached is not None and cached.maximum is not None and wanted > cached.maximum:
+            logger.warning(
+                f"[{self.exchange_name}] {instrument.symbol}: leverage {wanted} exceeds the venue "
+                f"maximum {cached.maximum}; requesting {cached.maximum}"
+            )
+            wanted = cached.maximum
+        # after the clamp, so a repeated over-maximum request dedups against what was sent
+        if cached is not None and cached.configured == wanted:
+            logger.info(
+                f"[{self.exchange_name}] {instrument.symbol}: venue already at leverage "
+                f"{cached.configured}, not sending {wanted}"
+            )
+            return
         logger.info(
             f"[{self.exchange_name}] {instrument.symbol}: sending leverage {wanted} "
             f"(cached {cached.configured} / max {cached.maximum})"
@@ -955,8 +971,33 @@ class CcxtConnector(ChannelEmitter):
         leverage, _ = self._fetch_leverage_row(instrument)
         if leverage is not None:
             return leverage
+        leverage = self._fetch_leverage_single(instrument)
+        if leverage is not None:
+            return leverage
         row = self._fetch_position_row(instrument)
         return info_float(row, "leverage") if row is not None else None
+
+    def _fetch_leverage_single(self, instrument: Instrument) -> float | None:
+        """Per-symbol venue read for venues with no ``fetchLeverages``.
+
+        ``is True`` excludes ccxt's ``'emulated'``, which only re-runs the fetch_leverages tried above.
+        """
+        if self._em.exchange.has.get("fetchLeverage") is not True:
+            return None
+        symbol = instrument_to_ccxt_symbol(instrument)
+        try:
+            row = self._run_sync(self._em.exchange.fetch_leverage(symbol))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] fetch_leverage for {instrument.symbol}: {e}")
+            return None
+        value = row.get("longLeverage") or row.get("shortLeverage")
+        if value is None:
+            return None
+        held = self._leverage_cache.get(symbol)
+        self._leverage_cache[symbol] = _LeverageInfo(
+            configured=int(value), maximum=held.maximum if held is not None else None
+        )
+        return float(value)
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         """The venue's published maximum, from the poller's cache.
@@ -1622,6 +1663,10 @@ class CcxtConnector(ChannelEmitter):
             )
         )
 
+    def _snapshot_params(self, **extra: Any) -> dict[str, Any]:
+        """Fresh params dict for a snapshot read — the venue seam plus this leg's own keys."""
+        return {**self._snapshot_fetch_params, **extra}
+
     async def _fetch_trigger_open_orders(self) -> list[dict]:
         """Fetch untriggered stop/conditional ("algo") open orders.
 
@@ -1632,7 +1677,7 @@ class CcxtConnector(ChannelEmitter):
         reconcile for the next tick rather than orphaning unseen stops).
         """
         try:
-            return await self._em.exchange.fetch_open_orders(params={"trigger": True})
+            return await self._em.exchange.fetch_open_orders(params=self._snapshot_params(trigger=True))
         except (ccxt.NotSupported, ccxt.BadRequest) as e:
             logger.debug(f"[{self.exchange_name}] snapshot: no trigger open-orders surface ({e}); regular only")
             return []
@@ -1700,14 +1745,16 @@ class CcxtConnector(ChannelEmitter):
         try:
             if include_orders:
                 raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
-                    ex.fetch_open_orders(),
+                    ex.fetch_open_orders(params=self._snapshot_params()),
                     self._fetch_trigger_open_orders(),
-                    ex.fetch_positions(),
+                    ex.fetch_positions(params=self._snapshot_params()),
                     ex.fetch_balance(),
                 )
                 open_orders = self._merge_open_orders(raw_orders, raw_trigger_orders)
             else:
-                raw_positions, raw_balance = await asyncio.gather(ex.fetch_positions(), ex.fetch_balance())
+                raw_positions, raw_balance = await asyncio.gather(
+                    ex.fetch_positions(params=self._snapshot_params()), ex.fetch_balance()
+                )
                 open_orders = None  # - not observed this tick -> reconcile skips order diffing
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)

@@ -889,6 +889,7 @@ def test_connect_triggers_initial_snapshot_and_subscription() -> None:
     assert len(submitted) == 3
     # Initial snapshot requested (fire-and-forget via the _spawn capture).
     assert len(conn._captured) == 1  # type: ignore[attr-defined]
+    conn._captured[0].close()  # type: ignore[attr-defined]
     # Close the coroutines we never awaited (avoid "coroutine was never awaited").
     for coro in submitted:
         coro.close()
@@ -1079,6 +1080,36 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     assert am.get_balance("USDT", exchange="BINANCE.UM").total == 1000.0
 
 
+@pytest.mark.asyncio
+async def test_snapshot_reduce_only_order_survives_recovery() -> None:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_open_orders = AsyncMock(
+        return_value=[{**_ws_order(status="open", cid="qubx_BTCUSDT_1", venue_id="V1"), "reduceOnly": True}]
+    )
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1000.0}, "used": {"USDT": 0.0}})
+    exchange.markets = {}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert sent[0].snapshot.open_orders[0].reduce_only is True
+
+    am = SimulatedAccountManager(
+        connectors={"BINANCE.UM": object()},
+        base_currencies={"BINANCE.UM": "USDT"},
+        time=DummyTimeProvider(),
+    )
+    am.apply(sent[0])
+
+    recovered = am.find_order_by_id("V1")
+    assert recovered is not None
+    assert recovered.origin is OrderOrigin.RECOVERED
+    assert recovered.reduce_only is True
+
+
 # --------------------------------------------------------------------------- #
 # (g) F26 — WS position/balance pushes + account-stream composition
 # --------------------------------------------------------------------------- #
@@ -1242,3 +1273,157 @@ async def test_two_stream_subscribes_orders_and_trades_only() -> None:
     assert [k["stream"] for k in recorded] == ["orders", "my_trades"]
     assert [k["mark_ready"] for k in recorded] == [True, False]
     assert recorded[1]["handle"] == conn._handle_ws_trade
+
+
+# --------------------------------------------------------------------------- #
+# (i) snapshot fetch params — the venue pagination seam
+# --------------------------------------------------------------------------- #
+class _PaginatedConnector(CcxtConnector):
+    """A venue whose whole-account reads truncate without cursor pagination (Bybit)."""
+
+    _snapshot_fetch_params = {"paginate": True}
+
+
+def _quiet_exchange() -> Mock:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.markets = {}
+    exchange.fetch_open_orders = AsyncMock(return_value=[])
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1.0}, "used": {"USDT": 0.0}})
+    return exchange
+
+
+def _fetch_params(mock: AsyncMock) -> list[dict]:
+    return [c.kwargs["params"] for c in mock.call_args_list]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_fetch_params_base_is_empty() -> None:
+    exchange = _quiet_exchange()
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert _fetch_params(exchange.fetch_open_orders) == [{}, {"trigger": True}]
+    assert _fetch_params(exchange.fetch_positions) == [{}]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_fetch_params_applied_to_every_whole_account_read() -> None:
+    # Bybit's /v5/order/realtime truncates at 20 rows and fetch_positions at 200
+    exchange = _quiet_exchange()
+    conn, _, _ = _make_connector(exchange=exchange, cls=_PaginatedConnector)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert _fetch_params(exchange.fetch_open_orders) == [
+        {"paginate": True},
+        {"paginate": True, "trigger": True},
+    ]
+    assert _fetch_params(exchange.fetch_positions) == [{"paginate": True}]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_fetch_params_applied_on_positions_only_tick() -> None:
+    exchange = _quiet_exchange()
+    conn, _, _ = _make_connector(exchange=exchange, cls=_PaginatedConnector)
+
+    conn.request_snapshot(include_orders=False)
+    await _drive(conn)
+
+    exchange.fetch_open_orders.assert_not_called()
+    assert _fetch_params(exchange.fetch_positions) == [{"paginate": True}]
+
+
+@pytest.mark.asyncio
+async def test_snapshot_fetch_params_class_attribute_never_mutated() -> None:
+    # ccxt writes its cursor into the params dict it is handed
+    exchange = _quiet_exchange()
+
+    async def _paginating(*args, **kwargs):
+        kwargs["params"]["cursor"] = "page2"
+        return []
+
+    exchange.fetch_open_orders = AsyncMock(side_effect=_paginating)
+    exchange.fetch_positions = AsyncMock(side_effect=_paginating)
+    conn, _, _ = _make_connector(exchange=exchange, cls=_PaginatedConnector)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert _PaginatedConnector._snapshot_fetch_params == {"paginate": True}
+
+
+@pytest.mark.asyncio
+async def test_paginate_in_params_terminates_on_real_ccxt() -> None:
+    # `paginate` must ride params, never options: handle_option_and_params drops the key only
+    # when it finds it in params, so the recursion in fetch_paginated_call_cursor terminates.
+    exchange = ccxt.pro.bybit({"enableRateLimit": False})
+    exchange.options["defaultType"] = "swap"
+    seen_params: list[dict] = []
+
+    async def _load_markets(reload=False, params={}):
+        exchange.markets, exchange.markets_by_id = {}, {}
+        return {}
+
+    def _row(i: int, cursor: str) -> dict:
+        return {
+            "orderId": f"V{i}",
+            "orderLinkId": f"c{i}",
+            "symbol": "BTCUSDT",
+            "side": "Buy",
+            "orderType": "Limit",
+            "price": "100",
+            "qty": "1",
+            "cumExecQty": "0",
+            "orderStatus": "New",
+            "createdTime": "1700000000000",
+            "updatedTime": "1700000000000",
+            "nextPageCursor": cursor,
+        }
+
+    async def _endpoint(params={}):
+        seen_params.append(dict(params))
+        page = len(seen_params)
+        if page > 5:
+            pytest.fail(f"pagination did not terminate: {page} calls")
+        if page <= 2:
+            return {
+                "retCode": 0,
+                "result": {
+                    "category": "linear",
+                    "nextPageCursor": f"cur{page}",
+                    "list": [_row(i, f"cur{page}") for i in range(50)],
+                },
+            }
+        return {"retCode": 0, "result": {"category": "linear", "nextPageCursor": "", "list": []}}
+
+    exchange.load_markets = _load_markets
+    exchange.privateGetV5OrderRealtime = _endpoint
+    try:
+        orders = await exchange.fetch_open_orders(params={"paginate": True, "trigger": True})
+    finally:
+        await exchange.close()
+
+    assert len(seen_params) == 3
+    assert len(orders) == 100
+    # the seam's key is consumed by the first frame; the trigger flag still reaches the venue
+    assert all("paginate" not in p for p in seen_params)
+    assert all(p["orderFilter"] == "StopOrder" for p in seen_params)
+
+
+# --------------------------------------------------------------------------- #
+# (j) update_order — a resting trigger order cannot be amended
+# --------------------------------------------------------------------------- #
+
+
+def test_update_order_on_limit_still_spawns() -> None:
+    conn, _, _ = _make_connector()
+
+    conn.update_order(_order(order_type=OrderType.LIMIT), price=102.0)
+
+    assert len(conn._captured) == 1  # type: ignore[attr-defined]
+    conn._captured[0].close()  # type: ignore[attr-defined]

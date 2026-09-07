@@ -353,6 +353,24 @@ class TestPmAlgoOrders:
         finally:
             run(ex.close())
 
+    def test_stop_limit_post_only_reaches_the_venue_as_gtx(self):
+        """The algo endpoint takes no postOnly flag, only a TIF.
+
+        Post-only now arrives as ccxt's unified flag, so without translating it here a
+        post-only conditional order would silently go out GTC and could take.
+        """
+        ex, calls = _pm_exchange_with_markets()
+        try:
+            run(
+                ex.create_order(
+                    "DOGE/USDT:USDT", "limit", "sell", 300, 0.0501, {"triggerPrice": 0.05064, "postOnly": True}
+                )
+            )
+            _, _, _, req = calls[0]
+            assert req["timeInForce"] == "GTX"
+        finally:
+            run(ex.close())
+
     def test_non_trigger_orders_unaffected(self):
         ex, calls = _pm_exchange_with_markets()
         try:

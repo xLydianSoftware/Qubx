@@ -582,6 +582,7 @@ class Reconciler:
                 side=snap_order.side,
                 status=snap_order.status,
                 time_in_force=snap_order.time_in_force,
+                reduce_only=snap_order.reduce_only,
                 filled_quantity=snap_order.filled_quantity,
                 avg_fill_price=snap_order.avg_fill_price,
                 last_update_time=snap_order.last_update_time if snap_order.last_update_time is not None else as_of,

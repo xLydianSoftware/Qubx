@@ -114,6 +114,45 @@ cpdef double prec_floor(double a, int precision):
     return copysign(floor(ticks) / scale, a)
 
 
+cdef inline double _grid_scale(double step) noexcept:
+    """
+    Exact integer reciprocal of a sub-unit step, or 0.0 when it has none.
+
+    Scaling by the exact reciprocal avoids the float error of dividing by the inexact step.
+    """
+    cdef double recip
+    if step <= 0.0 or step >= 1.0:
+        return 0.0
+    recip = round(1.0 / step)
+    if recip > 0.0 and 1.0 / recip == step:
+        return recip
+    return 0.0
+
+
+cpdef double grid_floor(double a, double step) noexcept:
+    """
+    Largest multiple of `step` not exceeding |a|, signed back: grid_floor(157, 10) -> 150.0.
+    """
+    cdef double scale = _grid_scale(step)
+    if scale > 0.0:
+        return copysign(floor(_snap_tick_noise(fabs(a) * scale)) / scale, a)
+    if step > 0.0:
+        return copysign(floor(_snap_tick_noise(fabs(a) / step)) * step, a)
+    return a
+
+
+cpdef double grid_ceil(double a, double step) noexcept:
+    """
+    Smallest multiple of `step` at or above |a|, signed back.
+    """
+    cdef double scale = _grid_scale(step)
+    if scale > 0.0:
+        return copysign(ceil(_snap_tick_noise(fabs(a) * scale)) / scale, a)
+    if step > 0.0:
+        return copysign(ceil(_snap_tick_noise(fabs(a) / step)) * step, a)
+    return a
+
+
 cpdef double add_in_lots(double quantity, double amount, double lot_size) noexcept:
     """
     Sum two lot multiples in whole lots, so a subtraction cannot land a few ulp off the grid.

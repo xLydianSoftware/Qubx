@@ -76,11 +76,6 @@ class BitfinexF(CcxtFuturePatchMixin, cxp.bitfinex):
         self, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}
     ):
         params.pop("type", None)
-        if "timeInForce" in params and params["timeInForce"] == "GTX":
-            # GTX is not supported by bitfinex, so we need to convert it to PO
-            params["timeInForce"] = "PO"
-            params["postOnly"] = True
-
         if "lev" not in params:
             params["lev"] = 2
 
@@ -91,11 +86,6 @@ class BitfinexF(CcxtFuturePatchMixin, cxp.bitfinex):
         self, symbol: str, type: OrderType, side: OrderSide, amount: float, price: Num = None, params={}
     ) -> Order:
         params.pop("type", None)
-        if "timeInForce" in params and params["timeInForce"] == "GTX":
-            # GTX is not supported by bitfinex, so we need to convert it to PO
-            params["timeInForce"] = "PO"
-            params["postOnly"] = True
-
         if "lev" not in params:
             params["lev"] = 2
 

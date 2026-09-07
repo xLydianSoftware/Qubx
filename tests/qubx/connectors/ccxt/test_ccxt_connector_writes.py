@@ -15,6 +15,7 @@ import pytest
 from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
 from qubx.connectors.ccxt.rate_limits import _default_endpoint_costs
 from qubx.core.basics import (
+    OPTION_REPRICE_IF_CROSSING,
     CtrlChannel,
     Instrument,
     MarketType,
@@ -218,15 +219,42 @@ async def test_submit_stop_market_sets_trigger_price() -> None:
 
 
 @pytest.mark.asyncio
-async def test_submit_gtx_buy_price_adjustment() -> None:
+async def test_crossing_post_only_reaches_the_venue_unrepriced_by_default() -> None:
+    """Strict by default: a crossing post-only is left for the venue to reject, not repriced."""
     conn, _sent, exchange = _make_connector()
-    # GTX BUY priced >= ask (101) must be nudged 1 tick below ask -> 101 - 0.1
     conn.submit_order(_order_request(price=105.0, time_in_force="gtx"))
     await _drive(conn)
 
     payload = exchange.create_order.await_args.kwargs
-    assert payload["params"]["timeInForce"] == "GTX"
+    # post-only must ride ccxt's unified flag: a raw TIF string is silently dropped by most venues
+    assert payload["params"]["postOnly"] is True
+    assert "timeInForce" not in payload["params"]
+    assert payload["price"] == pytest.approx(105.0)
+
+
+@pytest.mark.asyncio
+async def test_crossing_post_only_is_repriced_when_the_caller_opts_in() -> None:
+    conn, _sent, exchange = _make_connector()
+    conn.submit_order(_order_request(price=105.0, time_in_force="gtx", options={OPTION_REPRICE_IF_CROSSING: True}))
+    await _drive(conn)
+
+    payload = exchange.create_order.await_args.kwargs
     assert payload["price"] == pytest.approx(101.0 - 0.1)
+    # framework-only key: resolved into the payload, never forwarded raw
+    assert OPTION_REPRICE_IF_CROSSING not in payload["params"]
+
+
+@pytest.mark.asyncio
+async def test_post_only_option_sets_the_ccxt_flag() -> None:
+    """The post_only option is translated to ccxt's unified flag, not to a TIF spelling."""
+    conn, _sent, exchange = _make_connector()
+    conn.submit_order(_order_request(price=105.0, time_in_force="gtc", options={"post_only": True}))
+    await _drive(conn)
+
+    payload = exchange.create_order.await_args.kwargs
+    assert payload["params"]["postOnly"] is True
+    assert "timeInForce" not in payload["params"]
+    assert "post_only" not in payload["params"]
 
 
 # --------------------------------------------------------------------------- #
@@ -552,6 +580,52 @@ async def test_update_direct_edit_emits_updated() -> None:
 
 
 @pytest.mark.asyncio
+async def test_update_stop_market_amends_the_trigger() -> None:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.update_order(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_MARKET), price=105.0)
+    await _drive(conn)
+
+    exchange.edit_order.assert_awaited_once_with(
+        id="VENUE123",
+        symbol="BTC/USDT:USDT",
+        type="market",
+        side="buy",
+        amount=1.0,
+        price=105.0,
+        params={"triggerPrice": 105.0},
+    )
+    assert isinstance(sent[0], OrderUpdatedEvent)
+
+
+@pytest.mark.asyncio
+async def test_update_stop_limit_moves_trigger_and_limit_together() -> None:
+    # submit prices both legs off the one price; an amend that moved only the trigger would
+    # leave the venue's limit leg behind while the local order records the new price
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.update_order(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_LIMIT), price=105.0)
+    await _drive(conn)
+
+    exchange.edit_order.assert_awaited_once_with(
+        id="VENUE123",
+        symbol="BTC/USDT:USDT",
+        type="limit",
+        side="buy",
+        amount=1.0,
+        price=105.0,
+        params={"triggerPrice": 105.0},
+    )
+    assert isinstance(sent[0], OrderUpdatedEvent)
+
+
+@pytest.mark.asyncio
 async def test_update_by_cloid_uses_cloid_edit_endpoint() -> None:
     # No venue id yet -> ccxt's client-order-id edit variant, with symbol/side/type off the order.
     exchange = Mock()
@@ -563,7 +637,7 @@ async def test_update_by_cloid_uses_cloid_edit_endpoint() -> None:
     await _drive(conn)
 
     exchange.edit_order_with_client_order_id.assert_awaited_once_with(
-        "qubx_BTCUSDT_1", "BTC/USDT:USDT", "limit", "buy", 2.0, 102.0
+        "qubx_BTCUSDT_1", "BTC/USDT:USDT", "limit", "buy", 2.0, 102.0, {}
     )
     assert isinstance(sent[0], OrderUpdatedEvent)
 
@@ -806,6 +880,33 @@ async def test_set_leverage_is_clamped_to_the_cached_venue_maximum() -> None:
     exchange.set_leverage.assert_awaited_once_with(10, "BTC/USDT:USDT")
 
 
+def test_leverage_read_uses_the_singular_endpoint_when_available() -> None:
+    exchange = Mock()
+    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 10, "shortLeverage": 10})
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.has = {"editOrder": True, "fetchLeverages": None, "fetchLeverage": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_instrument_leverage(_instrument()) == 10.0
+    exchange.fetch_leverage.assert_awaited_once_with("BTC/USDT:USDT")
+    exchange.fetch_positions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_cloid_cancel_is_a_single_attempt() -> None:
+    """Retrying a venue refusal is the caller's call, not the connector's."""
+    exchange = Mock()
+    exchange.cancel_order_with_client_order_id = AsyncMock(side_effect=ccxt.OrderNotFound("order not exists"))
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.cancel_order(_order(venue_order_id=None))
+    await _drive(conn)
+
+    assert exchange.cancel_order_with_client_order_id.await_count == 1
+    assert any(isinstance(e, OrderCancelRejectedEvent) for e in sent)
+
+
 @pytest.mark.asyncio
 async def test_a_successful_set_updates_the_cache() -> None:
     """Without this the same value is re-sent every tick until the hourly refresh."""
@@ -823,6 +924,34 @@ async def test_a_successful_set_updates_the_cache() -> None:
     conn.set_instrument_leverage(_instrument(), 5.0)
     await _drive(conn)
     assert exchange.set_leverage.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_clamped_repeat_dedups_against_what_was_actually_sent() -> None:
+    """An over-maximum request is sent as the maximum, so the dedup compares the clamped value."""
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"longLeverage": 10}})
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=2, maximum=10)
+
+    for _ in range(3):
+        conn.set_instrument_leverage(_instrument(), 50.0)
+        await _drive(conn)
+
+    exchange.set_leverage.assert_awaited_once_with(10, "BTC/USDT:USDT")
+
+
+def test_emulated_fetch_leverage_is_not_used() -> None:
+    """Binance reports 'emulated', which is truthy — it must not reach the singular path."""
+    exchange = Mock()
+    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 3})
+    exchange.has = {"editOrder": True, "fetchLeverage": "emulated"}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn._fetch_leverage_single(_instrument()) is None
+    exchange.fetch_leverage.assert_not_awaited()
 
 
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:
