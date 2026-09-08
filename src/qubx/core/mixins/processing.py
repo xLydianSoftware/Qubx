@@ -320,6 +320,20 @@ class ProcessingManager(IProcessingManager):
         self._register_schedule(event_id, rule["schedule"], method)
         return event_id
 
+    def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
+        """
+        Register a method that runs on the ProcessorThread whenever an event with this
+        name is posted (see IStrategyContext.post_event). No schedule is armed — this is
+        the on-demand counterpart of schedule(). Same dispatch as custom scheduled methods:
+        the method is called with the context; return value ignored; emitted signals are
+        drained by the normal pipeline.
+        """
+        if not name:
+            raise ValueError("register_handler: name must be non-empty")
+        if name in self._custom_scheduled_methods:
+            raise ValueError(f"register_handler: '{name}' is already registered")
+        self._custom_scheduled_methods[name] = method
+
     def _register_schedule(self, event_id: str, cron_schedule: str, method: Callable) -> None:
         # - seam shared with FitContext.schedule (validated + recorded on the fit thread
         #   with a pre-generated event id, applied here at the FitCommit)
