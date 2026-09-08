@@ -15,7 +15,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
-from qubx.core.interfaces import IAccountViewer
+from qubx.core.interfaces import DEFAULT_TABLE_TTL, IAccountViewer
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.clock import time_now
 
@@ -199,7 +199,7 @@ class CSVMetricEmitter(BaseMetricEmitter):
         symbol_columns: Sequence[str] = (),
         dedup_keys: Sequence[str] | None = None,
         partition_by: str = "DAY",
-        max_ttl: str | None = None,
+        max_ttl: str | None = DEFAULT_TABLE_TTL,
     ) -> None:
         """
         Declare a strategy-owned table as one CSV file beside the metrics file.

@@ -15,7 +15,7 @@ from questdb.ingress import Sender
 
 from qubx import logger
 from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
-from qubx.core.interfaces import IAccountViewer, IStrategyContext
+from qubx.core.interfaces import DEFAULT_TABLE_TTL, IAccountViewer, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 from qubx.utils.questdb import QuestDBClient
 from qubx.utils.threading import BoundedWorker
@@ -36,7 +36,7 @@ SIGNALS_TTL = "14 weeks"
 DEALS_TTL = "14 weeks"
 HEALTH_TTL = "30 days"
 RATE_LIMITS_TTL = "30 days"
-DEFAULT_USER_TTL = "52 weeks"
+DEFAULT_USER_TTL = DEFAULT_TABLE_TTL
 
 
 def _json_scalar(value: Any) -> Any:
