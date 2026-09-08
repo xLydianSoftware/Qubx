@@ -332,6 +332,11 @@ class ProcessingManager(IProcessingManager):
             raise ValueError("register_handler: name must be non-empty")
         if name in self._custom_scheduled_methods:
             raise ValueError(f"register_handler: '{name}' is already registered")
+        if name in self._handlers:
+            raise ValueError(f"register_handler: '{name}' shadows a built-in data-type handler")
+        _dtype, _ = DataType.from_str(name)
+        if _dtype.value in self._handlers:
+            raise ValueError(f"register_handler: '{name}' shadows a built-in data-type handler ({_dtype.value})")
         self._custom_scheduled_methods[name] = method
 
     def _register_schedule(self, event_id: str, cron_schedule: str, method: Callable) -> None:

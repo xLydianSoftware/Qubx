@@ -69,3 +69,10 @@ def test_registered_handler_exception_is_logged_not_raised():
 
     pm.register_handler("agg.sources", boom)
     pm.process_data(None, "agg.sources", None, False)  # must not raise (same as scheduled methods)
+
+
+def test_register_handler_rejects_name_that_shadows_builtin_handler():
+    pm = _pm_with_handlers()
+    pm._handlers = {"trade": lambda *a: None}
+    with pytest.raises(ValueError):
+        pm.register_handler("trade", lambda ctx: None)
