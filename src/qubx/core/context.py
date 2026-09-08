@@ -1049,6 +1049,17 @@ class StrategyContext(IStrategyContext):
         self._assert_not_fit_thread("schedule")
         return self._processing_manager.schedule(cron_schedule, method)
 
+    def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
+        self._assert_not_fit_thread("register_handler")
+        self._processing_manager.register_handler(name, method)
+
+    def post_event(self, name: str) -> None:
+        # Thread-safe by construction: CtrlChannel.send is a Queue.put_nowait. This is the
+        # same channel the ProcessorThread drains, so the registered handler runs there.
+        if not self._data_providers:
+            raise RuntimeError("post_event: no data provider / channel available")
+        self._data_providers[0].channel.send((None, name, None, False))
+
     def unschedule(self, event_id: str) -> bool:
         self._assert_not_fit_thread("unschedule")
         return self._processing_manager.unschedule(event_id)

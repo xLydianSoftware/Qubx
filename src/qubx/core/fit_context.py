@@ -244,6 +244,17 @@ class FitContext(ITimeProvider):
         self._fit_state.record(partial(_pm._register_schedule, event_id, rule["schedule"], method))
         return event_id
 
+    def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
+        # deferred like schedule(): the registration is applied at the FitCommit
+        if not name:
+            raise ValueError("register_handler: name must be non-empty")
+        _pm = self._context._processing_manager  # type: ignore[attr-defined]
+        self._fit_state.record(partial(_pm.register_handler, name, method))
+
+    def post_event(self, name: str) -> None:
+        # queue put is thread-safe; no deferral needed
+        self._context.post_event(name)
+
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
         # - schedule-ish: deferred like schedule(); the delay countdown starts when the
         #   FitCommit is applied

@@ -1391,6 +1391,20 @@ class IProcessingManager:
         """
         ...
 
+    def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
+        """
+        Register a method to run on the strategy thread when post_event(name) is called.
+        On-demand counterpart of schedule(): no cron is armed. Strategy-thread only.
+        """
+        ...
+
+    def post_event(self, name: str) -> None:
+        """
+        Wake a handler registered with register_handler(name). Thread-safe: may be called
+        from any thread (it enqueues onto the strategy's data channel and returns).
+        """
+        ...
+
     def unschedule(self, event_id: str) -> bool:
         """
         Unschedule a scheduled event.
