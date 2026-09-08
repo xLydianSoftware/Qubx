@@ -14,12 +14,19 @@ Now it can use custom format
 
 ## On-demand callbacks: `register_handler` / `post_event`
 
-`ctx.register_handler(name, method)` registers a strategy-thread callback under `name`, with no cron armed — the on-demand counterpart of `schedule()` (raises `ValueError` on an empty or duplicate name, or one that shadows a built-in data-type handler such as `trade` or `ohlc(1h)`). `ctx.post_event(name)` wakes it: it takes no payload, the handler always runs as `method(ctx)`, and it raises `ValueError` if no handler is registered under `name`. Live, `post_event` enqueues onto the strategy's data channel and returns immediately — thread-safe, callable from any thread, never blocking — and the handler then runs on the strategy thread, just like a scheduled callback. In simulation the channel dispatches synchronously on the calling thread instead, so there `post_event` must only be called from the strategy thread. `post_event` raises `RuntimeError` if there's no data provider, and becomes a silent no-op once the context has stopped. Register the handler in `on_start` (or `on_init`), before starting any thread that will call `post_event`. (Inside a threaded `on_fit`, `register_handler` is deferred to the commit like `schedule()`; `post_event` passes straight through.)
+`ctx.register_handler(name, method)` registers a strategy-thread callback under `name` with no cron armed — the on-demand counterpart of `schedule()`. `ctx.post_event(name)` then wakes it. Register the handler in `on_start`, before starting any thread that will call `post_event`.
+
+- **Names and payload.** `register_handler` raises `ValueError` on an empty name, a duplicate, or any name that collides with a built-in event — either a non-data-type handler (`fit`, `event`, `time`, `error`, …) or *anything* the framework parses as a data type (`trade`, `ohlc(1h)`, `funding_rate`, `open_interest`, …). Use a namespaced name such as `my.wakeup`. `post_event` carries **no payload**: the handler always runs as `method(ctx)`, so pass data through your own state.
+- **Live vs simulation.** Live, `post_event` enqueues onto the strategy's data channel and returns immediately — thread-safe, callable from any thread, never blocking — and the handler runs on the strategy thread, exactly like a scheduled callback. In simulation the channel dispatches **synchronously on the calling thread**, so there `post_event` must only be called from the strategy thread, and a posting thread must not be started at all — it would drive the pipeline concurrently with the simulation loop. Guard any such thread with `if ctx.is_live:`.
+- **Errors and shutdown.** `post_event` raises `ValueError` if no handler is registered under `name`, and `RuntimeError` if there is no data provider. An exception raised *inside* the handler is logged, not propagated (same as a scheduled method). Live, once the context has stopped `post_event` is a silent no-op rather than an error.
+- **Boot.** Like scheduled custom methods, a registered handler runs as soon as its event is dequeued — it can fire before boot completes and before `on_start` returns; signals it emits are buffered until the pipeline drains them.
+- **Inside a threaded `on_fit`.** `register_handler` validates the name eagerly and defers the registration to the fit commit (like `schedule()`); `post_event` passes straight through.
 
 ```python
 def on_start(self, ctx):
     ctx.register_handler("my.wakeup", self._on_wakeup)
-    threading.Thread(target=self._watch, args=(ctx,), daemon=True).start()
+    if ctx.is_live:  # in simulation the channel dispatches inline — never post from a thread
+        threading.Thread(target=self._watch, args=(ctx,), daemon=True).start()
 
 def _watch(self, ctx):
     while True:
