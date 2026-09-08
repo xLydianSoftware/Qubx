@@ -288,6 +288,14 @@ def test_the_stop_price_spelling_is_recognised_too(bybit):
     assert request["triggerDirection"] == 2
 
 
+def test_an_explicit_none_trigger_price_still_falls_back_to_stop_price(bybit):
+    """A key present with a None value must not shadow the other spelling."""
+    request = bybit.create_order_request(
+        "BTC/USDT:USDT", "market", "sell", 0.01, 100.0, {"triggerPrice": None, "stopPrice": 95.0}
+    )
+    assert request["triggerDirection"] == 2
+
+
 def test_an_explicit_trigger_direction_is_left_alone(bybit):
     """A strategy can override the derivation through OrderRequest.options."""
     request = bybit.create_order_request(
@@ -350,6 +358,26 @@ def test_a_riskctrl_shaped_stop_reaches_the_wire(bybit, side, direction):
     assert "postOnly" not in request
 
 
+def test_an_amended_trigger_reaches_the_wire_rounded(bybit):
+    """edit_order re-extends its formatted request with the caller's params, so a raw float
+    trigger would land on the wire off-grid as a JSON number."""
+    noisy = 0.1 + 0.2  # 0.30000000000000004
+    rounded = bybit.price_to_precision("BTC/USDT:USDT", noisy)
+
+    on_the_wire = bybit.extend(
+        bybit.edit_order_request("VID", "BTC/USDT:USDT", "market", "buy", 0.01, None, {"triggerPrice": rounded}),
+        {"triggerPrice": rounded},
+    )
+    assert on_the_wire["triggerPrice"] == rounded and isinstance(on_the_wire["triggerPrice"], str)
+
+    # what the connector must not hand ccxt: the unrounded float survives the re-extend
+    raw = bybit.extend(
+        bybit.edit_order_request("VID", "BTC/USDT:USDT", "market", "buy", 0.01, None, {"triggerPrice": noisy}),
+        {"triggerPrice": noisy},
+    )
+    assert raw["triggerPrice"] == noisy != rounded
+
+
 @pytest.mark.parametrize("method", ["fetchOpenOrders", "fetchPositions"])
 def test_the_snapshot_fetches_have_an_explicit_pagination_cap(bybit, method):
     """Read through ccxt's own lookup, not the options dict, so a rename upstream fails here."""
@@ -405,7 +433,8 @@ async def test_cursor_pagination_stops_at_the_declared_cap():
     exchange.load_markets = _load_markets
     exchange.privateGetV5OrderRealtime = _endpoint
     try:
-        orders = await exchange.fetch_open_orders(params={"paginate": True})
+        # one settle coin, so the cap is measured without the settle-coin fan-out
+        orders = await exchange.fetch_open_orders(params={"paginate": True, "settleCoin": "USDT"})
     finally:
         await exchange.close()
 
@@ -414,6 +443,41 @@ async def test_cursor_pagination_stops_at_the_declared_cap():
     # the seam's key is consumed by the first frame and never reaches the venue
     assert all("paginate" not in p for p in calls)
     assert all("paginationCalls" not in p for p in calls)
+
+
+@pytest.mark.asyncio
+async def test_positions_keep_the_adl_rank_ccxt_drops(bybit):
+    """parse_position discards adlRankIndicator, so it is kept off the rows as they go past."""
+
+    async def _positions(self, symbols=None, params={}):
+        return [{"symbol": "BTC/USDT:USDT", "info": {"adlRankIndicator": "5"}}]
+
+    with patch.object(cxp.bybit, "fetch_positions", new=_positions):
+        await bybit.fetch_positions()
+
+    assert bybit.adl_ranks == {"BTC/USDT:USDT": 4}
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_less_read_covers_every_settle_coin(bybit):
+    """A symbol-less read defaults to settleCoin=USDT upstream, hiding USDC positions from the
+    reconciler, which reads the snapshot as venue truth."""
+    seen: list[str] = []
+
+    async def _positions(self, symbols=None, params={}):
+        seen.append(params["settleCoin"])
+        return [{"symbol": f"X/{params['settleCoin']}:{params['settleCoin']}"}]
+
+    with patch.object(cxp.bybit, "fetch_positions", new=_positions):
+        rows = await bybit.fetch_positions()
+    assert seen == ["USDT", "USDC"]
+    assert len(rows) == 2
+
+    # an explicit filter is left alone — one call, exactly as asked
+    seen.clear()
+    with patch.object(cxp.bybit, "fetch_positions", new=_positions):
+        await bybit.fetch_positions(params={"settleCoin": "USDC"})
+    assert seen == ["USDC"]
 
 
 @pytest.mark.parametrize(
@@ -444,25 +508,72 @@ def test_the_single_symbol_liquidation_row_is_also_inverted(bybit):
     assert bybit.parse_ws_liquidation(dict(row))["side"] == "sell"
 
 
+def _topic_recorder(seen: dict, ticker: dict):
+    async def _watch_topics(url, message_hashes, topics, params):
+        seen["topics"] = topics
+        seen["hashes"] = message_hashes
+        return ticker
+
+    return _watch_topics
+
+
 @pytest.mark.asyncio
 async def test_quotes_come_off_the_tickers_topic(bybit):
     seen: dict = {}
+    bybit.watch_topics = _topic_recorder(seen, {"symbol": "BTC/USDT:USDT", "bid": 100.0, "ask": 101.0})
 
+    quotes = await bybit.watch_bids_asks(["BTC/USDT:USDT"])
+
+    assert seen["topics"] == ["tickers.BTCUSDT"]
+    assert seen["hashes"] == ["ticker:BTC/USDT:USDT"]
+    # keyed by symbol, as QuoteDataHandler iterates it
+    assert list(quotes) == ["BTC/USDT:USDT"]
+    # the depth-1 topic is never subscribed, so the book cache the L2 stream owns stays untouched
+    assert bybit.orderbooks == {}
+
+
+@pytest.mark.asyncio
+async def test_upstream_bids_asks_subscribes_the_depth_one_book():
+    seen: dict = {}
+    upstream = _upstream()
+    upstream.watch_topics = _topic_recorder(seen, {"symbol": "BTC/USDT:USDT", "bid": 100.0, "ask": 101.0})
+
+    await upstream.watch_bids_asks(["BTC/USDT:USDT"])
+
+    assert seen["topics"] == ["orderbook.1.BTCUSDT"]
+
+
+def test_upstream_collapses_the_l2_book_with_the_depth_one_frame():
+    """Why the override exists: both depths share ``self.orderbooks[symbol]``."""
+    upstream = _upstream()
+    client = Mock(url="wss://stream.bybit.com/v5/public/linear")
+
+    def _frame(depth: str, bids: list, asks: list, ts: int) -> dict:
+        return {
+            "topic": f"orderbook.{depth}.BTCUSDT",
+            "type": "snapshot",
+            "ts": ts,
+            "data": {"s": "BTCUSDT", "b": bids, "a": asks},
+        }
+
+    upstream.handle_order_book(client, _frame("50", [["100", "1"], ["99", "2"]], [["101", "1"], ["102", "2"]], 1))
+    assert len(upstream.orderbooks["BTC/USDT:USDT"]["bids"]) == 2
+
+    upstream.handle_order_book(client, _frame("1", [["100.5", "1"]], [["100.6", "1"]], 2))
+    assert len(upstream.orderbooks["BTC/USDT:USDT"]["bids"]) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_half_populated_ticker_is_not_quoted(bybit):
     async def _watch_tickers(symbols=None, params={}):
-        seen["symbols"] = symbols
         return {
             "BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "bid": 100.0, "ask": 101.0},
             "ETH/USDT:USDT": {"symbol": "ETH/USDT:USDT", "bid": None, "ask": 3.0},
         }
 
     bybit.watch_tickers = _watch_tickers
-    quotes = await bybit.watch_bids_asks(["BTC/USDT:USDT", "ETH/USDT:USDT"])
 
-    assert seen["symbols"] == ["BTC/USDT:USDT", "ETH/USDT:USDT"]
-    # keyed by symbol, as QuoteDataHandler iterates it; a half-populated ticker is dropped
-    assert list(quotes) == ["BTC/USDT:USDT"]
-    # and nothing was written into the book cache the L2 stream owns
-    assert bybit.orderbooks == {}
+    assert list(await bybit.watch_bids_asks(["BTC/USDT:USDT", "ETH/USDT:USDT"])) == ["BTC/USDT:USDT"]
 
 
 @pytest.mark.asyncio

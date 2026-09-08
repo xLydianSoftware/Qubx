@@ -10,8 +10,9 @@ import ccxt
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
-from qubx.connectors.ccxt.exchanges.bybit.connector import BybitCcxtConnector, _parse_adl_ranks
-from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position
+from qubx.connectors.ccxt.exchanges.bybit.bybit import _parse_adl_ranks
+from qubx.connectors.ccxt.exchanges.bybit.connector import BybitCcxtConnector
+from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position, RejectCause
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 BTC = "BTC/USDT:USDT"
@@ -124,25 +125,19 @@ def test_the_most_endangered_bybit_rank_matches_the_binance_one():
     assert _parse_adl_ranks([_position_row(adlRankIndicator=5)])[BTC] == 4
 
 
-@pytest.mark.asyncio
-async def test_snapshot_stamps_adl_levels_on_positions_and_the_cache():
+def test_snapshot_stamps_adl_levels_on_positions_and_the_cache():
     exchange = Mock()
-    exchange.fetch_positions = AsyncMock(
-        return_value=[
-            _position_row(BTC, adlRankIndicator=5),
-            _position_row(ETH, adlRankIndicator=1),
-        ]
-    )
+    exchange.adl_ranks = {BTC: 4, ETH: 0}
     conn, _, _ = _make_connector(exchange)
     positions = [_position("BTCUSDT"), _position("ETHUSDT")]
 
-    await conn._fill_adl_levels(positions)
+    conn._fill_adl_levels(positions)
 
     assert [p.adl_level for p in positions] == [4, 0]
     assert conn.get_adl_level(_instrument("BTCUSDT")) == 4
     assert conn.get_adl_level(_instrument("ETHUSDT")) == 0
-    # same cursor walk as the snapshot's own leg
-    exchange.fetch_positions.assert_awaited_once_with(params={"paginate": True})
+    # the ranks ride the snapshot's own positions read — no second venue call
+    exchange.fetch_positions.assert_not_called()
 
 
 def test_the_whole_account_snapshot_reads_walk_the_cursor():
@@ -150,73 +145,27 @@ def test_the_whole_account_snapshot_reads_walk_the_cursor():
     assert BybitCcxtConnector._snapshot_fetch_params == {"paginate": True}
 
 
-@pytest.mark.asyncio
-async def test_an_unranked_position_keeps_no_level():
+def test_an_unranked_position_keeps_no_level():
     exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[_position_row(BTC, adlRankIndicator=0)])
+    exchange.adl_ranks = {}
     conn, _, _ = _make_connector(exchange)
     position = _position()
 
-    await conn._fill_adl_levels([position])
+    conn._fill_adl_levels([position])
 
     assert position.adl_level is None
     assert conn.get_adl_level(_instrument()) is None
 
 
-@pytest.mark.asyncio
-async def test_a_flat_account_costs_no_call_and_drops_a_stale_rank():
+def test_a_flat_account_drops_a_stale_rank():
     exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.adl_ranks = {BTC: 4}
     conn, _, _ = _make_connector(exchange)
     conn._adl_levels = {BTC: 4}
 
-    await conn._fill_adl_levels([])
+    conn._fill_adl_levels([])
 
-    exchange.fetch_positions.assert_not_awaited()
     assert conn.get_adl_level(_instrument()) is None
-
-
-@pytest.mark.asyncio
-async def test_an_adl_read_failure_leaves_the_previous_levels_alone():
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(side_effect=ccxt.ExchangeError("boom"))
-    conn, _, _ = _make_connector(exchange)
-    conn._adl_levels = {BTC: 3}
-    position = _position()
-
-    await conn._fill_adl_levels([position])
-
-    assert position.adl_level is None
-    assert conn.get_adl_level(_instrument()) == 3
-
-
-def test_venue_figures_invert_the_maintenance_margin_rate():
-    """Bybit reports maint/equity; the framework's margin_ratio is its reciprocal (higher = safer)."""
-    conn, _, _ = _make_connector()
-    equity, available, margin_ratio, withdrawable = conn._extract_venue_figures(_wallet_balance())
-
-    assert equity == pytest.approx(18070.32797922)
-    assert available == pytest.approx(17887.72614237)
-    assert margin_ratio == pytest.approx(1.0 / 0.03)
-    assert margin_ratio > 33.0
-    assert withdrawable is None
-
-
-@pytest.mark.parametrize("mm_rate", ["", "0", "0.0", None, "n/a"])
-def test_a_missing_or_zero_maintenance_margin_rate_leaves_the_ratio_derived(mm_rate):
-    """No maintenance margin to cover is not a ratio of zero — None lets AM derive it."""
-    conn, _, _ = _make_connector()
-    _, _, margin_ratio, _ = conn._extract_venue_figures(_wallet_balance(accountMMRate=mm_rate))
-    assert margin_ratio is None
-
-
-@pytest.mark.parametrize(
-    "payload",
-    [{}, {"info": None}, {"info": {}}, {"info": {"result": {}}}, {"info": {"result": {"list": []}}}],
-)
-def test_a_payload_without_the_account_block_degrades_to_all_none(payload):
-    conn, _, _ = _make_connector()
-    assert conn._extract_venue_figures(payload) == (None, None, None, None)
 
 
 @pytest.mark.asyncio
@@ -266,6 +215,52 @@ def test_get_margin_mode_survives_a_venue_error():
     assert conn.get_margin_mode(_instrument()) is None
 
 
+def test_get_margin_mode_survives_a_blocking_call_that_never_returns():
+    """A venue timeout is raised by _run_sync itself, past _read_margin_mode's own guard —
+    it must not reach the strategy thread."""
+
+    def _times_out(coro, timeout=None):
+        coro.close()
+        raise TimeoutError("venue read timed out")
+
+    conn, _, _ = _make_connector()
+    conn._run_sync = Mock(side_effect=_times_out)
+
+    assert conn.get_margin_mode(_instrument()) is None
+    assert conn._margin_mode is None
+
+
+@pytest.mark.asyncio
+async def test_a_warm_margin_mode_cache_costs_the_snapshot_no_venue_read():
+    """The read shares ccxt's throttle with order placement; the mode is account-wide."""
+    exchange = Mock()
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "cross"})
+    conn, _, _ = _make_connector(exchange)
+
+    await conn._fill_margin_mode([_position("BTCUSDT")])
+    exchange.fetch_margin_mode.reset_mock()
+    later = [_position("ETHUSDT")]
+    await conn._fill_margin_mode(later)
+
+    exchange.fetch_margin_mode.assert_not_awaited()
+    assert later[0].margin_mode == "cross"
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_goes_back_to_the_venue_after_a_margin_mode_write():
+    exchange = Mock()
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    conn, _, _ = _make_connector(exchange)
+    conn._margin_mode = "cross"
+    with patch.object(CcxtConnector, "set_margin_mode", return_value=True):
+        conn.set_margin_mode(_instrument(), "isolated")
+
+    await conn._fill_margin_mode([_position()])
+
+    exchange.fetch_margin_mode.assert_awaited_once_with(BTC)
+    assert conn._margin_mode == "isolated"
+
+
 @pytest.mark.asyncio
 async def test_a_margin_mode_read_failure_leaves_the_positions_alone():
     exchange = Mock()
@@ -283,7 +278,7 @@ async def test_the_snapshot_hook_runs_both_fills():
     exchange = Mock()
     exchange.has = {"fetchLeverages": False}
     exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
-    exchange.fetch_positions = AsyncMock(return_value=[_position_row(BTC, adlRankIndicator=3)])
+    exchange.adl_ranks = {BTC: 2}
     conn, _, _ = _make_connector(exchange)
     position = _position()
 
@@ -310,3 +305,23 @@ def test_a_refused_set_margin_mode_keeps_the_cache():
     with patch.object(CcxtConnector, "set_margin_mode", return_value=False):
         assert conn.set_margin_mode(_instrument(), "cross") is False
     assert conn._margin_mode == "isolated"
+
+
+@pytest.mark.parametrize(
+    "reason,expected",
+    [
+        ("EC_PostOnlyWillTakeLiquidity", RejectCause.NOT_FILLABLE),
+        ("EC_NoImmediateQtyToFill", RejectCause.NOT_FILLABLE),
+        ("EC_CancelForNoFullFill", RejectCause.UNKNOWN),
+        (None, RejectCause.UNKNOWN),
+    ],
+)
+def test_an_async_rejection_carries_the_venue_reason(reason, expected):
+    """Bybit refuses on the read path, so the cause cannot come from a raised ccxt error."""
+    conn = object.__new__(BybitCcxtConnector)
+    raw = {"info": {"rejectReason": reason} if reason is not None else {}}
+
+    code, cause = conn._reject_details(raw)
+
+    assert code == reason
+    assert cause == expected

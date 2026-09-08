@@ -752,7 +752,9 @@ class CcxtConnector(ChannelEmitter):
         if order_type.startswith("stop_"):
             # Mirror submit: the trigger rides params and `price` stays, so a STOP_LIMIT keeps
             # trigger and limit on the one price instead of drifting apart on amend.
-            params["triggerPrice"] = price
+            # Pre-rounded: ccxt's bybit re-extends its formatted request with the caller's raw
+            # params, so an unformatted float would reach the venue off-grid.
+            params["triggerPrice"] = self._em.exchange.price_to_precision(symbol, price)
             order_type = order_type.split("_", 1)[1]
         if venue_order_id is None:
             # cloid-only (venue ack never seen): ccxt's client-order-id variant sends the
@@ -846,7 +848,6 @@ class CcxtConnector(ChannelEmitter):
                 f"maximum {cached.maximum}; requesting {cached.maximum}"
             )
             wanted = cached.maximum
-        # after the clamp, so a repeated over-maximum request dedups against what was sent
         if cached is not None and cached.configured == wanted:
             logger.info(
                 f"[{self.exchange_name}] {instrument.symbol}: venue already at leverage "
@@ -1252,6 +1253,14 @@ class CcxtConnector(ChannelEmitter):
         order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
         self._emit_order_events(instrument, order, raw)
 
+    def _reject_details(self, raw: dict[str, Any]) -> tuple[str | None, RejectCause]:
+        """Venue reject code and its portable reading, for a rejection seen on the read path.
+
+        Only venues that refuse asynchronously (Bybit) carry one; the submit path classifies
+        from the raised ccxt error instead.
+        """
+        return None, RejectCause.UNKNOWN
+
     def _emit_order_events(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
         """Map a converted order's status to the typed lifecycle event(s).
 
@@ -1306,11 +1315,14 @@ class CcxtConnector(ChannelEmitter):
             )
             return
         if status == OrderStatus.REJECTED:
+            code, cause = self._reject_details(raw)
             self.send(
                 OrderRejectedEvent(
                     instrument=instrument,
                     client_order_id=order.client_order_id,
-                    reason="rejected by venue",
+                    reason=code or "rejected by venue",
+                    code=code,
+                    cause=cause,
                     last_update_time=order.last_update_time,
                 )
             )

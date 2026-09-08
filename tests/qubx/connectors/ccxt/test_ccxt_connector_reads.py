@@ -1275,9 +1275,6 @@ async def test_two_stream_subscribes_orders_and_trades_only() -> None:
     assert recorded[1]["handle"] == conn._handle_ws_trade
 
 
-# --------------------------------------------------------------------------- #
-# (i) snapshot fetch params — the venue pagination seam
-# --------------------------------------------------------------------------- #
 class _PaginatedConnector(CcxtConnector):
     """A venue whose whole-account reads truncate without cursor pagination (Bybit)."""
 
@@ -1413,11 +1410,6 @@ async def test_paginate_in_params_terminates_on_real_ccxt() -> None:
     # the seam's key is consumed by the first frame; the trigger flag still reaches the venue
     assert all("paginate" not in p for p in seen_params)
     assert all(p["orderFilter"] == "StopOrder" for p in seen_params)
-
-
-# --------------------------------------------------------------------------- #
-# (j) update_order — a resting trigger order cannot be amended
-# --------------------------------------------------------------------------- #
 
 
 def test_update_order_on_limit_still_spawns() -> None:

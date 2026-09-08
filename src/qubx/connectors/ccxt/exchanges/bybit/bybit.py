@@ -1,8 +1,11 @@
+import asyncio
+
 import ccxt.pro as cxp
 from ccxt.base.errors import ArgumentsRequired, BadRequest, OrderNotFound
 from ccxt.base.types import Any, Liquidation, Num, Order, OrderSide, OrderType, Str, Strings
 
 from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter
+from ...utils import info_float
 from ..base import CcxtFuturePatchMixin
 
 # Bybit answers a redundant set_leverage with this code rather than no-opping.
@@ -10,6 +13,31 @@ _LEVERAGE_NOT_MODIFIED = "110043"
 
 # a stop rests on the far side of the market from its own side: BUY above, SELL below
 _TRIGGER_DIRECTION = {"buy": "ascending", "sell": "descending"}
+
+# a symbol-less positions/orders read defaults to settleCoin=USDT, so anything settled in
+# another coin reads as absent; the endpoints take one settle coin per call
+_SETTLE_COINS = ("USDT", "USDC")
+
+# Bybit ranks the ADL queue 1..5, 0 = not ranked; the framework scale is Binance's 0..4,
+# higher = closer to the front of the queue.
+_ADL_MIN_RANK = 1
+_ADL_MAX_RANK = 5
+
+
+def _parse_adl_ranks(rows: Any) -> dict[str, int]:
+    """ccxt symbol -> framework ADL level from ``fetch_positions`` rows.
+
+    A rank outside 1..5 is dropped, not clamped: 0 means "not ranked", not "safest".
+    """
+    levels: dict[str, int] = {}
+    for row in rows if isinstance(rows, list) else []:
+        symbol = row.get("symbol")
+        rank = info_float(row.get("info") or {}, "adlRankIndicator")
+        if symbol is None or rank is None or not (_ADL_MIN_RANK <= rank <= _ADL_MAX_RANK):
+            continue
+        levels[symbol] = int(rank) - _ADL_MIN_RANK
+    return levels
+
 
 FUNDING_RATE_DEFAULT_POLL_MINUTES = 5
 
@@ -23,6 +51,8 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
     def __init__(self, config=None):
         super().__init__(config or {})
         self._funding_rate_adapter: PollingToWebSocketAdapter | None = None
+        # ccxt drops adlRankIndicator when parsing positions, so keep it off the rows we see
+        self.adl_ranks: dict[str, int] = {}
 
     def describe(self):
         return self.deep_extend(
@@ -43,6 +73,37 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
             },
         )
 
+    def _settle_filtered(self, params: dict) -> bool:
+        return any(params.get(k) is not None for k in ("settleCoin", "baseCoin", "symbol"))
+
+    async def fetch_positions(self, symbols: Strings = None, params={}) -> list[Any]:
+        if symbols or self._settle_filtered(params):
+            return self._keep_adl_ranks(await super().fetch_positions(symbols, params))
+        legs = await asyncio.gather(
+            *(
+                super(BybitF, self).fetch_positions(symbols, self.extend(params, {"settleCoin": coin}))
+                for coin in _SETTLE_COINS
+            )
+        )
+        return self._keep_adl_ranks([row for leg in legs for row in leg])
+
+    def _keep_adl_ranks(self, rows: list[Any]) -> list[Any]:
+        self.adl_ranks = _parse_adl_ranks(rows)
+        return rows
+
+    async def fetch_open_orders(
+        self, symbol: Str = None, since: Num = None, limit: Num = None, params={}
+    ) -> list[Order]:
+        if symbol is not None or self._settle_filtered(params):
+            return await super().fetch_open_orders(symbol, since, limit, params)
+        legs = await asyncio.gather(
+            *(
+                super(BybitF, self).fetch_open_orders(symbol, since, limit, self.extend(params, {"settleCoin": coin}))
+                for coin in _SETTLE_COINS
+            )
+        )
+        return [row for leg in legs for row in leg]
+
     def create_order_request(
         self,
         symbol: str,
@@ -62,7 +123,7 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
         """ccxt refuses every non-spot trigger order that does not carry ``triggerDirection``."""
         if params.get("triggerDirection") is not None:
             return params
-        if params.get("triggerPrice", params.get("stopPrice")) is None:
+        if params.get("triggerPrice") is None and params.get("stopPrice") is None:
             return params
         return {**params, "triggerDirection": _TRIGGER_DIRECTION[side.lower()]}
 

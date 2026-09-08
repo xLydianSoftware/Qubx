@@ -9,15 +9,10 @@ account figures from Bybit surfaces ccxt's unified shapes do not reach.
 from typing import Any, Literal
 
 from qubx import logger
-from qubx.core.basics import Instrument, Position
+from qubx.core.basics import Instrument, Position, RejectCause
 
 from ...utils import info_float, instrument_to_ccxt_symbol, normalize_margin_mode
 from .._two_stream import _TwoStreamCcxtConnector
-
-# Bybit ranks the ADL queue 1..5, 0 = not ranked; the framework scale is Binance's 0..4,
-# higher = closer to the front of the queue.
-_ADL_MIN_RANK = 1
-_ADL_MAX_RANK = 5
 
 
 def _account_block(raw_balance: dict[str, Any]) -> dict[str, Any]:
@@ -37,26 +32,15 @@ def _account_block(raw_balance: dict[str, Any]) -> dict[str, Any]:
     return rows[0]
 
 
-def _parse_adl_ranks(rows: Any) -> dict[str, int]:
-    """ccxt symbol -> framework ADL level from ``fetch_positions`` rows.
-
-    A rank outside 1..5 is dropped, not clamped: 0 means "not ranked", not "safest".
-    """
-    levels: dict[str, int] = {}
-    for row in rows if isinstance(rows, list) else []:
-        symbol = row.get("symbol")
-        rank = info_float(row.get("info") or {}, "adlRankIndicator")
-        if symbol is None or rank is None or not (_ADL_MIN_RANK <= rank <= _ADL_MAX_RANK):
-            continue
-        levels[symbol] = int(rank) - _ADL_MIN_RANK
-    return levels
-
-
 class BybitCcxtConnector(_TwoStreamCcxtConnector):
     """Bybit connector: split orders/fills streams, Bybit account surface, base behavior otherwise."""
 
     # /v5/order/realtime defaults to 20 rows and ccxt hardcodes limit=200 on /v5/position/list,
     # so without the cursor walk the differ takes a truncated list as venue truth
+    #
+    # LIMITATION: a symbol-less /v5 read carries ccxt's settleCoin=USDT default and the endpoint
+    # takes one settle coin per call, so the snapshot covers USDT-settled instruments only —
+    # a USDC-settled perp reads as flat/no-orders to reconcile.
     _snapshot_fetch_params = {"paginate": True}
 
     # account-wide on a UTA, so one value serves every instrument
@@ -71,17 +55,20 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
     async def _fill_leverage_settings(self, positions: list[Position]) -> None:
         await super()._fill_leverage_settings(positions)
         await self._fill_margin_mode(positions)
-        await self._fill_adl_levels(positions)
+        self._fill_adl_levels(positions)
 
     async def _fill_margin_mode(self, positions: list[Position]) -> None:
         """Stamp ``Position.margin_mode`` from ONE account-wide ``/v5/account/info`` read.
 
         ccxt's ``bybit.parse_position`` hardcodes ``marginMode: None``; the symbol only feeds
         ``safe_symbol``, so any held instrument answers for all of them.
+
+        Served from the cache once it is warm — the read shares ccxt's throttle with order
+        placement, and ``set_margin_mode`` drops the cache when the value can have changed.
         """
         if not positions:
             return
-        mode = await self._read_margin_mode(instrument_to_ccxt_symbol(positions[0].instrument))
+        mode = self._margin_mode or await self._read_margin_mode(instrument_to_ccxt_symbol(positions[0].instrument))
         if mode is None:
             return
         self._margin_mode = mode
@@ -97,17 +84,10 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
             return None
         return normalize_margin_mode(row.get("marginMode"))
 
-    async def _fill_adl_levels(self, positions: list[Position]) -> None:
-        """Stamp ``Position.adl_level`` from ``info.adlRankIndicator``; ccxt drops the field."""
-        if not positions:
-            self._adl_levels = {}
-            return
-        try:
-            rows = await self._em.exchange.fetch_positions(params=self._snapshot_params())
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[{self.exchange_name}] fetch adl ranks failed: {e}")
-            return
-        self._adl_levels = _parse_adl_ranks(rows)
+    def _fill_adl_levels(self, positions: list[Position]) -> None:
+        """Stamp ``Position.adl_level`` from the ranks ``BybitF`` kept off the snapshot's own
+        positions read."""
+        self._adl_levels = self._em.exchange.adl_ranks if positions else {}
         for pos in positions:
             level = self._adl_levels.get(instrument_to_ccxt_symbol(pos.instrument))
             if level is not None:
@@ -126,10 +106,15 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
 
     def get_margin_mode(self, instrument: Instrument) -> str | None:
         """Serve what the snapshot cached; a cold cache costs one REST hop on the strategy
-        thread, every later call a field read."""
+        thread, every later call a field read. Never raises at the caller: a venue read that
+        fails or times out reports None, as the base connector's does."""
         if self._margin_mode is not None:
             return self._margin_mode
-        self._margin_mode = self._run_sync(self._read_margin_mode(instrument_to_ccxt_symbol(instrument)))
+        try:
+            self._margin_mode = self._run_sync(self._read_margin_mode(instrument_to_ccxt_symbol(instrument)))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] margin mode read for {instrument.symbol}: {e}")
+            return None
         return self._margin_mode
 
     def _extract_venue_figures(
@@ -149,3 +134,14 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
             1.0 / mm_rate if mm_rate is not None and mm_rate > 0 else None,
             None,
         )
+
+    def _reject_details(self, raw: dict[str, Any]) -> tuple[str | None, RejectCause]:
+        """Bybit accepts then cancels a refused order, carrying the verdict in ``rejectReason``."""
+        reason = (raw.get("info") or {}).get("rejectReason") or None
+        if reason is None:
+            return None, RejectCause.UNKNOWN
+        # EC_PostOnlyWillTakeLiquidity / EC_NoImmediateQtyToFill: the price could not rest or fill
+        cause = (
+            RejectCause.NOT_FILLABLE if reason.startswith(("EC_PostOnly", "EC_NoImmediateQty")) else RejectCause.UNKNOWN
+        )
+        return reason, cause

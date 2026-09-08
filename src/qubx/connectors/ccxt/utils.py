@@ -645,12 +645,16 @@ def prepare_ccxt_order_payload(
         time_in_force = time_in_force.upper()
         # must ride ccxt's unified postOnly flag: bybit/okx/kraken silently drop an
         # unrecognised timeInForce string, degrading post-only to a taking GTC
-        if post_only or time_in_force == "GTX":
+        is_post_only = post_only or time_in_force == "GTX"
+        if is_post_only:
             params["postOnly"] = True
         else:
             params["timeInForce"] = time_in_force
         if price is None:
             raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
+        # only a post-only order is rejected for crossing; nudging a plain limit would turn a
+        # deliberately marketable order into a resting one
+        reprice_if_crossing = reprice_if_crossing and is_post_only
         if reprice_if_crossing and order_side == "BUY" and price >= quote.ask:
             logger.info(
                 f"[{instrument.symbol}] :: post-only BUY price {price} is at or above ask {quote.ask}. "

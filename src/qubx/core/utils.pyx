@@ -134,10 +134,15 @@ cpdef double grid_floor(double a, double step) noexcept:
     Largest multiple of `step` not exceeding |a|, signed back: grid_floor(157, 10) -> 150.0.
     """
     cdef double scale = _grid_scale(step)
+    cdef double ticks
     if scale > 0.0:
         return copysign(floor(_snap_tick_noise(fabs(a) * scale)) / scale, a)
     if step > 0.0:
-        return copysign(floor(_snap_tick_noise(fabs(a) / step)) * step, a)
+        ticks = _snap_tick_noise(fabs(a) / step)
+        # a value already on the grid is its own floor/ceil; multiplying back lands an ulp off
+        if ticks == floor(ticks):
+            return a
+        return copysign(floor(ticks) * step, a)
     return a
 
 
@@ -146,10 +151,15 @@ cpdef double grid_ceil(double a, double step) noexcept:
     Smallest multiple of `step` at or above |a|, signed back.
     """
     cdef double scale = _grid_scale(step)
+    cdef double ticks
     if scale > 0.0:
         return copysign(ceil(_snap_tick_noise(fabs(a) * scale)) / scale, a)
     if step > 0.0:
-        return copysign(ceil(_snap_tick_noise(fabs(a) / step)) * step, a)
+        ticks = _snap_tick_noise(fabs(a) / step)
+        # a value already on the grid is its own floor/ceil; multiplying back lands an ulp off
+        if ticks == floor(ticks):
+            return a
+        return copysign(ceil(ticks) * step, a)
     return a
 
 

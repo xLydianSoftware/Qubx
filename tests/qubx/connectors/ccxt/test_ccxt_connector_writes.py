@@ -584,6 +584,7 @@ async def test_update_stop_market_amends_the_trigger() -> None:
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    exchange.price_to_precision = lambda symbol, price: f"{price:.1f}"
     conn, sent, _ = _make_connector(exchange=exchange)
 
     conn.update_order(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_MARKET), price=105.0)
@@ -596,7 +597,7 @@ async def test_update_stop_market_amends_the_trigger() -> None:
         side="buy",
         amount=1.0,
         price=105.0,
-        params={"triggerPrice": 105.0},
+        params={"triggerPrice": "105.0"},
     )
     assert isinstance(sent[0], OrderUpdatedEvent)
 
@@ -608,6 +609,7 @@ async def test_update_stop_limit_moves_trigger_and_limit_together() -> None:
     exchange = Mock()
     exchange.has = {"editOrder": True}
     exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    exchange.price_to_precision = lambda symbol, price: f"{price:.1f}"
     conn, sent, _ = _make_connector(exchange=exchange)
 
     conn.update_order(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_LIMIT), price=105.0)
@@ -620,7 +622,7 @@ async def test_update_stop_limit_moves_trigger_and_limit_together() -> None:
         side="buy",
         amount=1.0,
         price=105.0,
-        params={"triggerPrice": 105.0},
+        params={"triggerPrice": "105.0"},
     )
     assert isinstance(sent[0], OrderUpdatedEvent)
 
