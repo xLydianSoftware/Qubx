@@ -252,7 +252,10 @@ class FitContext(ITimeProvider):
         self._fit_state.record(partial(_pm.register_handler, name, method))
 
     def post_event(self, name: str) -> None:
-        # queue put is thread-safe; no deferral needed
+        # Live: the channel's queue put is thread-safe, so no deferral is needed. In
+        # simulation the channel dispatches synchronously on the calling thread instead —
+        # a threaded on_fit calling this would run the handler on the fit thread, breaking
+        # the single-mutator invariant, but simulation never constructs a FitContext.
         self._context.post_event(name)
 
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:

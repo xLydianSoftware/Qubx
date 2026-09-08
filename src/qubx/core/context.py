@@ -1054,10 +1054,19 @@ class StrategyContext(IStrategyContext):
         self._processing_manager.register_handler(name, method)
 
     def post_event(self, name: str) -> None:
-        # Thread-safe by construction: CtrlChannel.send is a Queue.put_nowait. This is the
-        # same channel the ProcessorThread drains, so the registered handler runs there.
+        # Live: enqueued on the data channel (CtrlChannel.send is a Queue.put_nowait) and
+        # runs on the ProcessorThread that drains it — safe to call from any thread.
+        # Simulation: SimulatedCtrlChannel.send dispatches synchronously on the calling
+        # thread, so only call this from the strategy thread there. After the channel is
+        # stopped, send() is a silent no-op (mirrors CtrlChannel.stop()/send()), not an error.
         if not self._data_providers:
             raise RuntimeError("post_event: no data provider / channel available")
+        # A dict membership read is safe from any thread (no lock needed). Without this
+        # check, a typo'd name would silently decay into a bogus MarketEvent(instrument=None)
+        # delivered to on_market_data (see ProcessingManager._process_custom_event) —
+        # repeated failures there eventually stop the strategy.
+        if name not in self._processing_manager._custom_scheduled_methods:
+            raise ValueError(f"post_event: '{name}' has no registered handler (call register_handler first)")
         self._data_providers[0].channel.send((None, name, None, False))
 
     def unschedule(self, event_id: str) -> bool:

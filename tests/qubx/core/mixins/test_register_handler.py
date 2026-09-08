@@ -76,3 +76,22 @@ def test_register_handler_rejects_name_that_shadows_builtin_handler():
     pm._handlers = {"trade": lambda *a: None}
     with pytest.raises(ValueError):
         pm.register_handler("trade", lambda ctx: None)
+
+
+def test_register_handler_rejects_name_whose_datatype_shadows_builtin_handler():
+    # "ohlc(1h)" isn't a literal key of _handlers, but DataType.from_str resolves it to
+    # DataType.OHLC, whose .value ("ohlc") IS a key -- the same fallback __process_data
+    # performs, so a handler registered under this name would still silently never fire.
+    pm = _pm_with_handlers()
+    pm._handlers = {"ohlc": lambda *a: None}
+    with pytest.raises(ValueError):
+        pm.register_handler("ohlc(1h)", lambda ctx: None)
+
+
+def test_register_handler_rejects_unparseable_name_with_clear_message():
+    # DataType.from_str raises its own ValueError ("unit abbreviation w/o a number") for a
+    # name that looks like a parametrized subscription but isn't valid -- register_handler
+    # must wrap it so the message points at the real problem (the name), not the parser.
+    pm = _pm_with_handlers()
+    with pytest.raises(ValueError, match="quote\\(x\\)"):
+        pm.register_handler("quote(x)", lambda ctx: None)

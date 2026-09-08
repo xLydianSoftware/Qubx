@@ -334,7 +334,10 @@ class ProcessingManager(IProcessingManager):
             raise ValueError(f"register_handler: '{name}' is already registered")
         if name in self._handlers:
             raise ValueError(f"register_handler: '{name}' shadows a built-in data-type handler")
-        _dtype, _ = DataType.from_str(name)
+        try:
+            _dtype, _ = DataType.from_str(name)
+        except ValueError as e:
+            raise ValueError(f"register_handler: '{name}' is not a valid event name: {e}") from e
         if _dtype.value in self._handlers:
             raise ValueError(f"register_handler: '{name}' shadows a built-in data-type handler ({_dtype.value})")
         self._custom_scheduled_methods[name] = method

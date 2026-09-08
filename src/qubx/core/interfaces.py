@@ -1398,13 +1398,6 @@ class IProcessingManager:
         """
         ...
 
-    def post_event(self, name: str) -> None:
-        """
-        Wake a handler registered with register_handler(name). Thread-safe: may be called
-        from any thread (it enqueues onto the strategy's data channel and returns).
-        """
-        ...
-
     def unschedule(self, event_id: str) -> bool:
         """
         Unschedule a scheduled event.
@@ -1557,6 +1550,21 @@ class IStrategyContext(
         Seeded from ``live.default_instrument_leverage`` and overridable in ``on_init`` via
         ``initializer.set_default_instrument_leverage``. Raises on a read-only account; refuses a
         value below 1 with an error and changes nothing.
+        """
+        ...
+
+    def post_event(self, name: str) -> None:
+        """
+        Wake a handler registered with register_handler(name).
+
+        Live: enqueued onto the strategy's data channel and returns immediately — safe to
+        call from any thread; the handler then runs on the strategy (ProcessorThread) thread.
+        Simulation: the channel dispatches synchronously, so the handler runs inline on the
+        calling thread instead — only call this from the strategy thread there.
+        After the context has stopped, this is a silent no-op rather than an error.
+
+        Raises:
+            ValueError: no handler is registered under ``name``.
         """
         ...
 
