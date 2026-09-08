@@ -320,6 +320,36 @@ class ProcessingManager(IProcessingManager):
         self._register_schedule(event_id, rule["schedule"], method)
         return event_id
 
+    def _validate_handler_name(self, name: str) -> None:
+        """Name checks shared by register_handler and FitContext.register_handler.
+
+        Deliberately stateless with respect to the registry (no duplicate check) so the fit
+        thread can run it EAGERLY: FitContext defers the dict write to the FitCommit, and
+        _handle_fit_commit only logs a deferred op's exception — a name rejected there would
+        fail silently and leave every later post_event raising forever.
+
+        Two shadow guards, both fatal:
+          * a literal key of _handlers — the non-data-type events (`fit`, `event`, `time`,
+            `error`, `state_snapshot`, ...) whose handler __process_data would call instead;
+          * any name that DataType.from_str resolves at all. Not every data type has a
+            `_handle_*` method (`funding_rate`, `open_interest`, `liquidation`,
+            `aggregated_liquidations`, `record`, `fundamental`, `ohlc_quotes`); those flow
+            through _process_custom_event, which checks _custom_scheduled_methods FIRST and
+            returns before __update_base_data. A handler registered under such a name would
+            therefore win over live market data — cache never updated, no MarketEvent, no
+            data-arrival health signal — silently, for the whole run.
+        """
+        if not name:
+            raise ValueError("register_handler: name must be non-empty")
+        if name in self._handlers:
+            raise ValueError(f"register_handler: '{name}' shadows a built-in data-type handler")
+        try:
+            _dtype, _ = DataType.from_str(name)
+        except ValueError as e:
+            raise ValueError(f"register_handler: '{name}' is not a valid event name: {e}") from e
+        if _dtype is not DataType.NONE:
+            raise ValueError(f"register_handler: '{name}' shadows the built-in data type '{_dtype.value}'")
+
     def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
         """
         Register a method that runs on the ProcessorThread whenever an event with this
@@ -328,19 +358,15 @@ class ProcessingManager(IProcessingManager):
         the method is called with the context; return value ignored; emitted signals are
         drained by the normal pipeline.
         """
-        if not name:
-            raise ValueError("register_handler: name must be non-empty")
+        self._validate_handler_name(name)
         if name in self._custom_scheduled_methods:
             raise ValueError(f"register_handler: '{name}' is already registered")
-        if name in self._handlers:
-            raise ValueError(f"register_handler: '{name}' shadows a built-in data-type handler")
-        try:
-            _dtype, _ = DataType.from_str(name)
-        except ValueError as e:
-            raise ValueError(f"register_handler: '{name}' is not a valid event name: {e}") from e
-        if _dtype.value in self._handlers:
-            raise ValueError(f"register_handler: '{name}' shadows a built-in data-type handler ({_dtype.value})")
         self._custom_scheduled_methods[name] = method
+
+    def has_handler(self, name: str) -> bool:
+        """True if a method is registered under this event name (register_handler or an
+        internal scheduled/delayed id). A plain dict membership read — safe from any thread."""
+        return name in self._custom_scheduled_methods
 
     def _register_schedule(self, event_id: str, cron_schedule: str, method: Callable) -> None:
         # - seam shared with FitContext.schedule (validated + recorded on the fit thread

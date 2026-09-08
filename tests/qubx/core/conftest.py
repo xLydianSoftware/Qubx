@@ -30,3 +30,17 @@ def make_pm(**overrides) -> ProcessingManager:
     for name, value in overrides.items():
         setattr(pm, name, value)
     return pm
+
+
+def real_handler_map() -> dict:
+    """The ``_handlers`` map exactly as ``ProcessingManager.__init__`` builds it.
+
+    Tests that pin the register_handler shadow guard use this rather than a synthetic dict,
+    so renaming/removing a ``_handle_*`` method breaks the test instead of silently leaving
+    a name unguarded.
+    """
+    return {
+        n.split("_handle_")[1]: f
+        for n, f in ProcessingManager.__dict__.items()
+        if callable(f) and n.startswith("_handle_")
+    }

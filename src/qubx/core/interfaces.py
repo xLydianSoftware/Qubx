@@ -1398,6 +1398,14 @@ class IProcessingManager:
         """
         ...
 
+    def has_handler(self, name: str) -> bool:
+        """
+        True if a method is registered under this event name (via register_handler, or an
+        internal id minted by schedule()/delay()). Used by post_event to reject an unknown
+        name before it reaches the data channel. Safe to call from any thread.
+        """
+        ...
+
     def unschedule(self, event_id: str) -> bool:
         """
         Unschedule a scheduled event.
@@ -1561,7 +1569,8 @@ class IStrategyContext(
         call from any thread; the handler then runs on the strategy (ProcessorThread) thread.
         Simulation: the channel dispatches synchronously, so the handler runs inline on the
         calling thread instead — only call this from the strategy thread there.
-        After the context has stopped, this is a silent no-op rather than an error.
+        Live: once the context has stopped, this is a silent no-op rather than an error
+        (SimulatedCtrlChannel ignores the stop flag, so simulation has no such state).
 
         Raises:
             ValueError: no handler is registered under ``name``.

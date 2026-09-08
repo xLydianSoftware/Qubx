@@ -3,7 +3,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from qubx.core.mixins.processing import ProcessingManager
-from tests.qubx.core.conftest import make_pm
+from tests.qubx.core.conftest import make_pm, real_handler_map
 
 
 def _pm_with_handlers() -> ProcessingManager:
@@ -16,6 +16,9 @@ def _pm_with_handlers() -> ProcessingManager:
     (isinstance(..., dict) is already True) would mutate the SAME dict across every test/pm
     that doesn't set it explicitly -> duplicate-registration bleed between tests. Assign a
     fresh dict unconditionally instead.
+
+    _handlers is the REAL map (real_handler_map), not a synthetic one, so both the dispatch
+    fallback and the shadow guard see exactly what production sees.
     """
     pm = make_pm()
     pm._time_provider = MagicMock()
@@ -25,7 +28,7 @@ def _pm_with_handlers() -> ProcessingManager:
     pm._strategy_name = "RegisterHandlerTest"
     pm._emitted_signals = []
     pm._data_throttler = None
-    pm._handlers = {}
+    pm._handlers = real_handler_map()
     pm._custom_scheduled_methods = {}
     pm._pending_no_quote_signals = {}
     pm._fit_is_running = False
@@ -71,11 +74,15 @@ def test_registered_handler_exception_is_logged_not_raised():
     pm.process_data(None, "agg.sources", None, False)  # must not raise (same as scheduled methods)
 
 
-def test_register_handler_rejects_name_that_shadows_builtin_handler():
+@pytest.mark.parametrize("name", ["trade", "fit", "event", "time", "error", "state_snapshot"])
+def test_register_handler_rejects_name_that_shadows_builtin_handler(name):
+    # The `name in self._handlers` branch. "fit"/"event"/"time"/"error"/"state_snapshot" are
+    # NOT data types, so this branch is the only thing guarding them; the real handler map is
+    # used so renaming a `_handle_*` method breaks the test instead of quietly unguarding it.
     pm = _pm_with_handlers()
-    pm._handlers = {"trade": lambda *a: None}
+    assert name in pm._handlers  # pins the real key, not a synthetic one
     with pytest.raises(ValueError):
-        pm.register_handler("trade", lambda ctx: None)
+        pm.register_handler(name, lambda ctx: None)
 
 
 def test_register_handler_rejects_name_whose_datatype_shadows_builtin_handler():
@@ -83,9 +90,34 @@ def test_register_handler_rejects_name_whose_datatype_shadows_builtin_handler():
     # DataType.OHLC, whose .value ("ohlc") IS a key -- the same fallback __process_data
     # performs, so a handler registered under this name would still silently never fire.
     pm = _pm_with_handlers()
-    pm._handlers = {"ohlc": lambda *a: None}
+    assert "ohlc" in pm._handlers
     with pytest.raises(ValueError):
         pm.register_handler("ohlc(1h)", lambda ctx: None)
+
+
+@pytest.mark.parametrize(
+    "name",
+    [
+        "funding_rate",
+        "open_interest",
+        "liquidation",
+        "aggregated_liquidations",
+        "record",
+        "fundamental",
+        "ohlc_quotes",
+    ],
+)
+def test_register_handler_rejects_datatype_without_a_builtin_handler(name):
+    # These data types have NO _handle_* method: they flow through _process_custom_event ->
+    # __update_base_data. _process_custom_event consults _custom_scheduled_methods FIRST and
+    # returns before __update_base_data, so a handler registered under one of these names
+    # would WIN over live market data -- cache never updated, no MarketEvent, no data-arrival
+    # health signal -- silently, for the whole run. The guard must reject any name that
+    # resolves to a data type at all, not just the ones that happen to have a handler.
+    pm = _pm_with_handlers()
+    assert name not in pm._handlers  # exactly why the _handlers-key check is not enough
+    with pytest.raises(ValueError, match="shadows the built-in data type"):
+        pm.register_handler(name, lambda ctx: None)
 
 
 def test_register_handler_rejects_unparseable_name_with_clear_message():

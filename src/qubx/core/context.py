@@ -1053,19 +1053,25 @@ class StrategyContext(IStrategyContext):
         self._assert_not_fit_thread("register_handler")
         self._processing_manager.register_handler(name, method)
 
+    def has_handler(self, name: str) -> bool:
+        # - a dict membership read: no fit-thread tripwire, safe from any thread
+        return self._processing_manager.has_handler(name)
+
     def post_event(self, name: str) -> None:
         # Live: enqueued on the data channel (CtrlChannel.send is a Queue.put_nowait) and
         # runs on the ProcessorThread that drains it — safe to call from any thread.
         # Simulation: SimulatedCtrlChannel.send dispatches synchronously on the calling
-        # thread, so only call this from the strategy thread there. After the channel is
-        # stopped, send() is a silent no-op (mirrors CtrlChannel.stop()/send()), not an error.
+        # thread, so only call this from the strategy thread there. Live: once the channel is
+        # stopped, send() is a silent no-op (mirrors CtrlChannel.stop()/send()), not an error —
+        # SimulatedCtrlChannel ignores `control`, so simulation has no such state.
         if not self._data_providers:
             raise RuntimeError("post_event: no data provider / channel available")
-        # A dict membership read is safe from any thread (no lock needed). Without this
-        # check, a typo'd name would silently decay into a bogus MarketEvent(instrument=None)
-        # delivered to on_market_data (see ProcessingManager._process_custom_event) —
-        # repeated failures there eventually stop the strategy.
-        if name not in self._processing_manager._custom_scheduled_methods:
+        # has_handler is a dict membership read — safe from any thread (no lock needed).
+        # Without this check, a typo'd name would silently decay into a bogus
+        # MarketEvent(instrument=None) delivered to on_market_data (see
+        # ProcessingManager._process_custom_event) — repeated failures there eventually
+        # stop the strategy.
+        if not self._processing_manager.has_handler(name):
             raise ValueError(f"post_event: '{name}' has no registered handler (call register_handler first)")
         self._data_providers[0].channel.send((None, name, None, False))
 

@@ -245,10 +245,13 @@ class FitContext(ITimeProvider):
         return event_id
 
     def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
-        # deferred like schedule(): the registration is applied at the FitCommit
-        if not name:
-            raise ValueError("register_handler: name must be non-empty")
+        # - eager validation so a bad name still raises into on_fit (mirrors schedule());
+        #   only the dict write is deferred to the FitCommit. _handle_fit_commit merely LOGS
+        #   a deferred op's exception, so a name rejected there would fail silently and leave
+        #   every later post_event raising forever. The duplicate check stays deferred: it
+        #   depends on the registry's state at commit time, not on the name alone.
         _pm = self._context._processing_manager  # type: ignore[attr-defined]
+        _pm._validate_handler_name(name)
         self._fit_state.record(partial(_pm.register_handler, name, method))
 
     def post_event(self, name: str) -> None:
@@ -465,6 +468,7 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "get_warmup",
     "auto_subscribe",
     "get_event_schedule",
+    "has_handler",  # dict membership read on the ProcessingManager — safe from any thread
     "is_fitted",
     # (is_trading_allowed is an explicit method above — the real one can execute a
     # queued removal in place)
