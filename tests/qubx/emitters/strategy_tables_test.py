@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import qubx.emitters.questdb as qdb_mod
-from qubx.core.interfaces import IMetricEmitter
+from qubx.core.interfaces import DEFAULT_TABLE_TTL, IMetricEmitter
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.emitters.csv import CSVMetricEmitter
 from qubx.emitters.questdb import QuestDBMetricEmitter
@@ -20,6 +20,12 @@ class TestInterfaceDefaults:
 
     def test_emit_record_is_noop(self):
         IMetricEmitter().emit_record("t", {"a": 1.0})  # must not raise
+
+    def test_ensure_table_accepts_max_ttl(self):
+        # retention is part of the interface: a caller declaring a table through the abstract
+        # type (or any no-op backend) must be able to pass it without a TypeError
+        IMetricEmitter().ensure_table("t", {"a": "DOUBLE"}, max_ttl="30 days")
+        IMetricEmitter().ensure_table("t", {"a": "DOUBLE"}, max_ttl=None)
 
 
 class TestCompositeForwarding:
@@ -37,10 +43,19 @@ class TestCompositeForwarding:
                 symbol_columns=("pair",),
                 dedup_keys=("timestamp", "trade_id"),
                 partition_by="DAY",
+                max_ttl=DEFAULT_TABLE_TTL,
             )
             child.emit_record.assert_called_once_with(
                 "frab.trades", {"net_pnl": 1.5}, symbol_columns=("pair",), timestamp=None
             )
+
+    @pytest.mark.parametrize("max_ttl", ["30 days", None])
+    def test_forwards_max_ttl(self, max_ttl):
+        # None is a real value ("leave retention alone"), not "unspecified": it must reach the
+        # children as-is instead of being replaced by the default
+        child = MagicMock(spec=IMetricEmitter)
+        CompositeMetricEmitter([child]).ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl=max_ttl)
+        assert child.ensure_table.call_args.kwargs["max_ttl"] == max_ttl
 
     def test_child_error_is_isolated(self):
         bad, good = MagicMock(spec=IMetricEmitter), MagicMock(spec=IMetricEmitter)
@@ -142,6 +157,29 @@ class TestEnsureTable:
         # single-letter SYMBOL columns; must be rejected instead, not silently misinterpreted.
         emitter.ensure_table("t", {}, symbol_columns="pair")  # must not raise (logged), no DDL executed
         emitter._ddl_client_for_test.execute.assert_not_called()
+
+
+class TestEnsureTableRetention:
+    @staticmethod
+    def _ttl_statements(emitter) -> list[str]:
+        return [
+            call[0][0]
+            for call in emitter._ddl_client_for_test.execute.call_args_list
+            if "SET TTL" in call[0][0].upper()
+        ]
+
+    def test_default_applies_interface_ttl(self, emitter):
+        emitter.ensure_table("frab.trades", {"net_pnl": "DOUBLE"})
+        assert self._ttl_statements(emitter) == [f'ALTER TABLE "frab.trades" SET TTL {DEFAULT_TABLE_TTL}']
+
+    def test_explicit_ttl_is_applied(self, emitter):
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == ['ALTER TABLE "frab.pairs" SET TTL 30 days']
+
+    def test_none_leaves_retention_alone(self, emitter):
+        emitter.ensure_table("exec.fills", {"qty": "DOUBLE"}, max_ttl=None)
+        assert _create_sql(emitter)  # table still declared
+        assert self._ttl_statements(emitter) == []
 
 
 class TestEmitRecord:
@@ -276,7 +314,7 @@ class TestCSVRecords:
     def test_a_declared_table_keeps_columns_absent_from_the_first_row(self, tmp_path):
         em = self._emitter(tmp_path)
         em.ensure_table("loe.execution", {"price": "DOUBLE", "filled_qty": "DOUBLE"}, max_ttl=None)
-        em.emit_record("loe.execution", {"price": 0.1})          # first row lacks filled_qty
+        em.emit_record("loe.execution", {"price": 0.1})  # first row lacks filled_qty
         em.emit_record("loe.execution", {"filled_qty": 100.0})
 
         rows = list(csv_mod.DictReader((tmp_path / "loe.execution.csv").read_text().splitlines()))

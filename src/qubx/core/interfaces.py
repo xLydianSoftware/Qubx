@@ -2698,6 +2698,10 @@ class IStrategy(metaclass=Mixable):
         return None
 
 
+# - retention a strategy-owned table gets unless the caller says otherwise; None leaves it untouched
+DEFAULT_TABLE_TTL = "52 weeks"
+
+
 class IMetricEmitter:
     """Interface for emitting metrics to external monitoring systems."""
 
@@ -2811,6 +2815,7 @@ class IMetricEmitter:
         symbol_columns: Sequence[str] = (),
         dedup_keys: Sequence[str] | None = None,
         partition_by: str = "DAY",
+        max_ttl: str | None = DEFAULT_TABLE_TTL,
     ) -> None:
         """
         Declare a strategy-owned table with an explicit schema.
@@ -2826,6 +2831,9 @@ class IMetricEmitter:
             symbol_columns: Column names to create as indexed SYMBOL columns
             dedup_keys: Optional designated-timestamp-first dedup key columns
             partition_by: Partitioning unit (default DAY)
+            max_ttl: Retention to apply whether the table is new or already exists
+                (QuestDB TTL shorthand, e.g. "30 days"). None leaves retention untouched.
+                Backends without retention accept and ignore it.
         """
         pass
 

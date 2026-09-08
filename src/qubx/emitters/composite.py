@@ -12,7 +12,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import Deal, Instrument, Signal, TargetPosition, dt_64
-from qubx.core.interfaces import IAccountViewer, IMetricEmitter, IStrategyContext
+from qubx.core.interfaces import DEFAULT_TABLE_TTL, IAccountViewer, IMetricEmitter, IStrategyContext
 from qubx.emitters.base import BaseMetricEmitter
 
 
@@ -125,6 +125,7 @@ class CompositeMetricEmitter(BaseMetricEmitter):
         symbol_columns: Sequence[str] = (),
         dedup_keys: Sequence[str] | None = None,
         partition_by: str = "DAY",
+        max_ttl: str | None = DEFAULT_TABLE_TTL,
     ) -> None:
         """
         Declare a strategy-owned table on all configured emitters.
@@ -135,11 +136,17 @@ class CompositeMetricEmitter(BaseMetricEmitter):
             symbol_columns: Column names to create as indexed SYMBOL columns
             dedup_keys: Optional designated-timestamp-first dedup key columns
             partition_by: Partitioning unit (default DAY)
+            max_ttl: Retention forwarded as-is; None means "leave retention untouched"
         """
         for emitter in self._emitters:
             try:
                 emitter.ensure_table(
-                    table, columns, symbol_columns=symbol_columns, dedup_keys=dedup_keys, partition_by=partition_by
+                    table,
+                    columns,
+                    symbol_columns=symbol_columns,
+                    dedup_keys=dedup_keys,
+                    partition_by=partition_by,
+                    max_ttl=max_ttl,
                 )
             except Exception as e:
                 logger.error(f"Error ensuring table on {emitter.__class__.__name__}: {e}")
