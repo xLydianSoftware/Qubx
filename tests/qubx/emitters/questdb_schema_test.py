@@ -132,7 +132,7 @@ def test_a_strategy_table_is_still_accepted(emitter):
     assert "loe.execution" in emitter._declared_columns
 
 
-def test_retention_is_set_on_the_reserved_tables(emitter):
+def test_reserved_table_ttl_constants(emitter):
     # - health and rate_limits are new tables and would otherwise grow without bound
     from qubx.emitters.questdb import DEALS_TTL, HEALTH_TTL, METRICS_TTL, RATE_LIMITS_TTL, SIGNALS_TTL
 

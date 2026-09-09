@@ -136,7 +136,7 @@ class CompositeMetricEmitter(BaseMetricEmitter):
             symbol_columns: Column names to create as indexed SYMBOL columns
             dedup_keys: Optional designated-timestamp-first dedup key columns
             partition_by: Partitioning unit (default DAY)
-            max_ttl: Retention forwarded as-is; None means "leave retention untouched"
+            max_ttl: Retention cap forwarded as-is; None means "leave retention untouched"
         """
         for emitter in self._emitters:
             try:

@@ -205,6 +205,30 @@ class TestEnsureTableRetention:
         emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
         assert self._ttl_statements(emitter) == ['ALTER TABLE "frab.pairs" SET TTL 30 days']
 
+    def test_empty_tables_result_applies_the_cap(self, emitter):
+        # QuestDB returns an empty frame (not an exception) for a table tables() doesn't know
+        # about yet — the WAL create/read race — and that must fail open the same as a read error
+        emitter._ddl_client_for_test.query.return_value = pd.DataFrame(columns=["ttlValue", "ttlUnit"])
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == ['ALTER TABLE "frab.pairs" SET TTL 30 days']
+
+    def test_shorter_existing_retention_is_kept_across_units(self, emitter):
+        # 2 weeks (336h) < 30 days (720h) cap: the shorter existing retention must survive
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(2, "WEEK")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == []
+
+    def test_lowercase_ttl_unit_is_tolerated(self, emitter):
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(10, "day")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == []
+
+    def test_shorter_existing_retention_is_kept_months_vs_weeks(self, emitter):
+        # 2 months (1440h) < 52 weeks (8736h) cap
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(2, "MONTH")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="52 weeks")
+        assert self._ttl_statements(emitter) == []
+
     def test_unparseable_cap_is_applied_verbatim(self, emitter):
         # QuestDB is the authority on syntax; an unparseable spec skips the comparison, not the ALTER
         emitter._ddl_client_for_test.query.return_value = _ttl_frame(10, "DAY")

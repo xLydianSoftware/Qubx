@@ -29,9 +29,9 @@ DEALS_TABLE = "qubx.deals"
 HEALTH_TABLE = "qubx.health"
 RATE_LIMITS_TABLE = "qubx.rate_limits"
 
-# - retention per reserved table. metrics/signals/deals match what production already carries, so
-#   deploying does not change retention there; health and rate_limits are new and would otherwise
-#   grow without bound.
+# - bootstrap retention per reserved table, applied once (creation, or found with no TTL); a
+#   changed constant does not touch an existing table. metrics/signals/deals are then owned by the
+#   platform's reconciler; health/rate_limits have no reconciler rule yet and just keep this value.
 METRICS_TTL = "30 days"
 SIGNALS_TTL = "14 weeks"
 DEALS_TTL = "14 weeks"
@@ -412,12 +412,15 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         except Exception as e:
             logger.warning(f"[QuestDBMetricEmitter] '{table}': TTL {max_ttl!r} not applied: {e}")
 
-    def _current_ttl_hours(self, client: QuestDBClient, table: str) -> float | None:
+    def _current_ttl_hours(self, client: QuestDBClient, table: str, max_ttl: str) -> float | None:
         """
         Retention QuestDB reports for `table` in hours; 0.0 when it has none, None when unreadable.
 
         `tables()` is the only place QuestDB exposes TTL (`ttlValue`, `ttlUnit`); `ttlValue = 0`
-        means no retention. Any failure is reported as None so the caller can fail open.
+        means no retention. Any failure is reported as None so the caller can fail open. QuestDB
+        releases before 8.2 do not expose `ttlValue`/`ttlUnit` in `tables()` at all, so every read
+        fails there and this path — applying `max_ttl` unconditionally — is taken on every boot,
+        matching the old (pre-cap) behaviour.
         """
         try:
             frame = client.query(
@@ -430,7 +433,10 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
                 return 0.0
             return value * _TTL_UNIT_HOURS[str(frame.iloc[0]["ttlUnit"]).upper()]
         except Exception as e:
-            logger.warning(f"[QuestDBMetricEmitter] '{table}': could not read current TTL ({e})")
+            logger.warning(
+                f"[QuestDBMetricEmitter] '{table}': could not read current TTL ({e}) "
+                f"— applying {max_ttl} unconditionally"
+            )
             return None
 
     def _apply_retention(self, client: QuestDBClient, table: str, max_ttl: str, *, cap: bool) -> None:
@@ -440,7 +446,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         when the table has no retention at all (a bootstrap default the platform owns afterwards).
         An unreadable current value applies `max_ttl` unconditionally: fail open toward the bound.
         """
-        current = self._current_ttl_hours(client, table)
+        current = self._current_ttl_hours(client, table, max_ttl)
         if current is None:
             self._set_retention(client, table, max_ttl)
             return
