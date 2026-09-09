@@ -8,6 +8,7 @@ auto-create, for every bot writing to the same server.
 import datetime
 from unittest.mock import MagicMock, patch
 
+import pandas as pd
 import pytest
 
 from qubx.emitters.questdb import QuestDBMetricEmitter
@@ -131,7 +132,7 @@ def test_a_strategy_table_is_still_accepted(emitter):
     assert "loe.execution" in emitter._declared_columns
 
 
-def test_retention_is_set_on_the_reserved_tables(emitter):
+def test_reserved_table_ttl_constants(emitter):
     # - health and rate_limits are new tables and would otherwise grow without bound
     from qubx.emitters.questdb import DEALS_TTL, HEALTH_TTL, METRICS_TTL, RATE_LIMITS_TTL, SIGNALS_TTL
 
@@ -149,3 +150,38 @@ def test_set_retention_survives_a_ttl_questdb_rejects(emitter):
     emitter._set_retention(client, "some.table", "10 days")  # - must not raise
 
     client.execute.assert_called_once_with('ALTER TABLE "some.table" SET TTL 10 days')
+
+
+def _ttl_frame(value: int, unit: str) -> pd.DataFrame:
+    return pd.DataFrame([{"ttlValue": value, "ttlUnit": unit}])
+
+
+def _ttl_statements(client) -> list[str]:
+    return [c[0][0] for c in client.execute.call_args_list if "SET TTL" in c[0][0].upper()]
+
+
+def test_reserved_tables_get_their_ttl_only_when_they_have_none():
+    # the platform reconciler owns qubx.* retention once a table exists (dev: 10 days); a bot
+    # boot must not re-apply METRICS_TTL on top of it
+    with patch("qubx.emitters.questdb.Sender"), patch("qubx.emitters.questdb.QuestDBClient") as client_cls:
+        client_cls.return_value.query.return_value = _ttl_frame(10, "DAY")
+        QuestDBMetricEmitter(host="qdb", tags={"strategy": "bot-1", "run_id": "r-1", "environment": "dev"})
+        assert _ttl_statements(client_cls.return_value) == []
+
+
+def test_reserved_tables_without_retention_get_the_bootstrap_ttl():
+    from qubx.emitters.questdb import METRICS_TTL
+
+    with patch("qubx.emitters.questdb.Sender"), patch("qubx.emitters.questdb.QuestDBClient") as client_cls:
+        client_cls.return_value.query.return_value = _ttl_frame(0, "HOUR")
+        QuestDBMetricEmitter(host="qdb", tags={"strategy": "bot-1", "run_id": "r-1", "environment": "dev"})
+        assert f'ALTER TABLE "qubx.metrics" SET TTL {METRICS_TTL}' in _ttl_statements(client_cls.return_value)
+
+
+def test_reserved_tables_apply_the_bootstrap_ttl_when_the_read_fails():
+    from qubx.emitters.questdb import METRICS_TTL
+
+    with patch("qubx.emitters.questdb.Sender"), patch("qubx.emitters.questdb.QuestDBClient") as client_cls:
+        client_cls.return_value.query.side_effect = RuntimeError("no tables()")
+        QuestDBMetricEmitter(host="qdb", tags={"strategy": "bot-1", "run_id": "r-1", "environment": "dev"})
+        assert f'ALTER TABLE "qubx.metrics" SET TTL {METRICS_TTL}' in _ttl_statements(client_cls.return_value)

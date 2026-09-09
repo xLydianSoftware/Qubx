@@ -5,13 +5,14 @@ import datetime
 from unittest.mock import MagicMock
 
 import numpy as np
+import pandas as pd
 import pytest
 
 import qubx.emitters.questdb as qdb_mod
 from qubx.core.interfaces import DEFAULT_TABLE_TTL, IMetricEmitter
 from qubx.emitters.composite import CompositeMetricEmitter
 from qubx.emitters.csv import CSVMetricEmitter
-from qubx.emitters.questdb import QuestDBMetricEmitter
+from qubx.emitters.questdb import QuestDBMetricEmitter, ttl_hours
 
 
 class TestInterfaceDefaults:
@@ -159,6 +160,10 @@ class TestEnsureTable:
         emitter._ddl_client_for_test.execute.assert_not_called()
 
 
+def _ttl_frame(value: int, unit: str) -> pd.DataFrame:
+    return pd.DataFrame([{"ttlValue": value, "ttlUnit": unit}])
+
+
 class TestEnsureTableRetention:
     @staticmethod
     def _ttl_statements(emitter) -> list[str]:
@@ -168,18 +173,73 @@ class TestEnsureTableRetention:
             if "SET TTL" in call[0][0].upper()
         ]
 
-    def test_default_applies_interface_ttl(self, emitter):
+    def test_default_applies_interface_ttl_to_a_table_without_retention(self, emitter):
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(0, "HOUR")
         emitter.ensure_table("frab.trades", {"net_pnl": "DOUBLE"})
         assert self._ttl_statements(emitter) == [f'ALTER TABLE "frab.trades" SET TTL {DEFAULT_TABLE_TTL}']
 
-    def test_explicit_ttl_is_applied(self, emitter):
+    def test_explicit_ttl_is_applied_to_a_new_table(self, emitter):
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(0, "HOUR")
         emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
         assert self._ttl_statements(emitter) == ['ALTER TABLE "frab.pairs" SET TTL 30 days']
+
+    def test_shorter_existing_retention_is_kept(self, emitter):
+        # the platform tightened dev to 10 days; the strategy's 30-day cap must not undo it
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(10, "DAY")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == []
+
+    def test_equal_existing_retention_is_kept(self, emitter):
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(30, "DAY")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == []
+
+    def test_longer_existing_retention_is_tightened(self, emitter):
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(52, "WEEK")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == ['ALTER TABLE "frab.pairs" SET TTL 30 days']
+
+    def test_unreadable_retention_applies_the_cap(self, emitter):
+        # fail open toward the strategy's bound: a read error must not leave a table unbounded
+        emitter._ddl_client_for_test.query.side_effect = RuntimeError("tables() unavailable")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == ['ALTER TABLE "frab.pairs" SET TTL 30 days']
+
+    def test_empty_tables_result_applies_the_cap(self, emitter):
+        # QuestDB returns an empty frame (not an exception) for a table tables() doesn't know
+        # about yet — the WAL create/read race — and that must fail open the same as a read error
+        emitter._ddl_client_for_test.query.return_value = pd.DataFrame(columns=["ttlValue", "ttlUnit"])
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == ['ALTER TABLE "frab.pairs" SET TTL 30 days']
+
+    def test_shorter_existing_retention_is_kept_across_units(self, emitter):
+        # 2 weeks (336h) < 30 days (720h) cap: the shorter existing retention must survive
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(2, "WEEK")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == []
+
+    def test_lowercase_ttl_unit_is_tolerated(self, emitter):
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(10, "day")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="30 days")
+        assert self._ttl_statements(emitter) == []
+
+    def test_shorter_existing_retention_is_kept_months_vs_weeks(self, emitter):
+        # 2 months (1440h) < 52 weeks (8736h) cap
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(2, "MONTH")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="52 weeks")
+        assert self._ttl_statements(emitter) == []
+
+    def test_unparseable_cap_is_applied_verbatim(self, emitter):
+        # QuestDB is the authority on syntax; an unparseable spec skips the comparison, not the ALTER
+        emitter._ddl_client_for_test.query.return_value = _ttl_frame(10, "DAY")
+        emitter.ensure_table("frab.pairs", {"ev": "DOUBLE"}, max_ttl="3 fortnights")
+        assert self._ttl_statements(emitter) == ['ALTER TABLE "frab.pairs" SET TTL 3 fortnights']
 
     def test_none_leaves_retention_alone(self, emitter):
         emitter.ensure_table("exec.fills", {"qty": "DOUBLE"}, max_ttl=None)
         assert _create_sql(emitter)  # table still declared
         assert self._ttl_statements(emitter) == []
+        emitter._ddl_client_for_test.query.assert_not_called()
 
 
 class TestEmitRecord:
@@ -338,3 +398,31 @@ class TestCSVRecords:
         em.ensure_table("loe.execution", {"price": "DOUBLE"})
         em._record_path = lambda table: tmp_path / "no_such_dir" / "x" / "y.csv"
         em.emit_record("loe.execution", {"price": 1.0})  # must not raise
+
+
+class TestTtlHours:
+    @pytest.mark.parametrize(
+        "spec,hours",
+        [
+            ("30 days", 720.0),
+            ("52 weeks", 8736.0),
+            ("4 hours", 4.0),
+            ("1 day", 24.0),
+            ("6 months", 4320.0),
+            ("1 year", 8760.0),
+            ("30d", 720.0),
+            ("4h", 4.0),
+            ("2w", 336.0),
+            ("6M", 4320.0),
+            ("1y", 8760.0),
+            ("30 DAYS", 720.0),
+            ("  30 days ", 720.0),
+        ],
+    )
+    def test_parses_questdb_ttl_specs(self, spec, hours):
+        assert ttl_hours(spec) == hours
+
+    @pytest.mark.parametrize("spec", ["", "days", "30", "30 minutes", "30m", "-1 day", "1.5 days", "0 days", "0d"])
+    def test_rejects_unparseable_specs(self, spec):
+        with pytest.raises(ValueError):
+            ttl_hours(spec)
