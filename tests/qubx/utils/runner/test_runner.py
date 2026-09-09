@@ -42,6 +42,18 @@ def _wait_until(condition, timeout: float = 10.0, poll: float = 0.05) -> bool:
     return condition()
 
 
+def _returns_data_provider(mock_get_data_provider, mock_data_provider):
+    """Patched ConnectorRegistry.get_data_provider that adopts the channel the runner built,
+    the way a real provider does — StrategyContext requires one bus across every producer."""
+
+    def _build(_name, build_ctx):
+        mock_data_provider.channel = build_ctx.channel
+        return mock_data_provider
+
+    mock_get_data_provider.side_effect = _build
+    return mock_data_provider
+
+
 class TestRunStrategyYaml:
     @pytest.fixture
     def temp_config_file(self):
@@ -230,7 +242,7 @@ class TestRunStrategyYaml:
         from qubx.utils.runner.configs import load_strategy_config_from_yaml
         from qubx.utils.runner.runner import create_strategy_context
 
-        mock_create_data_provider.return_value = mock_data_provider
+        _returns_data_provider(mock_create_data_provider, mock_data_provider)
         mock_live_time_provider_class.return_value = mock_time_provider
 
         # - no warmup: focus the test on construction-time wiring (warmup is exercised elsewhere)
@@ -300,7 +312,7 @@ class TestRunStrategyYaml:
         from qubx.utils.runner.configs import load_strategy_config_from_yaml
         from qubx.utils.runner.runner import create_strategy_context
 
-        mock_create_data_provider.return_value = mock_data_provider
+        _returns_data_provider(mock_create_data_provider, mock_data_provider)
         mock_live_time_provider_class.return_value = mock_time_provider
 
         config = load_strategy_config_from_yaml(temp_config_file)
@@ -353,7 +365,7 @@ class TestRunStrategyYaml:
         from qubx.utils.runner.configs import load_strategy_config_from_yaml
         from qubx.utils.runner.runner import create_strategy_context
 
-        mock_create_data_provider.return_value = mock_data_provider
+        _returns_data_provider(mock_create_data_provider, mock_data_provider)
         mock_live_time_provider_class.return_value = mock_time_provider
         # Faithful to live: the PM data provider self-reports the venue name (the
         # data-side EXCHANGE_MAPPINGS fallback bridges quote lookups by BINANCE.UM).
@@ -431,7 +443,7 @@ class TestRunStrategyYaml:
         assert isinstance(channel, CtrlChannel)
 
         mock_ctrl_channel_class.return_value = channel
-        mock_create_data_provider.return_value = mock_data_provider
+        _returns_data_provider(mock_create_data_provider, mock_data_provider)
         mock_live_time_provider_class.return_value = mock_time_provider
 
         # Create mock restored state with positions
@@ -531,7 +543,7 @@ class TestRunStrategyYaml:
         assert isinstance(channel, CtrlChannel)
 
         mock_ctrl_channel_class.return_value = channel
-        mock_create_data_provider.return_value = mock_data_provider
+        _returns_data_provider(mock_create_data_provider, mock_data_provider)
         mock_live_time_provider_class.return_value = mock_time_provider
 
         QubxLogConfig.set_log_level("DEBUG")
