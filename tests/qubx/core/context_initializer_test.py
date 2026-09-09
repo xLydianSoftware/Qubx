@@ -3,6 +3,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from qubx.core.basics import CtrlChannel
 from qubx.core.context import StrategyContext
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import IStrategy, IStrategyInitializer
@@ -36,7 +37,9 @@ class TestContextInitializer:
     def mock_components(self):
         """Create mock components for the StrategyContext."""
         broker = MagicMock()
+        channel = CtrlChannel("test")
         data_provider = MagicMock()
+        data_provider.channel = channel
         account = MagicMock()
         scheduler = MagicMock()
         time_provider = MagicMock()
@@ -50,6 +53,7 @@ class TestContextInitializer:
         return {
             "connectors": {"BINANCE.UM": broker},
             "data_provider": data_provider,
+            "channel": channel,
             "account": account,
             "scheduler": scheduler,
             "time_provider": time_provider,
@@ -78,6 +82,7 @@ class TestContextInitializer:
                                 data_providers=[mock_components["data_provider"]],
                                 account_manager=mock_components["account"],
                                 scheduler=mock_components["scheduler"],
+                                channel=mock_components["channel"],
                                 time_provider=mock_components["time_provider"],
                                 instruments=mock_components["instruments"],
                                 logging=mock_components["logging"],
@@ -111,6 +116,7 @@ class TestContextInitializer:
                                 data_providers=[mock_components["data_provider"]],
                                 account_manager=mock_components["account"],
                                 scheduler=mock_components["scheduler"],
+                                channel=mock_components["channel"],
                                 time_provider=mock_components["time_provider"],
                                 instruments=mock_components["instruments"],
                                 logging=mock_components["logging"],
@@ -144,6 +150,7 @@ class TestContextInitializer:
                                 data_providers=[mock_components["data_provider"]],
                                 account_manager=mock_components["account"],
                                 scheduler=mock_components["scheduler"],
+                                channel=mock_components["channel"],
                                 time_provider=mock_components["time_provider"],
                                 instruments=mock_components["instruments"],
                                 logging=mock_components["logging"],
@@ -163,6 +170,32 @@ class TestContextInitializer:
 
         # Check that the event schedule was set
         mock_processing_manager.return_value.set_event_schedule.assert_called_with("0 * * * *")
+
+    def test_data_provider_on_a_different_channel_is_rejected(self, mock_components):
+        # a provider publishing into a queue the context never drains would just go silent
+        stray = MagicMock()
+        stray.channel = CtrlChannel("stray")
+        stray.exchange.return_value = "BINANCE.UM"
+        with (
+            patch("qubx.core.context.MarketManager"),
+            patch("qubx.core.context.UniverseManager"),
+            patch("qubx.core.context.SubscriptionManager"),
+            patch("qubx.core.context.TradingManager"),
+            patch("qubx.core.context.ProcessingManager"),
+            pytest.raises(ValueError, match="different channel"),
+        ):
+            StrategyContext(
+                strategy=MockStrategy(),
+                connectors=mock_components["connectors"],
+                data_providers=[mock_components["data_provider"], stray],
+                account_manager=mock_components["account"],
+                scheduler=mock_components["scheduler"],
+                channel=mock_components["channel"],
+                time_provider=mock_components["time_provider"],
+                instruments=mock_components["instruments"],
+                logging=mock_components["logging"],
+                aux_data_storage=mock_components["aux_data_storage"],
+            )
 
 
 def test_on_instrument_service_change_registers_in_order():

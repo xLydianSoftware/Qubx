@@ -117,6 +117,7 @@ class StrategyContext(IStrategyContext):
     _data_providers: list[IDataProvider]  # market data provider
     _logging: StrategyLogging  # recording all activities for the strat: execs, positions, portfolio
     _scheduler: BasicScheduler
+    _channel: CtrlChannel  # the one data bus: connectors publish, the ProcessorThread drains
     _initial_instruments: list[Instrument]
     _strategy_name: str
     _delisting_detector: DelistingDetector
@@ -154,6 +155,7 @@ class StrategyContext(IStrategyContext):
         data_providers: list[IDataProvider],
         account_manager: AccountManager,
         scheduler: BasicScheduler,
+        channel: CtrlChannel,
         time_provider: ITimeProvider,
         instruments: list[Instrument],
         logging: StrategyLogging,
@@ -202,6 +204,15 @@ class StrategyContext(IStrategyContext):
         self._data_providers = data_providers
         self._logging = logging
         self._scheduler = scheduler
+        self._channel = channel
+        # - one bus per context: a provider on a different channel would publish into a
+        #   queue nobody drains, so its data would simply never arrive
+        for _dp in data_providers:
+            if _dp.channel is not channel:
+                raise ValueError(
+                    f"data provider {type(_dp).__name__} ({_dp.exchange()}) is bound to a different channel "
+                    "than the one passed to StrategyContext"
+                )
         self._initial_instruments = instruments
 
         self._exporter = exporter
@@ -419,7 +430,7 @@ class StrategyContext(IStrategyContext):
         self._scheduler.run()
 
         # - create incoming market data processing
-        databus = self._data_providers[0].channel
+        databus = self._channel
         databus.register(self)
 
         # - bring up exchange connectors (no-op in simulation)
@@ -543,7 +554,7 @@ class StrategyContext(IStrategyContext):
 
             # Stop the channel
             try:
-                self._data_providers[0].channel.stop()
+                self._channel.stop()
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to stop data channel: {e}")
 
@@ -1069,8 +1080,6 @@ class StrategyContext(IStrategyContext):
         # afterwards, and the handler must treat it as read-only. A consumer that can re-read
         # its data from the source (e.g. a Redis stream) should post None and re-read on the
         # strategy thread instead.
-        if not self._data_providers:
-            raise RuntimeError("post_event: no data provider / channel available")
         # has_handler is a dict membership read — safe from any thread (no lock needed).
         # Without this check, a typo'd name would silently decay into a bogus
         # MarketEvent(instrument=None) delivered to on_market_data (see
@@ -1078,7 +1087,7 @@ class StrategyContext(IStrategyContext):
         # stop the strategy.
         if not self._processing_manager.has_handler(name):
             raise ValueError(f"post_event: '{name}' has no registered handler (call register_handler first)")
-        self._data_providers[0].channel.send((None, name, payload, False))
+        self._channel.send((None, name, payload, False))
 
     def unschedule(self, event_id: str) -> bool:
         self._assert_not_fit_thread("unschedule")

@@ -512,6 +512,7 @@ class SimulationRunner:
             data_providers=self._data_providers,
             account_manager=self.account_manager,
             scheduler=self.scheduler,
+            channel=self.channel,
             time_provider=self.time_provider,
             instruments=self.setup.instruments,
             logging=StrategyLogging(self.logs_writer, portfolio_log_freq=self.portfolio_log_freq),

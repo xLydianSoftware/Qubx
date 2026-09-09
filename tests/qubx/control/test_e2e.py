@@ -132,6 +132,7 @@ def e2e_server():
         data_providers=[dp],
         account_manager=account,
         scheduler=scheduler,
+        channel=dp.channel,
         time_provider=tp,
         instruments=instruments,
         logging=logging,

@@ -14,6 +14,7 @@ from unittest.mock import MagicMock, patch
 import numpy as np
 import pytest
 
+from qubx.core.basics import CtrlChannel
 from qubx.core.context import StrategyContext
 from qubx.core.initializer import BasicStrategyInitializer
 from qubx.core.interfaces import IHealthMonitor, IStrategy
@@ -43,12 +44,15 @@ class _StubSafePersistence:
 
 @pytest.fixture
 def mock_components():
+    channel = CtrlChannel("test")
     data_provider = MagicMock()
+    data_provider.channel = channel
     time_provider = MagicMock()
     time_provider.time.return_value = np.datetime64("2023-01-01", "ns")
     return {
         "connectors": {"BINANCE.UM": MagicMock()},
         "data_provider": data_provider,
+        "channel": channel,
         "account": MagicMock(),
         "scheduler": MagicMock(),
         "time_provider": time_provider,
@@ -72,6 +76,7 @@ def _build_context(mock_components, state_persistence, health_monitor) -> Strate
             data_providers=[mock_components["data_provider"]],
             account_manager=mock_components["account"],
             scheduler=mock_components["scheduler"],
+            channel=mock_components["channel"],
             time_provider=mock_components["time_provider"],
             instruments=mock_components["instruments"],
             logging=mock_components["logging"],

@@ -11,13 +11,13 @@ from qubx.core.interfaces import IStrategyContext
 from tests.qubx.core.conftest import make_pm, real_handler_map
 
 
-def _ctx_shell(providers, event_handlers=None):
-    # Exercise the unbound methods on a shell object: post_event needs _data_providers and
+def _ctx_shell(channel, event_handlers=None):
+    # Exercise the unbound methods on a shell object: post_event needs _channel and
     # _processing_manager.has_handler (the registered-handler membership check),
     # register_handler needs _processing_manager and the fit-thread tripwire.
     registry = event_handlers if event_handlers is not None else {}
     shell = SimpleNamespace(
-        _data_providers=providers,
+        _channel=channel,
         _processing_manager=MagicMock(),
         _fit_state=SimpleNamespace(is_fit_thread=lambda: False),
     )
@@ -42,10 +42,7 @@ def _fit_ctx_with_real_validation() -> tuple[FitContext, FitCycleState]:
 
 def test_post_event_sends_tuple_on_the_data_channel():
     channel = MagicMock()
-    shell = _ctx_shell(
-        [SimpleNamespace(channel=channel)],
-        event_handlers={"agg.sources": lambda ctx, payload: None},
-    )
+    shell = _ctx_shell(channel, event_handlers={"agg.sources": lambda ctx, payload: None})
 
     StrategyContext.post_event(shell, "agg.sources")
 
@@ -56,10 +53,7 @@ def test_post_event_sends_the_payload_in_the_tuple():
     # The payload rides the data tuple's data slot, which is what _process_custom_event
     # hands to the registered handler as its second argument.
     channel = MagicMock()
-    shell = _ctx_shell(
-        [SimpleNamespace(channel=channel)],
-        event_handlers={"agg.sources": lambda ctx, payload: None},
-    )
+    shell = _ctx_shell(channel, event_handlers={"agg.sources": lambda ctx, payload: None})
     payload = {"sources": ["a"]}
 
     StrategyContext.post_event(shell, "agg.sources", payload)
@@ -73,10 +67,7 @@ def test_post_event_allowed_from_fit_thread():
     # thread-safe Queue.put_nowait, which is the whole point of the hook (wake the strategy
     # thread from anywhere). Pin it so a future _assert_not_fit_thread sweep can't add one.
     channel = MagicMock()
-    shell = _ctx_shell(
-        [SimpleNamespace(channel=channel)],
-        event_handlers={"agg.sources": lambda ctx, payload: None},
-    )
+    shell = _ctx_shell(channel, event_handlers={"agg.sources": lambda ctx, payload: None})
     shell._fit_state = SimpleNamespace(is_fit_thread=lambda: True)
 
     StrategyContext.post_event(shell, "agg.sources")
@@ -84,18 +75,12 @@ def test_post_event_allowed_from_fit_thread():
     channel.send.assert_called_once_with((None, "agg.sources", None, False))
 
 
-def test_post_event_without_data_provider_raises():
-    shell = _ctx_shell([])
-    with pytest.raises(RuntimeError):
-        StrategyContext.post_event(shell, "agg.sources")
-
-
 def test_post_event_for_unregistered_name_raises_value_error():
     # A typo'd name must never fall through to the tuple dispatch: unknown event types
     # decay into a bogus MarketEvent(instrument=None) delivered to on_market_data
     # (processing.py's _process_custom_event), which repeatedly crashes user strategies.
     channel = MagicMock()
-    shell = _ctx_shell([SimpleNamespace(channel=channel)])  # _event_handlers == {}
+    shell = _ctx_shell(channel)  # _event_handlers == {}
 
     with pytest.raises(ValueError):
         StrategyContext.post_event(shell, "agg.sorces")  # typo
@@ -108,7 +93,7 @@ def test_post_event_for_a_scheduled_id_raises_value_error():
     # only, so has_handler does not cover them: posting to one must be rejected here rather
     # than reach the channel and call the scheduled method with a payload it cannot take.
     channel = MagicMock()
-    shell = _ctx_shell([SimpleNamespace(channel=channel)], event_handlers={"agg.sources": lambda ctx, p: None})
+    shell = _ctx_shell(channel, event_handlers={"agg.sources": lambda ctx, p: None})
 
     with pytest.raises(ValueError):
         StrategyContext.post_event(shell, "custom_schedule_x")
@@ -117,14 +102,14 @@ def test_post_event_for_a_scheduled_id_raises_value_error():
 
 
 def test_register_handler_delegates_to_processing_manager():
-    shell = _ctx_shell([SimpleNamespace(channel=MagicMock())])
+    shell = _ctx_shell(MagicMock())
     fn = lambda ctx, payload: None  # noqa: E731
     StrategyContext.register_handler(shell, "agg.sources", fn)
     shell._processing_manager.register_handler.assert_called_once_with("agg.sources", fn)
 
 
 def test_register_handler_from_fit_thread_raises():
-    shell = _ctx_shell([SimpleNamespace(channel=MagicMock())])
+    shell = _ctx_shell(MagicMock())
     shell._fit_state = SimpleNamespace(is_fit_thread=lambda: True)
 
     with pytest.raises(RuntimeError):
