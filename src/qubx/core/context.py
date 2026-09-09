@@ -1049,7 +1049,7 @@ class StrategyContext(IStrategyContext):
         self._assert_not_fit_thread("schedule")
         return self._processing_manager.schedule(cron_schedule, method)
 
-    def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
         self._assert_not_fit_thread("register_handler")
         self._processing_manager.register_handler(name, method)
 
@@ -1057,13 +1057,18 @@ class StrategyContext(IStrategyContext):
         # - a dict membership read: no fit-thread tripwire, safe from any thread
         return self._processing_manager.has_handler(name)
 
-    def post_event(self, name: str) -> None:
+    def post_event(self, name: str, payload: Any = None) -> None:
         # Live: enqueued on the data channel (CtrlChannel.send is a Queue.put_nowait) and
         # runs on the ProcessorThread that drains it — safe to call from any thread.
         # Simulation: SimulatedCtrlChannel.send dispatches synchronously on the calling
         # thread, so only call this from the strategy thread there. Live: once the channel is
         # stopped, send() is a silent no-op (mirrors CtrlChannel.stop()/send()), not an error —
         # SimulatedCtrlChannel ignores `control`, so simulation has no such state.
+        # The payload rides the tuple's data slot and reaches the handler as its second
+        # argument. It is HANDED OVER, not copied: the posting thread must not mutate it
+        # afterwards, and the handler must treat it as read-only. A consumer that can re-read
+        # its data from the source (e.g. a Redis stream) should post None and re-read on the
+        # strategy thread instead.
         if not self._data_providers:
             raise RuntimeError("post_event: no data provider / channel available")
         # has_handler is a dict membership read — safe from any thread (no lock needed).
@@ -1073,7 +1078,7 @@ class StrategyContext(IStrategyContext):
         # stop the strategy.
         if not self._processing_manager.has_handler(name):
             raise ValueError(f"post_event: '{name}' has no registered handler (call register_handler first)")
-        self._data_providers[0].channel.send((None, name, None, False))
+        self._data_providers[0].channel.send((None, name, payload, False))
 
     def unschedule(self, event_id: str) -> bool:
         self._assert_not_fit_thread("unschedule")

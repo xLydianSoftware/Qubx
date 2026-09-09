@@ -244,7 +244,7 @@ class FitContext(ITimeProvider):
         self._fit_state.record(partial(_pm._register_schedule, event_id, rule["schedule"], method))
         return event_id
 
-    def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
         # - eager validation so a bad name still raises into on_fit (mirrors schedule());
         #   only the dict write is deferred to the FitCommit. _handle_fit_commit merely LOGS
         #   a deferred op's exception, so a name rejected there would fail silently and leave
@@ -254,12 +254,12 @@ class FitContext(ITimeProvider):
         _pm._validate_handler_name(name)
         self._fit_state.record(partial(_pm.register_handler, name, method))
 
-    def post_event(self, name: str) -> None:
+    def post_event(self, name: str, payload: Any = None) -> None:
         # Live: the channel's queue put is thread-safe, so no deferral is needed. In
         # simulation the channel dispatches synchronously on the calling thread instead —
         # a threaded on_fit calling this would run the handler on the fit thread, breaking
         # the single-mutator invariant, but simulation never constructs a FitContext.
-        self._context.post_event(name)
+        self._context.post_event(name, payload)
 
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
         # - schedule-ish: deferred like schedule(); the delay countdown starts when the

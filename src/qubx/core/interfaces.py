@@ -1391,18 +1391,24 @@ class IProcessingManager:
         """
         ...
 
-    def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
         """
         Register a method to run on the strategy thread when post_event(name) is called.
         On-demand counterpart of schedule(): no cron is armed. Strategy-thread only.
+
+        The method is called as ``method(ctx, payload)``, where payload is whatever
+        post_event carried (None when it carried nothing). Scheduled callbacks registered
+        with schedule()/delay() keep their ``method(ctx)`` shape — the two are separate
+        registries and a name may live in only one of them.
         """
         ...
 
     def has_handler(self, name: str) -> bool:
         """
-        True if a method is registered under this event name (via register_handler, or an
-        internal id minted by schedule()/delay()). Used by post_event to reject an unknown
-        name before it reaches the data channel. Safe to call from any thread.
+        True if a method was registered under this event name via register_handler. Used by
+        post_event to reject an unknown name before it reaches the data channel. Safe to
+        call from any thread. Internal ids minted by schedule()/delay() are NOT covered:
+        those callbacks take (ctx) only and are not postable.
         """
         ...
 
@@ -1561,9 +1567,15 @@ class IStrategyContext(
         """
         ...
 
-    def post_event(self, name: str) -> None:
+    def post_event(self, name: str, payload: Any = None) -> None:
         """
-        Wake a handler registered with register_handler(name).
+        Wake a handler registered with register_handler(name), optionally carrying a payload.
+
+        The handler runs as ``method(ctx, payload)``; with no payload it receives None.
+        The object is HANDED OVER, not copied: the posting thread must not mutate it after
+        the call and the handler must treat it as read-only. A consumer that can re-read its
+        data from the source (e.g. a Redis stream) should post None and re-read on the
+        strategy thread instead — that is what quantkit's aggregator does.
 
         Live: enqueued onto the strategy's data channel and returns immediately — safe to
         call from any thread; the handler then runs on the strategy (ProcessorThread) thread.

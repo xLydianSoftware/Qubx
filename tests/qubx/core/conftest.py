@@ -18,6 +18,10 @@ def make_pm(**overrides) -> ProcessingManager:
     pm._context.emitter = None
     pm._context.initializer.get_fit_on_start.return_value = False  # a MagicMock would read as the knob being on
     pm._boot = BootStateMachine(MagicMock())  # __new__ skips __init__, which builds it
+    # _event_handlers is annotation-only on the class (no mutable class default), so __new__
+    # leaves it UNSET and every dispatch-path test would AttributeError in
+    # _process_custom_event. Seed it here, per-instance, like _boot above.
+    pm._event_handlers = {}
     pm._position_gathering = MagicMock()
     pm._exporter = None
     pm._universe_manager = MagicMock()

@@ -181,6 +181,14 @@ class ProcessingManager(IProcessingManager):
     # - custom scheduled methods
     _custom_scheduled_methods: dict[str, Callable] = {}
 
+    # - on-demand handlers registered with register_handler and woken by post_event.
+    #   Kept apart from _custom_scheduled_methods because the call shape differs:
+    #   method(ctx, payload) here vs method(ctx) for a scheduled/delayed callback.
+    #   Annotation only, NO mutable class-level default: a half-constructed test object
+    #   (ProcessingManager.__new__) then fails loudly instead of quietly sharing one dict
+    #   with every other instance.
+    _event_handlers: dict[str, Callable[[IStrategyContext, Any], None]]
+
     def __init__(
         self,
         context: IStrategyContext,
@@ -252,6 +260,7 @@ class ProcessingManager(IProcessingManager):
         self._instruments_in_init_stage = set()
         self._active_targets = {}
         self._custom_scheduled_methods = {}
+        self._event_handlers = {}
         self._pending_no_quote_signals = {}
 
         # - Threaded fit executor: live-only. Simulation ALWAYS stays inline regardless
@@ -334,7 +343,7 @@ class ProcessingManager(IProcessingManager):
           * any name that DataType.from_str resolves at all. Not every data type has a
             `_handle_*` method (`funding_rate`, `open_interest`, `liquidation`,
             `aggregated_liquidations`, `record`, `fundamental`, `ohlc_quotes`); those flow
-            through _process_custom_event, which checks _custom_scheduled_methods FIRST and
+            through _process_custom_event, which checks the handler registries FIRST and
             returns before __update_base_data. A handler registered under such a name would
             therefore win over live market data — cache never updated, no MarketEvent, no
             data-arrival health signal — silently, for the whole run.
@@ -350,23 +359,33 @@ class ProcessingManager(IProcessingManager):
         if _dtype is not DataType.NONE:
             raise ValueError(f"register_handler: '{name}' shadows the built-in data type '{_dtype.value}'")
 
-    def register_handler(self, name: str, method: Callable[["IStrategyContext"], None]) -> None:
+    def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
         """
         Register a method that runs on the ProcessorThread whenever an event with this
         name is posted (see IStrategyContext.post_event). No schedule is armed — this is
-        the on-demand counterpart of schedule(). Same dispatch as custom scheduled methods:
-        the method is called with the context; return value ignored; emitted signals are
-        drained by the normal pipeline.
+        the on-demand counterpart of schedule(). The method is called as
+        ``method(ctx, payload)`` with whatever post_event carried (None when nothing was
+        posted); return value ignored; emitted signals are drained by the normal pipeline.
+
+        Payload ownership: the posting thread hands the object over and must not mutate it
+        afterwards; the handler treats it as read-only.
         """
         self._validate_handler_name(name)
-        if name in self._custom_scheduled_methods:
+        # - one dispatch key, two registries: _process_custom_event matches the event type
+        #   against both, so a name may live in only one of them or the event-handler branch
+        #   would silently shadow the scheduled method (or vice versa).
+        if name in self._event_handlers or name in self._custom_scheduled_methods:
             raise ValueError(f"register_handler: '{name}' is already registered")
-        self._custom_scheduled_methods[name] = method
+        self._event_handlers[name] = method
 
     def has_handler(self, name: str) -> bool:
-        """True if a method is registered under this event name (register_handler or an
-        internal scheduled/delayed id). A plain dict membership read — safe from any thread."""
-        return name in self._custom_scheduled_methods
+        """True if a method was registered under this event name with register_handler.
+        A plain dict membership read — safe from any thread.
+
+        Deliberately does NOT cover scheduled/delayed ids: post_event gates on this, and a
+        scheduled callback takes (ctx) only — posting to one would call it with a payload.
+        """
+        return name in self._event_handlers
 
     def _register_schedule(self, event_id: str, cron_schedule: str, method: Callable) -> None:
         # - seam shared with FitContext.schedule (validated + recorded on the fit thread
@@ -1057,6 +1076,18 @@ class ProcessingManager(IProcessingManager):
     def _process_custom_event(
         self, instrument: Instrument | None, event_type: str, event_data: Any
     ) -> MarketEvent | None:
+        # Handle on-demand handlers registered with register_handler: called with the
+        # payload post_event carried in the tuple's data slot (None when none was posted).
+        # Like scheduled methods, no MarketEvent is produced — on_event / on_market_data
+        # must not see a synthetic event for a hook the strategy woke itself.
+        if event_type in self._event_handlers:
+            try:
+                self._event_handlers[event_type](self._context, event_data)
+            except Exception as e:
+                logger.error(f"[ProcessingManager] :: Error executing registered handler for event {event_type}: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
+            return None
+
         # Handle custom scheduled events
         if event_type in self._custom_scheduled_methods:
             try:

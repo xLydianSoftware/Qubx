@@ -15,7 +15,8 @@ def _pm_with_handlers() -> ProcessingManager:
     make_pm's __new__ bypass of __init__ never shadows it per-instance, so leaving it alone
     (isinstance(..., dict) is already True) would mutate the SAME dict across every test/pm
     that doesn't set it explicitly -> duplicate-registration bleed between tests. Assign a
-    fresh dict unconditionally instead.
+    fresh dict unconditionally instead. _event_handlers (the register_handler registry) has
+    no class-level default at all, so it can't bleed -- make_pm seeds it per-instance.
 
     _handlers is the REAL map (real_handler_map), not a synthetic one, so both the dispatch
     fallback and the shadow guard see exactly what production sees.
@@ -46,28 +47,78 @@ def _pm_with_handlers() -> ProcessingManager:
 def test_register_handler_runs_method_on_process_data():
     pm = _pm_with_handlers()
     calls = []
-    pm.register_handler("agg.sources", lambda ctx: calls.append(ctx))
+    pm.register_handler("agg.sources", lambda ctx, payload: calls.append((ctx, payload)))
 
-    pm.process_data(None, "agg.sources", None, False)  # what post_event enqueues
+    pm.process_data(None, "agg.sources", None, False)  # what post_event() enqueues
 
-    assert calls == [pm._context]
+    assert calls == [(pm._context, None)]
     pm._strategy.on_event.assert_not_called()
     pm._strategy.on_market_data.assert_not_called()
 
 
+def test_registered_handler_receives_the_posted_payload_object():
+    # post_event(name, payload) hands the object over untouched: the handler must see the
+    # SAME object (identity, not a copy/repr), which is what makes "the poster must not
+    # mutate it afterwards" a meaningful contract.
+    pm = _pm_with_handlers()
+    payload = {"sources": ["a", "b"]}
+    seen = []
+    pm.register_handler("agg.sources", lambda ctx, p: seen.append(p))
+
+    pm.process_data(None, "agg.sources", payload, False)  # what post_event(name, payload) enqueues
+
+    assert len(seen) == 1
+    assert seen[0] is payload
+
+
+def test_scheduled_method_is_still_called_with_context_only():
+    # The two registries dispatch differently: a scheduled/delayed method keeps the
+    # single-argument shape it has always had -- adding the payload arg to register_handler
+    # must not leak into it (every existing strategy's scheduled callback would break).
+    pm = _pm_with_handlers()
+    calls = []
+    pm._custom_scheduled_methods["custom_schedule_x"] = lambda ctx: calls.append(ctx)
+
+    pm.process_data(None, "custom_schedule_x", None, False)
+
+    assert calls == [pm._context]
+
+
 def test_register_handler_rejects_duplicate_and_empty_name():
     pm = _pm_with_handlers()
-    pm.register_handler("agg.sources", lambda ctx: None)
+    pm.register_handler("agg.sources", lambda ctx, payload: None)
     with pytest.raises(ValueError):
-        pm.register_handler("agg.sources", lambda ctx: None)
+        pm.register_handler("agg.sources", lambda ctx, payload: None)
     with pytest.raises(ValueError):
-        pm.register_handler("", lambda ctx: None)
+        pm.register_handler("", lambda ctx, payload: None)
+
+
+def test_register_handler_rejects_a_name_already_used_by_a_scheduled_method():
+    # The registries are separate but the DISPATCH KEY is shared (both are matched against
+    # the event type in _process_custom_event), so a name may live in only one of them --
+    # otherwise the event-handler branch would silently shadow the scheduled method.
+    pm = _pm_with_handlers()
+    pm._custom_scheduled_methods["rate_limit_metrics"] = lambda ctx: None
+    with pytest.raises(ValueError, match="already registered"):
+        pm.register_handler("rate_limit_metrics", lambda ctx, payload: None)
+
+
+def test_has_handler_covers_registered_handlers_only():
+    # post_event() gates on has_handler, and only an event handler can consume a payload:
+    # a scheduled/delayed id must NOT be postable (it would be called with the wrong arity).
+    pm = _pm_with_handlers()
+    pm.register_handler("agg.sources", lambda ctx, payload: None)
+    pm._custom_scheduled_methods["custom_schedule_x"] = lambda ctx: None
+
+    assert pm.has_handler("agg.sources")
+    assert not pm.has_handler("custom_schedule_x")
+    assert not pm.has_handler("agg.sorces")
 
 
 def test_registered_handler_exception_is_logged_not_raised():
     pm = _pm_with_handlers()
 
-    def boom(ctx):
+    def boom(ctx, payload):
         raise RuntimeError("x")
 
     pm.register_handler("agg.sources", boom)
@@ -82,7 +133,7 @@ def test_register_handler_rejects_name_that_shadows_builtin_handler(name):
     pm = _pm_with_handlers()
     assert name in pm._handlers  # pins the real key, not a synthetic one
     with pytest.raises(ValueError):
-        pm.register_handler(name, lambda ctx: None)
+        pm.register_handler(name, lambda ctx, payload: None)
 
 
 def test_register_handler_rejects_name_whose_datatype_shadows_builtin_handler():
@@ -92,7 +143,7 @@ def test_register_handler_rejects_name_whose_datatype_shadows_builtin_handler():
     pm = _pm_with_handlers()
     assert "ohlc" in pm._handlers
     with pytest.raises(ValueError):
-        pm.register_handler("ohlc(1h)", lambda ctx: None)
+        pm.register_handler("ohlc(1h)", lambda ctx, payload: None)
 
 
 @pytest.mark.parametrize(
@@ -109,7 +160,7 @@ def test_register_handler_rejects_name_whose_datatype_shadows_builtin_handler():
 )
 def test_register_handler_rejects_datatype_without_a_builtin_handler(name):
     # These data types have NO _handle_* method: they flow through _process_custom_event ->
-    # __update_base_data. _process_custom_event consults _custom_scheduled_methods FIRST and
+    # __update_base_data. _process_custom_event consults the handler registries FIRST and
     # returns before __update_base_data, so a handler registered under one of these names
     # would WIN over live market data -- cache never updated, no MarketEvent, no data-arrival
     # health signal -- silently, for the whole run. The guard must reject any name that
@@ -117,7 +168,7 @@ def test_register_handler_rejects_datatype_without_a_builtin_handler(name):
     pm = _pm_with_handlers()
     assert name not in pm._handlers  # exactly why the _handlers-key check is not enough
     with pytest.raises(ValueError, match="shadows the built-in data type"):
-        pm.register_handler(name, lambda ctx: None)
+        pm.register_handler(name, lambda ctx, payload: None)
 
 
 def test_register_handler_rejects_unparseable_name_with_clear_message():
@@ -126,4 +177,4 @@ def test_register_handler_rejects_unparseable_name_with_clear_message():
     # must wrap it so the message points at the real problem (the name), not the parser.
     pm = _pm_with_handlers()
     with pytest.raises(ValueError, match="quote\\(x\\)"):
-        pm.register_handler("quote(x)", lambda ctx: None)
+        pm.register_handler("quote(x)", lambda ctx, payload: None)
