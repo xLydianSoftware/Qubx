@@ -6,6 +6,7 @@ This module provides an implementation of IMetricEmitter that exports metrics to
 
 import datetime
 import json
+import re
 from collections.abc import Sequence
 from typing import Any, cast
 
@@ -37,6 +38,34 @@ DEALS_TTL = "14 weeks"
 HEALTH_TTL = "30 days"
 RATE_LIMITS_TTL = "30 days"
 DEFAULT_USER_TTL = DEFAULT_TABLE_TTL
+
+_TTL_UNIT_HOURS = {"HOUR": 1.0, "DAY": 24.0, "WEEK": 168.0, "MONTH": 720.0, "YEAR": 8760.0}
+_TTL_SHORT_UNITS = {
+    "h": "HOUR",
+    "d": "DAY",
+    "w": "WEEK",
+    "M": "MONTH",
+    "y": "YEAR",
+}  # QuestDB shorthand, case-sensitive
+_TTL_SPEC = re.compile(r"^\s*(\d+)\s*([A-Za-z]+)\s*$")
+
+
+def ttl_hours(spec: str) -> float:
+    """Hours in a QuestDB TTL spec ('30 days', '52 WEEKS', '4h', '6M'). Minutes are not a TTL unit."""
+    match = _TTL_SPEC.match(spec or "")
+    if match is None:
+        raise ValueError(f"unparseable TTL spec {spec!r}")
+    value, unit = int(match.group(1)), match.group(2)
+    if value <= 0:
+        raise ValueError(f"TTL must be positive: {spec!r}")
+    if len(unit) == 1:
+        canonical = _TTL_SHORT_UNITS.get(unit)
+    else:
+        canonical = unit.upper().rstrip("S")
+        canonical = canonical if canonical in _TTL_UNIT_HOURS else None
+    if canonical is None:
+        raise ValueError(f"unknown TTL unit in {spec!r}")
+    return value * _TTL_UNIT_HOURS[canonical]
 
 
 def _json_scalar(value: Any) -> Any:
@@ -382,6 +411,54 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         except Exception as e:
             logger.warning(f"[QuestDBMetricEmitter] '{table}': TTL {max_ttl!r} not applied: {e}")
 
+    def _current_ttl_hours(self, client: QuestDBClient, table: str) -> float | None:
+        """
+        Retention QuestDB reports for `table` in hours; 0.0 when it has none, None when unreadable.
+
+        `tables()` is the only place QuestDB exposes TTL (`ttlValue`, `ttlUnit`); `ttlValue = 0`
+        means no retention. Any failure is reported as None so the caller can fail open.
+        """
+        try:
+            frame = client.query(
+                "SELECT ttlValue, ttlUnit FROM tables() WHERE table_name = %(table)s", {"table": table}
+            )
+            if not isinstance(frame, pd.DataFrame) or frame.empty:
+                return None
+            value = int(frame.iloc[0]["ttlValue"])
+            if value <= 0:
+                return 0.0
+            return value * _TTL_UNIT_HOURS[str(frame.iloc[0]["ttlUnit"]).upper()]
+        except Exception as e:
+            logger.warning(f"[QuestDBMetricEmitter] '{table}': could not read current TTL ({e})")
+            return None
+
+    def _apply_retention(self, client: QuestDBClient, table: str, max_ttl: str, *, cap: bool) -> None:
+        """
+        cap=True: `max_ttl` is an upper bound — set it when the table has no retention or a longer
+        one, keep a shorter one (the platform may tighten per environment). cap=False: set it only
+        when the table has no retention at all (a bootstrap default the platform owns afterwards).
+        An unreadable current value applies `max_ttl` unconditionally: fail open toward the bound.
+        """
+        current = self._current_ttl_hours(client, table)
+        if current is None:
+            self._set_retention(client, table, max_ttl)
+            return
+        if current == 0.0:
+            self._set_retention(client, table, max_ttl)
+            return
+        if not cap:
+            logger.debug(f"[QuestDBMetricEmitter] '{table}': retention {current:g}h left to the platform")
+            return
+        try:
+            bound = ttl_hours(max_ttl)
+        except ValueError:
+            self._set_retention(client, table, max_ttl)  # QuestDB owns the syntax rule
+            return
+        if current > bound:
+            self._set_retention(client, table, max_ttl)
+        else:
+            logger.debug(f"[QuestDBMetricEmitter] '{table}': retention {current:g}h within the {bound:g}h cap")
+
     def _refuse_reserved(self, table: str) -> None:
         """
         Reject a strategy table that targets one of the emitter's own tables.
@@ -464,8 +541,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         """
         Create a strategy-owned table with explicit types (spec: strategy-tables §2.0).
 
-        `max_ttl` is applied whether the table was just created or already existed. Pass None
-        to leave retention alone.
+        `max_ttl` is a cap: applied when the table has no retention or a longer one, never
+        raising a shorter one. Pass None to leave retention alone.
         """
         try:
             self._refuse_reserved(table)
@@ -495,7 +572,7 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
             client = QuestDBClient(host=self._host, port=8812)
             client.execute(ddl)
             if max_ttl:
-                self._set_retention(client, table, max_ttl)
+                self._apply_retention(client, table, max_ttl, cap=True)
             self._declared_columns[table] = set(decl)
             self._declared_symbols[table] = {n for n, t in decl.items() if t == "SYMBOL"}
             logger.info(f"[QuestDBMetricEmitter] Ensured table '{table}' exists")
