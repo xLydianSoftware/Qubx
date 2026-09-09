@@ -36,8 +36,9 @@ class TestContextInitializer:
     @pytest.fixture
     def mock_components(self):
         """Create mock components for the StrategyContext."""
-        broker = MagicMock()
         channel = CtrlChannel("test")
+        broker = MagicMock()
+        broker.channel = channel
         data_provider = MagicMock()
         data_provider.channel = channel
         account = MagicMock()
@@ -171,23 +172,30 @@ class TestContextInitializer:
         # Check that the event schedule was set
         mock_processing_manager.return_value.set_event_schedule.assert_called_with("0 * * * *")
 
-    def test_data_provider_on_a_different_channel_is_rejected(self, mock_components):
-        # a provider publishing into a queue the context never drains would just go silent
+    @pytest.mark.parametrize("stray_kind", ["data provider", "connector"])
+    def test_producer_on_a_different_channel_is_rejected(self, mock_components, stray_kind):
+        # a producer publishing into a queue the context never drains would just go silent
         stray = MagicMock()
         stray.channel = CtrlChannel("stray")
-        stray.exchange.return_value = "BINANCE.UM"
+        stray.exchange.return_value = "STRAY.VENUE"
+        connectors = dict(mock_components["connectors"])
+        data_providers = [mock_components["data_provider"]]
+        if stray_kind == "connector":
+            connectors["STRAY.VENUE"] = stray
+        else:
+            data_providers.append(stray)
         with (
             patch("qubx.core.context.MarketManager"),
             patch("qubx.core.context.UniverseManager"),
             patch("qubx.core.context.SubscriptionManager"),
             patch("qubx.core.context.TradingManager"),
             patch("qubx.core.context.ProcessingManager"),
-            pytest.raises(ValueError, match="different channel"),
+            pytest.raises(ValueError, match=f"{stray_kind} STRAY.VENUE is bound to a different channel"),
         ):
             StrategyContext(
                 strategy=MockStrategy(),
-                connectors=mock_components["connectors"],
-                data_providers=[mock_components["data_provider"], stray],
+                connectors=connectors,
+                data_providers=data_providers,
                 account_manager=mock_components["account"],
                 scheduler=mock_components["scheduler"],
                 channel=mock_components["channel"],

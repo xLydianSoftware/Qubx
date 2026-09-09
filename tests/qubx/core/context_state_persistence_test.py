@@ -47,10 +47,12 @@ def mock_components():
     channel = CtrlChannel("test")
     data_provider = MagicMock()
     data_provider.channel = channel
+    connector = MagicMock()
+    connector.channel = channel
     time_provider = MagicMock()
     time_provider.time.return_value = np.datetime64("2023-01-01", "ns")
     return {
-        "connectors": {"BINANCE.UM": MagicMock()},
+        "connectors": {"BINANCE.UM": connector},
         "data_provider": data_provider,
         "channel": channel,
         "account": MagicMock(),

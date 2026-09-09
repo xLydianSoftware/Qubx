@@ -8,7 +8,7 @@ from functools import partial
 from typing import Any
 
 from qubx import logger
-from qubx.core.basics import DataType, Instrument
+from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.exceptions import NotSupported
 from qubx.core.fit_executor import SingleThreadWorker
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager, ITimeProvider, StrategyState
@@ -45,6 +45,7 @@ class _CommitPlan:
 class SubscriptionManager(ISubscriptionManager):
     _time_provider: ITimeProvider
     _data_providers: list[IDataProvider]
+    _channel: CtrlChannel
     _exchange_to_data_provider: dict[str, IDataProvider]
     _health_monitor: IHealthMonitor
     _base_sub: str
@@ -62,6 +63,7 @@ class SubscriptionManager(ISubscriptionManager):
         self,
         time_provider: ITimeProvider,
         data_providers: list[IDataProvider],
+        channel: CtrlChannel,
         health_monitor: IHealthMonitor,
         strategy_state: StrategyState,
         auto_subscribe: bool = True,
@@ -70,6 +72,7 @@ class SubscriptionManager(ISubscriptionManager):
     ) -> None:
         self._time_provider = time_provider
         self._data_providers = data_providers
+        self._channel = channel
         self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
         self._health_monitor = health_monitor
         self._strategy_state = strategy_state
@@ -177,9 +180,7 @@ class SubscriptionManager(ISubscriptionManager):
             logger.error(f"[SubscriptionManager] :: deferred warmup failed: {e}; applying the subscription swap anyway")
             logger.opt(colors=False).error(traceback.format_exc())
         finally:
-            self._data_providers[0].channel.send(
-                (None, SUBSCRIPTION_SWAP_EVENT, partial(self._apply_deferred_swap, plan), False)
-            )
+            self._channel.send((None, SUBSCRIPTION_SWAP_EVENT, partial(self._apply_deferred_swap, plan), False))
 
     def _apply_deferred_swap(self, plan: _CommitPlan) -> None:
         """ProcessorThread-side application of a deferred commit's swap (posted by the

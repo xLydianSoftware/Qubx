@@ -64,6 +64,7 @@ def make_thread_pm(fit_executor: str = "thread", is_simulation: bool = False, **
         is_warmup_in_progress=False,
     )
     context._data_providers = [MagicMock(channel=channel)]
+    context.channel = channel
     context.emitter = None
     context._market_data_provider = MagicMock()  # FitContext snapshot reads
     context.initializer.get_fit_on_start.return_value = False  # a MagicMock would read as the knob being on
@@ -880,6 +881,7 @@ class TestDeferredSubscriptionCommit:
         sm = SubscriptionManager(
             time_provider=MagicMock(),
             data_providers=[dp],
+            channel=channel,
             health_monitor=MagicMock(),
             strategy_state=StrategyState(),
             monitor_interval_seconds=3600.0,  # keep the live monitoring thread quiet
@@ -1054,6 +1056,7 @@ class TestDeferredSubscriptionCommit:
         sm = SubscriptionManager(
             time_provider=MagicMock(),
             data_providers=[dp],
+            channel=channel,
             health_monitor=MagicMock(),
             strategy_state=StrategyState(),
             auto_subscribe=False,

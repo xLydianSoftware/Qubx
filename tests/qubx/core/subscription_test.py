@@ -4,7 +4,7 @@ from unittest.mock import Mock, call
 import pytest
 
 from qubx.connectors.ccxt.subscription_manager import SubscriptionManager as CcxtSubscriptionManager
-from qubx.core.basics import DataType, Instrument
+from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.interfaces import StrategyState
 from qubx.core.lookups import lookup
 from qubx.core.mixins.subscription import SubscriptionManager, _CommitPlan
@@ -22,7 +22,7 @@ class TestSubscriptionStuff:
         self.mock_time_provider = Mock()
         self.mock_time_provider.time.return_value = 0.0
         self.manager = SubscriptionManager(
-            self.mock_time_provider, [self.mock_broker], DummyHealthMonitor(), StrategyState()
+            self.mock_time_provider, [self.mock_broker], CtrlChannel("test"), DummyHealthMonitor(), StrategyState()
         )
 
     def _get_instrument(self, symbol: str) -> Instrument:
@@ -259,7 +259,9 @@ class TestSubscriptionWatchdog:
         time_provider.time.return_value = 0.0
         state = StrategyState()
         state.is_on_warmup_finished_called = True
-        return SubscriptionManager(time_provider, [data_provider], health_monitor, state, monitor_interval_seconds=1e6)
+        return SubscriptionManager(
+            time_provider, [data_provider], CtrlChannel("test"), health_monitor, state, monitor_interval_seconds=1e6
+        )
 
     def _provider(self, instrument, connected: bool, sub_type: str | None = None):
         """A provider whose subscription queries go through the real CcxtSubscriptionManager."""

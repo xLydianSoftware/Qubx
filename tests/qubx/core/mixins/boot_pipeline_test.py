@@ -36,6 +36,7 @@ def make_pm(
         is_warmup_in_progress=is_warmup_in_progress,
     )
     context._data_providers = [MagicMock(channel=channel)]
+    context.channel = channel
     context.emitter = None
     context._market_data_provider = MagicMock()
     context.get_warmup_positions.return_value = warmup_positions or {}

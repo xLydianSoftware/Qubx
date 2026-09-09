@@ -105,6 +105,14 @@ def check_transfer_manager(func: Callable) -> Callable:
     return wrapper
 
 
+def _producer_name(producer: Any) -> str:
+    """Label a data provider / connector for the channel-invariant error message."""
+    _exchange = getattr(producer, "exchange", None)
+    if callable(_exchange):
+        return str(_exchange())
+    return str(getattr(producer, "exchange_name", None) or type(producer).__name__)
+
+
 class StrategyContext(IStrategyContext):
     _market_data_provider: IMarketManager
     _universe_manager: IUniverseManager
@@ -205,14 +213,18 @@ class StrategyContext(IStrategyContext):
         self._logging = logging
         self._scheduler = scheduler
         self._channel = channel
-        # - one bus per context: a provider on a different channel would publish into a
-        #   queue nobody drains, so its data would simply never arrive
-        for _dp in data_providers:
-            if _dp.channel is not channel:
-                raise ValueError(
-                    f"data provider {type(_dp).__name__} ({_dp.exchange()}) is bound to a different channel "
-                    "than the one passed to StrategyContext"
-                )
+        # - one bus per context: a producer on a different channel would publish into a
+        #   queue nobody drains, so its events would simply never arrive. `channel` reaches
+        #   connectors through ChannelEmitter rather than the IConnector protocol, so one
+        #   without the attribute is simply not checked.
+        for _label, _producers in (("data provider", tuple(data_providers)), ("connector", tuple(connectors.values()))):
+            for _producer in _producers:
+                _producer_channel = getattr(_producer, "channel", None)
+                if _producer_channel is not None and _producer_channel is not channel:
+                    raise ValueError(
+                        f"{_label} {_producer_name(_producer)} is bound to a different channel "
+                        "than the one passed to StrategyContext"
+                    )
         self._initial_instruments = instruments
 
         self._exporter = exporter
@@ -256,6 +268,7 @@ class StrategyContext(IStrategyContext):
         self._subscription_manager = SubscriptionManager(
             time_provider=self._time_provider,
             data_providers=self._data_providers,
+            channel=self._channel,
             health_monitor=self._health_monitor,
             strategy_state=self._strategy_state,
             default_base_subscription=DataType.ORDERBOOK[0, 1]
@@ -650,6 +663,11 @@ class StrategyContext(IStrategyContext):
     @property
     def status(self) -> QubxStatusInfo:
         return self._status.info
+
+    @property
+    def channel(self) -> CtrlChannel:
+        # - framework-internal: not on IStrategyContext, strategies wake handlers via post_event()
+        return self._channel
 
     @property
     def is_simulation(self) -> bool:

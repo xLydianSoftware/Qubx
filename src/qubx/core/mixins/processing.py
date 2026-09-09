@@ -1370,7 +1370,7 @@ class ProcessingManager(IProcessingManager):
             return
         assert self._fit_executor is not None  # constructed with the "thread" mode
         # - the commit rides the same channel the ProcessorThread drains
-        channel = self._context._data_providers[0].channel
+        channel = self._context.channel
         self._fit_is_running = True
         try:
             # - cache finalization mutates ctx state: keep it on the ProcessorThread (fast)
