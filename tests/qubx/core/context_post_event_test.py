@@ -103,6 +103,19 @@ def test_post_event_for_unregistered_name_raises_value_error():
     channel.send.assert_not_called()
 
 
+def test_post_event_for_a_scheduled_id_raises_value_error():
+    # schedule()/delay() ids live in a separate registry and their callbacks take (ctx)
+    # only, so has_handler does not cover them: posting to one must be rejected here rather
+    # than reach the channel and call the scheduled method with a payload it cannot take.
+    channel = MagicMock()
+    shell = _ctx_shell([SimpleNamespace(channel=channel)], event_handlers={"agg.sources": lambda ctx, p: None})
+
+    with pytest.raises(ValueError):
+        StrategyContext.post_event(shell, "custom_schedule_x")
+
+    channel.send.assert_not_called()
+
+
 def test_register_handler_delegates_to_processing_manager():
     shell = _ctx_shell([SimpleNamespace(channel=MagicMock())])
     fn = lambda ctx, payload: None  # noqa: E731
@@ -152,6 +165,20 @@ def test_fit_context_register_handler_validates_eagerly(bad_name):
 
     with pytest.raises(ValueError):
         fit_ctx.register_handler(bad_name, lambda ctx, payload: None)
+
+    ops, _ = fit_state.end()
+    assert ops == ()  # nothing recorded -> nothing to fail silently at the commit
+
+
+def test_fit_context_register_handler_rejects_the_scheduled_arity_eagerly():
+    # Same reason the name checks are eager: _handle_fit_commit only LOGS a deferred op's
+    # exception, so a wrong-arity handler deferred to the commit would register silently and
+    # then no-op on every post. It must raise into on_fit instead.
+    fit_ctx, fit_state = _fit_ctx_with_real_validation()
+    fit_state.begin(threading.get_ident())
+
+    with pytest.raises(ValueError, match=r"must accept \(ctx, payload\)"):
+        fit_ctx.register_handler("agg.sources", lambda ctx: None)
 
     ops, _ = fit_state.end()
     assert ops == ()  # nothing recorded -> nothing to fail silently at the commit

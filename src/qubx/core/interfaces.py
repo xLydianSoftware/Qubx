@@ -1399,7 +1399,9 @@ class IProcessingManager:
         The method is called as ``method(ctx, payload)``, where payload is whatever
         post_event carried (None when it carried nothing). Scheduled callbacks registered
         with schedule()/delay() keep their ``method(ctx)`` shape — the two are separate
-        registries and a name may live in only one of them.
+        registries and a name may live in only one of them. A method that cannot be called
+        with two positional arguments is rejected here with a ValueError, rather than
+        failing as a caught-and-logged TypeError on every post.
         """
         ...
 

@@ -1,4 +1,5 @@
-from unittest.mock import MagicMock
+import inspect
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -169,6 +170,59 @@ def test_register_handler_rejects_datatype_without_a_builtin_handler(name):
     assert name not in pm._handlers  # exactly why the _handlers-key check is not enough
     with pytest.raises(ValueError, match="shadows the built-in data type"):
         pm.register_handler(name, lambda ctx, payload: None)
+
+
+class _Strategy:
+    """Bound-method handler: inspect.signature already drops `self`, so (ctx, payload) here
+    is the same two-parameter shape as a module-level function."""
+
+    def on_wakeup(self, ctx, payload):
+        pass
+
+    def on_tick(self, ctx):  # the schedule() shape -- must be rejected as a handler
+        pass
+
+
+def test_register_handler_rejects_a_handler_with_the_scheduled_arity():
+    # `def _on_wakeup(self, ctx)` is the shape of the sibling schedule()/delay() API, so it
+    # is the easy mistake to make. Dispatch CATCHES the resulting TypeError and logs it, so
+    # without this guard the strategy would look alive while every post is a no-op -- the
+    # same failure mode validate_account_callback_signatures exists to prevent.
+    pm = _pm_with_handlers()
+    with pytest.raises(ValueError, match=r"must accept \(ctx, payload\)"):
+        pm.register_handler("agg.sources", lambda ctx: None)
+    assert "agg.sources" not in pm._event_handlers  # rejected before the registry write
+
+    with pytest.raises(ValueError, match=r"must accept \(ctx, payload\)"):
+        pm.register_handler("agg.bound", _Strategy().on_tick)
+
+
+@pytest.mark.parametrize(
+    "handler",
+    [
+        pytest.param(lambda ctx, payload: None, id="two-positional"),
+        pytest.param(lambda ctx, payload=None: None, id="payload-defaulted"),
+        pytest.param(lambda ctx=None, payload=None: None, id="both-defaulted"),
+        pytest.param(lambda *args: None, id="var-positional"),
+        pytest.param(lambda ctx, *args, **kw: None, id="one-then-var-positional"),
+        pytest.param(_Strategy().on_wakeup, id="bound-method"),
+        pytest.param(MagicMock(), id="magicmock"),  # (*args, **kwargs) -- tests must stay writable
+    ],
+)
+def test_register_handler_accepts_every_callable_shape_dispatch_can_call(handler):
+    pm = _pm_with_handlers()
+    pm.register_handler("agg.sources", handler)
+    assert pm._event_handlers["agg.sources"] is handler
+
+
+def test_register_handler_skips_the_arity_check_for_a_signature_less_callable():
+    # Some C callables expose no signature at all; the guard must not turn that into a
+    # registration failure (it is a best-effort check, not a gate on exotic callables).
+    pm = _pm_with_handlers()
+    handler = MagicMock()
+    with patch.object(inspect, "signature", side_effect=ValueError("no signature")):
+        pm.register_handler("agg.sources", handler)
+    assert pm._event_handlers["agg.sources"] is handler
 
 
 def test_register_handler_rejects_unparseable_name_with_clear_message():

@@ -329,8 +329,8 @@ class ProcessingManager(IProcessingManager):
         self._register_schedule(event_id, rule["schedule"], method)
         return event_id
 
-    def _validate_handler_name(self, name: str) -> None:
-        """Name checks shared by register_handler and FitContext.register_handler.
+    def _validate_handler_name(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
+        """Name AND arity checks shared by register_handler and FitContext.register_handler.
 
         Deliberately stateless with respect to the registry (no duplicate check) so the fit
         thread can run it EAGERLY: FitContext defers the dict write to the FitCommit, and
@@ -347,6 +347,12 @@ class ProcessingManager(IProcessingManager):
             returns before __update_base_data. A handler registered under such a name would
             therefore win over live market data — cache never updated, no MarketEvent, no
             data-arrival health signal — silently, for the whole run.
+
+        Plus an arity guard on the method itself: the sibling schedule()/delay() API takes
+        method(ctx), so a handler written to that shape is the easy mistake — and it would
+        raise TypeError inside _process_custom_event, which CATCHES and logs it: one error
+        line per post while the strategy looks alive. Same class of silent no-op that
+        validate_account_callback_signatures guards at construction time.
         """
         if not name:
             raise ValueError("register_handler: name must be non-empty")
@@ -358,6 +364,29 @@ class ProcessingManager(IProcessingManager):
             raise ValueError(f"register_handler: '{name}' is not a valid event name: {e}") from e
         if _dtype is not DataType.NONE:
             raise ValueError(f"register_handler: '{name}' shadows the built-in data type '{_dtype.value}'")
+        self._validate_handler_arity(name, method)
+
+    @staticmethod
+    def _validate_handler_arity(name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
+        """Reject a handler dispatch could not call as method(ctx, payload).
+
+        Best-effort by design: a callable that exposes no signature at all (some C builtins)
+        is accepted rather than turned into a registration failure. Bound methods are fine —
+        inspect.signature already drops `self`.
+        """
+        try:
+            sig = inspect.signature(method)
+        except (TypeError, ValueError):
+            return  # - no introspectable signature: nothing to check, let dispatch try
+        params = list(sig.parameters.values())
+        if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+            return  # - *args swallows both
+        positional = [
+            p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        required = [p for p in positional if p.default is inspect.Parameter.empty]
+        if len(positional) < 2 or len(required) > 2:
+            raise ValueError(f"register_handler: '{name}' handler must accept (ctx, payload); got {sig}")
 
     def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
         """
@@ -370,7 +399,7 @@ class ProcessingManager(IProcessingManager):
         Payload ownership: the posting thread hands the object over and must not mutate it
         afterwards; the handler treats it as read-only.
         """
-        self._validate_handler_name(name)
+        self._validate_handler_name(name, method)
         # - one dispatch key, two registries: _process_custom_event matches the event type
         #   against both, so a name may live in only one of them or the event-handler branch
         #   would silently shadow the scheduled method (or vice versa).
