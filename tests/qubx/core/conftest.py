@@ -18,10 +18,7 @@ def make_pm(**overrides) -> ProcessingManager:
     pm._context.emitter = None
     pm._context.initializer.get_fit_on_start.return_value = False  # a MagicMock would read as the knob being on
     pm._boot = BootStateMachine(MagicMock())  # __new__ skips __init__, which builds it
-    # _event_handlers is annotation-only on the class (no mutable class default), so __new__
-    # leaves it UNSET and every dispatch-path test would AttributeError in
-    # _process_custom_event. Seed it here, per-instance, like _boot above.
-    pm._event_handlers = {}
+    pm._event_handlers = {}  # annotation-only on the class, so __new__ leaves it unset
     pm._position_gathering = MagicMock()
     pm._exporter = None
     pm._universe_manager = MagicMock()
@@ -37,12 +34,9 @@ def make_pm(**overrides) -> ProcessingManager:
 
 
 def real_handler_map() -> dict:
-    """The ``_handlers`` map exactly as ``ProcessingManager.__init__`` builds it.
-
-    Tests that pin the register_handler shadow guard use this rather than a synthetic dict,
-    so renaming/removing a ``_handle_*`` method breaks the test instead of silently leaving
-    a name unguarded.
-    """
+    """The ``_handlers`` map exactly as ``ProcessingManager.__init__`` builds it, so renaming
+    or removing a ``_handle_*`` method breaks the shadow-guard tests instead of silently
+    leaving a name unguarded."""
     return {
         n.split("_handle_")[1]: f
         for n, f in ProcessingManager.__dict__.items()

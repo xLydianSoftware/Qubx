@@ -245,22 +245,16 @@ class FitContext(ITimeProvider):
         return event_id
 
     def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
-        # - eager validation so a bad name still raises into on_fit (mirrors schedule());
-        #   only the dict write is deferred to the FitCommit. _handle_fit_commit merely LOGS
-        #   a deferred op's exception, so a name rejected there would fail silently and leave
-        #   every later post_event raising forever. Same for the (ctx, payload) arity check,
-        #   whose failure mode is a handler that registers fine and then no-ops on every post.
-        #   The duplicate check stays deferred: it depends on the registry's state at commit
-        #   time, not on the name alone.
+        # - validate eagerly, defer only the dict write: _handle_fit_commit merely LOGS a
+        #   deferred op's exception, so a name/arity rejected there would fail silently. The
+        #   duplicate check stays deferred — it depends on the registry's state at commit time.
         _pm = self._context._processing_manager  # type: ignore[attr-defined]
         _pm._validate_handler_name(name, method)
         self._fit_state.record(partial(_pm.register_handler, name, method))
 
     def post_event(self, name: str, payload: Any = None) -> None:
-        # Live: the channel's queue put is thread-safe, so no deferral is needed. In
-        # simulation the channel dispatches synchronously on the calling thread instead —
-        # a threaded on_fit calling this would run the handler on the fit thread, breaking
-        # the single-mutator invariant, but simulation never constructs a FitContext.
+        # - no deferral needed: the live channel's queue put is thread-safe (simulation
+        #   dispatches on the caller instead, but never constructs a FitContext)
         self._context.post_event(name, payload)
 
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
@@ -470,7 +464,7 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "get_warmup",
     "auto_subscribe",
     "get_event_schedule",
-    "has_handler",  # dict membership read on the ProcessingManager — safe from any thread
+    "has_handler",  # dict membership read — safe from any thread
     "is_fitted",
     # (is_trading_allowed is an explicit method above — the real one can execute a
     # queued removal in place)

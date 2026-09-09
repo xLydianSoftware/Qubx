@@ -181,12 +181,10 @@ class ProcessingManager(IProcessingManager):
     # - custom scheduled methods
     _custom_scheduled_methods: dict[str, Callable] = {}
 
-    # - on-demand handlers registered with register_handler and woken by post_event.
-    #   Kept apart from _custom_scheduled_methods because the call shape differs:
-    #   method(ctx, payload) here vs method(ctx) for a scheduled/delayed callback.
-    #   Annotation only, NO mutable class-level default: a half-constructed test object
-    #   (ProcessingManager.__new__) then fails loudly instead of quietly sharing one dict
-    #   with every other instance.
+    # - on-demand handlers woken by post_event; separate from _custom_scheduled_methods
+    #   because the call shape differs: method(ctx, payload) vs method(ctx).
+    #   Annotation only, no mutable class-level default — a half-constructed object then
+    #   fails loudly instead of quietly sharing one dict with every other instance.
     _event_handlers: dict[str, Callable[[IStrategyContext, Any], None]]
 
     def __init__(
@@ -330,29 +328,22 @@ class ProcessingManager(IProcessingManager):
         return event_id
 
     def _validate_handler_name(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
-        """Name AND arity checks shared by register_handler and FitContext.register_handler.
+        """Name and arity checks shared by register_handler and FitContext.register_handler.
 
-        Deliberately stateless with respect to the registry (no duplicate check) so the fit
-        thread can run it EAGERLY: FitContext defers the dict write to the FitCommit, and
-        _handle_fit_commit only logs a deferred op's exception — a name rejected there would
-        fail silently and leave every later post_event raising forever.
+        Stateless with respect to the registry (no duplicate check) so the fit thread can run
+        it eagerly — _handle_fit_commit only logs a deferred op's exception.
 
-        Two shadow guards, both fatal:
-          * a literal key of _handlers — the non-data-type events (`fit`, `event`, `time`,
-            `error`, `state_snapshot`, ...) whose handler __process_data would call instead;
-          * any name that DataType.from_str resolves at all. Not every data type has a
-            `_handle_*` method (`funding_rate`, `open_interest`, `liquidation`,
-            `aggregated_liquidations`, `record`, `fundamental`, `ohlc_quotes`); those flow
-            through _process_custom_event, which checks the handler registries FIRST and
-            returns before __update_base_data. A handler registered under such a name would
-            therefore win over live market data — cache never updated, no MarketEvent, no
-            data-arrival health signal — silently, for the whole run.
+        Rejects any name DataType.from_str resolves, not just the keys of _handlers: a data
+        type without a `_handle_*` method (funding_rate, open_interest, ...) flows through
+        _process_custom_event, which consults the handler registries FIRST and returns before
+        __update_base_data — such a handler would silently swallow live market data for the
+        whole run. The arity guard is the same class of protection: a method(ctx) handler
+        would raise a TypeError that _process_custom_event catches and logs, one line per
+        post, while the strategy looks alive.
 
-        Plus an arity guard on the method itself: the sibling schedule()/delay() API takes
-        method(ctx), so a handler written to that shape is the easy mistake — and it would
-        raise TypeError inside _process_custom_event, which CATCHES and logs it: one error
-        line per post while the strategy looks alive. Same class of silent no-op that
-        validate_account_callback_signatures guards at construction time.
+        Raises:
+            ValueError: the name is empty, shadows a built-in, or the method cannot take
+                (ctx, payload).
         """
         if not name:
             raise ValueError("register_handler: name must be non-empty")
@@ -368,16 +359,15 @@ class ProcessingManager(IProcessingManager):
 
     @staticmethod
     def _validate_handler_arity(name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
-        """Reject a handler dispatch could not call as method(ctx, payload).
+        """Reject a handler that dispatch could not call as method(ctx, payload).
 
-        Best-effort by design: a callable that exposes no signature at all (some C builtins)
-        is accepted rather than turned into a registration failure. Bound methods are fine —
-        inspect.signature already drops `self`.
+        Best-effort: a callable exposing no signature at all (some C builtins) is accepted
+        rather than turned into a registration failure.
         """
         try:
             sig = inspect.signature(method)
         except (TypeError, ValueError):
-            return  # - no introspectable signature: nothing to check, let dispatch try
+            return  # - nothing to check, let dispatch try
         params = list(sig.parameters.values())
         if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
             return  # - *args swallows both
@@ -390,30 +380,24 @@ class ProcessingManager(IProcessingManager):
 
     def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
         """
-        Register a method that runs on the ProcessorThread whenever an event with this
-        name is posted (see IStrategyContext.post_event). No schedule is armed — this is
-        the on-demand counterpart of schedule(). The method is called as
-        ``method(ctx, payload)`` with whatever post_event carried (None when nothing was
-        posted); return value ignored; emitted signals are drained by the normal pipeline.
+        Register ``method(ctx, payload)`` to run on the ProcessorThread whenever an event with
+        this name is posted (see IStrategyContext.post_event). The payload is handed over, not
+        copied: the poster must not mutate it afterwards.
 
-        Payload ownership: the posting thread hands the object over and must not mutate it
-        afterwards; the handler treats it as read-only.
+        Raises:
+            ValueError: see _validate_handler_name, or the name is already registered.
         """
         self._validate_handler_name(name, method)
         # - one dispatch key, two registries: _process_custom_event matches the event type
-        #   against both, so a name may live in only one of them or the event-handler branch
-        #   would silently shadow the scheduled method (or vice versa).
+        #   against both, so a name in both would have one branch shadow the other
         if name in self._event_handlers or name in self._custom_scheduled_methods:
             raise ValueError(f"register_handler: '{name}' is already registered")
         self._event_handlers[name] = method
 
     def has_handler(self, name: str) -> bool:
-        """True if a method was registered under this event name with register_handler.
-        A plain dict membership read — safe from any thread.
-
-        Deliberately does NOT cover scheduled/delayed ids: post_event gates on this, and a
-        scheduled callback takes (ctx) only — posting to one would call it with a payload.
-        """
+        """True if register_handler registered a method under this name. A dict membership
+        read — safe from any thread. Does NOT cover scheduled/delayed ids: those callbacks
+        take (ctx) only, and post_event gates on this."""
         return name in self._event_handlers
 
     def _register_schedule(self, event_id: str, cron_schedule: str, method: Callable) -> None:
@@ -1105,10 +1089,8 @@ class ProcessingManager(IProcessingManager):
     def _process_custom_event(
         self, instrument: Instrument | None, event_type: str, event_data: Any
     ) -> MarketEvent | None:
-        # Handle on-demand handlers registered with register_handler: called with the
-        # payload post_event carried in the tuple's data slot (None when none was posted).
-        # Like scheduled methods, no MarketEvent is produced — on_event / on_market_data
-        # must not see a synthetic event for a hook the strategy woke itself.
+        # - like scheduled methods, no MarketEvent is produced: on_event / on_market_data
+        #   must not see a synthetic event for a hook the strategy woke itself
         if event_type in self._event_handlers:
             try:
                 self._event_handlers[event_type](self._context, event_data)

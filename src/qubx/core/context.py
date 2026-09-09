@@ -1069,22 +1069,12 @@ class StrategyContext(IStrategyContext):
         return self._processing_manager.has_handler(name)
 
     def post_event(self, name: str, payload: Any = None) -> None:
-        # Live: enqueued on the data channel (CtrlChannel.send is a Queue.put_nowait) and
-        # runs on the ProcessorThread that drains it — safe to call from any thread.
-        # Simulation: SimulatedCtrlChannel.send dispatches synchronously on the calling
-        # thread, so only call this from the strategy thread there. Live: once the channel is
-        # stopped, send() is a silent no-op (mirrors CtrlChannel.stop()/send()), not an error —
-        # SimulatedCtrlChannel ignores `control`, so simulation has no such state.
-        # The payload rides the tuple's data slot and reaches the handler as its second
-        # argument. It is HANDED OVER, not copied: the posting thread must not mutate it
-        # afterwards, and the handler must treat it as read-only. A consumer that can re-read
-        # its data from the source (e.g. a Redis stream) should post None and re-read on the
-        # strategy thread instead.
-        # has_handler is a dict membership read — safe from any thread (no lock needed).
-        # Without this check, a typo'd name would silently decay into a bogus
-        # MarketEvent(instrument=None) delivered to on_market_data (see
-        # ProcessingManager._process_custom_event) — repeated failures there eventually
-        # stop the strategy.
+        # - live, the channel send is a Queue.put_nowait, so this is callable from any thread
+        #   and the handler runs on the ProcessorThread; SimulatedCtrlChannel instead dispatches
+        #   synchronously on the caller, so in simulation post only from the strategy thread.
+        #   The payload is handed over, not copied — see IStrategyContext.post_event.
+        # - the guard: an unknown name would decay into a bogus MarketEvent(instrument=None)
+        #   delivered to on_market_data (ProcessingManager._process_custom_event)
         if not self._processing_manager.has_handler(name):
             raise ValueError(f"post_event: '{name}' has no registered handler (call register_handler first)")
         self._channel.send((None, name, payload, False))

@@ -12,9 +12,7 @@ from tests.qubx.core.conftest import make_pm, real_handler_map
 
 
 def _ctx_shell(channel, event_handlers=None):
-    # Exercise the unbound methods on a shell object: post_event needs _channel and
-    # _processing_manager.has_handler (the registered-handler membership check),
-    # register_handler needs _processing_manager and the fit-thread tripwire.
+    # the unbound StrategyContext methods are exercised on this shell
     registry = event_handlers if event_handlers is not None else {}
     shell = SimpleNamespace(
         _channel=channel,
@@ -29,8 +27,7 @@ def _ctx_shell(channel, event_handlers=None):
 
 
 def _fit_ctx_with_real_validation() -> tuple[FitContext, FitCycleState]:
-    """FitContext over a context whose _processing_manager is a REAL ProcessingManager
-    half-object, so _validate_handler_name actually runs (a MagicMock would swallow it)."""
+    # a REAL ProcessingManager half-object, so _validate_handler_name actually runs
     pm = make_pm()
     pm._handlers = real_handler_map()
     pm._custom_scheduled_methods = {}
@@ -50,8 +47,6 @@ def test_post_event_sends_tuple_on_the_data_channel():
 
 
 def test_post_event_sends_the_payload_in_the_tuple():
-    # The payload rides the data tuple's data slot, which is what _process_custom_event
-    # hands to the registered handler as its second argument.
     channel = MagicMock()
     shell = _ctx_shell(channel, event_handlers={"agg.sources": lambda ctx, payload: None})
     payload = {"sources": ["a"]}
@@ -63,9 +58,8 @@ def test_post_event_sends_the_payload_in_the_tuple():
 
 
 def test_post_event_allowed_from_fit_thread():
-    # post_event is the one scheduling-family call with NO fit-thread tripwire: live it is a
-    # thread-safe Queue.put_nowait, which is the whole point of the hook (wake the strategy
-    # thread from anywhere). Pin it so a future _assert_not_fit_thread sweep can't add one.
+    # the one scheduling-family call with no fit-thread tripwire — waking the strategy
+    # thread from anywhere is the point of the hook
     channel = MagicMock()
     shell = _ctx_shell(channel, event_handlers={"agg.sources": lambda ctx, payload: None})
     shell._fit_state = SimpleNamespace(is_fit_thread=lambda: True)
@@ -76,9 +70,7 @@ def test_post_event_allowed_from_fit_thread():
 
 
 def test_post_event_for_unregistered_name_raises_value_error():
-    # A typo'd name must never fall through to the tuple dispatch: unknown event types
-    # decay into a bogus MarketEvent(instrument=None) delivered to on_market_data
-    # (processing.py's _process_custom_event), which repeatedly crashes user strategies.
+    # an unknown name would decay into a bogus MarketEvent(instrument=None) on on_market_data
     channel = MagicMock()
     shell = _ctx_shell(channel)  # _event_handlers == {}
 
@@ -89,9 +81,7 @@ def test_post_event_for_unregistered_name_raises_value_error():
 
 
 def test_post_event_for_a_scheduled_id_raises_value_error():
-    # schedule()/delay() ids live in a separate registry and their callbacks take (ctx)
-    # only, so has_handler does not cover them: posting to one must be rejected here rather
-    # than reach the channel and call the scheduled method with a payload it cannot take.
+    # scheduled ids live in the other registry and take (ctx) only — not postable
     channel = MagicMock()
     shell = _ctx_shell(channel, event_handlers={"agg.sources": lambda ctx, p: None})
 
@@ -136,15 +126,14 @@ def test_fit_context_register_handler_is_deferred_via_fit_state_record():
     assert len(ops) == 1
     context._processing_manager.register_handler.assert_not_called()  # deferred, not applied yet
 
-    ops[0]()  # simulate the ProcessorThread replaying it at the FitCommit
+    ops[0]()  # the ProcessorThread replaying it at the FitCommit
     context._processing_manager.register_handler.assert_called_once_with("agg.sources", fn)
 
 
 @pytest.mark.parametrize("bad_name", ["trade", "funding_rate", "fit", ""])
 def test_fit_context_register_handler_validates_eagerly(bad_name):
-    # _handle_fit_commit only LOGS a deferred op's exception, so deferring the name checks
-    # would make a bad name fail silently on the fit thread and leave every later post_event
-    # raising forever. Validation must happen in the on_fit call itself, before any commit.
+    # _handle_fit_commit only LOGS a deferred op's exception, so a check deferred to the
+    # commit would fail silently — it must raise into on_fit instead
     fit_ctx, fit_state = _fit_ctx_with_real_validation()
     fit_state.begin(threading.get_ident())
 
@@ -156,9 +145,6 @@ def test_fit_context_register_handler_validates_eagerly(bad_name):
 
 
 def test_fit_context_register_handler_rejects_the_scheduled_arity_eagerly():
-    # Same reason the name checks are eager: _handle_fit_commit only LOGS a deferred op's
-    # exception, so a wrong-arity handler deferred to the commit would register silently and
-    # then no-op on every post. It must raise into on_fit instead.
     fit_ctx, fit_state = _fit_ctx_with_real_validation()
     fit_state.begin(threading.get_ident())
 
