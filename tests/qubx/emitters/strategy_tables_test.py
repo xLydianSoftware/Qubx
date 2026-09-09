@@ -398,7 +398,7 @@ class TestTtlHours:
     def test_parses_questdb_ttl_specs(self, spec, hours):
         assert ttl_hours(spec) == hours
 
-    @pytest.mark.parametrize("spec", ["", "days", "30", "30 minutes", "30m", "-1 day", "1.5 days"])
+    @pytest.mark.parametrize("spec", ["", "days", "30", "30 minutes", "30m", "-1 day", "1.5 days", "0 days", "0d"])
     def test_rejects_unparseable_specs(self, spec):
         with pytest.raises(ValueError):
             ttl_hours(spec)

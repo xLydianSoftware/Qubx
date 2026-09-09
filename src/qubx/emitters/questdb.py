@@ -381,7 +381,8 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
 
     def _declare_table(self, table: str, columns: dict[str, str], partition_by: str, max_ttl: str) -> None:
         """
-        Create a reserved table, record its schema, and set its retention.
+        Create a reserved table, record its schema, and give it a bootstrap retention only when
+        it has none — the platform's retention reconciler owns it afterwards.
 
         The recorded schema is what `_split_tags` filters against, so a table whose DDL could
         not be applied still filters against the declaration rather than accepting everything.
@@ -393,14 +394,14 @@ class QuestDBMetricEmitter(BaseMetricEmitter):
         try:
             client = QuestDBClient(host=self._host, port=8812)
             client.execute(ddl)
-            self._set_retention(client, table, max_ttl)
+            self._apply_retention(client, table, max_ttl, cap=False)
             logger.info(f"[QuestDBMetricEmitter] Ensured table '{table}' exists")
         except Exception as e:
             logger.error(f"[QuestDBMetricEmitter] Failed to create table '{table}': {e}")
 
     def _set_retention(self, client: QuestDBClient, table: str, max_ttl: str) -> None:
         """
-        Set retention on a table, whether it was just created or already existed.
+        Issue ALTER TABLE … SET TTL.
 
         Idempotent and ~2ms, so it runs unconditionally rather than reading the current value
         back first. QuestDB rejects a TTL finer than the partition size and leaves the table

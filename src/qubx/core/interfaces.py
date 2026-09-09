@@ -2738,7 +2738,7 @@ class IStrategy(metaclass=Mixable):
         return None
 
 
-# - retention a strategy-owned table gets unless the caller says otherwise; None leaves it untouched
+# - default retention cap for a strategy-owned table unless the caller says otherwise; None leaves it untouched
 DEFAULT_TABLE_TTL = "52 weeks"
 
 
@@ -2871,9 +2871,10 @@ class IMetricEmitter:
             symbol_columns: Column names to create as indexed SYMBOL columns
             dedup_keys: Optional designated-timestamp-first dedup key columns
             partition_by: Partitioning unit (default DAY)
-            max_ttl: Retention to apply whether the table is new or already exists
-                (QuestDB TTL shorthand, e.g. "30 days"). None leaves retention untouched.
-                Backends without retention accept and ignore it.
+            max_ttl: Retention cap for the table. Implementations apply it when the table has
+                no retention or a longer one and keep a shorter one, so an operator can tighten
+                retention per environment without a restart undoing it; raising retention is a
+                deliberate manual step. None leaves retention untouched. Default DEFAULT_TABLE_TTL.
         """
         pass
 
