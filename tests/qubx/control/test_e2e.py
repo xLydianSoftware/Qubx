@@ -62,17 +62,18 @@ def _find_free_port() -> int:
         return s.getsockname()[1]
 
 
-def _make_mock_data_provider(instruments: list[Instrument], is_simulation: bool = False):
+def _make_mock_data_provider(instruments: list[Instrument], channel: CtrlChannel, is_simulation: bool = False):
     dp = MagicMock()
     dp.is_simulation = is_simulation
-    dp.channel = CtrlChannel("test")
+    dp.channel = channel
     dp.instruments = instruments
     return dp
 
 
-def _make_mock_broker():
+def _make_mock_broker(channel: CtrlChannel):
     broker = MagicMock()
     broker.exchange.return_value = "BINANCE.UM"
+    broker.channel = channel
     return broker
 
 
@@ -118,8 +119,9 @@ def e2e_server():
     """Build a real StrategyContext + ControlServer, yield the running server URL, then tear down."""
     instruments = [lookup.find_symbol("BINANCE.UM", "BTCUSDT"), lookup.find_symbol("BINANCE.UM", "ETHUSDT")]
 
-    dp = _make_mock_data_provider(instruments, is_simulation=False)
-    broker = _make_mock_broker()
+    channel = CtrlChannel("test")
+    dp = _make_mock_data_provider(instruments, channel, is_simulation=False)
+    broker = _make_mock_broker(channel)
     account = _make_mock_account(instruments)
     tp = _make_time_provider()
     logging = _make_logging()
@@ -132,6 +134,7 @@ def e2e_server():
         data_providers=[dp],
         account_manager=account,
         scheduler=scheduler,
+        channel=channel,
         time_provider=tp,
         instruments=instruments,
         logging=logging,
@@ -152,7 +155,7 @@ def e2e_server():
     # Start the data processing loop in a thread (so commands get drained)
     ctx._thread_data_loop = Thread(
         target=ctx._StrategyContext__process_incoming_data_loop,
-        args=(dp.channel,),
+        args=(channel,),
         daemon=True,
         name="TestProcessorThread",
     )
@@ -172,7 +175,7 @@ def e2e_server():
     yield base_url, ctx
 
     # Teardown
-    dp.channel.stop()
+    channel.stop()
     server.stop()
 
 

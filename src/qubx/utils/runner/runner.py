@@ -663,6 +663,7 @@ def create_strategy_context(
         data_providers=list(_exchange_to_data_provider.values()),
         account_manager=_am,
         scheduler=_sched,
+        channel=_chan,
         time_provider=_time,
         instruments=_instruments,
         logging=_logging,

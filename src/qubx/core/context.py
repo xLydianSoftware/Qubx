@@ -105,6 +105,14 @@ def check_transfer_manager(func: Callable) -> Callable:
     return wrapper
 
 
+def _producer_name(producer: Any) -> str:
+    """Label a data provider / connector for the channel-invariant error message."""
+    _exchange = getattr(producer, "exchange", None)
+    if callable(_exchange):
+        return str(_exchange())
+    return str(getattr(producer, "exchange_name", None) or type(producer).__name__)
+
+
 class StrategyContext(IStrategyContext):
     _market_data_provider: IMarketManager
     _universe_manager: IUniverseManager
@@ -117,6 +125,7 @@ class StrategyContext(IStrategyContext):
     _data_providers: list[IDataProvider]  # market data provider
     _logging: StrategyLogging  # recording all activities for the strat: execs, positions, portfolio
     _scheduler: BasicScheduler
+    _channel: CtrlChannel  # the one data bus: connectors publish, the ProcessorThread drains
     _initial_instruments: list[Instrument]
     _strategy_name: str
     _delisting_detector: DelistingDetector
@@ -154,6 +163,7 @@ class StrategyContext(IStrategyContext):
         data_providers: list[IDataProvider],
         account_manager: AccountManager,
         scheduler: BasicScheduler,
+        channel: CtrlChannel,
         time_provider: ITimeProvider,
         instruments: list[Instrument],
         logging: StrategyLogging,
@@ -202,6 +212,19 @@ class StrategyContext(IStrategyContext):
         self._data_providers = data_providers
         self._logging = logging
         self._scheduler = scheduler
+        self._channel = channel
+        # - one bus per context: a producer on a different channel would publish into a
+        #   queue nobody drains, so its events would simply never arrive. `channel` reaches
+        #   connectors through ChannelEmitter rather than the IConnector protocol, so one
+        #   without the attribute is simply not checked.
+        for _label, _producers in (("data provider", tuple(data_providers)), ("connector", tuple(connectors.values()))):
+            for _producer in _producers:
+                _producer_channel = getattr(_producer, "channel", None)
+                if _producer_channel is not None and _producer_channel is not channel:
+                    raise ValueError(
+                        f"{_label} {_producer_name(_producer)} is bound to a different channel "
+                        "than the one passed to StrategyContext"
+                    )
         self._initial_instruments = instruments
 
         self._exporter = exporter
@@ -245,6 +268,7 @@ class StrategyContext(IStrategyContext):
         self._subscription_manager = SubscriptionManager(
             time_provider=self._time_provider,
             data_providers=self._data_providers,
+            channel=self._channel,
             health_monitor=self._health_monitor,
             strategy_state=self._strategy_state,
             default_base_subscription=DataType.ORDERBOOK[0, 1]
@@ -419,7 +443,7 @@ class StrategyContext(IStrategyContext):
         self._scheduler.run()
 
         # - create incoming market data processing
-        databus = self._data_providers[0].channel
+        databus = self._channel
         databus.register(self)
 
         # - bring up exchange connectors (no-op in simulation)
@@ -543,7 +567,7 @@ class StrategyContext(IStrategyContext):
 
             # Stop the channel
             try:
-                self._data_providers[0].channel.stop()
+                self._channel.stop()
             except Exception as e:
                 logger.error(f"[StrategyContext] :: Failed to stop data channel: {e}")
 
@@ -639,6 +663,11 @@ class StrategyContext(IStrategyContext):
     @property
     def status(self) -> QubxStatusInfo:
         return self._status.info
+
+    @property
+    def channel(self) -> CtrlChannel:
+        # - framework-internal: not on IStrategyContext, strategies wake handlers via post_event()
+        return self._channel
 
     @property
     def is_simulation(self) -> bool:
@@ -1048,6 +1077,25 @@ class StrategyContext(IStrategyContext):
     def schedule(self, cron_schedule: str, method: Callable[["IStrategyContext"], None]) -> str:
         self._assert_not_fit_thread("schedule")
         return self._processing_manager.schedule(cron_schedule, method)
+
+    def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
+        self._assert_not_fit_thread("register_handler")
+        self._processing_manager.register_handler(name, method)
+
+    def has_handler(self, name: str) -> bool:
+        # - a dict membership read: no fit-thread tripwire, safe from any thread
+        return self._processing_manager.has_handler(name)
+
+    def post_event(self, name: str, payload: Any = None) -> None:
+        # - live, the channel send is a Queue.put_nowait, so this is callable from any thread
+        #   and the handler runs on the ProcessorThread; SimulatedCtrlChannel instead dispatches
+        #   synchronously on the caller, so in simulation post only from the strategy thread.
+        #   The payload is handed over, not copied — see IStrategyContext.post_event.
+        # - the guard: an unknown name would decay into a bogus MarketEvent(instrument=None)
+        #   delivered to on_market_data (ProcessingManager._process_custom_event)
+        if not self._processing_manager.has_handler(name):
+            raise ValueError(f"post_event: '{name}' has no registered handler (call register_handler first)")
+        self._channel.send((None, name, payload, False))
 
     def unschedule(self, event_id: str) -> bool:
         self._assert_not_fit_thread("unschedule")

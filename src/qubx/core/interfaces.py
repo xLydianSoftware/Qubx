@@ -1391,6 +1391,27 @@ class IProcessingManager:
         """
         ...
 
+    def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
+        """
+        Register ``method(ctx, payload)`` to run on the strategy thread when post_event(name)
+        is called — the on-demand counterpart of schedule(), with no cron armed.
+        Strategy-thread only; schedule()/delay() callbacks keep their ``method(ctx)`` shape
+        and share the name space with these.
+
+        Raises:
+            ValueError: the name is empty, already taken in either registry, collides with a
+                built-in event or data type, or the method cannot take (ctx, payload).
+        """
+        ...
+
+    def has_handler(self, name: str) -> bool:
+        """
+        True if a method was registered under this event name via register_handler. Safe to
+        call from any thread. Ids minted by schedule()/delay() are NOT covered — those
+        callbacks take (ctx) only and are not postable.
+        """
+        ...
+
     def unschedule(self, event_id: str) -> bool:
         """
         Unschedule a scheduled event.
@@ -1543,6 +1564,25 @@ class IStrategyContext(
         Seeded from ``live.default_instrument_leverage`` and overridable in ``on_init`` via
         ``initializer.set_default_instrument_leverage``. Raises on a read-only account; refuses a
         value below 1 with an error and changes nothing.
+        """
+        ...
+
+    def post_event(self, name: str, payload: Any = None) -> None:
+        """
+        Wake a handler registered with register_handler(name), optionally carrying a payload.
+
+        The payload is HANDED OVER, not copied: the posting thread must not mutate it after
+        the call and the handler must treat it as read-only. A consumer that can re-read its
+        data from the source (e.g. a Redis stream) should post None and re-read on the
+        strategy thread instead.
+
+        Live: enqueued on the data channel and returns immediately, so it is callable from
+        any thread and the handler runs on the ProcessorThread; after the context stopped it
+        is a silent no-op. Simulation: the channel dispatches synchronously, so the handler
+        runs inline on the caller — post only from the strategy thread there.
+
+        Raises:
+            ValueError: no handler is registered under ``name``.
         """
         ...
 

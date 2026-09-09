@@ -181,6 +181,12 @@ class ProcessingManager(IProcessingManager):
     # - custom scheduled methods
     _custom_scheduled_methods: dict[str, Callable] = {}
 
+    # - on-demand handlers woken by post_event; separate from _custom_scheduled_methods
+    #   because the call shape differs: method(ctx, payload) vs method(ctx).
+    #   Annotation only, no mutable class-level default — a half-constructed object then
+    #   fails loudly instead of quietly sharing one dict with every other instance.
+    _event_handlers: dict[str, Callable[[IStrategyContext, Any], None]]
+
     def __init__(
         self,
         context: IStrategyContext,
@@ -252,6 +258,7 @@ class ProcessingManager(IProcessingManager):
         self._instruments_in_init_stage = set()
         self._active_targets = {}
         self._custom_scheduled_methods = {}
+        self._event_handlers = {}
         self._pending_no_quote_signals = {}
 
         # - Threaded fit executor: live-only. Simulation ALWAYS stays inline regardless
@@ -319,6 +326,79 @@ class ProcessingManager(IProcessingManager):
 
         self._register_schedule(event_id, rule["schedule"], method)
         return event_id
+
+    def _validate_handler_name(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
+        """Name and arity checks shared by register_handler and FitContext.register_handler.
+
+        Stateless with respect to the registry (no duplicate check) so the fit thread can run
+        it eagerly — _handle_fit_commit only logs a deferred op's exception.
+
+        Rejects any name DataType.from_str resolves, not just the keys of _handlers: a data
+        type without a `_handle_*` method (funding_rate, open_interest, ...) flows through
+        _process_custom_event, which consults the handler registries FIRST and returns before
+        __update_base_data — such a handler would silently swallow live market data for the
+        whole run. The arity guard is the same class of protection: a method(ctx) handler
+        would raise a TypeError that _process_custom_event catches and logs, one line per
+        post, while the strategy looks alive.
+
+        Raises:
+            ValueError: the name is empty, shadows a built-in, or the method cannot take
+                (ctx, payload).
+        """
+        if not name:
+            raise ValueError("register_handler: name must be non-empty")
+        if name in self._handlers:
+            raise ValueError(f"register_handler: '{name}' shadows a built-in data-type handler")
+        try:
+            _dtype, _ = DataType.from_str(name)
+        except ValueError as e:
+            raise ValueError(f"register_handler: '{name}' is not a valid event name: {e}") from e
+        if _dtype is not DataType.NONE:
+            raise ValueError(f"register_handler: '{name}' shadows the built-in data type '{_dtype.value}'")
+        self._validate_handler_arity(name, method)
+
+    @staticmethod
+    def _validate_handler_arity(name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
+        """Reject a handler that dispatch could not call as method(ctx, payload).
+
+        Best-effort: a callable exposing no signature at all (some C builtins) is accepted
+        rather than turned into a registration failure.
+        """
+        try:
+            sig = inspect.signature(method)
+        except (TypeError, ValueError):
+            return  # - nothing to check, let dispatch try
+        params = list(sig.parameters.values())
+        if any(p.kind is inspect.Parameter.VAR_POSITIONAL for p in params):
+            return  # - *args swallows both
+        positional = [
+            p for p in params if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+        ]
+        required = [p for p in positional if p.default is inspect.Parameter.empty]
+        if len(positional) < 2 or len(required) > 2:
+            raise ValueError(f"register_handler: '{name}' handler must accept (ctx, payload); got {sig}")
+
+    def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
+        """
+        Register ``method(ctx, payload)`` to run on the ProcessorThread whenever an event with
+        this name is posted (see IStrategyContext.post_event). The payload is handed over, not
+        copied: the poster must not mutate it afterwards.
+
+        Raises:
+            ValueError: see _validate_handler_name, or the name is already registered.
+        """
+        self._validate_handler_name(name, method)
+        # - one dispatch key, two registries: _process_custom_event matches the event type
+        #   against both, so a name in both would have one branch shadow the other
+        if name in self._event_handlers or name in self._custom_scheduled_methods:
+            raise ValueError(f"register_handler: '{name}' is already registered")
+        self._event_handlers[name] = method
+
+    def has_handler(self, name: str) -> bool:
+        """True if register_handler registered a method under this name. A dict membership
+        read — safe from any thread. Does NOT cover scheduled/delayed ids: those callbacks
+        take (ctx) only, and post_event gates on this."""
+        return name in self._event_handlers
 
     def _register_schedule(self, event_id: str, cron_schedule: str, method: Callable) -> None:
         # - seam shared with FitContext.schedule (validated + recorded on the fit thread
@@ -1009,6 +1089,16 @@ class ProcessingManager(IProcessingManager):
     def _process_custom_event(
         self, instrument: Instrument | None, event_type: str, event_data: Any
     ) -> MarketEvent | None:
+        # - like scheduled methods, no MarketEvent is produced: on_event / on_market_data
+        #   must not see a synthetic event for a hook the strategy woke itself
+        if event_type in self._event_handlers:
+            try:
+                self._event_handlers[event_type](self._context, event_data)
+            except Exception as e:
+                logger.error(f"[ProcessingManager] :: Error executing registered handler for event {event_type}: {e}")
+                logger.opt(colors=False).error(traceback.format_exc())
+            return None
+
         # Handle custom scheduled events
         if event_type in self._custom_scheduled_methods:
             try:
@@ -1280,7 +1370,7 @@ class ProcessingManager(IProcessingManager):
             return
         assert self._fit_executor is not None  # constructed with the "thread" mode
         # - the commit rides the same channel the ProcessorThread drains
-        channel = self._context._data_providers[0].channel
+        channel = self._context.channel
         self._fit_is_running = True
         try:
             # - cache finalization mutates ctx state: keep it on the ProcessorThread (fast)

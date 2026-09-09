@@ -18,6 +18,7 @@ def make_pm(**overrides) -> ProcessingManager:
     pm._context.emitter = None
     pm._context.initializer.get_fit_on_start.return_value = False  # a MagicMock would read as the knob being on
     pm._boot = BootStateMachine(MagicMock())  # __new__ skips __init__, which builds it
+    pm._event_handlers = {}  # annotation-only on the class, so __new__ leaves it unset
     pm._position_gathering = MagicMock()
     pm._exporter = None
     pm._universe_manager = MagicMock()
@@ -30,3 +31,14 @@ def make_pm(**overrides) -> ProcessingManager:
     for name, value in overrides.items():
         setattr(pm, name, value)
     return pm
+
+
+def real_handler_map() -> dict:
+    """The ``_handlers`` map exactly as ``ProcessingManager.__init__`` builds it, so renaming
+    or removing a ``_handle_*`` method breaks the shadow-guard tests instead of silently
+    leaving a name unguarded."""
+    return {
+        n.split("_handle_")[1]: f
+        for n, f in ProcessingManager.__dict__.items()
+        if callable(f) and n.startswith("_handle_")
+    }

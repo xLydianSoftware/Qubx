@@ -244,6 +244,19 @@ class FitContext(ITimeProvider):
         self._fit_state.record(partial(_pm._register_schedule, event_id, rule["schedule"], method))
         return event_id
 
+    def register_handler(self, name: str, method: Callable[["IStrategyContext", Any], None]) -> None:
+        # - validate eagerly, defer only the dict write: _handle_fit_commit merely LOGS a
+        #   deferred op's exception, so a name/arity rejected there would fail silently. The
+        #   duplicate check stays deferred — it depends on the registry's state at commit time.
+        _pm = self._context._processing_manager  # type: ignore[attr-defined]
+        _pm._validate_handler_name(name, method)
+        self._fit_state.record(partial(_pm.register_handler, name, method))
+
+    def post_event(self, name: str, payload: Any = None) -> None:
+        # - no deferral needed: the live channel's queue put is thread-safe (simulation
+        #   dispatches on the caller instead, but never constructs a FitContext)
+        self._context.post_event(name, payload)
+
     def delay(self, duration: str, method: Callable[["IStrategyContext"], None]) -> str:
         # - schedule-ish: deferred like schedule(); the delay countdown starts when the
         #   FitCommit is applied
@@ -451,6 +464,7 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "get_warmup",
     "auto_subscribe",
     "get_event_schedule",
+    "has_handler",  # dict membership read — safe from any thread
     "is_fitted",
     # (is_trading_allowed is an explicit method above — the real one can execute a
     # queued removal in place)
