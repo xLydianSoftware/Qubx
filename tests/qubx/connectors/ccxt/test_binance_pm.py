@@ -12,7 +12,8 @@ Pins the PM routing fix and the PM-specific connector subclass:
 3. ``parse_position_risk`` defaults marginMode to cross (papi payloads carry neither
    marginType nor isolatedMargin; PM is always cross).
 4. ``BinancePmCcxtConnector._extract_venue_figures`` reads the papiGetAccount dict the
-   exchange class grafts into fetch_balance's ``info`` (uniMMR sentinel mapped to None).
+   exchange class grafts into fetch_balance's ``info`` (uniMMR sentinel mapped to None,
+   account-wide margin totals passed through).
 5. The factory resolves ``CUSTOM_CONNECTORS`` by venue name first, canonical second.
 6. ``ccxt_extract_leverage_settings`` accepts papi's ``maxNotional`` spelling.
 
@@ -198,12 +199,13 @@ class TestBinancePmVenueFigures:
                         "totalAvailableBalance": "359.52",
                         "uniMMR": "731.2",
                         "accountMaintMargin": "0.55",
+                        "accountInitialMargin": "44.99",
                         "virtualMaxWithdrawAmount": "358.0",
                     },
                 }
             }
         )
-        assert figures == (404.51, 359.52, 731.2, 358.0)
+        assert figures == (404.51, 359.52, 731.2, 358.0, 0.55, 44.99)
 
     def test_unimmr_sentinel_maps_to_none(self):
         # no positions: accountMaintMargin 0 and uniMMR is a 99999999 sentinel
@@ -216,16 +218,18 @@ class TestBinancePmVenueFigures:
                         "totalAvailableBalance": "404.51",
                         "uniMMR": "99999999",
                         "accountMaintMargin": "0.0",
+                        "accountInitialMargin": "0.0",
                         "virtualMaxWithdrawAmount": "404.51",
                     },
                 }
             }
         )
-        assert figures == (404.51, 404.51, None, 404.51)
+        # the 0.0 margin totals are real venue values (no positions), not "unreported"
+        assert figures == (404.51, 404.51, None, 404.51, 0.0, 0.0)
 
     def test_missing_graft_degrades_to_none(self):
         # raw papiGetBalance list info (graft failed) must not sink the snapshot
-        assert self._connector()._extract_venue_figures({"info": [{"asset": "USDT"}]}) == (None, None, None, None)
+        assert self._connector()._extract_venue_figures({"info": [{"asset": "USDT"}]}) == (None,) * 6
 
 
 DOGE_MARKET = {

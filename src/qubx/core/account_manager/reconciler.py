@@ -504,7 +504,17 @@ class Reconciler:
 
         # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
         #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.
-        if any(v is not None for v in (snap.equity, snap.available_margin, snap.margin_ratio, snap.withdrawable)):
+        if any(
+            v is not None
+            for v in (
+                snap.equity,
+                snap.available_margin,
+                snap.margin_ratio,
+                snap.withdrawable,
+                snap.total_maint_margin,
+                snap.total_initial_margin,
+            )
+        ):
             state.set_venue_figures(
                 VenueAccountFigures(
                     as_of=snap.as_of,
@@ -512,8 +522,21 @@ class Reconciler:
                     available_margin=snap.available_margin,
                     margin_ratio=snap.margin_ratio,
                     withdrawable=snap.withdrawable,
+                    total_maint_margin=snap.total_maint_margin,
+                    total_initial_margin=snap.total_initial_margin,
                 )
             )
+        # - diagnostic only, changes no value: a venue claiming zero maintenance margin on a
+        #   live book is the false-safe signature (Binance UM single-asset mode reports
+        #   USDT-only totals, so a non-USDT-margined position reads as zero). The reported
+        #   0.0 is still used as-is — it is a value, not "unreported".
+        if snap.total_maint_margin == 0.0 and snap.positions:
+            open_count = sum(1 for p in snap.positions if p.is_open())
+            if open_count:
+                _log.warning(
+                    f"[{state.exchange}] reconcile: venue reports total_maint_margin=0.0 with {open_count} open "
+                    "position(s) — check the margin asset/mode of those positions"
+                )
 
         return actions + self._dispatch(SnapshotIn(snap), state, now)
 

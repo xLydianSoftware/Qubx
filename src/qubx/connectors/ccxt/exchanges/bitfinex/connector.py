@@ -16,7 +16,7 @@ class BitfinexCcxtConnector(_TwoStreamCcxtConnector):
 
     def _extract_venue_figures(
         self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None]:
+    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
         """Deliberately all-None: Bitfinex's ``fetch_balance`` carries no account figures.
 
         Its raw ``info`` is the bare wallets *list* from ``auth/r/wallets`` (the
@@ -25,4 +25,4 @@ class BitfinexCcxtConnector(_TwoStreamCcxtConnector):
         snapshot seam's reach. All-None → AM derives every metric from balances +
         positions.
         """
-        return None, None, None, None
+        return None, None, None, None, None, None

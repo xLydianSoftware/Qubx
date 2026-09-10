@@ -2,6 +2,7 @@ from unittest.mock import MagicMock
 
 import numpy as np
 
+from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_order_info
 from qubx.core.account_manager import AccountManager, AccountManagerConfig
 from qubx.core.basics import (
@@ -82,6 +83,8 @@ def _snap_event(
     available_margin=None,
     margin_ratio=None,
     withdrawable=None,
+    total_maint_margin=None,
+    total_initial_margin=None,
 ):
     return AccountSnapshotEvent(
         instrument=None,
@@ -95,6 +98,8 @@ def _snap_event(
             available_margin=available_margin,
             margin_ratio=margin_ratio,
             withdrawable=withdrawable,
+            total_maint_margin=total_maint_margin,
+            total_initial_margin=total_initial_margin,
         ),
     )
 
@@ -694,6 +699,86 @@ def test_snapshot_sets_venue_figures_and_metrics_prefer_them():
     assert am.get_available_margin("binance") == 4000.0
     assert am.get_margin_ratio("binance") == 42.0
     assert am.get_withdrawable_balance("binance") == 3500.0
+
+
+def test_snapshot_margin_totals_round_trip_and_prefer_venue():
+    # The venue's account-level margin totals ride the snapshot into VenueAccountFigures
+    # (a snapshot carrying only them still sets the capture) and win over the position sums.
+    am = _am()
+    state = am._states["binance"]
+    pos = Position(_instrument())
+    pos.initial_margin = 10.0
+    pos.maint_margin = 4.0
+    state.set_position(pos.instrument, pos)
+    am.apply(_snap_event(total_maint_margin=11.5, total_initial_margin=143.4))
+    figures = state.get_venue_figures()
+    assert figures is not None
+    assert figures.total_maint_margin == 11.5
+    assert figures.total_initial_margin == 143.4
+    assert am.get_total_maint_margin("binance") == 11.5
+    assert am.get_total_initial_margin("binance") == 143.4
+
+
+def test_snapshot_zero_margin_totals_are_trusted_end_to_end():
+    # The production incident: the venue reports account-level margin totals of 0.0 while
+    # the local position still carries stale non-zero per-position margins. 0.0 is a
+    # reported value, not "unreported": it must survive the reconciler's is-not-None guard
+    # (a truthiness regression would silently drop exactly this case) and win.
+    am = _am()
+    state = am._states["binance"]
+    pos = Position(_instrument())
+    pos.initial_margin = 143.4
+    pos.maint_margin = 11.539
+    state.set_position(pos.instrument, pos)
+    am.apply(_snap_event(total_maint_margin=0.0, total_initial_margin=0.0))
+    assert am.get_total_maint_margin("binance") == 0.0
+    assert am.get_total_initial_margin("binance") == 0.0
+    assert am.get_margin_ratio("binance") == 100.0
+
+
+def test_snapshot_zero_maint_margin_on_live_book_warns_but_changes_nothing():
+    # Diagnostic only: a venue claiming zero maintenance margin while its own snapshot
+    # carries an open position is the false-safe signature (Binance UM single-asset mode
+    # reports USDT-only totals). It logs a WARNING naming the exchange; the value still wins.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.set_position(inst, Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0))
+    snap_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(m), level="WARNING")
+    try:
+        am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos], total_maint_margin=0.0))
+    finally:
+        logger.remove(sink_id)
+
+    assert any(
+        m.record["level"].name == "WARNING" and "[binance]" in m and "total_maint_margin=0.0" in m for m in messages
+    )
+    assert am.get_total_maint_margin("binance") == 0.0
+
+
+def test_snapshot_zero_maint_margin_warning_stays_silent_otherwise():
+    # No open position in the snapshot (flat book) or a non-zero venue total: no warning.
+    am = _am()
+    state = am._states["binance"]
+    inst = _instrument()
+    state.set_position(inst, Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0))
+    open_pos = Position(instrument=inst, quantity=1.0, pos_average_price=50_000.0)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+
+    messages: list[str] = []
+    sink_id = logger.add(lambda m: messages.append(m), level="WARNING")
+    try:
+        am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[open_pos], total_maint_margin=25.0))
+        am.apply(_snap_event(as_of="2026-05-28T01:01:00", total_maint_margin=0.0))  # positions not observed
+        am.apply(_snap_event(as_of="2026-05-28T01:02:00", positions=[], total_maint_margin=0.0))  # flat book
+    finally:
+        logger.remove(sink_id)
+
+    assert not [m for m in messages if "total_maint_margin=0.0" in m]
 
 
 def test_snapshot_without_figures_keeps_previous_capture():
