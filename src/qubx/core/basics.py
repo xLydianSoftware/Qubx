@@ -1160,7 +1160,9 @@ class Position:
         self.market_value = 0.0
         self.market_value_funds = 0.0
         self.initial_margin = 0.0
+        self._initial_margin_external = False
         self.maint_margin = 0.0
+        self._maint_margin_external = False
         self.pnl = self.r_pnl  # unrealized PnL is zero at zero quantity
         self.__pos_incr_qty = 0
 
@@ -1541,6 +1543,14 @@ class Position:
         self._initial_margin_external = True
 
     def _update_maint_margin(self) -> None:
+        # A flat position reserves nothing. Venues report margins for OPEN positions only
+        # (HL clearinghouseState / Binance positionRisk omit flat ones), so a venue-reported
+        # value has no refresh path after a close — drop it, and its flag, on going flat.
+        if not self.is_open():
+            self.maint_margin = 0.0
+            self._maint_margin_external = False
+            return
+
         # Skip recalculation if margin is managed externally (live trading with exchange-provided values)
         if self._maint_margin_external:
             return
@@ -1554,6 +1564,12 @@ class Position:
             self.maint_margin = 0.0
 
     def _update_initial_margin(self) -> None:
+        # Same flat guard as _update_maint_margin: a venue-reported value has no refresh path once flat.
+        if not self.is_open():
+            self.initial_margin = 0.0
+            self._initial_margin_external = False
+            return
+
         # Skip recalculation if margin is managed externally (live trading with exchange-provided values)
         if self._initial_margin_external:
             return

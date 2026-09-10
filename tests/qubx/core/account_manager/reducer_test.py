@@ -73,13 +73,19 @@ def _fill(trade_id: str = "t1", amount: float = 0.5, price: float = 100.0) -> De
     return Deal(trade_id=trade_id, order_id="v1", time=T0, amount=amount, price=price, aggressive=True)
 
 
-def _order(state: AccountState, cid: str = "c1", status: OrderStatus = OrderStatus.SUBMITTED, venue_id=None) -> Order:
+def _order(
+    state: AccountState,
+    cid: str = "c1",
+    status: OrderStatus = OrderStatus.SUBMITTED,
+    venue_id=None,
+    side: OrderSide = OrderSide.BUY,
+) -> Order:
     order = Order(
         client_order_id=cid,
         type=OrderType.LIMIT,
         instrument=BTC,
         quantity=1.0,
-        side=OrderSide.BUY,
+        side=side,
         time_in_force="gtc",
         status=status,
         venue_order_id=venue_id,
@@ -606,6 +612,31 @@ def test_futures_fee_debits_settle_balance():
     apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=deal), T1)
     # futures: settle (USDT) += realized_pnl - fee = 0 - 2
     assert _present(state.get_balance("USDT")).total == 998.0
+
+
+def test_closing_fill_clears_venue_reported_margins():
+    # Venues report margins for OPEN positions only, so a value a snapshot stamped on the
+    # position (set_external_*_margin) has no refresh path once the deal ledger books the size
+    # to zero. The closing fill itself must drop it — otherwise total_maint_margin() and
+    # margin_ratio() keep reporting a maintenance requirement with no position behind it.
+    state = _state()
+    _seed_usdt(state, 1000.0)
+    _order(state, status=OrderStatus.ACCEPTED)
+    apply(state, OrderFilledEvent(instrument=None, client_order_id="c1", fill=_fill("t1", 0.5, 50_000.0)), T1)
+
+    pos = _present(state.get_position(BTC))
+    pos.set_external_maint_margin(107.40)  # as reconcile_position_from_snapshot does
+    pos.set_external_initial_margin(268.5)
+    assert state.total_maint_margin() == 107.40
+    assert state.margin_ratio() < 100.0
+
+    _order(state, cid="c2", status=OrderStatus.ACCEPTED, side=OrderSide.SELL)
+    apply(state, OrderFilledEvent(instrument=None, client_order_id="c2", fill=_fill("t2", -0.5, 51_000.0)), T1)
+
+    assert pos.quantity == 0.0
+    assert state.total_maint_margin() == 0.0
+    assert state.total_initial_margin() == 0.0
+    assert state.margin_ratio() == 100.0
 
 
 # --------------------------------------------------------------------------- #
