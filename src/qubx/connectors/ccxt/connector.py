@@ -988,17 +988,19 @@ class CcxtConnector(ChannelEmitter):
         symbol = instrument_to_ccxt_symbol(instrument)
         try:
             row = self._run_sync(self._em.exchange.fetch_leverage(symbol))
+            value = row.get("longLeverage") or row.get("shortLeverage")
+            if value is None:
+                return None
+            leverage = float(value)
+            configured = int(leverage)  # the cache holds what the venue accepts: whole numbers
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[{self.exchange_name}] fetch_leverage for {instrument.symbol}: {e}")
             return None
-        value = row.get("longLeverage") or row.get("shortLeverage")
-        if value is None:
-            return None
         held = self._leverage_cache.get(symbol)
         self._leverage_cache[symbol] = _LeverageInfo(
-            configured=int(value), maximum=held.maximum if held is not None else None
+            configured=configured, maximum=held.maximum if held is not None else None
         )
-        return float(value)
+        return leverage
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         """The venue's published maximum, from the poller's cache.
@@ -1023,8 +1025,27 @@ class CcxtConnector(ChannelEmitter):
         return notional if notional is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> str | None:
-        row = self._fetch_position_row(instrument)
-        return normalize_margin_mode(row.get("marginMode")) if row is not None else None
+        rows = self._fetch_position_rows(instrument)
+        if rows is None:
+            # the read failed; a second venue call would only double the caller's stall
+            return None
+        mode = normalize_margin_mode(rows[0].get("marginMode")) if rows else None
+        return mode if mode is not None else self._fetch_margin_mode_single(instrument)
+
+    def _fetch_margin_mode_single(self, instrument: Instrument) -> str | None:
+        """Per-symbol venue read for the mode a position row does not carry.
+
+        Truthy (not ``is True``, unlike ``fetchLeverage``): ``'emulated'`` defers to
+        ``fetch_margin_modes``, which no other read here makes.
+        """
+        if not self._em.exchange.has.get("fetchMarginMode"):
+            return None
+        try:
+            row = self._run_sync(self._em.exchange.fetch_margin_mode(instrument_to_ccxt_symbol(instrument)))
+            return normalize_margin_mode(row.get("marginMode")) if row is not None else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] fetch_margin_mode for {instrument.symbol}: {e}")
+            return None
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
         row = self._fetch_position_row(instrument)
@@ -1076,10 +1097,14 @@ class CcxtConnector(ChannelEmitter):
 
     def _fetch_position_row(self, instrument: Instrument) -> dict[str, Any] | None:
         """Blocking single-symbol position pull; None on error or when no position is held."""
+        rows = self._fetch_position_rows(instrument)
+        return rows[0] if rows else None
+
+    def _fetch_position_rows(self, instrument: Instrument) -> list[dict[str, Any]] | None:
+        """As ``_fetch_position_row`` but keeps the two apart: None on error, [] when flat."""
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
-            rows = self._run_sync(self._em.exchange.fetch_positions([symbol]))
-            return rows[0] if rows else None
+            return self._run_sync(self._em.exchange.fetch_positions([symbol]))
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] fetch position for {instrument.symbol}: {e}")
             return None

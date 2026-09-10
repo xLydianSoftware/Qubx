@@ -305,6 +305,79 @@ def test_update_position_inserts_then_resets_existing():
     assert _present(state.get_position(inst)).quantity == 1.0
 
 
+def _settings_snapshot(inst, *, qty=1.0, avg=50_000.0, adl=2, leverage=10.0, margin_mode="cross", max_notional=1e6):
+    p = Position(inst, quantity=qty, pos_average_price=avg)
+    p.adl_level = adl
+    p.leverage = leverage
+    p.margin_mode = margin_mode
+    p.max_notional = max_notional
+    return p
+
+
+def test_apply_position_settings_copies_venue_fields_onto_held_position():
+    state = AccountState("binance", "USDT")
+    inst = _instrument("BTCUSDT")
+    held = Position(inst, quantity=1.0, pos_average_price=50_000.0)
+    state.set_position(inst, held)
+
+    state.apply_position_settings(_settings_snapshot(inst))
+
+    assert (held.adl_level, held.leverage, held.margin_mode, held.max_notional) == (2, 10.0, "cross", 1e6)
+    assert state.get_position(inst) is held  # identity preserved, never re-inserted
+
+
+def test_apply_position_settings_leaves_size_and_margin_untouched():
+    state = AccountState("binance", "USDT")
+    inst = _instrument("BTCUSDT")
+    held = Position(inst, quantity=1.0, pos_average_price=50_000.0)
+    held.set_external_maint_margin(123.0)
+    state.set_position(inst, held)
+
+    state.apply_position_settings(_settings_snapshot(inst, qty=7.0, avg=61_000.0))
+
+    assert held.quantity == 1.0
+    assert held.position_avg_price == 50_000.0
+    assert held.maint_margin == 123.0
+
+
+def test_apply_position_settings_keeps_last_known_when_snapshot_omits_a_field():
+    state = AccountState("binance", "USDT")
+    inst = _instrument("BTCUSDT")
+    held = Position(inst, quantity=1.0, pos_average_price=50_000.0)
+    state.set_position(inst, held)
+    state.apply_position_settings(_settings_snapshot(inst))
+
+    # a snapshot carrying none of them must not clobber the last-known values to None
+    state.apply_position_settings(
+        _settings_snapshot(inst, adl=None, leverage=None, margin_mode=None, max_notional=None)
+    )
+    assert (held.adl_level, held.leverage, held.margin_mode, held.max_notional) == (2, 10.0, "cross", 1e6)
+
+
+def test_apply_position_settings_is_noop_for_instrument_not_held():
+    state = AccountState("binance", "USDT")
+    inst = _instrument("BTCUSDT")
+
+    state.apply_position_settings(_settings_snapshot(inst))
+
+    assert state.get_position(inst) is None  # never materializes a position
+    assert state.get_positions() == {}
+
+
+def test_reconcile_position_from_snapshot_still_applies_settings():
+    # the pre-existing path must behave exactly as before the settings extraction
+    state = AccountState("binance", "USDT")
+    inst = _instrument("BTCUSDT")
+    held = Position(inst, quantity=1.0, pos_average_price=50_000.0)
+    state.set_position(inst, held)
+
+    changed = state.reconcile_position_from_snapshot(_settings_snapshot(inst, qty=2.0, avg=51_000.0))
+
+    assert changed is True
+    assert held.quantity == 2.0
+    assert (held.adl_level, held.leverage, held.margin_mode, held.max_notional) == (2, 10.0, "cross", 1e6)
+
+
 # --------------------------------------------------------------------------- #
 # WS push side-tables: apply_balance_push / push as_of ratchets (F26)
 # --------------------------------------------------------------------------- #

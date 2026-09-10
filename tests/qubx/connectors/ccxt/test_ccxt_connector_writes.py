@@ -7,7 +7,9 @@ deterministically without crossing a real thread/loop boundary.
 """
 
 import asyncio
-from unittest.mock import AsyncMock, Mock, patch
+import gc
+import warnings
+from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import ccxt
 import pytest
@@ -956,6 +958,17 @@ def test_emulated_fetch_leverage_is_not_used() -> None:
     exchange.fetch_leverage.assert_not_awaited()
 
 
+def test_fetch_leverage_single_survives_a_non_numeric_value() -> None:
+    """A venue value int() cannot parse must not raise onto the strategy thread."""
+    exchange = Mock()
+    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": "n/a"})
+    exchange.has = {"editOrder": True, "fetchLeverage": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn._fetch_leverage_single(_instrument()) is None
+    assert "BTC/USDT:USDT" not in conn._leverage_cache
+
+
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:
     exchange = Mock()
     exchange.set_margin_mode = AsyncMock(return_value={})
@@ -1007,6 +1020,153 @@ def test_get_margin_mode_reads_position_row() -> None:
     conn, _, _ = _make_connector(exchange=exchange)
 
     assert conn.get_margin_mode(_instrument()) == "cross"
+
+
+def test_get_margin_mode_falls_back_to_fetch_margin_mode_when_flat() -> None:
+    """Binance v3 positionRisk omits flat symbols, so the position row is empty while flat."""
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    exchange.has = {"editOrder": True, "fetchMarginMode": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_margin_mode(_instrument()) == "isolated"
+    exchange.fetch_margin_mode.assert_awaited_once_with("BTC/USDT:USDT")
+
+
+def test_get_margin_mode_prefers_the_position_row() -> None:
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[_position_row(marginMode="cross")])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    exchange.has = {"editOrder": True, "fetchMarginMode": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_margin_mode(_instrument()) == "cross"
+    exchange.fetch_margin_mode.assert_not_awaited()
+
+
+def test_get_margin_mode_skips_the_fallback_when_unsupported() -> None:
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    exchange.has = {"editOrder": True, "fetchMarginMode": False}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_margin_mode(_instrument()) is None
+    exchange.fetch_margin_mode.assert_not_awaited()
+
+
+def test_get_margin_mode_uses_the_emulated_fallback() -> None:
+    """Unlike fetchLeverage, an 'emulated' fetch_margin_mode defers to a source nothing else tries."""
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "cross"})
+    exchange.has = {"editOrder": True, "fetchMarginMode": "emulated"}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_margin_mode(_instrument()) == "cross"
+
+
+@pytest.mark.parametrize("failure", [ccxt.ExchangeError("boom"), None])
+def test_get_margin_mode_never_raises_on_the_strategy_thread(failure) -> None:
+    """Runs via _run_sync from strategy code — a venue error or a junk payload reads as None."""
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_margin_mode = (
+        AsyncMock(side_effect=failure) if failure is not None else AsyncMock(return_value="not-a-dict")
+    )
+    exchange.has = {"editOrder": True, "fetchMarginMode": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_margin_mode(_instrument()) is None
+
+
+def test_get_margin_mode_falls_back_when_the_row_carries_no_mode() -> None:
+    """A row is not itself an answer: a held Bybit UTA position reports marginMode None."""
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[_position_row(marginMode=None)])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "cross"})
+    exchange.has = {"editOrder": True, "fetchMarginMode": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_margin_mode(_instrument()) == "cross"
+    exchange.fetch_margin_mode.assert_awaited_once_with("BTC/USDT:USDT")
+
+
+def test_a_failed_position_read_does_not_reach_the_fallback() -> None:
+    """A failed read and a flat account must not collapse into the same empty result: falling
+    back on a failure spends a second DEFAULT_VENUE_CALL_TIMEOUT_SECONDS to return the same None."""
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(side_effect=ccxt.NetworkError("venue down"))
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    exchange.has = {"editOrder": True, "fetchMarginMode": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_margin_mode(_instrument()) is None
+    exchange.fetch_margin_mode.assert_not_awaited()
+
+    # the other half of the same branch: flat IS an answer, so [] does reach the fallback
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    assert conn.get_margin_mode(_instrument()) == "isolated"
+    exchange.fetch_margin_mode.assert_awaited_once_with("BTC/USDT:USDT")
+
+
+class _RaisingLoop:
+    """Stands in for the AsyncThreadLoop so the REAL ``_run_sync`` body runs.
+
+    Keeps no reference to the coroutine, nor to the raised exception whose traceback would keep
+    it alive — so a coroutine nothing closes reaches GC and warns, as it would in production.
+    """
+
+    def __init__(self, error: type[BaseException], message: str, *, consumes: bool) -> None:
+        self._error = error
+        self._message = message
+        self._consumes = consumes
+        self.calls = 0
+
+    def run_sync(self, coro, *, timeout: float | None = None):
+        self.calls += 1
+        if self._consumes:
+            coro.close()  # a real timeout leaves the coroutine on the loop, not unawaited
+        raise self._error(self._message)
+
+
+def _connector_and_failing_loop(
+    error: type[BaseException], message: str, *, consumes: bool
+) -> tuple[CcxtConnector, _RaisingLoop]:
+    exchange = Mock()
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    exchange.has = {"editOrder": True, "fetchMarginMode": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    del conn._run_sync  # drop the stub — the guarantee under test is _run_sync's own
+    return conn, _RaisingLoop(error, message, consumes=consumes)
+
+
+def test_get_margin_mode_survives_a_venue_timeout() -> None:
+    """The timeout comes out of _run_sync itself, which every stubbed test skips over."""
+    conn, loop = _connector_and_failing_loop(TimeoutError, "venue call timed out", consumes=True)
+
+    with patch.object(CcxtConnector, "_loop", new_callable=PropertyMock, return_value=loop):
+        assert conn.get_margin_mode(_instrument()) is None
+
+    assert loop.calls == 1  # falling back would stall the caller a second full timeout
+
+
+def test_get_margin_mode_leaks_no_unawaited_coroutine_when_the_loop_refuses() -> None:
+    """The loop-thread guard rejects before the coroutine is ever awaited; _run_sync closes it
+    so a read from the strategy thread leaves no "never awaited" warning behind."""
+    conn, loop = _connector_and_failing_loop(RuntimeError, "run_sync from the loop's own thread", consumes=False)
+
+    with (
+        patch.object(CcxtConnector, "_loop", new_callable=PropertyMock, return_value=loop),
+        warnings.catch_warnings(record=True) as caught,
+    ):
+        warnings.simplefilter("always")
+        assert conn.get_margin_mode(_instrument()) is None
+        gc.collect()
+
+    assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
 
 
 def test_get_adl_level_reads_position_info() -> None:

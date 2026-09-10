@@ -325,3 +325,20 @@ def test_an_async_rejection_carries_the_venue_reason(reason, expected):
 
     assert code == reason
     assert cause == expected
+
+
+def _trade_row(**overrides) -> dict:
+    """One ccxt-parsed row of /v5/execution/list."""
+    row = {
+        "id": "cdb53b54-ec42-5d97-923c-5da9ce1c1cdb",
+        "order": "f6029fd8-a785-4374-bbdd-9d3cf13b0ef4",
+        "timestamp": 1788885297101,
+        "symbol": ETH,
+        "side": "buy",
+        "amount": 0.01,
+        "price": 2490.1,
+        "takerOrMaker": "taker",
+        "fee": {"cost": 0.0249118, "currency": "USDT"},
+    }
+    row.update(overrides)
+    return row

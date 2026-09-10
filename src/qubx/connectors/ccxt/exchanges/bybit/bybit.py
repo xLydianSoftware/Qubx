@@ -2,7 +2,7 @@ import asyncio
 
 import ccxt.pro as cxp
 from ccxt.base.errors import ArgumentsRequired, BadRequest, OrderNotFound
-from ccxt.base.types import Any, Liquidation, Num, Order, OrderSide, OrderType, Str, Strings
+from ccxt.base.types import Any, Liquidation, Num, Order, OrderSide, OrderType, Position, Str, Strings
 
 from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter
 from ...utils import info_float
@@ -90,6 +90,20 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
     def _keep_adl_ranks(self, rows: list[Any]) -> list[Any]:
         self.adl_ranks = _parse_adl_ranks(rows)
         return rows
+
+    def parse_position(self, position, market=None) -> Position:
+        """Keep the venue's own maintenance margin.
+
+        ccxt reads ``positionMM`` and then replaces it with ``|liqPrice - bustPrice| * size``
+        whenever a liquidation price is set; a UTA account reports ``bustPrice=""``, so the
+        product is None and the framework falls back to a flat 5% of notional.
+        """
+        parsed = super().parse_position(position, market)
+        if parsed.get("maintenanceMargin") is None:
+            venue_mm = info_float(position, "positionMM")
+            if venue_mm is not None:
+                parsed["maintenanceMargin"] = venue_mm
+        return parsed
 
     async def fetch_open_orders(
         self, symbol: Str = None, since: Num = None, limit: Num = None, params={}

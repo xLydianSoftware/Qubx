@@ -502,6 +502,11 @@ class Reconciler:
             except Exception:
                 _log.exception(f"[{state.exchange}] reconcile: diff atom failed, skipping -> {difference.describe()}")
 
+        # - venue settings are size-independent and the differ emits no atom for them, so they
+        #   refresh off every snapshot instead of riding an unrelated mismatch; never a `changed`
+        for snap_pos in snap.positions or ():
+            state.apply_position_settings(snap_pos)
+
         # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
         #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.
         if any(

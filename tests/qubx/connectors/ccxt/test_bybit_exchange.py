@@ -15,7 +15,7 @@ from ccxt.base.errors import ArgumentsRequired, BadRequest, NotSupported, OrderN
 
 from qubx.connectors.ccxt.exchanges import CUSTOM_CONNECTORS, EXCHANGE_ALIASES, BybitF
 from qubx.connectors.ccxt.exchanges.bybit.connector import BybitCcxtConnector
-from qubx.connectors.ccxt.utils import ccxt_convert_funding_rate, prepare_ccxt_order_payload
+from qubx.connectors.ccxt.utils import ccxt_convert_funding_rate, ccxt_convert_position, prepare_ccxt_order_payload
 from qubx.core.basics import Instrument, MarketType, Quote
 
 # venue specs, inline: the global lookup ships no bybit symbols, so it resolves only from a
@@ -206,6 +206,88 @@ def test_parse_position_still_nulls_margin_mode(bybit):
         bybit.market("BTC/USDT:USDT"),
     )
     assert row["marginMode"] is None
+
+
+def _position_row(**overrides) -> dict:
+    """A UTA linear position as Bybit testnet returns it: ``bustPrice`` is never filled in."""
+    return {
+        "symbol": "BTCUSDT",
+        "side": "Buy",
+        "size": "0.01",
+        "positionIdx": 0,
+        "positionValue": "24.8745",
+        "entryPrice": "2487.45",
+        "markPrice": "2487.45",
+        "positionIM": "2.78594425",
+        "positionMM": "0.10419654",
+        "adlRankIndicator": "2",
+        "leverage": "10",
+        "unrealisedPnl": "0",
+        "positionBalance": "2.9",
+        "liqPrice": "2200.5",
+        "bustPrice": "",
+        "createdTime": "1",
+        "updatedTime": "2",
+    } | overrides
+
+
+def test_the_venue_maintenance_margin_survives_an_empty_bust_price(bybit):
+    row = bybit.parse_position(_position_row(), bybit.market("BTC/USDT:USDT"))
+    assert row["maintenanceMargin"] == 0.10419654
+
+
+def test_a_maintenance_margin_ccxt_derived_is_left_alone(bybit):
+    """With both prices present ccxt's |liqPrice - bustPrice| * size stands."""
+    row = bybit.parse_position(_position_row(bustPrice="2180.0"), bybit.market("BTC/USDT:USDT"))
+    assert row["maintenanceMargin"] == 0.205
+
+
+@pytest.mark.parametrize("position_mm", [None, "", "n/a"])
+def test_an_unusable_position_mm_leaves_the_field_as_ccxt_left_it(bybit, position_mm):
+    raw = _position_row()
+    raw["positionMM"] = position_mm
+    if position_mm is None:
+        del raw["positionMM"]
+    assert bybit.parse_position(raw, bybit.market("BTC/USDT:USDT"))["maintenanceMargin"] is None
+
+
+def test_no_other_position_field_is_touched(bybit):
+    row = _position_row()
+    mine = bybit.parse_position(row, bybit.market("BTC/USDT:USDT"))
+    theirs = _upstream().parse_position(row, _upstream().market("BTC/USDT:USDT"))
+    assert {k: v for k, v in mine.items() if k != "maintenanceMargin"} == {
+        k: v for k, v in theirs.items() if k != "maintenanceMargin"
+    }
+
+
+def test_upstream_drops_the_maintenance_margin_when_the_bust_price_is_empty():
+    """If this fails, ccxt fixed it upstream and the parse_position override can be dropped."""
+    upstream = _upstream()
+    market = upstream.market("BTC/USDT:USDT")
+    assert upstream.parse_position(_position_row(), market)["maintenanceMargin"] is None
+    # the same row without a liquidation price keeps positionMM, so nothing else is wrong with it
+    assert upstream.parse_position(_position_row(liqPrice=""), market)["maintenanceMargin"] == 0.10419654
+
+
+def test_the_venue_maintenance_margin_reaches_the_position(bybit):
+    """The join the two halves above leave open: parse_position -> ccxt_convert_position.
+
+    Measured on a UTA testnet account: the empty bustPrice dropped the venue's 0.10419654 and
+    Position fell back to DEFAULT_MAINTENANCE_MARGIN (5%) of notional — 12x too much.
+    """
+    market = _swap_market()
+    market["limits"]["cost"] = {"min": 5.0}  # ccxt_symbol_to_instrument reads it; the fixture omits it
+    parsed = bybit.parse_position(_position_row(), bybit.market("BTC/USDT:USDT"))
+
+    pos = ccxt_convert_position(parsed, "BYBIT.F", {"BTC/USDT:USDT": market})
+    assert pos is not None
+    assert pos.maint_margin == pytest.approx(0.10419654)
+    assert pos._maint_margin_external is True  # a later mark update must not recompute it away
+
+    # the counterfactual, through the same code: this is the number the bug reported
+    without = ccxt_convert_position({**parsed, "maintenanceMargin": None}, "BYBIT.F", {"BTC/USDT:USDT": market})
+    assert without is not None
+    assert without.maint_margin == pytest.approx(1.243725)
 
 
 @pytest.mark.parametrize(

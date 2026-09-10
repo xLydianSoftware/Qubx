@@ -263,7 +263,7 @@ def ccxt_convert_deal_info(raw: dict[str, Any]) -> Deal:
     return Deal(
         trade_id=trade_id,
         order_id=order_id,
-        time=to_timestamp(timestamp, unit="ms"),
+        time=to_timestamp(timestamp, unit="ms").as_unit("ns").asm8,
         amount=amount * (-1 if raw.get("side") == "sell" else +1),
         price=price,
         aggressive=raw.get("takerOrMaker") == "taker",  # absent -> maker (some venues omit it)

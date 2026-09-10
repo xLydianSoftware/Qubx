@@ -218,8 +218,9 @@ def test_venue_settings_neutral_when_not_reported():
     # An instrument the venue never reported reads as None / inf (get_position materializes flat).
     am = _am()
     inst = _instrument("BTCUSDT")
-    # - the leverage fallback asks the connector, which knows nothing about it either
+    # - leverage and margin mode both fall back to the connector, which knows nothing either
     am._connectors["binance"].get_instrument_leverage.return_value = None
+    am._connectors["binance"].get_margin_mode.return_value = None
     assert am.get_instrument_leverage(inst) is None
     assert am.get_max_instrument_notional(inst) == float("inf")
     assert am.get_margin_mode(inst) is None
@@ -275,3 +276,35 @@ def test_instrument_leverage_prefers_the_snapshot_over_the_connector():
 
     assert am.get_instrument_leverage(inst) == 5.0
     am._connectors["binance"].get_instrument_leverage.assert_not_called()
+
+
+def test_margin_mode_falls_back_to_the_connector_when_the_snapshot_has_none():
+    """Same shape as the leverage fallback: a snapshot only carries the mode for instruments
+    the account holds a position in — and a Bybit UTA nulls it even then."""
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am._connectors["binance"].get_margin_mode.return_value = "cross"
+
+    assert am.get_margin_mode(inst) == "cross"
+    am._connectors["binance"].get_margin_mode.assert_called_once_with(inst)
+
+
+def test_margin_mode_prefers_the_snapshot_over_the_connector():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    pos = Position(instrument=inst)
+    pos.margin_mode = "isolated"
+    am._states["binance"].set_position(inst, pos)
+    am._connectors["binance"].get_margin_mode.return_value = "cross"
+
+    assert am.get_margin_mode(inst) == "isolated"
+    am._connectors["binance"].get_margin_mode.assert_not_called()
+
+
+def test_margin_mode_is_none_when_the_exchange_has_no_connector():
+    # the fallback is guarded, like the leverage one: a state with no connector reads None
+    am = _am(exchanges=("binance", "bybit"))
+    inst = _instrument("BTCUSDT", exchange="bybit")
+    am._connectors.pop("bybit")
+
+    assert am.get_margin_mode(inst) is None

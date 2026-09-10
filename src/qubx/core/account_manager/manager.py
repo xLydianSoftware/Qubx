@@ -584,7 +584,13 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return notional if notional is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
-        return self.get_position(instrument).margin_mode
+        # snapshot first, connector second — as for leverage: a snapshot only carries the mode
+        # for instruments the account holds a position in
+        mode = self.get_position(instrument).margin_mode
+        if mode is not None:
+            return mode
+        connector = self._connectors.get(instrument.exchange)
+        return connector.get_margin_mode(instrument) if connector is not None else None
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
         return self.get_position(instrument).adl_level

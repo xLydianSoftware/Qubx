@@ -857,3 +857,114 @@ def test_first_snapshot_is_full_then_light_then_full_after_sweep():
 
     # once the full-sweep interval elapses, the next due request is FULL again (WS-drop backstop)
     assert RequestSnapshot(ex, include_orders=True) in rec.on_tick(st, _passed_seconds(T0, 300))
+
+
+# --------------------------------------------------------------------------- #
+# Venue-reported per-position settings (adl rank / leverage / margin mode / notional cap)
+# — informational and size-independent, so they refresh off EVERY snapshot instead of
+# depending on an unrelated size/avg/margin diff atom, and never count as a change.
+# --------------------------------------------------------------------------- #
+
+
+def _settings_pos(qty: float, *, avg: float = 59_000.0, ts: np.datetime64 = T0, adl=2, lev=10.0, cap=1e6) -> Position:
+    p = _position(qty, avg=avg, ts=ts)
+    p.adl_level = adl
+    p.leverage = lev
+    p.margin_mode = "cross"
+    p.max_notional = cap
+    return p
+
+
+def test_settings_refresh_when_snapshot_produces_no_diff_at_all():
+    # the steady state (and the WS-fill-books-before-the-snapshot race): local already agrees on
+    # size/avg/margin, so the differ emits nothing — the settings must still land.
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.003, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
+    snap = _origin(positions=[_settings_pos(0.003)])
+
+    assert Differ(grace="5s").diff(st, snap) == []  # no diff atom for this position
+
+    changed: list[Position] = []
+    a = rec.on_snapshot(st, snap, T0, changed_positions=changed)
+
+    pos = st.get_position(_inst())
+    assert (pos.adl_level, pos.leverage, pos.margin_mode, pos.max_notional) == (2, 10.0, "cross", 1e6)  # type: ignore
+    assert changed == []  # no on_position_change fired for a settings-only refresh
+    assert a == []
+    assert rec.active_keys() == set()  # no task spawned
+
+
+def test_settings_refresh_repeats_on_every_snapshot_without_a_diff():
+    # a venue-side adl/leverage move must propagate even though nothing else ever diffs
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.003, avg=59_000.0, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
+    rec.on_snapshot(st, _origin(positions=[_settings_pos(0.003)]), T0)
+
+    t1 = _passed_seconds(T0, 30)
+    changed: list[Position] = []
+    rec.on_snapshot(
+        st, _origin(positions=[_settings_pos(0.003, ts=t1, adl=4, lev=20.0)], as_of=t1), t1, changed_positions=changed
+    )
+
+    pos = st.get_position(_inst())
+    assert (pos.adl_level, pos.leverage) == (4, 20.0)  # type: ignore
+    assert changed == []
+
+
+def test_settings_applied_alongside_a_position_size_diff():
+    # when the position IS diffed, the snapshot's settings still win and the diff path keeps
+    # producing exactly its own single change entry
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.003, avg=59_000.0, r_pnl=5.0, ts=_passed_seconds(T0, -10)))
+    _mark_in_session(st)
+
+    changed: list[Position] = []
+    rec.on_snapshot(st, _origin(positions=[_settings_pos(0.005, avg=59_100.0)]), T0, changed_positions=changed)
+
+    pos = st.get_position(_inst())
+    assert pos.quantity == 0.005  # type: ignore # size handling unchanged
+    assert pos.r_pnl == 5.0  # type: ignore
+    assert (pos.adl_level, pos.leverage, pos.margin_mode, pos.max_notional) == (2, 10.0, "cross", 1e6)  # type: ignore
+    assert changed == [pos]  # exactly one entry, from the size diff — not doubled by the refresh
+
+
+def test_settings_refresh_does_not_materialize_an_unheld_position():
+    # an immaterial snapshot position for an instrument we don't hold raises no presence diff;
+    # the settings refresh must stay a no-op rather than inventing a local position
+    rec = _reconciler()
+    st = _local()
+    _mark_in_session(st)
+    snap = _origin(positions=[_settings_pos(0.0)])
+
+    assert Differ(grace="5s").diff(st, snap) == []
+
+    changed: list[Position] = []
+    rec.on_snapshot(st, snap, T0, changed_positions=changed)
+
+    assert st.get_position(_inst()) is None
+    assert st.get_positions() == {}
+    assert changed == []
+
+
+def test_settings_refresh_survives_the_stale_snapshot_guard():
+    # a snapshot older than a locally booked deal is skipped for size (rewind guard), but the
+    # venue settings it carries are size-independent and must still land
+    rec = _reconciler()
+    st = _local()
+    st.set_position(_inst(), _position(0.005, avg=59_100.0, ts=T0))
+    _mark_in_session(st)
+    st.mark_position_deal_booked(_inst(), _passed_seconds(T0, 2))  # a deal booked AFTER the snapshot as_of
+    before_qty = st.get_position(_inst()).quantity  # type: ignore
+
+    changed: list[Position] = []
+    rec.on_snapshot(st, _origin(positions=[_settings_pos(0.003)]), T0, changed_positions=changed)
+
+    pos = st.get_position(_inst())
+    assert pos.quantity == before_qty  # type: ignore # rewind guard intact
+    assert (pos.adl_level, pos.leverage) == (2, 10.0)  # type: ignore
+    assert changed == []
