@@ -464,6 +464,12 @@ class IAccountViewer:
         (depends on the per-instrument leverage tier and margin mode).
         Useful for "can I open more?" sizing decisions.
 
+        In live this is the venue-reported account total when the venue provides
+        one (e.g. Binance ``totalInitialMargin``, OKX ``imr``); otherwise it is
+        summed over ``Position.initial_margin``. The venue total may be scoped
+        differently from a position sum (cross-only on some venues, or including
+        open-order margin) — it is the venue's requirement, not a re-sum of positions.
+
         Returns:
             float: Total initial margin
         """
@@ -475,6 +481,12 @@ class IAccountViewer:
         Maintenance margin is the threshold below which positions get
         liquidated (typically lower than initial margin).  Useful for
         liquidation-distance / risk dashboards.
+
+        In live this is the venue-reported account total when the venue provides
+        one (e.g. Binance ``totalMaintMargin``, OKX ``mmr``); otherwise it is
+        summed over ``Position.maint_margin``. The venue total may be scoped
+        differently from a position sum (cross-only on some venues, or including
+        open-order margin) — it is the venue's requirement, not a re-sum of positions.
 
         Returns:
             float: Total maintenance margin

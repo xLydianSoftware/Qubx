@@ -80,6 +80,59 @@ def test_total_margins_from_positions():
     assert state.total_maint_margin() == 4.0
 
 
+def test_total_margins_prefer_venue():
+    state = _state()
+    pos = Position(_instrument())
+    pos.initial_margin = 10.0
+    pos.maint_margin = 4.0
+    state.set_position(pos.instrument, pos)
+    state.set_venue_figures(_venue(total_initial_margin=143.4, total_maint_margin=11.5))
+    assert state.total_initial_margin() == 143.4
+    assert state.total_maint_margin() == 11.5
+
+
+def test_total_margins_fall_back_per_metric():
+    # Per-metric preference: a venue reporting only one total leaves the other summed.
+    state = _state()
+    pos = Position(_instrument())
+    pos.initial_margin = 10.0
+    pos.maint_margin = 4.0
+    state.set_position(pos.instrument, pos)
+    state.set_venue_figures(_venue(total_maint_margin=11.5))
+    assert state.total_initial_margin() == 10.0
+    assert state.total_maint_margin() == 11.5
+
+
+def test_venue_zero_maint_margin_is_authoritative():
+    # A reported 0.0 is a value, not "unreported": it wins over the position sum and
+    # margin_ratio takes its no-maint branch.
+    state = _state(1000.0)
+    pos = Position(_instrument())
+    pos.maint_margin = 4.0
+    state.set_position(pos.instrument, pos)
+    state.set_venue_figures(_venue(total_maint_margin=0.0))
+    assert state.total_maint_margin() == 0.0
+    assert state.margin_ratio() == 100.0
+
+
+def test_available_margin_derives_from_venue_initial_margin_total():
+    state = _state(1000.0)
+    pos = Position(_instrument())
+    pos.initial_margin = 10.0
+    state.set_position(pos.instrument, pos)
+    state.set_venue_figures(_venue(total_initial_margin=150.0))
+    assert state.available_margin() == 850.0
+
+
+def test_margin_ratio_derives_from_venue_maint_total():
+    state = _state(1000.0)
+    pos = Position(_instrument())
+    pos.maint_margin = 100.0
+    state.set_position(pos.instrument, pos)
+    state.set_venue_figures(_venue(total_maint_margin=50.0))
+    assert state.margin_ratio() == 20.0
+
+
 def test_available_margin_derived():
     state = _state(1000.0)
     pos = Position(_instrument())

@@ -376,7 +376,7 @@ async def test_okx_snapshot_extracts_cashbal_balances() -> None:
 
 
 # --------------------------------------------------------------------------- #
-# OKX venue account figures (totalEq / mgnRatio / adjEq − imr from info.data[0])
+# OKX venue account figures (totalEq / mgnRatio / adjEq − imr / mmr / imr from info.data[0])
 # --------------------------------------------------------------------------- #
 @pytest.mark.asyncio
 async def test_okx_snapshot_extracts_venue_figures_multi_ccy() -> None:
@@ -391,6 +391,7 @@ async def test_okx_snapshot_extracts_venue_figures_multi_ccy() -> None:
                         "totalEq": "50000.5",
                         "adjEq": "49000.0",
                         "imr": "1200.0",
+                        "mmr": "600.0",
                         "mgnRatio": "35.5",
                         "details": [
                             {"ccy": "USDT", "cashBal": "40000.0", "frozenBal": "1200.0"},
@@ -408,6 +409,8 @@ async def test_okx_snapshot_extracts_venue_figures_multi_ccy() -> None:
     assert snap.available_margin == pytest.approx(47800.0)  # adjEq - imr
     assert snap.margin_ratio == 35.5  # mgnRatio
     assert snap.withdrawable is None  # max-withdrawal lives on a separate OKX endpoint
+    assert snap.total_maint_margin == 600.0  # mmr
+    assert snap.total_initial_margin == 1200.0  # imr
 
     # End-to-end: the snapshot lands in AM and the venue figures win over derived metrics.
     am = SimulatedAccountManager(
@@ -421,6 +424,8 @@ async def test_okx_snapshot_extracts_venue_figures_multi_ccy() -> None:
     assert am.get_margin_ratio("OKX.F") == 35.5
     # no venue withdrawable -> falls back to the (venue-preferred) available figure
     assert am.get_withdrawable_balance("OKX.F") == pytest.approx(47800.0)
+    assert am.get_total_maint_margin("OKX.F") == 600.0
+    assert am.get_total_initial_margin("OKX.F") == 1200.0
 
 
 @pytest.mark.asyncio
@@ -437,6 +442,7 @@ async def test_okx_snapshot_single_ccy_empty_fields_yield_none() -> None:
                         "totalEq": "1918.55678",
                         "adjEq": "",
                         "imr": "",
+                        "mmr": "",
                         "mgnRatio": "",
                         "details": [{"ccy": "BTC", "cashBal": "0.049", "frozenBal": "0"}],
                     }
@@ -451,6 +457,8 @@ async def test_okx_snapshot_single_ccy_empty_fields_yield_none() -> None:
     assert snap.available_margin is None
     assert snap.margin_ratio is None
     assert snap.withdrawable is None
+    assert snap.total_maint_margin is None
+    assert snap.total_initial_margin is None
 
 
 @pytest.mark.asyncio
@@ -476,6 +484,8 @@ async def test_okx_snapshot_survives_malformed_balance_payload(info) -> None:
     assert snap.available_margin is None
     assert snap.margin_ratio is None
     assert snap.withdrawable is None
+    assert snap.total_maint_margin is None
+    assert snap.total_initial_margin is None
     # The good legs still made it into the snapshot.
     assert snap.open_orders == []
     assert snap.positions == []
@@ -485,7 +495,8 @@ async def test_okx_snapshot_survives_malformed_balance_payload(info) -> None:
 async def test_base_snapshot_extracts_binance_figures_incl_withdrawable() -> None:
     # Base extractor maps the Binance fapi account payload (v2 and v3 both carry these
     # top-level): totalMarginBalance -> equity, availableBalance -> available_margin,
-    # maxWithdrawAmount -> withdrawable; Binance reports no margin ratio -> None.
+    # maxWithdrawAmount -> withdrawable, totalMaintMargin / totalInitialMargin -> the
+    # account margin totals; Binance reports no margin ratio -> None.
     exchange = _snapshot_exchange(
         {
             "total": {"USDT": 111.02},
@@ -494,6 +505,8 @@ async def test_base_snapshot_extracts_binance_figures_incl_withdrawable() -> Non
                 "totalMarginBalance": "111.02007243",
                 "availableBalance": "11.39894857",
                 "maxWithdrawAmount": "10.50000000",
+                "totalMaintMargin": "1.23456789",
+                "totalInitialMargin": "99.62112386",
             },
         }
     )
@@ -504,6 +517,8 @@ async def test_base_snapshot_extracts_binance_figures_incl_withdrawable() -> Non
     assert snap.available_margin == 11.39894857
     assert snap.margin_ratio is None
     assert snap.withdrawable == 10.5
+    assert snap.total_maint_margin == 1.23456789
+    assert snap.total_initial_margin == 99.62112386
 
 
 @pytest.mark.asyncio
@@ -579,6 +594,8 @@ async def test_bitfinex_snapshot_venue_figures_pinned_all_none() -> None:
     assert snap.available_margin is None
     assert snap.margin_ratio is None
     assert snap.withdrawable is None
+    assert snap.total_maint_margin is None
+    assert snap.total_initial_margin is None
     assert len(snap.balances) == 1
     assert snap.balances[0].currency == "USDT"
     assert snap.balances[0].total == 50.0

@@ -194,6 +194,8 @@ class AccountSnapshot:
     available_margin: float | None = None
     margin_ratio: float | None = None
     withdrawable: float | None = None
+    total_maint_margin: float | None = None
+    total_initial_margin: float | None = None
 
 
 @msg

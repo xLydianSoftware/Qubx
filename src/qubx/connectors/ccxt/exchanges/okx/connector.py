@@ -12,7 +12,7 @@ Adds the OKX-specific behavior on top of the generic ``CcxtConnector``:
 - **Balance extraction**: ccxt's OKX balance mapping is wrong for the framework — see
   ``_convert_balances``.
 - **Venue account figures**: OKX's trading-balance payload carries account-level
-  figures (``totalEq`` / ``mgnRatio`` / ``adjEq`` / ``imr`` in ``info.data[0]``) — see
+  figures (``totalEq`` / ``mgnRatio`` / ``adjEq`` / ``imr`` / ``mmr`` in ``info.data[0]``) — see
   ``_extract_venue_figures``; AM prefers them per metric over its derived values.
 - **make_client_id / cid_framework_prefix**: OKX clOrdId is case-sensitive
   alphanumeric only, 1-32 chars — the underscore in ``qubx_`` is stripped, so origin
@@ -185,7 +185,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
 
     def _extract_venue_figures(
         self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None]:
+    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
         """OKX account-level figures from ``info.data[0]`` of the trading-balance payload.
 
         - equity: ``totalEq`` — total account equity. USD-denominated; reported as-is
@@ -197,6 +197,9 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         - withdrawable: deliberately None — OKX reports max-withdrawal only on a
           separate ``account/max-withdrawal`` endpoint, outside the snapshot seam,
           so AM derives it (= available).
+        - total_maint_margin / total_initial_margin: ``mmr`` / ``imr`` — account-level
+          maintenance / initial margin requirements (cross positions + pending orders),
+          populated only in multi-currency/portfolio margin modes like ``adjEq``.
 
         Not-applicable fields arrive as ``""`` → None → AM derives that metric.
         """
@@ -206,7 +209,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         adj_eq = info_float(acct, "adjEq")
         imr = info_float(acct, "imr")
         available_margin = adj_eq - imr if adj_eq is not None and imr is not None else None
-        return equity, available_margin, margin_ratio, None
+        return equity, available_margin, margin_ratio, None, info_float(acct, "mmr"), imr
 
     def make_client_id(self, suggested: str) -> str:
         """OKX clOrdId: case-sensitive alphanumeric only, 1-32 chars.

@@ -138,17 +138,29 @@ legality, runs no reconcile rules, fires no callbacks, depends on no clock.
 ### Venue-reported figures (option 2)
 
 `AccountState` holds an optional `VenueAccountFigures{equity, available_margin,
-margin_ratio, withdrawable, as_of}`. Each metric prefers its venue counterpart when
-present, else derives. The figures ride **flat on `AccountSnapshot`** (optional fields
-next to `as_of`/orders/positions/balances) and are set only by snapshot reconcile; the
-connector extracts them via the `_extract_venue_figures` seam (Binance and OKX wired;
-Bitfinex documented derive-only — `fetch_balance` carries no account figures; other
-venues return None and always derive — as does sim).
+margin_ratio, withdrawable, total_maint_margin, total_initial_margin, as_of}`. Each
+metric prefers its venue counterpart when present, else derives. The figures ride
+**flat on `AccountSnapshot`** (optional fields next to `as_of`/orders/positions/
+balances) and are set only by snapshot reconcile; the connector extracts them via the
+`_extract_venue_figures` seam — a positional 6-tuple in that field order (Binance and
+OKX wired; Bitfinex documented derive-only — `fetch_balance` carries no account
+figures; other venues return None and always derive — as does sim).
 
 - `withdrawable` maps Binance fapi `maxWithdrawAmount`; OKX exposes max-withdrawal only
   on a separate endpoint (outside the snapshot seam) so it stays None there. The derived
   fallback equals available margin (withdrawable ≤ available conceptually; equality is
   the documented sim/no-venue simplification).
+- `total_maint_margin` / `total_initial_margin` map Binance fapi `totalMaintMargin` /
+  `totalInitialMargin` (PM: `accountMaintMargin` / `accountInitialMargin`) and OKX
+  `mmr` / `imr`. The venue total may be scoped differently from a position sum
+  (cross-only on some venues, or including open-order margin): it is the venue's
+  requirement, not a re-sum of our positions. In single-asset mode Binance UM's totals
+  cover the USDT asset only, so a non-USDT-margined position reads as zero there; the
+  reconciler logs a WARNING when a venue reports zero maintenance margin on a book with
+  open positions (a signal only — the reported 0.0 is still used). The derived fallback
+  sums the per-position margins. On PM the venue total is also what makes
+  `total_capital / total_maint_margin` equal `uniMMR` — `accountEquity` spans
+  um/cm/margin while the position sum is UM-only.
 
 - **Freshness = WS liveness, not a TTL.** Venue figures arrive in lockstep with the
   events that would change them; the only staleness is a dead WS, which the liveness →

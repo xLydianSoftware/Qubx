@@ -1712,7 +1712,9 @@ class CcxtConnector(ChannelEmitter):
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
             balances = self._convert_balances(raw_balance)
-            equity, available_margin, margin_ratio, withdrawable = self._extract_venue_figures(raw_balance)
+            equity, available_margin, margin_ratio, withdrawable, total_maint_margin, total_initial_margin = (
+                self._extract_venue_figures(raw_balance)
+            )
         except Exception as e:  # noqa: BLE001 — AM retries on its next snapshot tick
             # Venue exception text goes in as a positional arg (may contain HTML/markup that
             # loguru's colorizer rejects when it appears in the format string).
@@ -1737,6 +1739,8 @@ class CcxtConnector(ChannelEmitter):
                     available_margin=available_margin,
                     margin_ratio=margin_ratio,
                     withdrawable=withdrawable,
+                    total_maint_margin=total_maint_margin,
+                    total_initial_margin=total_initial_margin,
                 ),
             )
         )
@@ -1751,27 +1755,33 @@ class CcxtConnector(ChannelEmitter):
 
     def _extract_venue_figures(
         self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None]:
-        """(equity, available_margin, margin_ratio, withdrawable) from the venue's raw
-        account payload.
+    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
+        """Venue account figures from the raw account payload, as the positional 6-tuple
+        ``(equity, available_margin, margin_ratio, withdrawable, total_maint_margin,
+        total_initial_margin)`` — overrides must keep exactly this order.
 
         ccxt has no unified account-figures schema, so the base impl reads the
         Binance-futures account fields carried through in ``info`` (both fapi v2 and
         v3 account payloads carry them top-level): ``totalMarginBalance`` (wallet +
         unrealized PnL = account equity), ``availableBalance`` (margin available for
-        new positions) and ``maxWithdrawAmount`` (maximum amount for transfer out).
-        Binance reports no direct margin ratio — left None so AM derives it. Venues
-        whose payload lacks these keys yield all-None and AM derives every metric;
-        subclasses override for venue-specific payloads.
+        new positions), ``maxWithdrawAmount`` (maximum amount for transfer out),
+        ``totalMaintMargin`` and ``totalInitialMargin`` (account-level margin
+        requirements; the initial figure includes open-order margin, and in single-asset
+        mode both cover the USDT asset only — a non-USDT-margined position reads as zero
+        there). Binance reports no direct margin ratio — left None so AM derives it.
+        Venues whose payload lacks these keys yield all-None and AM derives every
+        metric; subclasses override for venue-specific payloads.
         """
         info = raw_balance.get("info")
         if not isinstance(info, dict):
-            return None, None, None, None
+            return None, None, None, None, None, None
         return (
             info_float(info, "totalMarginBalance"),
             info_float(info, "availableBalance"),
             None,
             info_float(info, "maxWithdrawAmount"),
+            info_float(info, "totalMaintMargin"),
+            info_float(info, "totalInitialMargin"),
         )
 
     # ------------------------------------------------------------------ #
