@@ -2,8 +2,8 @@
 
 Bybit, like OKX and Bitfinex, splits the account feed: ``bybit.parse_order`` sets
 ``trades: None``, so fills arrive only on the ``execution`` topic ``watch_my_trades`` reads
-(same /v5/private socket). On top of that split, it fills ADL rank, margin mode and the venue
-account figures from Bybit surfaces ccxt's unified shapes do not reach.
+(same /v5/private socket). On top of that split, it fills margin mode and the venue account
+figures from Bybit surfaces ccxt's unified shapes do not reach.
 """
 
 from typing import Any, Literal
@@ -13,6 +13,7 @@ from qubx.core.basics import Instrument, Position, RejectCause
 
 from ...utils import info_float, instrument_to_ccxt_symbol, normalize_margin_mode
 from .._two_stream import _TwoStreamCcxtConnector
+from .bybit import _POST_ONLY_REFUSAL
 
 
 def _account_block(raw_balance: dict[str, Any]) -> dict[str, Any]:
@@ -35,27 +36,12 @@ def _account_block(raw_balance: dict[str, Any]) -> dict[str, Any]:
 class BybitCcxtConnector(_TwoStreamCcxtConnector):
     """Bybit connector: split orders/fills streams, Bybit account surface, base behavior otherwise."""
 
-    # /v5/order/realtime defaults to 20 rows and ccxt hardcodes limit=200 on /v5/position/list,
-    # so without the cursor walk the differ takes a truncated list as venue truth
-    #
-    # LIMITATION: a symbol-less /v5 read carries ccxt's settleCoin=USDT default and the endpoint
-    # takes one settle coin per call, so the snapshot covers USDT-settled instruments only —
-    # a USDC-settled perp reads as flat/no-orders to reconcile.
-    _snapshot_fetch_params = {"paginate": True}
-
     # account-wide on a UTA, so one value serves every instrument
     _margin_mode: Literal["cross", "isolated"] | None = None
-
-    _adl_levels: dict[str, int]
-
-    def __init__(self, **kwargs: Any):
-        super().__init__(**kwargs)
-        self._adl_levels = {}
 
     async def _fill_leverage_settings(self, positions: list[Position]) -> None:
         await super()._fill_leverage_settings(positions)
         await self._fill_margin_mode(positions)
-        self._fill_adl_levels(positions)
 
     async def _fill_margin_mode(self, positions: list[Position]) -> None:
         """Stamp ``Position.margin_mode`` from ONE account-wide ``/v5/account/info`` read.
@@ -83,19 +69,6 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
             logger.debug(f"[{self.exchange_name}] fetch_margin_mode for {symbol}: {e}")
             return None
         return normalize_margin_mode(row.get("marginMode"))
-
-    def _fill_adl_levels(self, positions: list[Position]) -> None:
-        """Stamp ``Position.adl_level`` from the ranks ``BybitF`` kept off the snapshot's own
-        positions read."""
-        self._adl_levels = self._em.exchange.adl_ranks if positions else {}
-        for pos in positions:
-            level = self._adl_levels.get(instrument_to_ccxt_symbol(pos.instrument))
-            if level is not None:
-                pos.adl_level = level
-
-    def get_adl_level(self, instrument: Instrument) -> int | None:
-        # local cache, refreshed each snapshot — never a blocking venue call
-        return self._adl_levels.get(instrument_to_ccxt_symbol(instrument))
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         """Drop the cached mode on a successful write so the next read goes back to the venue."""
@@ -136,12 +109,14 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
         )
 
     def _reject_details(self, raw: dict[str, Any]) -> tuple[str | None, RejectCause]:
-        """Bybit accepts then cancels a refused order, carrying the verdict in ``rejectReason``."""
+        """The venue's verdict on a rejection seen on the read path.
+
+        Bybit either reports ``orderStatus=Rejected`` outright or accepts and then cancels,
+        which ``BybitF.parse_order`` normalises to rejected; both carry ``rejectReason``.
+        """
         reason = (raw.get("info") or {}).get("rejectReason") or None
         if reason is None:
             return None, RejectCause.UNKNOWN
-        # EC_PostOnlyWillTakeLiquidity / EC_NoImmediateQtyToFill: the price could not rest or fill
-        cause = (
-            RejectCause.NOT_FILLABLE if reason.startswith(("EC_PostOnly", "EC_NoImmediateQty")) else RejectCause.UNKNOWN
-        )
-        return reason, cause
+        # the price could not rest (post-only crossing) or fill (IOC/FOK with nothing to take)
+        not_fillable = reason.startswith((_POST_ONLY_REFUSAL, "EC_NoImmediateQty"))
+        return reason, RejectCause.NOT_FILLABLE if not_fillable else RejectCause.UNKNOWN

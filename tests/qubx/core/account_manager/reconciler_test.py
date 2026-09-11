@@ -859,13 +859,6 @@ def test_first_snapshot_is_full_then_light_then_full_after_sweep():
     assert RequestSnapshot(ex, include_orders=True) in rec.on_tick(st, _passed_seconds(T0, 300))
 
 
-# --------------------------------------------------------------------------- #
-# Venue-reported per-position settings (adl rank / leverage / margin mode / notional cap)
-# — informational and size-independent, so they refresh off EVERY snapshot instead of
-# depending on an unrelated size/avg/margin diff atom, and never count as a change.
-# --------------------------------------------------------------------------- #
-
-
 def _settings_pos(qty: float, *, avg: float = 59_000.0, ts: np.datetime64 = T0, adl=2, lev=10.0, cap=1e6) -> Position:
     p = _position(qty, avg=avg, ts=ts)
     p.adl_level = adl

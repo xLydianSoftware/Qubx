@@ -1,5 +1,6 @@
 import math
 import random
+from decimal import Decimal
 
 import pandas as pd
 import pytest
@@ -178,10 +179,68 @@ def test_grid_floor_keeps_the_sub_lot_noise_snap():
     assert grid_floor(1.1 * 3, 0.1) == 3.3
 
 
-def test_a_non_positive_step_is_left_alone():
-    """No grid to snap to — returning the input beats letting a division by zero produce a nan size."""
-    assert grid_floor(1.23, 0.0) == 1.23
-    assert grid_ceil(1.23, -1.0) == 1.23
+def test_a_value_a_hair_under_an_integer_step_snaps_up_to_the_grid():
+    """An unsnapped return here is a whole tick down: ccxt TRUNCATEs 0.9999999999999999 to 0."""
+    assert grid_floor(0.9999999999999999, 1.0) == 1.0
+    assert grid_ceil(0.9999999999999999, 1.0) == 1.0
+    assert grid_floor(29.999999999999996, 10.0) == 30.0
+    assert grid_ceil(29.999999999999996, 10.0) == 30.0
+    assert grid_floor(1234.9999999999998, 1.0) == 1235.0
+    assert grid_ceil(1234.9999999999998, 1.0) == 1235.0
+
+
+def test_an_on_grid_value_comes_back_bit_exact_on_a_power_of_ten_step():
+    """Sub-unit powers of ten take the exact-reciprocal branch, so the multiply-back never moves them."""
+    for step in (0.1, 0.01, 0.001, 1e-05, 1e-08):
+        for ticks in (1, 3, 7, 29, 1234):
+            x = prec_floor(ticks * step, int(abs(math.log10(step))))
+            assert grid_floor(x, step) == x
+            assert grid_ceil(x, step) == x
+
+
+def test_a_decimal_step_with_no_exact_reciprocal_still_lands_on_the_decimal_grid():
+    """Kraken ships lot 0.3 (22 pairs), 0.15 and 0.0075. 1/0.3 is not a whole number, so these
+    miss the reciprocal branch; n * step would land an ulp low and ccxt truncates 0.3-lot
+    0.8999999999999999 to 0.6 — two whole lots down."""
+    assert grid_floor(0.9, 0.3) == 0.9
+    assert grid_ceil(0.9, 0.3) == 0.9
+    assert grid_floor(0.44999999999999996, 0.15) == 0.45
+    assert grid_ceil(0.44999999999999996, 0.15) == 0.45
+    assert grid_floor(9.254999999999999, 0.0075) == 9.255
+    assert grid_ceil(9.254999999999999, 0.0075) == 9.255
+    assert grid_floor(2.0999999999999996, 0.7) == 2.1
+    assert grid_floor(0.9, 0.4) == 0.8
+    assert grid_ceil(0.9, 0.4) == 1.2
+
+
+@pytest.mark.parametrize("step", [0.3, 0.15, 0.0075, 0.06, 0.7, 0.9, 5.0, 2.5, 1.0, 10.0])
+def test_every_returned_value_is_a_whole_number_of_steps(step):
+    """The property the decimal decomposition buys: floor/ceil never hand back a fraction of a lot."""
+    random.seed(3)
+    for _ in range(2000):
+        x = random.uniform(-1e4, 1e4)
+        for v in (grid_floor(x, step), grid_ceil(x, step)):
+            q = Decimal(repr(v)) / Decimal(repr(step))
+            assert q == q.to_integral_value(), f"{v!r} is not a whole multiple of {step}"
+
+
+def test_a_step_no_power_of_ten_resolves_degrades_instead_of_misbehaving():
+    """No exact reciprocal and no whole numerator under the 1e12 bound: the divide-by-step path
+    takes over, still bracketing rather than hanging or returning nan."""
+    step = math.pi / 10
+    for x in (0.9, 1.7, 123.456):
+        lo, hi = grid_floor(x, step), grid_ceil(x, step)
+        assert lo <= x <= hi
+        assert hi - lo <= step * 1.0000001
+
+
+@pytest.mark.parametrize("step", [0.0, -1.0])
+def test_a_non_positive_step_raises(step):
+    """precision.amount is None on broken venue metadata; sending the unrounded size is worse."""
+    with pytest.raises(ValueError):
+        grid_floor(1.23, step)
+    with pytest.raises(ValueError):
+        grid_ceil(1.23, step)
 
 
 @pytest.mark.parametrize("power", range(9))

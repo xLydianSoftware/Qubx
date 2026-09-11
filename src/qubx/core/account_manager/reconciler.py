@@ -503,7 +503,7 @@ class Reconciler:
                 _log.exception(f"[{state.exchange}] reconcile: diff atom failed, skipping -> {difference.describe()}")
 
         # - venue settings are size-independent and the differ emits no atom for them, so they
-        #   refresh off every snapshot instead of riding an unrelated mismatch; never a `changed`
+        #   refresh off every snapshot; never a `changed`
         for snap_pos in snap.positions or ():
             state.apply_position_settings(snap_pos)
 

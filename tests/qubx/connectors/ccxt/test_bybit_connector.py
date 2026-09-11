@@ -1,4 +1,4 @@
-"""Bybit connector account surface: ADL rank, wallet-balance figures, margin mode.
+"""Bybit connector account surface: wallet-balance figures, margin mode, reject causes.
 
 Offline, mocked ccxt — no credentials or network.
 """
@@ -10,7 +10,6 @@ import ccxt
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector
-from qubx.connectors.ccxt.exchanges.bybit.bybit import _parse_adl_ranks
 from qubx.connectors.ccxt.exchanges.bybit.connector import BybitCcxtConnector
 from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position, RejectCause
 from tests.qubx.core.utils_test import DummyTimeProvider
@@ -100,70 +99,21 @@ def _wallet_balance(**overrides) -> dict:
     return {"info": {"retCode": 0, "retMsg": "OK", "result": {"list": [account]}, "time": 1672125441042}}
 
 
-# ADL rank: Bybit ranks 1..5 with 0 = "not ranked"; the framework scale is Binance's 0..4.
-@pytest.mark.parametrize(
-    "rank,expected",
-    [(1, 0), (2, 1), (3, 2), (4, 3), (5, 4), ("5", 4), ("1", 0)],
-)
-def test_adl_rank_is_normalised_onto_the_framework_scale(rank, expected):
-    assert _parse_adl_ranks([_position_row(adlRankIndicator=rank)]) == {BTC: expected}
-
-
-@pytest.mark.parametrize("rank", [0, "0", 6, -1, "", "n/a", None])
-def test_an_unranked_or_out_of_scale_row_reports_no_level(rank):
-    """0 means "not ranked", not "safest"; anything outside 1..5 is dropped, not clamped."""
-    assert _parse_adl_ranks([_position_row(adlRankIndicator=rank)]) == {}
-
-
-def test_a_row_without_the_field_reports_no_level():
-    assert _parse_adl_ranks([_position_row()]) == {}
-    assert _parse_adl_ranks(None) == {}
-
-
-def test_the_most_endangered_bybit_rank_matches_the_binance_one():
-    """Bybit's worst rank (5) must arrive as 4 — strategies threshold against Binance's 0..4."""
-    assert _parse_adl_ranks([_position_row(adlRankIndicator=5)])[BTC] == 4
-
-
-def test_snapshot_stamps_adl_levels_on_positions_and_the_cache():
+def test_get_adl_level_reads_the_rank_off_the_venue_row():
+    """No connector-side cache: ``BybitF.parse_position`` puts ``adl`` on the raw row (the
+    unified key ``ccxt_convert_position`` already reads) and the base getter takes it there."""
     exchange = Mock()
-    exchange.adl_ranks = {BTC: 4, ETH: 0}
+    exchange.fetch_positions = AsyncMock(return_value=[{"symbol": BTC, "info": {"adl": 1, "adlRankIndicator": "2"}}])
     conn, _, _ = _make_connector(exchange)
-    positions = [_position("BTCUSDT"), _position("ETHUSDT")]
 
-    conn._fill_adl_levels(positions)
-
-    assert [p.adl_level for p in positions] == [4, 0]
-    assert conn.get_adl_level(_instrument("BTCUSDT")) == 4
-    assert conn.get_adl_level(_instrument("ETHUSDT")) == 0
-    # the ranks ride the snapshot's own positions read — no second venue call
-    exchange.fetch_positions.assert_not_called()
+    assert conn.get_adl_level(_instrument()) == 1
+    exchange.fetch_positions.assert_awaited_once_with([BTC])
 
 
-def test_the_whole_account_snapshot_reads_walk_the_cursor():
-    """/v5/order/realtime defaults to 20 rows and ccxt pins /v5/position/list at 200."""
-    assert BybitCcxtConnector._snapshot_fetch_params == {"paginate": True}
-
-
-def test_an_unranked_position_keeps_no_level():
+def test_a_flat_position_read_reports_no_adl_level():
     exchange = Mock()
-    exchange.adl_ranks = {}
+    exchange.fetch_positions = AsyncMock(return_value=[])
     conn, _, _ = _make_connector(exchange)
-    position = _position()
-
-    conn._fill_adl_levels([position])
-
-    assert position.adl_level is None
-    assert conn.get_adl_level(_instrument()) is None
-
-
-def test_a_flat_account_drops_a_stale_rank():
-    exchange = Mock()
-    exchange.adl_ranks = {BTC: 4}
-    conn, _, _ = _make_connector(exchange)
-    conn._adl_levels = {BTC: 4}
-
-    conn._fill_adl_levels([])
 
     assert conn.get_adl_level(_instrument()) is None
 
@@ -274,18 +224,18 @@ async def test_a_margin_mode_read_failure_leaves_the_positions_alone():
 
 
 @pytest.mark.asyncio
-async def test_the_snapshot_hook_runs_both_fills():
+async def test_the_snapshot_hook_fills_the_margin_mode():
+    """ADL is not filled here: BybitF.parse_position puts it on the row ccxt_convert_position
+    already reads (see test_bybit_exchange)."""
     exchange = Mock()
     exchange.has = {"fetchLeverages": False}
     exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
-    exchange.adl_ranks = {BTC: 2}
     conn, _, _ = _make_connector(exchange)
     position = _position()
 
     await conn._fill_leverage_settings([position])
 
     assert position.margin_mode == "isolated"
-    assert position.adl_level == 2
 
 
 def test_set_margin_mode_invalidates_the_cached_read():

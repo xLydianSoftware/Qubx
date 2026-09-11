@@ -364,20 +364,6 @@ def test_apply_position_settings_is_noop_for_instrument_not_held():
     assert state.get_positions() == {}
 
 
-def test_reconcile_position_from_snapshot_still_applies_settings():
-    # the pre-existing path must behave exactly as before the settings extraction
-    state = AccountState("binance", "USDT")
-    inst = _instrument("BTCUSDT")
-    held = Position(inst, quantity=1.0, pos_average_price=50_000.0)
-    state.set_position(inst, held)
-
-    changed = state.reconcile_position_from_snapshot(_settings_snapshot(inst, qty=2.0, avg=51_000.0))
-
-    assert changed is True
-    assert held.quantity == 2.0
-    assert (held.adl_level, held.leverage, held.margin_mode, held.max_notional) == (2, 10.0, "cross", 1e6)
-
-
 # --------------------------------------------------------------------------- #
 # WS push side-tables: apply_balance_push / push as_of ratchets (F26)
 # --------------------------------------------------------------------------- #

@@ -490,7 +490,6 @@ class AccountState:
             existing.set_external_maint_margin(snapshot.maint_margin)
         if snapshot._initial_margin_external:
             existing.set_external_initial_margin(snapshot.initial_margin)
-        self.apply_position_settings(snapshot)
         if not np.isnan(snapshot.last_update_price):
             existing.update_market_price(
                 snapshot.last_update_time, snapshot.last_update_price, snapshot.last_update_conversion_rate

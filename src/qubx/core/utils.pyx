@@ -129,38 +129,61 @@ cdef inline double _grid_scale(double step) noexcept:
     return 0.0
 
 
-cpdef double grid_floor(double a, double step) noexcept:
+cdef inline bint _decimal_grid(double step, double* num, double* den) noexcept:
+    """
+    Exact num/den for `step`, den the smallest power of ten that makes num whole: 0.3 -> 3/10,
+    0.0075 -> 75/10000, 10.0 -> 10/1. Both halves are exact, so scaling through the pair keeps a
+    multiple of a step like 0.3 on the decimal grid, where `n * step` lands an ulp below it
+    (3 * 0.3 -> 0.8999999999999999, which ccxt truncates a whole tick down).
+
+    False when no power of ten up to 1e12 resolves the step; the caller then divides by it.
+    """
+    cdef double d = 1.0
+    cdef double n
+    while d <= 1e12:
+        n = round(step * d)
+        if n > 0.0 and n / d == step:
+            num[0] = n
+            den[0] = d
+            return True
+        d *= 10.0
+    return False
+
+
+cpdef double grid_floor(double a, double step):
     """
     Largest multiple of `step` not exceeding |a|, signed back: grid_floor(157, 10) -> 150.0.
+
+    Raises ValueError on a non-positive step: there is no grid, and passing the value through
+    would ship an unrounded size on bad venue metadata.
     """
-    cdef double scale = _grid_scale(step)
-    cdef double ticks
+    cdef double num = 0.0, den = 0.0
+    cdef double scale
+    if step <= 0.0:
+        raise ValueError(f"grid step must be positive, got {step}")
+    scale = _grid_scale(step)
     if scale > 0.0:
         return copysign(floor(_snap_tick_noise(fabs(a) * scale)) / scale, a)
-    if step > 0.0:
-        ticks = _snap_tick_noise(fabs(a) / step)
-        # a value already on the grid is its own floor/ceil; multiplying back lands an ulp off
-        if ticks == floor(ticks):
-            return a
-        return copysign(floor(ticks) * step, a)
-    return a
+    if _decimal_grid(step, &num, &den):
+        return copysign(floor(_snap_tick_noise(fabs(a) * den / num)) * num / den, a)
+    return copysign(floor(_snap_tick_noise(fabs(a) / step)) * step, a)
 
 
-cpdef double grid_ceil(double a, double step) noexcept:
+cpdef double grid_ceil(double a, double step):
     """
-    Smallest multiple of `step` at or above |a|, signed back.
+    Smallest multiple of `step` at or above |a|, signed back. Raises ValueError on a
+    non-positive step.
     """
-    cdef double scale = _grid_scale(step)
-    cdef double ticks
+    cdef double num = 0.0, den = 0.0
+    cdef double scale
+    if step <= 0.0:
+        raise ValueError(f"grid step must be positive, got {step}")
+    scale = _grid_scale(step)
     if scale > 0.0:
         return copysign(ceil(_snap_tick_noise(fabs(a) * scale)) / scale, a)
-    if step > 0.0:
-        ticks = _snap_tick_noise(fabs(a) / step)
-        # a value already on the grid is its own floor/ceil; multiplying back lands an ulp off
-        if ticks == floor(ticks):
-            return a
-        return copysign(ceil(ticks) * step, a)
-    return a
+    if _decimal_grid(step, &num, &den):
+        return copysign(ceil(_snap_tick_noise(fabs(a) * den / num)) * num / den, a)
+    return copysign(ceil(_snap_tick_noise(fabs(a) / step)) * step, a)
 
 
 cpdef double add_in_lots(double quantity, double amount, double lot_size) noexcept:

@@ -115,11 +115,12 @@ DEFAULT_VENUE_CALL_TIMEOUT_SECONDS = 15.0
 
 @dataclass(frozen=True, slots=True)
 class _LeverageInfo:
-    """One symbol's venue leverage state, in whole numbers as the venue reports and
-    accepts them. Either field is None when that read failed or the venue does not
-    report it."""
+    """One symbol's venue leverage state. Either field is None when that read failed or
+    the venue does not report it. ``configured`` is the venue's own figure, fractional
+    where the venue allows it (Bybit's leverageStep); ``maximum`` is a whole number,
+    as the write path sends it."""
 
-    configured: int | None
+    configured: float | None
     maximum: int | None
 
 
@@ -169,10 +170,6 @@ class CcxtConnector(ChannelEmitter):
     # overwrite the account balance with the sub-wallet figure, so they stay
     # snapshot-only.
     _wants_ws_balance_push: bool = True
-
-    # Venue seam: extra params for the snapshot's whole-account reads, e.g. {"paginate": True}.
-    # Must ride params, not options — ccxt's fetch_paginated_call_cursor recurses forever otherwise.
-    _snapshot_fetch_params: dict[str, Any] = {}
 
     def __init__(
         self,
@@ -751,10 +748,12 @@ class CcxtConnector(ChannelEmitter):
         params: dict[str, Any] = {}
         if order_type.startswith("stop_"):
             # Mirror submit: the trigger rides params and `price` stays, so a STOP_LIMIT keeps
-            # trigger and limit on the one price instead of drifting apart on amend.
-            # Pre-rounded: ccxt's bybit re-extends its formatted request with the caller's raw
-            # params, so an unformatted float would reach the venue off-grid.
-            params["triggerPrice"] = self._em.exchange.price_to_precision(symbol, price)
+            # trigger and limit on the one price instead of drifting apart on amend. A
+            # quantity-only amend carries no price and must not send triggerPrice: None.
+            # Pre-rounded for Bybit — the only edit path that reads the key — because its
+            # request builder re-extends with the caller's raw params, off-grid float and all.
+            if price is not None:
+                params["triggerPrice"] = self._em.exchange.price_to_precision(symbol, price)
             order_type = order_type.split("_", 1)[1]
         if venue_order_id is None:
             # cloid-only (venue ack never seen): ccxt's client-order-id variant sends the
@@ -883,9 +882,14 @@ class CcxtConnector(ChannelEmitter):
             return
         # - adopt what we just set, so the next call for the same value is skipped without
         #   waiting for the poller; the poller corrects it if the venue disagrees
-        cached = self._leverage_cache.get(symbol)
+        self._store_leverage(symbol, configured=leverage)
+
+    def _store_leverage(self, symbol: str, configured: float | None = None, maximum: int | None = None) -> None:
+        """Merge one symbol's cache entry — a None leaves what is already held."""
+        held = self._leverage_cache.get(symbol)
         self._leverage_cache[symbol] = _LeverageInfo(
-            configured=leverage, maximum=cached.maximum if cached is not None else None
+            configured=configured if configured is not None else (held.configured if held else None),
+            maximum=maximum if maximum is not None else (held.maximum if held else None),
         )
 
     def _start_leverage_poller(self) -> None:
@@ -925,7 +929,7 @@ class CcxtConnector(ChannelEmitter):
             for symbol, row in rows.items():
                 value = row.get("longLeverage") or row.get("leverage")
                 if value is not None:
-                    configured[symbol] = int(value)
+                    configured[symbol] = float(value)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[{self.exchange_name}] configured-leverage read failed: {type(e).__name__}: {e}")
         try:
@@ -939,10 +943,10 @@ class CcxtConnector(ChannelEmitter):
 
         if not configured and not maxima:
             return
-        self._leverage_cache = {
-            symbol: _LeverageInfo(configured=configured.get(symbol), maximum=maxima.get(symbol))
-            for symbol in configured.keys() | maxima.keys()
-        }
+        # merged, not replaced: a venue with only one of the two reads (Bybit has no
+        # fetchLeverages) would otherwise blank what the per-symbol reads cached
+        for symbol in configured.keys() | maxima.keys():
+            self._store_leverage(symbol, configured=configured.get(symbol), maximum=maxima.get(symbol))
         logger.info(
             f"[{self.exchange_name}] leverage cache refreshed: {len(configured)} configured, {len(maxima)} maxima"
         )
@@ -978,28 +982,34 @@ class CcxtConnector(ChannelEmitter):
         row = self._fetch_position_row(instrument)
         return info_float(row, "leverage") if row is not None else None
 
-    def _fetch_leverage_single(self, instrument: Instrument) -> float | None:
-        """Per-symbol venue read for venues with no ``fetchLeverages``.
+    async def _read_configured_leverage(self, symbol: str) -> float | None:
+        """One symbol's configured leverage from the venue's singular endpoint.
 
-        ``is True`` excludes ccxt's ``'emulated'``, which only re-runs the fetch_leverages tried above.
+        ``is True`` excludes ccxt's ``'emulated'``, which only re-runs the fetch_leverages
+        tried above. The sole seam for it: a venue subclass calls this rather than repeating
+        the read, so one cache entry cannot be written two ways.
         """
         if self._em.exchange.has.get("fetchLeverage") is not True:
             return None
+        try:
+            row = await self._em.exchange.fetch_leverage(symbol)
+            value = (row.get("longLeverage") or row.get("shortLeverage")) if row else None
+            return float(value) if value is not None else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] fetch_leverage for {symbol}: {e}")
+            return None
+
+    def _fetch_leverage_single(self, instrument: Instrument) -> float | None:
+        """Blocking ``_read_configured_leverage`` for venues with no ``fetchLeverages``."""
         symbol = instrument_to_ccxt_symbol(instrument)
         try:
-            row = self._run_sync(self._em.exchange.fetch_leverage(symbol))
-            value = row.get("longLeverage") or row.get("shortLeverage")
-            if value is None:
-                return None
-            leverage = float(value)
-            configured = int(leverage)  # the cache holds what the venue accepts: whole numbers
+            leverage = self._run_sync(self._read_configured_leverage(symbol))
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[{self.exchange_name}] fetch_leverage for {instrument.symbol}: {e}")
             return None
-        held = self._leverage_cache.get(symbol)
-        self._leverage_cache[symbol] = _LeverageInfo(
-            configured=configured, maximum=held.maximum if held is not None else None
-        )
+        if leverage is None:
+            return None
+        self._store_leverage(symbol, configured=leverage)
         return leverage
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
@@ -1700,10 +1710,6 @@ class CcxtConnector(ChannelEmitter):
             )
         )
 
-    def _snapshot_params(self, **extra: Any) -> dict[str, Any]:
-        """Fresh params dict for a snapshot read — the venue seam plus this leg's own keys."""
-        return {**self._snapshot_fetch_params, **extra}
-
     async def _fetch_trigger_open_orders(self) -> list[dict]:
         """Fetch untriggered stop/conditional ("algo") open orders.
 
@@ -1714,7 +1720,7 @@ class CcxtConnector(ChannelEmitter):
         reconcile for the next tick rather than orphaning unseen stops).
         """
         try:
-            return await self._em.exchange.fetch_open_orders(params=self._snapshot_params(trigger=True))
+            return await self._em.exchange.fetch_open_orders(params={"trigger": True})
         except (ccxt.NotSupported, ccxt.BadRequest) as e:
             logger.debug(f"[{self.exchange_name}] snapshot: no trigger open-orders surface ({e}); regular only")
             return []
@@ -1782,16 +1788,14 @@ class CcxtConnector(ChannelEmitter):
         try:
             if include_orders:
                 raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
-                    ex.fetch_open_orders(params=self._snapshot_params()),
+                    ex.fetch_open_orders(),
                     self._fetch_trigger_open_orders(),
-                    ex.fetch_positions(params=self._snapshot_params()),
+                    ex.fetch_positions(),
                     ex.fetch_balance(),
                 )
                 open_orders = self._merge_open_orders(raw_orders, raw_trigger_orders)
             else:
-                raw_positions, raw_balance = await asyncio.gather(
-                    ex.fetch_positions(params=self._snapshot_params()), ex.fetch_balance()
-                )
+                raw_positions, raw_balance = await asyncio.gather(ex.fetch_positions(), ex.fetch_balance())
                 open_orders = None  # - not observed this tick -> reconcile skips order diffing
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)

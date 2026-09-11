@@ -1,8 +1,11 @@
 import asyncio
+from collections.abc import Awaitable, Callable
+from functools import partial
+from typing import Any
 
 import ccxt.pro as cxp
 from ccxt.base.errors import ArgumentsRequired, BadRequest, OrderNotFound
-from ccxt.base.types import Any, Liquidation, Num, Order, OrderSide, OrderType, Position, Str, Strings
+from ccxt.base.types import Liquidation, Num, Order, OrderSide, OrderType, Position, Str, Strings
 
 from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter
 from ...utils import info_float
@@ -23,20 +26,19 @@ _SETTLE_COINS = ("USDT", "USDC")
 _ADL_MIN_RANK = 1
 _ADL_MAX_RANK = 5
 
+# a crossing post-only order comes back cancelled with this reject-reason family
+_POST_ONLY_REFUSAL = "EC_PostOnly"
 
-def _parse_adl_ranks(rows: Any) -> dict[str, int]:
-    """ccxt symbol -> framework ADL level from ``fetch_positions`` rows.
+
+def _adl_level(position: Any) -> int | None:
+    """Bybit's ``adlRankIndicator`` on the framework scale.
 
     A rank outside 1..5 is dropped, not clamped: 0 means "not ranked", not "safest".
     """
-    levels: dict[str, int] = {}
-    for row in rows if isinstance(rows, list) else []:
-        symbol = row.get("symbol")
-        rank = info_float(row.get("info") or {}, "adlRankIndicator")
-        if symbol is None or rank is None or not (_ADL_MIN_RANK <= rank <= _ADL_MAX_RANK):
-            continue
-        levels[symbol] = int(rank) - _ADL_MIN_RANK
-    return levels
+    rank = info_float(position, "adlRankIndicator")
+    if rank is None or not (_ADL_MIN_RANK <= rank <= _ADL_MAX_RANK):
+        return None
+    return int(rank) - _ADL_MIN_RANK
 
 
 FUNDING_RATE_DEFAULT_POLL_MINUTES = 5
@@ -51,8 +53,6 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
     def __init__(self, config=None):
         super().__init__(config or {})
         self._funding_rate_adapter: PollingToWebSocketAdapter | None = None
-        # ccxt drops adlRankIndicator when parsing positions, so keep it off the rows we see
-        self.adl_ranks: dict[str, int] = {}
 
     def describe(self):
         return self.deep_extend(
@@ -76,33 +76,41 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
     def _settle_filtered(self, params: dict) -> bool:
         return any(params.get(k) is not None for k in ("settleCoin", "baseCoin", "symbol"))
 
+    async def _per_settle_coin(self, fetch: Callable[[dict], Awaitable[list]], params: dict) -> list:
+        """One paginated call per settle coin, concatenated.
+
+        The row caps — /v5/order/realtime serves 20, ccxt pins /v5/position/list at 200 — need
+        the cursor walk, and ``paginate`` must ride params, not options: the recursive call
+        carries ``settleCoin``, so it lands back on the filtered branch and ends at ``super()``.
+        """
+        legs = await asyncio.gather(
+            *(fetch(self.extend(params, {"settleCoin": coin, "paginate": True})) for coin in _SETTLE_COINS)
+        )
+        return [row for leg in legs for row in leg]
+
     async def fetch_positions(self, symbols: Strings = None, params={}) -> list[Any]:
         if symbols or self._settle_filtered(params):
-            return self._keep_adl_ranks(await super().fetch_positions(symbols, params))
-        legs = await asyncio.gather(
-            *(
-                super(BybitF, self).fetch_positions(symbols, self.extend(params, {"settleCoin": coin}))
-                for coin in _SETTLE_COINS
-            )
-        )
-        return self._keep_adl_ranks([row for leg in legs for row in leg])
-
-    def _keep_adl_ranks(self, rows: list[Any]) -> list[Any]:
-        self.adl_ranks = _parse_adl_ranks(rows)
-        return rows
+            return await super().fetch_positions(symbols, params)
+        return await self._per_settle_coin(partial(super(BybitF, self).fetch_positions, symbols), params)
 
     def parse_position(self, position, market=None) -> Position:
-        """Keep the venue's own maintenance margin.
+        """Keep the venue's own maintenance margin and put the ADL rank on the unified key.
 
         ccxt reads ``positionMM`` and then replaces it with ``|liqPrice - bustPrice| * size``
         whenever a liquidation price is set; a UTA account reports ``bustPrice=""``, so the
         product is None and the framework falls back to a flat 5% of notional.
+
+        ``info`` is ccxt's passthrough of the raw row, which is where ``ccxt_convert_position``
+        reads ``adl`` — Bybit spells the same figure ``adlRankIndicator`` on a 1-based scale.
         """
         parsed = super().parse_position(position, market)
         if parsed.get("maintenanceMargin") is None:
             venue_mm = info_float(position, "positionMM")
             if venue_mm is not None:
                 parsed["maintenanceMargin"] = venue_mm
+        adl = _adl_level(position)
+        if adl is not None:
+            parsed["info"] = {**position, "adl": adl}
         return parsed
 
     async def fetch_open_orders(
@@ -110,13 +118,7 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
     ) -> list[Order]:
         if symbol is not None or self._settle_filtered(params):
             return await super().fetch_open_orders(symbol, since, limit, params)
-        legs = await asyncio.gather(
-            *(
-                super(BybitF, self).fetch_open_orders(symbol, since, limit, self.extend(params, {"settleCoin": coin}))
-                for coin in _SETTLE_COINS
-            )
-        )
-        return [row for leg in legs for row in leg]
+        return await self._per_settle_coin(partial(super(BybitF, self).fetch_open_orders, symbol, since, limit), params)
 
     def create_order_request(
         self,
@@ -150,7 +152,7 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
         parsed = super().parse_order(order, market)
         if parsed.get("status") == "canceled":
             reason = self.safe_string(parsed.get("info") or {}, "rejectReason", "")
-            if reason.startswith("EC_PostOnly"):
+            if reason.startswith(_POST_ONLY_REFUSAL):
                 parsed["status"] = "rejected"
         return parsed
 

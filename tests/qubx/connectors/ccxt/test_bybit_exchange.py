@@ -255,9 +255,55 @@ def test_no_other_position_field_is_touched(bybit):
     row = _position_row()
     mine = bybit.parse_position(row, bybit.market("BTC/USDT:USDT"))
     theirs = _upstream().parse_position(row, _upstream().market("BTC/USDT:USDT"))
-    assert {k: v for k, v in mine.items() if k != "maintenanceMargin"} == {
-        k: v for k, v in theirs.items() if k != "maintenanceMargin"
-    }
+    touched = {"maintenanceMargin", "info"}
+    assert {k: v for k, v in mine.items() if k not in touched} == {k: v for k, v in theirs.items() if k not in touched}
+    # the raw row is passed through with one key added, and the caller's dict is not mutated
+    assert {k: v for k, v in mine["info"].items() if k != "adl"} == theirs["info"] == row
+
+
+@pytest.mark.parametrize("rank,expected", [(1, 0), ("2", 1), (3, 2), (4, 3), (5, 4)])
+def test_the_adl_rank_lands_on_the_framework_scale(bybit, rank, expected):
+    """Bybit ranks the ADL queue 1..5; the framework scale is Binance's 0..4."""
+    parsed = bybit.parse_position(_position_row(adlRankIndicator=rank), bybit.market("BTC/USDT:USDT"))
+    assert parsed["info"]["adl"] == expected
+
+
+@pytest.mark.parametrize("rank", [0, "0", 6, -1, "", "n/a"])
+def test_an_unranked_or_out_of_scale_position_carries_no_adl(bybit, rank):
+    """0 means "not ranked", not "safest" — dropped, not clamped."""
+    parsed = bybit.parse_position(_position_row(adlRankIndicator=rank), bybit.market("BTC/USDT:USDT"))
+    assert "adl" not in parsed["info"]
+
+
+def test_a_position_row_without_the_rank_is_left_alone(bybit):
+    row = _position_row()
+    del row["adlRankIndicator"]
+    assert "adl" not in bybit.parse_position(row, bybit.market("BTC/USDT:USDT"))["info"]
+
+
+def test_upstream_keeps_the_raw_row_but_not_the_unified_adl_key():
+    """ccxt does pass the raw row through on ``info`` — the override only has to add the
+    spelling ccxt_convert_position reads. If this ever fails, upstream maps it itself."""
+    upstream = _upstream()
+    parsed = upstream.parse_position(_position_row(), upstream.market("BTC/USDT:USDT"))
+    assert parsed["info"]["adlRankIndicator"] == "2"
+    assert "adl" not in parsed["info"]
+
+
+def test_the_adl_rank_reaches_the_position(bybit):
+    """The join: parse_position -> ccxt_convert_position, which reads ``adl`` off the raw row
+    (the same key Binance's v3 positionRisk uses)."""
+    market = _swap_market()
+    market["limits"]["cost"] = {"min": 5.0}  # ccxt_symbol_to_instrument reads it; the fixture omits it
+    parsed = bybit.parse_position(_position_row(), bybit.market("BTC/USDT:USDT"))
+
+    pos = ccxt_convert_position(parsed, "BYBIT.F", {"BTC/USDT:USDT": market})
+    assert pos is not None
+    assert pos.adl_level == 1  # the fixture's adlRankIndicator "2"
+
+    # the worst Bybit rank must arrive as Binance's worst: strategies threshold on 0..4
+    worst = bybit.parse_position(_position_row(adlRankIndicator="5"), bybit.market("BTC/USDT:USDT"))
+    assert ccxt_convert_position(worst, "BYBIT.F", {"BTC/USDT:USDT": market}).adl_level == 4
 
 
 def test_upstream_drops_the_maintenance_margin_when_the_bust_price_is_empty():
@@ -528,38 +574,79 @@ async def test_cursor_pagination_stops_at_the_declared_cap():
 
 
 @pytest.mark.asyncio
-async def test_positions_keep_the_adl_rank_ccxt_drops(bybit):
-    """parse_position discards adlRankIndicator, so it is kept off the rows as they go past."""
+async def test_the_settle_coin_fan_out_paginates_each_leg_and_terminates():
+    """The snapshot's whole-account read: no symbol, no settleCoin. Each fan-out leg arms
+    paginate, and the recursive call carries settleCoin — so it lands back on the filtered
+    branch and goes straight to super() instead of re-arming. Real ccxt, stubbed transport."""
+    exchange = BybitF({"enableRateLimit": False})
+    exchange.options["defaultType"] = "swap"
+    calls: list[dict] = []
 
-    async def _positions(self, symbols=None, params={}):
-        return [{"symbol": "BTC/USDT:USDT", "info": {"adlRankIndicator": "5"}}]
+    async def _load_markets(reload=False, params={}):
+        exchange.markets, exchange.markets_by_id = {}, {}
+        return {}
 
-    with patch.object(cxp.bybit, "fetch_positions", new=_positions):
-        await bybit.fetch_positions()
+    async def _endpoint(params={}):
+        calls.append(dict(params))
+        if len(calls) > 8:
+            pytest.fail(f"pagination did not terminate: {len(calls)} calls")
+        coin = params["settleCoin"]
+        page = sum(1 for c in calls if c["settleCoin"] == coin)
+        rows = [
+            {
+                "orderId": f"{coin}{page}_{i}",
+                "orderLinkId": f"c{coin}{page}_{i}",
+                "symbol": "BTCUSDT",
+                "side": "Buy",
+                "orderType": "Limit",
+                "price": "100",
+                "qty": "1",
+                "cumExecQty": "0",
+                "orderStatus": "New",
+                "createdTime": "1700000000000",
+                "updatedTime": "1700000000000",
+                "nextPageCursor": f"cur{page}",
+            }
+            for i in range(50 if page <= 2 else 0)
+        ]
+        return {"retCode": 0, "result": {"category": "linear", "nextPageCursor": f"cur{page}", "list": rows}}
 
-    assert bybit.adl_ranks == {"BTC/USDT:USDT": 4}
+    exchange.load_markets = _load_markets
+    exchange.privateGetV5OrderRealtime = _endpoint
+    try:
+        orders = await exchange.fetch_open_orders(params={"trigger": True})
+    finally:
+        await exchange.close()
+
+    assert sorted(c["settleCoin"] for c in calls) == ["USDC"] * 3 + ["USDT"] * 3
+    assert len(orders) == 200
+    # the fan-out's key is consumed by the first frame; the trigger filter still reaches the venue
+    assert all("paginate" not in c for c in calls)
+    assert all(c["orderFilter"] == "StopOrder" for c in calls)
 
 
 @pytest.mark.asyncio
 async def test_a_symbol_less_read_covers_every_settle_coin(bybit):
     """A symbol-less read defaults to settleCoin=USDT upstream, hiding USDC positions from the
     reconciler, which reads the snapshot as venue truth."""
-    seen: list[str] = []
+    seen: list[dict] = []
 
     async def _positions(self, symbols=None, params={}):
-        seen.append(params["settleCoin"])
+        seen.append(dict(params))
         return [{"symbol": f"X/{params['settleCoin']}:{params['settleCoin']}"}]
 
     with patch.object(cxp.bybit, "fetch_positions", new=_positions):
         rows = await bybit.fetch_positions()
-    assert seen == ["USDT", "USDC"]
+    assert [p["settleCoin"] for p in seen] == ["USDT", "USDC"]
+    # each leg walks the cursor: the caps are per call, so the fan-out is where paginate belongs
+    assert all(p["paginate"] is True for p in seen)
     assert len(rows) == 2
 
-    # an explicit filter is left alone — one call, exactly as asked
+    # an explicit filter is left alone — one call, exactly as asked, and unpaginated
     seen.clear()
     with patch.object(cxp.bybit, "fetch_positions", new=_positions):
         await bybit.fetch_positions(params={"settleCoin": "USDC"})
-    assert seen == ["USDC"]
+    assert seen == [{"settleCoin": "USDC"}]
 
 
 @pytest.mark.parametrize(

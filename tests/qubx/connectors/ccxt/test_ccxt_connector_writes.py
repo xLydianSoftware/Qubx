@@ -630,6 +630,27 @@ async def test_update_stop_limit_moves_trigger_and_limit_together() -> None:
 
 
 @pytest.mark.asyncio
+async def test_a_quantity_only_stop_amend_sends_no_trigger_price() -> None:
+    """A STOP_MARKET read back from the venue has no limit price (ccxt omit_zero's Bybit's
+    "0"), and price_to_precision(symbol, None) answers None — so an unguarded amend would
+    tell the venue to clear the trigger."""
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
+    exchange.price_to_precision = Mock(side_effect=lambda symbol, price: None if price is None else f"{price:.1f}")
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    order = _order(venue_order_id="VENUE123", order_type=OrderType.STOP_MARKET, price=None)
+    conn.update_order(order, quantity=2.0)
+    await _drive(conn)
+
+    assert exchange.edit_order.await_args.kwargs["params"] == {}
+    assert exchange.edit_order.await_args.kwargs["price"] is None
+    exchange.price_to_precision.assert_not_called()
+    assert isinstance(sent[0], OrderUpdatedEvent)
+
+
+@pytest.mark.asyncio
 async def test_update_by_cloid_uses_cloid_edit_endpoint() -> None:
     # No venue id yet -> ccxt's client-order-id edit variant, with symbol/side/type off the order.
     exchange = Mock()
@@ -956,6 +977,34 @@ def test_emulated_fetch_leverage_is_not_used() -> None:
 
     assert conn._fetch_leverage_single(_instrument()) is None
     exchange.fetch_leverage.assert_not_awaited()
+
+
+def test_a_fractional_venue_leverage_is_cached_as_reported() -> None:
+    """Bybit's leverageStep allows 4.2; truncating to 4 makes a later set_instrument_leverage(4)
+    look redundant and skip the write."""
+    exchange = Mock()
+    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": "4.2"})
+    exchange.has = {"editOrder": True, "fetchLeverage": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn._fetch_leverage_single(_instrument()) == 4.2
+    assert conn._leverage_cache["BTC/USDT:USDT"].configured == 4.2
+
+
+def test_the_hourly_refresh_keeps_what_the_singular_read_cached() -> None:
+    """Bybit has no fetchLeverages but does publish tiers: a wholesale rebuild would write
+    configured=None over every entry the per-symbol read filled."""
+    exchange = Mock()
+    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 12})
+    exchange.fetch_leverages = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+    exchange.fetch_leverage_tiers = AsyncMock(return_value={"BTC/USDT:USDT": [{"maxLeverage": 100}]})
+    exchange.has = {"editOrder": True, "fetchLeverage": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._fetch_leverage_single(_instrument())
+
+    asyncio.new_event_loop().run_until_complete(conn._refresh_leverage_cache())
+
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=12, maximum=100)
 
 
 def test_fetch_leverage_single_survives_a_non_numeric_value() -> None:

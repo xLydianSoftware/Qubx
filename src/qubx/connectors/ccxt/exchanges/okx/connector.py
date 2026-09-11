@@ -30,7 +30,6 @@ from typing import Any, Coroutine
 from qubx import logger
 from qubx.core.basics import FRAMEWORK_CID_PREFIX, Balance, Instrument
 
-from ...connector import _LeverageInfo
 from ...utils import info_float, instrument_to_ccxt_symbol
 from .._two_stream import _TwoStreamCcxtConnector
 
@@ -84,21 +83,6 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         )
         return streams
 
-    async def _read_configured_leverage(self, symbol: str) -> int | None:
-        """
-        One symbol's configured leverage from OKX's own endpoint.
-
-        ccxt asks for cross margin mode unless told otherwise, which is the mode
-        ``set_leverage`` writes by default, so read and write agree.
-        """
-        try:
-            row = await self._em.exchange.fetch_leverage(symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[{self.exchange_name}] fetch_leverage {symbol}: {e}")
-            return None
-        value = (row.get("longLeverage") or row.get("shortLeverage")) if row else None
-        return int(value) if value is not None else None
-
     async def _read_max_leverage(self, symbol: str) -> int | None:
         """One symbol's venue cap: OKX publishes tiers one market at a time."""
         try:
@@ -109,13 +93,6 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         levels = [t["maxLeverage"] for t in (tiers or []) if t.get("maxLeverage") is not None]
         return int(max(levels)) if levels else None
 
-    def _store(self, symbol: str, configured: int | None = None, maximum: int | None = None) -> None:
-        held = self._leverage_cache.get(symbol)
-        self._leverage_cache[symbol] = _LeverageInfo(
-            configured=configured if configured is not None else (held.configured if held else None),
-            maximum=maximum if maximum is not None else (held.maximum if held else None),
-        )
-
     async def _refresh_leverage_cache(self) -> None:
         """
         Refresh the symbols the cache already holds, one at a time.
@@ -124,26 +101,15 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         so it fills nothing and every getter falls through to a venue round trip — measured at
         0.93s per ``get_instrument_leverage`` against 16us on Binance, where the sweep works.
         Entries land here on first ask, and this keeps them as fresh as the hourly sweep does
-        elsewhere.
+        elsewhere. The configured half is the base's read — ``get_instrument_leverage`` already
+        goes through it, so the two cannot disagree.
         """
         for symbol in list(self._leverage_cache):
-            self._store(
+            self._store_leverage(
                 symbol,
                 configured=await self._read_configured_leverage(symbol),
                 maximum=await self._read_max_leverage(symbol),
             )
-
-    def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        """Read it from OKX when the cache and the position row have nothing, and keep it."""
-        leverage = super().get_instrument_leverage(instrument)
-        if leverage is not None:
-            return leverage
-        symbol = instrument_to_ccxt_symbol(instrument)
-        configured = self._run_sync(self._read_configured_leverage(symbol))
-        if configured is None:
-            return None
-        self._store(symbol, configured=configured)
-        return float(configured)
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         """Read the venue cap per symbol and keep it: the base's source does not exist here."""
@@ -154,7 +120,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         maximum = self._run_sync(self._read_max_leverage(symbol))
         if maximum is None:
             return None
-        self._store(symbol, maximum=maximum)
+        self._store_leverage(symbol, maximum=maximum)
         return float(maximum)
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
