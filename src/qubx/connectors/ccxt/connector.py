@@ -43,6 +43,7 @@ from ccxt import AuthenticationError, ExchangeClosedByUser, ExchangeError, Excha
 from qubx import connector_logger, logger
 from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
+    OPTION_REPRICE_IF_CROSSING,
     Balance,
     CtrlChannel,
     Deal,
@@ -84,6 +85,7 @@ from qubx.utils.time import to_timedelta
 from .exceptions import CcxtSymbolNotRecognized
 from .exchange_manager import ExchangeManager
 from .utils import (
+    FRAMEWORK_ONLY_OPTIONS,
     ccxt_convert_balance,
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
@@ -113,11 +115,12 @@ DEFAULT_VENUE_CALL_TIMEOUT_SECONDS = 15.0
 
 @dataclass(frozen=True, slots=True)
 class _LeverageInfo:
-    """One symbol's venue leverage state, in whole numbers as the venue reports and
-    accepts them. Either field is None when that read failed or the venue does not
-    report it."""
+    """One symbol's venue leverage state. Either field is None when that read failed or
+    the venue does not report it. ``configured`` is the venue's own figure, fractional
+    where the venue allows it (Bybit's leverageStep); ``maximum`` is a whole number,
+    as the write path sends it."""
 
-    configured: int | None
+    configured: float | None
     maximum: int | None
 
 
@@ -305,6 +308,8 @@ class CcxtConnector(ChannelEmitter):
 
         options = request.options or {}
         reduce_only = bool(resolve_reduce_only(options))
+        post_only = bool(options.get("post_only", False))
+        reprice_if_crossing = bool(options.get(OPTION_REPRICE_IF_CROSSING, False))
 
         # Quote lookup is the connector's only READ dependency; payload build raises
         # framework-side rejections (no quote, below min-notional, missing price).
@@ -319,11 +324,13 @@ class CcxtConnector(ChannelEmitter):
             time_in_force=request.time_in_force,
             quote=quote,
             reduce_only=reduce_only,
+            post_only=post_only,
+            reprice_if_crossing=reprice_if_crossing,
         )
         # Forward any remaining venue-specific options ccxt understands (e.g.
         # lighter_* indices) without clobbering what the payload builder set.
         for k, v in options.items():
-            if k in ("reduceOnly", "reduce_only"):
+            if k in FRAMEWORK_ONLY_OPTIONS:
                 continue
             payload["params"].setdefault(k, v)
 
@@ -738,12 +745,22 @@ class CcxtConnector(ChannelEmitter):
         # editOrder requires symbol/side/type on most venues (Binance resolves the market from
         # `symbol`) — all read straight off the order the AM passed.
         amount = abs(quantity) if quantity is not None else None
+        params: dict[str, Any] = {}
+        if order_type.startswith("stop_"):
+            # Mirror submit: the trigger rides params and `price` stays, so a STOP_LIMIT keeps
+            # trigger and limit on the one price instead of drifting apart on amend. A
+            # quantity-only amend carries no price and must not send triggerPrice: None.
+            # Pre-rounded for Bybit — the only edit path that reads the key — because its
+            # request builder re-extends with the caller's raw params, off-grid float and all.
+            if price is not None:
+                params["triggerPrice"] = self._em.exchange.price_to_precision(symbol, price)
+            order_type = order_type.split("_", 1)[1]
         if venue_order_id is None:
             # cloid-only (venue ack never seen): ccxt's client-order-id variant sends the
             # cloid as origClientOrderId — mirroring the cancel path.
             assert client_order_id is not None
             return await self._em.exchange.edit_order_with_client_order_id(
-                client_order_id, symbol, order_type, side, amount, price
+                client_order_id, symbol, order_type, side, amount, price, params
             )
         return await self._em.exchange.edit_order(
             id=venue_order_id,
@@ -752,7 +769,7 @@ class CcxtConnector(ChannelEmitter):
             side=side,
             amount=amount,
             price=price,
-            params={},
+            params=params,
         )
 
     async def _update_via_cancel_recreate(
@@ -824,19 +841,18 @@ class CcxtConnector(ChannelEmitter):
                 f"number; the venue takes integers, requesting {wanted}"
             )
         cached = self._leverage_cache.get(symbol)
-        if cached is not None:
-            if cached.maximum is not None and wanted > cached.maximum:
-                logger.warning(
-                    f"[{self.exchange_name}] {instrument.symbol}: leverage {wanted} exceeds the venue "
-                    f"maximum {cached.maximum}; requesting {cached.maximum}"
-                )
-                wanted = cached.maximum
-            if cached.configured is not None and cached.configured == wanted:
-                logger.info(
-                    f"[{self.exchange_name}] {instrument.symbol}: venue already at leverage "
-                    f"{cached.configured}, not sending {wanted}"
-                )
-                return
+        if cached is not None and cached.maximum is not None and wanted > cached.maximum:
+            logger.warning(
+                f"[{self.exchange_name}] {instrument.symbol}: leverage {wanted} exceeds the venue "
+                f"maximum {cached.maximum}; requesting {cached.maximum}"
+            )
+            wanted = cached.maximum
+        if cached is not None and cached.configured == wanted:
+            logger.info(
+                f"[{self.exchange_name}] {instrument.symbol}: venue already at leverage "
+                f"{cached.configured}, not sending {wanted}"
+            )
+            return
         logger.info(
             f"[{self.exchange_name}] {instrument.symbol}: sending leverage {wanted} "
             f"(cached {cached.configured} / max {cached.maximum})"
@@ -866,9 +882,14 @@ class CcxtConnector(ChannelEmitter):
             return
         # - adopt what we just set, so the next call for the same value is skipped without
         #   waiting for the poller; the poller corrects it if the venue disagrees
-        cached = self._leverage_cache.get(symbol)
+        self._store_leverage(symbol, configured=leverage)
+
+    def _store_leverage(self, symbol: str, configured: float | None = None, maximum: int | None = None) -> None:
+        """Merge one symbol's cache entry — a None leaves what is already held."""
+        held = self._leverage_cache.get(symbol)
         self._leverage_cache[symbol] = _LeverageInfo(
-            configured=leverage, maximum=cached.maximum if cached is not None else None
+            configured=configured if configured is not None else (held.configured if held else None),
+            maximum=maximum if maximum is not None else (held.maximum if held else None),
         )
 
     def _start_leverage_poller(self) -> None:
@@ -908,7 +929,7 @@ class CcxtConnector(ChannelEmitter):
             for symbol, row in rows.items():
                 value = row.get("longLeverage") or row.get("leverage")
                 if value is not None:
-                    configured[symbol] = int(value)
+                    configured[symbol] = float(value)
         except Exception as e:  # noqa: BLE001
             logger.debug(f"[{self.exchange_name}] configured-leverage read failed: {type(e).__name__}: {e}")
         try:
@@ -922,10 +943,10 @@ class CcxtConnector(ChannelEmitter):
 
         if not configured and not maxima:
             return
-        self._leverage_cache = {
-            symbol: _LeverageInfo(configured=configured.get(symbol), maximum=maxima.get(symbol))
-            for symbol in configured.keys() | maxima.keys()
-        }
+        # merged, not replaced: a venue with only one of the two reads (Bybit has no
+        # fetchLeverages) would otherwise blank what the per-symbol reads cached
+        for symbol in configured.keys() | maxima.keys():
+            self._store_leverage(symbol, configured=configured.get(symbol), maximum=maxima.get(symbol))
         logger.info(
             f"[{self.exchange_name}] leverage cache refreshed: {len(configured)} configured, {len(maxima)} maxima"
         )
@@ -955,8 +976,41 @@ class CcxtConnector(ChannelEmitter):
         leverage, _ = self._fetch_leverage_row(instrument)
         if leverage is not None:
             return leverage
+        leverage = self._fetch_leverage_single(instrument)
+        if leverage is not None:
+            return leverage
         row = self._fetch_position_row(instrument)
         return info_float(row, "leverage") if row is not None else None
+
+    async def _read_configured_leverage(self, symbol: str) -> float | None:
+        """One symbol's configured leverage from the venue's singular endpoint.
+
+        ``is True`` excludes ccxt's ``'emulated'``, which only re-runs the fetch_leverages
+        tried above. The sole seam for it: a venue subclass calls this rather than repeating
+        the read, so one cache entry cannot be written two ways.
+        """
+        if self._em.exchange.has.get("fetchLeverage") is not True:
+            return None
+        try:
+            row = await self._em.exchange.fetch_leverage(symbol)
+            value = (row.get("longLeverage") or row.get("shortLeverage")) if row else None
+            return float(value) if value is not None else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] fetch_leverage for {symbol}: {e}")
+            return None
+
+    def _fetch_leverage_single(self, instrument: Instrument) -> float | None:
+        """Blocking ``_read_configured_leverage`` for venues with no ``fetchLeverages``."""
+        symbol = instrument_to_ccxt_symbol(instrument)
+        try:
+            leverage = self._run_sync(self._read_configured_leverage(symbol))
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] fetch_leverage for {instrument.symbol}: {e}")
+            return None
+        if leverage is None:
+            return None
+        self._store_leverage(symbol, configured=leverage)
+        return leverage
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         """The venue's published maximum, from the poller's cache.
@@ -981,8 +1035,27 @@ class CcxtConnector(ChannelEmitter):
         return notional if notional is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> str | None:
-        row = self._fetch_position_row(instrument)
-        return normalize_margin_mode(row.get("marginMode")) if row is not None else None
+        rows = self._fetch_position_rows(instrument)
+        if rows is None:
+            # the read failed; a second venue call would only double the caller's stall
+            return None
+        mode = normalize_margin_mode(rows[0].get("marginMode")) if rows else None
+        return mode if mode is not None else self._fetch_margin_mode_single(instrument)
+
+    def _fetch_margin_mode_single(self, instrument: Instrument) -> str | None:
+        """Per-symbol venue read for the mode a position row does not carry.
+
+        Truthy (not ``is True``, unlike ``fetchLeverage``): ``'emulated'`` defers to
+        ``fetch_margin_modes``, which no other read here makes.
+        """
+        if not self._em.exchange.has.get("fetchMarginMode"):
+            return None
+        try:
+            row = self._run_sync(self._em.exchange.fetch_margin_mode(instrument_to_ccxt_symbol(instrument)))
+            return normalize_margin_mode(row.get("marginMode")) if row is not None else None
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"[{self.exchange_name}] fetch_margin_mode for {instrument.symbol}: {e}")
+            return None
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
         row = self._fetch_position_row(instrument)
@@ -1034,10 +1107,14 @@ class CcxtConnector(ChannelEmitter):
 
     def _fetch_position_row(self, instrument: Instrument) -> dict[str, Any] | None:
         """Blocking single-symbol position pull; None on error or when no position is held."""
+        rows = self._fetch_position_rows(instrument)
+        return rows[0] if rows else None
+
+    def _fetch_position_rows(self, instrument: Instrument) -> list[dict[str, Any]] | None:
+        """As ``_fetch_position_row`` but keeps the two apart: None on error, [] when flat."""
         try:
             symbol = instrument_to_ccxt_symbol(instrument)
-            rows = self._run_sync(self._em.exchange.fetch_positions([symbol]))
-            return rows[0] if rows else None
+            return self._run_sync(self._em.exchange.fetch_positions([symbol]))
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] fetch position for {instrument.symbol}: {e}")
             return None
@@ -1211,6 +1288,14 @@ class CcxtConnector(ChannelEmitter):
         order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
         self._emit_order_events(instrument, order, raw)
 
+    def _reject_details(self, raw: dict[str, Any]) -> tuple[str | None, RejectCause]:
+        """Venue reject code and its portable reading, for a rejection seen on the read path.
+
+        Only venues that refuse asynchronously (Bybit) carry one; the submit path classifies
+        from the raised ccxt error instead.
+        """
+        return None, RejectCause.UNKNOWN
+
     def _emit_order_events(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
         """Map a converted order's status to the typed lifecycle event(s).
 
@@ -1265,11 +1350,14 @@ class CcxtConnector(ChannelEmitter):
             )
             return
         if status == OrderStatus.REJECTED:
+            code, cause = self._reject_details(raw)
             self.send(
                 OrderRejectedEvent(
                     instrument=instrument,
                     client_order_id=order.client_order_id,
-                    reason="rejected by venue",
+                    reason=code or "rejected by venue",
+                    code=code,
+                    cause=cause,
                     last_update_time=order.last_update_time,
                 )
             )

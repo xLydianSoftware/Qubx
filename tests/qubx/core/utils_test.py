@@ -1,7 +1,12 @@
+import math
+import random
+from decimal import Decimal
+
 import pandas as pd
+import pytest
 
 from qubx.core.basics import Balance, Deal, Instrument, ITimeProvider, Position, dt_64
-from qubx.core.utils import add_in_lots, is_lot_multiple, prec_ceil, prec_floor
+from qubx.core.utils import add_in_lots, grid_ceil, grid_floor, is_lot_multiple, prec_ceil, prec_floor
 
 
 def test_prec_floor():
@@ -123,3 +128,132 @@ def test_is_lot_multiple_admits_the_grid_and_refuses_a_half_lot():
     assert is_lot_multiple(0.00054, 0.00001)
     assert not is_lot_multiple(-0.05, 0.1)
     assert not is_lot_multiple(23.196474135931336, 1.0)
+
+
+def test_grid_rounding_reaches_a_grid_no_decimal_precision_can_express():
+    """int(abs(log10(step))) folds the sign, so lot 10/100 both round as if the grid were sub-unit."""
+    assert grid_floor(157, 10) == 150.0
+    assert grid_ceil(157, 10) == 160.0
+    assert grid_floor(157, 100) == 100.0
+    assert grid_ceil(157, 100) == 200.0
+    assert grid_floor(150, 100) == 100.0
+    assert grid_floor(37, 10) == 30.0
+    # a grid no power of ten can reach at all
+    assert grid_floor(13, 5) == 10.0
+    assert grid_ceil(13, 5) == 15.0
+
+
+def test_grid_rounding_on_a_half_decimal_step():
+    """Kraken ticks 0.5/0.05 and Bybit 5e-5 all truncate to the next decade under prec_floor."""
+    assert grid_floor(101.7, 0.5) == 101.5
+    assert grid_ceil(101.7, 0.5) == 102.0
+    assert grid_floor(1.234, 0.05) == 1.2
+    assert grid_ceil(1.234, 0.05) == 1.25
+    assert grid_floor(0.123456, 5e-05) == 0.12345
+
+
+def test_grid_rounding_brackets_the_value_and_lands_on_the_grid():
+    random.seed(11)
+    for step in (0.001, 0.01, 0.1, 1.0, 5.0, 10.0, 100.0):
+        for _ in range(500):
+            x = random.uniform(-1e4, 1e4)
+            lo, hi = grid_floor(x, step), grid_ceil(x, step)
+            assert is_lot_multiple(lo, step)
+            assert is_lot_multiple(hi, step)
+            assert abs(lo) <= abs(x) + step  # the noise snap may round |x| up by <1 tick
+            assert abs(hi) >= abs(x) - step
+            assert abs(hi) - abs(lo) <= step * 1.0000001
+
+
+def test_grid_rounding_rounds_toward_zero_like_prec_rounding():
+    assert grid_floor(-157, 10) == -150.0
+    assert grid_ceil(-157, 10) == -160.0
+    assert grid_floor(0.0, 10) == 0.0
+
+
+def test_grid_floor_keeps_the_sub_lot_noise_snap():
+    """prepare_ccxt_order_payload depends on this: a bare floor would send 0 and raise."""
+    assert grid_floor(0.009999999999999998, 0.01) == 0.01
+    assert grid_floor(0.29, 0.01) == 0.29
+    assert grid_floor(0.1 + 0.2, 0.1) == 0.3
+    assert grid_floor(1.1 * 3, 0.1) == 3.3
+
+
+def test_a_value_a_hair_under_an_integer_step_snaps_up_to_the_grid():
+    """An unsnapped return here is a whole tick down: ccxt TRUNCATEs 0.9999999999999999 to 0."""
+    assert grid_floor(0.9999999999999999, 1.0) == 1.0
+    assert grid_ceil(0.9999999999999999, 1.0) == 1.0
+    assert grid_floor(29.999999999999996, 10.0) == 30.0
+    assert grid_ceil(29.999999999999996, 10.0) == 30.0
+    assert grid_floor(1234.9999999999998, 1.0) == 1235.0
+    assert grid_ceil(1234.9999999999998, 1.0) == 1235.0
+
+
+def test_an_on_grid_value_comes_back_bit_exact_on_a_power_of_ten_step():
+    """Sub-unit powers of ten take the exact-reciprocal branch, so the multiply-back never moves them."""
+    for step in (0.1, 0.01, 0.001, 1e-05, 1e-08):
+        for ticks in (1, 3, 7, 29, 1234):
+            x = prec_floor(ticks * step, int(abs(math.log10(step))))
+            assert grid_floor(x, step) == x
+            assert grid_ceil(x, step) == x
+
+
+def test_a_decimal_step_with_no_exact_reciprocal_still_lands_on_the_decimal_grid():
+    """Kraken ships lot 0.3 (22 pairs), 0.15 and 0.0075. 1/0.3 is not a whole number, so these
+    miss the reciprocal branch; n * step would land an ulp low and ccxt truncates 0.3-lot
+    0.8999999999999999 to 0.6 — two whole lots down."""
+    assert grid_floor(0.9, 0.3) == 0.9
+    assert grid_ceil(0.9, 0.3) == 0.9
+    assert grid_floor(0.44999999999999996, 0.15) == 0.45
+    assert grid_ceil(0.44999999999999996, 0.15) == 0.45
+    assert grid_floor(9.254999999999999, 0.0075) == 9.255
+    assert grid_ceil(9.254999999999999, 0.0075) == 9.255
+    assert grid_floor(2.0999999999999996, 0.7) == 2.1
+    assert grid_floor(0.9, 0.4) == 0.8
+    assert grid_ceil(0.9, 0.4) == 1.2
+
+
+@pytest.mark.parametrize("step", [0.3, 0.15, 0.0075, 0.06, 0.7, 0.9, 5.0, 2.5, 1.0, 10.0])
+def test_every_returned_value_is_a_whole_number_of_steps(step):
+    """The property the decimal decomposition buys: floor/ceil never hand back a fraction of a lot."""
+    random.seed(3)
+    for _ in range(2000):
+        x = random.uniform(-1e4, 1e4)
+        for v in (grid_floor(x, step), grid_ceil(x, step)):
+            q = Decimal(repr(v)) / Decimal(repr(step))
+            assert q == q.to_integral_value(), f"{v!r} is not a whole multiple of {step}"
+
+
+def test_a_step_no_power_of_ten_resolves_degrades_instead_of_misbehaving():
+    """No exact reciprocal and no whole numerator under the 1e12 bound: the divide-by-step path
+    takes over, still bracketing rather than hanging or returning nan."""
+    step = math.pi / 10
+    for x in (0.9, 1.7, 123.456):
+        lo, hi = grid_floor(x, step), grid_ceil(x, step)
+        assert lo <= x <= hi
+        assert hi - lo <= step * 1.0000001
+
+
+@pytest.mark.parametrize("step", [0.0, -1.0])
+def test_a_non_positive_step_raises(step):
+    """precision.amount is None on broken venue metadata; sending the unrounded size is worse."""
+    with pytest.raises(ValueError):
+        grid_floor(1.23, step)
+    with pytest.raises(ValueError):
+        grid_ceil(1.23, step)
+
+
+@pytest.mark.parametrize("power", range(9))
+def test_grid_rounding_is_bit_identical_to_prec_rounding_on_a_power_of_ten_grid(power):
+    """Every venue except Bybit/Kraken is on a 10^-k grid; those must not move by a single ulp.
+
+    Bit-identity, not a tolerance: multiplying by an inexact 1e-3 instead of dividing by an exact
+    1000.0 disagrees in the last ulp on ~19% of samples, and a relative tolerance would hide it.
+    """
+    random.seed(20260902 + power)
+    step = 10.0**-power
+    precision = int(abs(math.log10(step)))
+    for i in range(4000):
+        x = random.uniform(-1.0, 1.0) * (10.0 ** (i % 5 - 2))
+        assert grid_floor(x, step) == prec_floor(x, precision)
+        assert grid_ceil(x, step) == prec_ceil(x, precision)

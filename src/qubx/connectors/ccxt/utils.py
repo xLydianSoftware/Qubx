@@ -12,6 +12,11 @@ from qubx import logger
 from qubx.core.basics import (
     EXTERNAL_CID_PREFIX,
     FRAMEWORK_CID_PREFIX,
+    OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
+    OPTION_FILL_AT_SIGNAL_PRICE,
+    OPTION_REPRICE_IF_CROSSING,
+    OPTION_SIGNAL_PRICE,
+    OPTION_SKIP_PRICE_CROSS_CONTROL,
     Balance,
     Deal,
     FundingRate,
@@ -41,6 +46,24 @@ from .exceptions import (
 )
 
 EXCH_SYMBOL_PATTERN = re.compile(r"(?P<base>[^/]+)/(?P<quote>[^:]+)(?::(?P<margin>.+))?")
+
+# - venue timeInForce spellings that mean post-only on the read path
+_POST_ONLY_TIF = frozenset({"GTX", "ALO", "PO", "POST_ONLY", "POSTONLY"})
+
+# - options the connector resolves itself; never forwarded as ccxt params
+FRAMEWORK_ONLY_OPTIONS = frozenset(
+    {
+        OPTION_FILL_AT_SIGNAL_PRICE,
+        OPTION_SIGNAL_PRICE,
+        OPTION_SKIP_PRICE_CROSS_CONTROL,
+        OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
+        "stop_type",
+        OPTION_REPRICE_IF_CROSSING,
+        "reduceOnly",
+        "reduce_only",
+        "post_only",
+    }
+)
 
 # ccxt canonical order status -> framework OrderStatus. ccxt lowercases the
 # canonical `status` field; venue-specific `info.status` values are uppercase, so
@@ -144,16 +167,15 @@ def ccxt_convert_order_info(
         amnt_raw = ri.get("sz") or ri.get("origSz") or 0.0
     amnt = float(amnt_raw)
 
+    # Binance sends stopPrice="0" on plain orders, so a present level still has to be > 0.
+    _trigger = raw.get("triggerPrice") or raw.get("stopPrice") or ri.get("stopPrice")
+    is_trigger = bool(_trigger) and float(_trigger) > 0
+
     # None for market orders (no limit price) — matches Order.price: float | None.
     price = raw.get("price")
-    if price is None:
-        # - trigger/conditional orders (STOP_MARKET) carry no limit price; the trigger level
-        #   lives in triggerPrice/stopPrice. The locally-tracked stop stores the trigger as its
-        #   price, so mirror it — else every snapshot diffs price (57966.5 -> None) on the same
-        #   live order. Binance reports stopPrice="0" for plain market orders, so guard on > 0.
-        _trigger = raw.get("triggerPrice") or raw.get("stopPrice") or ri.get("stopPrice")
-        if _trigger is not None and float(_trigger) > 0:
-            price = _trigger
+    if price is None and is_trigger:
+        # locally-tracked stops store the trigger as their price, so mirror it
+        price = _trigger
     # ccxt's unified fill fields; None-safe (venues omit them on fresh acks).
 
     _filled = raw.get("filled")
@@ -182,12 +204,14 @@ def ccxt_convert_order_info(
         _type = "UNKNOWN"
     else:
         _type = _type.upper()
-
-    options = {}
-    if raw.get("reduceOnly"):
-        options["reduceOnly"] = True
+    if is_trigger and _type in ("MARKET", "LIMIT"):
+        # venues type a conditional order by how it executes once triggered, so a resting
+        # stop reads back as plain MARKET/LIMIT
+        _type = f"STOP_{_type}"
 
     tif = raw.get("timeInForce")
+    # time_in_force stays exactly as the venue reported it; post-only is normalised onto post_only
+    post_only = bool(raw.get("postOnly")) or (tif is not None and str(tif).upper() in _POST_ONLY_TIF)
 
     # Some venues omit clientOrderId (e.g. externally-placed orders); fall back to the
     # framework's external-order id convention (ext:<venue_id>) so it reads as EXTERNAL and
@@ -218,7 +242,8 @@ def ccxt_convert_order_info(
         filled_quantity=filled_quantity,
         avg_fill_price=avg_fill_price,
         time_in_force=tif,
-        options=options,
+        post_only=post_only,
+        reduce_only=bool(raw.get("reduceOnly")),
     )
 
 
@@ -238,7 +263,7 @@ def ccxt_convert_deal_info(raw: dict[str, Any]) -> Deal:
     return Deal(
         trade_id=trade_id,
         order_id=order_id,
-        time=to_timestamp(timestamp, unit="ms"),
+        time=to_timestamp(timestamp, unit="ms").as_unit("ns").asm8,
         amount=amount * (-1 if raw.get("side") == "sell" else +1),
         price=price,
         aggressive=raw.get("takerOrMaker") == "taker",  # absent -> maker (some venues omit it)
@@ -462,7 +487,8 @@ def ccxt_convert_liquidation(liq: dict[str, Any]) -> Liquidation:
             time=recognize_time(liq["datetime"]),
             price=liq["price"],
             quantity=liq["contracts"],
-            side=(1 if liq["info"]["S"] == "BUY" else -1),
+            # ccxt's unified side; it is the closing order's side, so a "buy" closed a short
+            side=(1 if str(liq.get("side", "")).lower() == "buy" else -1),
         )
     except Exception as e:
         raise CcxtLiquidationParsingError(f"Failed to parse liquidation: {e}")
@@ -558,6 +584,8 @@ def prepare_ccxt_order_payload(
     time_in_force: str,
     quote: Quote | None,
     reduce_only: bool,
+    post_only: bool = False,
+    reprice_if_crossing: bool = False,
 ) -> dict[str, Any]:
     """Build the ccxt ``create_order`` payload and perform framework-side validation.
 
@@ -581,6 +609,13 @@ def prepare_ccxt_order_payload(
         logger.warning(f"[<y>{instrument.symbol}</y>] :: Quote is not available for order creation.")
         raise BadRequest(f"Quote is not available for order creation for {instrument.symbol}")
 
+    # ccxt quantizes with TRUNCATE, so 0.009999999999999998 on a 0.01 step would become '0'
+    amount = instrument.round_size_down(amount)
+    if amount == 0.0:
+        raise InvalidOrderParameters(
+            f"[{instrument.symbol}] Order amount rounds to zero at lot size {instrument.lot_size}"
+        )
+
     if reduce_only:
         params["reduceOnly"] = True
     else:
@@ -592,6 +627,8 @@ def prepare_ccxt_order_payload(
 
     # - handle trigger (stop) orders
     if _is_trigger_order:
+        if price is None:
+            raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
         params["triggerPrice"] = price
         order_type = order_type.split("_")[1]
 
@@ -603,22 +640,30 @@ def prepare_ccxt_order_payload(
 
     ccxt_symbol = instrument_to_ccxt_symbol(instrument)
 
-    if order_type.lower() == "limit" or _is_trigger_order:
+    # stop_limit is already "limit" here and stop_market already "market"
+    if order_type == "limit":
         time_in_force = time_in_force.upper()
-        params["timeInForce"] = time_in_force
+        # must ride ccxt's unified postOnly flag: bybit/okx/kraken silently drop an
+        # unrecognised timeInForce string, degrading post-only to a taking GTC
+        is_post_only = post_only or time_in_force == "GTX"
+        if is_post_only:
+            params["postOnly"] = True
+        else:
+            params["timeInForce"] = time_in_force
         if price is None:
             raise InvalidOrderParameters(f"Price must be specified for '{order_type}' order")
-        # GTX (post-only) crossing-the-spread adjustment: nudge the price 1 tick to the
-        # passive side so the venue does not reject the post-only order outright.
-        if order_side == "BUY" and time_in_force == "GTX" and price >= quote.ask:
+        # only a post-only order is rejected for crossing; nudging a plain limit would turn a
+        # deliberately marketable order into a resting one
+        reprice_if_crossing = reprice_if_crossing and is_post_only
+        if reprice_if_crossing and order_side == "BUY" and price >= quote.ask:
             logger.info(
-                f"[{instrument.symbol}] :: GTX BUY order price {price} is greater than ask price {quote.ask}. "
+                f"[{instrument.symbol}] :: post-only BUY price {price} is at or above ask {quote.ask}. "
                 "Setting 1 tick below ask."
             )
             price = quote.ask - instrument.tick_size
-        elif order_side == "SELL" and time_in_force == "GTX" and price <= quote.bid:
+        elif reprice_if_crossing and order_side == "SELL" and price <= quote.bid:
             logger.info(
-                f"[{instrument.symbol}] :: GTX SELL order price {price} is less than bid price {quote.bid}. "
+                f"[{instrument.symbol}] :: post-only SELL price {price} is at or below bid {quote.bid}. "
                 "Setting 1 tick above bid."
             )
             price = quote.bid + instrument.tick_size

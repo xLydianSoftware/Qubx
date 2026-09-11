@@ -12,8 +12,7 @@ from qubx import logger
 from qubx.connectors.ccxt.exchanges import EXCHANGE_ALIASES, OkxFutures
 from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
 from qubx.connectors.ccxt.utils import ccxt_status_to_order_status
-from qubx.core.basics import OrderStatus
-from qubx.core.basics import CtrlChannel, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, Instrument, MarketType, OrderStatus
 
 
 def run(coro):
@@ -411,7 +410,8 @@ class TestLeverageReads:
     @staticmethod
     def _exchange(**overrides) -> Mock:
         exchange = Mock()
-        exchange.has = {}
+        # what real ccxt okx reports: a singular fetchLeverage, no bulk fetchLeverages
+        exchange.has = {"fetchLeverage": True}
         exchange.fetch_positions = AsyncMock(return_value=[])
         exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 5, "shortLeverage": 5})
         exchange.fetch_market_leverage_tiers = AsyncMock(return_value=[{"maxLeverage": 125}, {"maxLeverage": 50}])
@@ -435,10 +435,12 @@ class TestLeverageReads:
         )
 
     def test_configured_leverage_read_per_symbol(self):
+        """One mechanism: the base's singular read serves okx, so nothing here duplicates it."""
         exchange = self._exchange()
         connector = self._connector(exchange)
         assert connector.get_instrument_leverage(self._instrument()) == 5.0
         exchange.fetch_leverage.assert_awaited_once_with("BTC/USDT:USDT")
+        exchange.fetch_positions.assert_not_awaited()
 
     def test_venue_cap_read_per_symbol(self):
         exchange = self._exchange()
