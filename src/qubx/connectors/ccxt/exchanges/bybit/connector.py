@@ -92,8 +92,9 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
 
     def _extract_venue_figures(
         self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None]:
-        """(equity, available_margin, margin_ratio, withdrawable) from ``info.result.list[0]``.
+    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
+        """(equity, available_margin, margin_ratio, withdrawable, maint_margin, initial_margin)
+        from ``info.result.list[0]``.
 
         ``accountMMRate`` is maintenance margin OVER equity — the reciprocal of the framework's
         ratio — and ``""``/``"0"`` map to None, as does withdrawable (per coin only), so that AM
@@ -106,6 +107,8 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
             info_float(acct, "totalAvailableBalance"),
             1.0 / mm_rate if mm_rate is not None and mm_rate > 0 else None,
             None,
+            info_float(acct, "totalMaintenanceMargin"),
+            info_float(acct, "totalInitialMargin"),
         )
 
     def _reject_details(self, raw: dict[str, Any]) -> tuple[str | None, RejectCause]:

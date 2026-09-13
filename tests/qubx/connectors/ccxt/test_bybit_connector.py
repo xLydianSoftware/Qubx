@@ -4,6 +4,7 @@ Offline, mocked ccxt — no credentials or network.
 """
 
 import asyncio
+import inspect
 from unittest.mock import AsyncMock, Mock, patch
 
 import ccxt
@@ -97,6 +98,36 @@ def _wallet_balance(**overrides) -> dict:
     }
     account.update(overrides)
     return {"info": {"retCode": 0, "retMsg": "OK", "result": {"list": [account]}, "time": 1672125441042}}
+
+
+def test_venue_figures_match_the_base_arity():
+    """The snapshot unpacks this tuple positionally, and a short one sinks it inside
+    ``_do_request_snapshot``'s except — no snapshot is ever emitted."""
+    conn, _, _ = _make_connector()
+    expected = len(inspect.signature(CcxtConnector._extract_venue_figures).return_annotation.__args__)
+
+    assert len(conn._extract_venue_figures(_wallet_balance())) == expected
+
+
+def test_venue_figures_read_the_unified_account_block():
+    conn, _, _ = _make_connector()
+
+    equity, available, ratio, withdrawable, maint, initial = conn._extract_venue_figures(_wallet_balance())
+
+    assert equity == 18070.32797922
+    assert available == 17887.72614237
+    assert ratio == pytest.approx(1.0 / 0.03)  # accountMMRate is the reciprocal
+    assert withdrawable is None
+    assert maint == 542.10
+    assert initial == 182.60183684
+
+
+@pytest.mark.parametrize("missing", ["accountMMRate", "totalMaintenanceMargin", "totalInitialMargin"])
+def test_venue_figures_survive_a_missing_field(missing: str):
+    conn, _, _ = _make_connector()
+    balance = _wallet_balance(**{missing: ""})
+
+    assert len(conn._extract_venue_figures(balance)) == 6
 
 
 def test_get_adl_level_reads_the_rank_off_the_venue_row():
