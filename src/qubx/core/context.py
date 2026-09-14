@@ -271,6 +271,7 @@ class StrategyContext(IStrategyContext):
             channel=self._channel,
             health_monitor=self._health_monitor,
             strategy_state=self._strategy_state,
+            status=self._status,
             default_base_subscription=DataType.ORDERBOOK[0, 1]
             if not self._data_providers[0].is_simulation
             else DataType.NONE,

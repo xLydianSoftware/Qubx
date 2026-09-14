@@ -1,4 +1,3 @@
-import pprint
 import threading
 import time
 import traceback
@@ -12,6 +11,8 @@ from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.exceptions import NotSupported
 from qubx.core.fit_executor import SingleThreadWorker
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager, ITimeProvider, StrategyState
+from qubx.core.status import ContextStatus
+from qubx.core.subscription_watchdog import SubscriptionWatchdog
 from qubx.utils.misc import synchronized
 
 from .utils import EXCHANGE_MAPPINGS
@@ -21,10 +22,6 @@ from .utils import EXCHANGE_MAPPINGS
 # worker when its fetch completes, dispatched to ProcessingManager._handle_subscription_swap
 # and applied on the ProcessorThread.
 SUBSCRIPTION_SWAP_EVENT = "subscription_swap"
-
-# Data types the stale-data watchdog polices. Base types: a subscription may carry parameters
-# ("orderbook(0, 1)"), and only the base type has a staleness threshold in the health monitor.
-_WATCHDOG_DATA_TYPES = frozenset({DataType.QUOTE, DataType.ORDERBOOK, DataType.TRADE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +63,7 @@ class SubscriptionManager(ISubscriptionManager):
         channel: CtrlChannel,
         health_monitor: IHealthMonitor,
         strategy_state: StrategyState,
+        status: ContextStatus,
         auto_subscribe: bool = True,
         default_base_subscription: str = DataType.NONE,
         monitor_interval_seconds: float = 30.0,
@@ -76,6 +74,7 @@ class SubscriptionManager(ISubscriptionManager):
         self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
         self._health_monitor = health_monitor
         self._strategy_state = strategy_state
+        self._status = status
         self._base_sub = default_base_subscription
         self._sub_to_warmup = {}
         self._pending_warmups = {}
@@ -520,58 +519,16 @@ class SubscriptionManager(ISubscriptionManager):
             )
 
     def _init_subscription_monitoring(self) -> None:
+        self._watchdog: SubscriptionWatchdog | None = None
         if self._is_simulation:
             return
-        # - start monitoring thread only if there is at least one live data provider
-        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._monitor_thread.start()
-
-    def _monitor_loop(self) -> None:
-        while True:
-            try:
-                time.sleep(self._monitor_interval_seconds)
-                if self._strategy_state.is_on_warmup_finished_called:
-                    self._monitor_subscription_status()
-            except Exception as e:
-                logger.error(f"Error in subscription monitoring: {e}")
-
-    def _monitor_subscription_status(self) -> None:
-        exch_sub_to_stale_instr = defaultdict(lambda: defaultdict(set))
-        for data_provider in self._data_providers:
-            # Must NOT be gated on `is_connected()`: a wedged CCXT provider drops its
-            # stream-enabled flag before it blocks, so it reports not-connected exactly when this
-            # watchdog is needed - gating here disarms the last recovery path.
-            if data_provider.is_simulation:
-                continue
-            # Iterate the provider's OWN subscription keys, not the bare base types: a subscription
-            # may carry parameters ("orderbook(0, 1)") and get_subscribed_instruments / subscribe /
-            # unsubscribe are all exact-key lookups, so "orderbook" would match nothing. Health is
-            # keyed by base type, the provider by full key - carry both.
-            for sub in data_provider.get_subscriptions():
-                base_type = DataType.from_str(sub)[0]
-                if base_type not in _WATCHDOG_DATA_TYPES:
-                    continue
-                for instrument in data_provider.get_subscribed_instruments(sub):
-                    if self._health_monitor.is_stale(instrument, str(base_type)):
-                        exch_sub_to_stale_instr[data_provider.exchange()][sub].add(instrument)
-
-        if not exch_sub_to_stale_instr:
-            return
-
-        for exchange, sub_to_stale_instr in exch_sub_to_stale_instr.items():
-            logger.warning(
-                f"[<yellow>{exchange}</yellow>] :: Stale data detected for {pprint.pformat(dict(sub_to_stale_instr))} instruments"
-            )
-            logger.info("[1/4] Unsubscribing stale instruments..")
-            data_provider = self._get_data_provider(exchange)
-            # - unsubscribe stale instruments (full subscription key, not the base type)
-            for sub, stale_instruments in sub_to_stale_instr.items():
-                data_provider.unsubscribe(sub, stale_instruments)
-            logger.info("[2/4] Waiting for 3 seconds before resubscribing..")
-            # - wait for 3 seconds before resubscribing
-            time.sleep(3)
-            logger.info("[3/4] Resubscribing stale instruments..")
-            # - resubscribe stale instruments
-            for sub, stale_instruments in sub_to_stale_instr.items():
-                data_provider.subscribe(sub, stale_instruments)
-            logger.info("[4/4] Resubscription complete")
+        self._watchdog = SubscriptionWatchdog(
+            data_providers=self._data_providers,
+            health_monitor=self._health_monitor,
+            status=self._status,
+            reconcile_fn=self.reconcile,
+            subscriptions_fn=lambda: dict(self._desired),
+            strategy_state=self._strategy_state,
+            interval_seconds=self._monitor_interval_seconds,
+        )
+        self._watchdog.start()

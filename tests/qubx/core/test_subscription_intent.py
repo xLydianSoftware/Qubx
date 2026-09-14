@@ -343,3 +343,70 @@ def test_apply_swap_is_gated_by_the_shared_instance_lock(manager_and_provider):
 
     assert call_returned.wait(timeout=2)
     caller.join(timeout=2)
+
+
+def test_watchdog_is_started_for_live_and_absent_in_simulation():
+    from qubx.core.subscription_watchdog import SubscriptionWatchdog
+
+    live = Mock()
+    live.is_simulation = False
+    live.exchange.return_value = EXCHANGE
+    time_provider = Mock()
+    time_provider.time.return_value = 0.0
+    manager = SubscriptionManager(
+        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
+    )
+    assert isinstance(manager._watchdog, SubscriptionWatchdog)
+
+    sim = Mock()
+    sim.is_simulation = True
+    sim.exchange.return_value = EXCHANGE
+    sim_manager = SubscriptionManager(
+        time_provider, [sim], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
+    )
+    assert sim_manager._watchdog is None
+
+
+def test_watchdog_sees_the_desired_universe():
+    live = Mock()
+    live.is_simulation = False
+    live.exchange.return_value = EXCHANGE
+    live.get_subscribed_instruments.return_value = []
+    time_provider = Mock()
+    time_provider.time.return_value = 0.0
+    manager = SubscriptionManager(
+        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
+    )
+    btc = _instrument("BTCUSDT")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.commit()
+
+    assert manager._watchdog._subscriptions_fn() == {DataType.ORDERBOOK: {btc}}
+
+
+def test_old_monitor_entry_points_are_gone():
+    assert not hasattr(SubscriptionManager, "_monitor_subscription_status")
+    assert not hasattr(SubscriptionManager, "_monitor_loop")
+
+
+def test_watchdog_publishes_into_the_caller_s_status_object():
+    """A defaulted ContextStatus would let the watchdog degrade an object the order
+    path never reads — visible in the status, inert in trading."""
+    live = Mock()
+    live.is_simulation = False
+    live.exchange.return_value = EXCHANGE
+    time_provider = Mock()
+    time_provider.time.return_value = 0.0
+    status = ContextStatus()
+    manager = SubscriptionManager(
+        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), status
+    )
+
+    assert manager._watchdog._status is status
+
+
+def test_status_is_a_required_argument():
+    import inspect
+
+    parameter = inspect.signature(SubscriptionManager.__init__).parameters["status"]
+    assert parameter.default is inspect.Parameter.empty
