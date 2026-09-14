@@ -78,7 +78,10 @@ class TestSubscriptionStuff:
 
     def test_unsubscribe(self):
         instrument = self._get_instrument("BTCUSDT")
-        self.mock_broker.get_subscribed_instruments.return_value = {instrument}
+        # _desired, not the provider's registry, is now "current" -- subscribe it first
+        self.manager.subscribe(DataType.ORDERBOOK, instrument)
+        self.manager.commit()
+        self.mock_broker.reset_mock()
 
         self.manager.unsubscribe(DataType.ORDERBOOK, instrument)
         self.manager.commit()
@@ -88,6 +91,12 @@ class TestSubscriptionStuff:
     def test_global_subscription(self):
         instruments = {self._get_instrument("BTCUSDT"), self._get_instrument("ETHUSDT")}
         self.mock_broker.get_subscribed_instruments.side_effect = lambda x=None: (instruments if x is None else set())
+
+        # a global subscription expands to the manager's own _desired universe now, not
+        # the provider's registry -- seed it via a real subscribe/commit first
+        self.manager.subscribe(DataType.QUOTE, list(instruments))
+        self.manager.commit()
+        self.mock_broker.reset_mock()
 
         self.manager.set_warmup({DataType.TRADE: "1d"})
         self.manager.subscribe(DataType.TRADE)

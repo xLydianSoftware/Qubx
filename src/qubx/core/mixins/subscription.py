@@ -83,6 +83,11 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_global_unsubscriptions = set()
         self._pending_stream_subscriptions = defaultdict(set)
         self._pending_stream_unsubscriptions = defaultdict(set)
+        # - the desired universe: authoritative, and deliberately NOT read back from the
+        #   providers. A provider that loses its registry (a failed repair, a dropped
+        #   socket) must not take the universe with it.
+        self._desired: dict[str, set[Instrument]] = defaultdict(set)
+        self._unsupported: set[tuple[str, str]] = set()
         self._auto_subscribe = auto_subscribe
         self._monitor_interval_seconds = monitor_interval_seconds
         self._is_simulation = all(data_provider.is_simulation for data_provider in data_providers)
@@ -198,7 +203,7 @@ class SubscriptionManager(ISubscriptionManager):
     def _apply_swap(self, plan: _CommitPlan) -> None:
         # - apply: the subscribe/unsubscribe swap (fast)
         for _sub in self._get_updated_subs(plan):
-            _current_sub_instruments = set(self.get_subscribed_instruments(_sub))
+            _current_sub_instruments = set(self._desired.get(_sub, set()))
             _removed_instruments = plan.stream_unsubscriptions.get(_sub, set())
             _added_instruments = plan.stream_subscriptions.get(_sub, set())
 
@@ -206,10 +211,16 @@ class SubscriptionManager(ISubscriptionManager):
                 _removed_instruments.update(_current_sub_instruments)
 
             if _sub in plan.global_subscriptions:
-                _added_instruments.update(self.get_subscribed_instruments())
+                _added_instruments.update({i for instrs in self._desired.values() for i in instrs})
 
             # - subscribe collection
             _updated_instruments = _current_sub_instruments.union(_added_instruments).difference(_removed_instruments)
+            # - intent is recorded BEFORE the provider calls, so a raising provider leaves
+            #   the universe intact and the next reconcile repairs it
+            if _updated_instruments:
+                self._desired[_sub] = set(_updated_instruments)
+            else:
+                self._desired.pop(_sub, None)
             _exchange_to_updated_instruments = defaultdict(set)
             _exchange_to_current_sub_instruments = defaultdict(set)
             for instr in _updated_instruments:
@@ -228,6 +239,7 @@ class SubscriptionManager(ISubscriptionManager):
                     try:
                         _data_provider.subscribe(_sub, _exchange_updated_instruments, reset=True)
                     except NotSupported as e:
+                        self._unsupported.add((_exchange, _sub))
                         logger.warning(f"Subscription not supported for {_exchange}: {e}")
 
             # Notify health monitor of new subscriptions
@@ -248,8 +260,7 @@ class SubscriptionManager(ISubscriptionManager):
                 self._health_monitor.unsubscribe(instr, _sub)
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
-        _data_provider = self._get_data_provider(instrument.exchange)
-        return _data_provider.has_subscription(instrument, subscription_type)
+        return instrument in self._desired.get(subscription_type, set())
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         _data_provider = (
@@ -262,10 +273,9 @@ class SubscriptionManager(ISubscriptionManager):
         )
 
     def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
-        _current_instruments = []
-        for _data_provider in self._data_providers:
-            _current_instruments.extend(_data_provider.get_subscribed_instruments(subscription_type))
-        return _current_instruments
+        if subscription_type is not None:
+            return list(self._desired.get(subscription_type, set()))
+        return list({i for instrs in self._desired.values() for i in instrs})
 
     def get_base_subscription(self) -> str:
         return self._base_sub
