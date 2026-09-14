@@ -41,7 +41,11 @@ from qubx.core.events import (
     OrderEvent,
     OrderUpdateRejectedEvent,
 )
-from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.exceptions import (
+    InvalidOrderTransition,
+    QubxDegradedState,
+    StrategyExceededMaxNumberOfRuntimeFailuresError,
+)
 from qubx.core.fit_context import FitContext
 from qubx.core.fit_executor import FIT_COMMIT_EVENT, FitCommitData, FitCycleState, FitExecutorMode, SingleThreadWorker
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
@@ -656,6 +660,12 @@ class ProcessingManager(IProcessingManager):
                 self._fails_counter = 0
 
             self._subscription_manager.commit()  # apply pending operations
+
+        except QubxDegradedState as degraded:
+            # - a refusal the framework generated for an expected condition (venue in
+            #   maintenance, stale local view), not a strategy bug. Counting it would let a
+            #   venue outage stop the run after 10 events.
+            logger.warning(f"Strategy {self._strategy_name} order refused: {degraded}")
 
         except Exception as strat_error:
             # - probably we need some cooldown interval after exception to prevent flooding
