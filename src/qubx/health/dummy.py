@@ -3,6 +3,7 @@ from typing import Callable
 from qubx.core.basics import Instrument, dt_64, td_64
 from qubx.core.interfaces import IHealthMonitor, LatencyMetrics
 from qubx.core.status import ContextStatus
+from qubx.health.status import ExchangeDataStatus
 
 
 class DummyHealthMonitor(IHealthMonitor):
@@ -67,6 +68,13 @@ class DummyHealthMonitor(IHealthMonitor):
 
     def is_exchange_stale(self, exchange: str, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
         return False
+
+    def get_exchange_data_status(
+        self, exchange: str, subscribed: dict[str, set[Instrument]]
+    ) -> ExchangeDataStatus:
+        return ExchangeDataStatus(
+            exchange=exchange, connected=None, subscribed=0, stale=0, in_grace=0, last_event_time=None
+        )
 
     def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         return 1.0

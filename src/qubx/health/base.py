@@ -11,6 +11,7 @@ from qubx.core.basics import CtrlChannel, DataType, Instrument, dt_64, td_64
 from qubx.core.interfaces import IHealthMonitor, IMetricEmitter, IStatePersistence, ITimeProvider, LatencyMetrics
 from qubx.core.status import ContextStatus, DegradeReason, QubxStatus
 from qubx.core.utils import recognize_timeframe
+from qubx.health.status import ExchangeDataStatus
 from qubx.utils import convert_tf_str_td64
 from qubx.utils.collections import DequeFloat64, DequeIndicator
 from qubx.utils.time import timedelta_to_str
@@ -101,6 +102,7 @@ class BaseHealthMonitor(IHealthMonitor):
 
         # Subscription tracking for filtering unsubscribed data
         self._active_subscriptions: set[tuple[Instrument, str]] = set()
+        self._subscribed_at: dict[tuple[Instrument, str], dt_64] = {}
 
         # Order tracking (per exchange)
         self._order_submit_requests = {}  # dict[(exchange, client_id), dt_64]
@@ -191,6 +193,7 @@ class BaseHealthMonitor(IHealthMonitor):
             event_type: The data type being subscribed to (e.g., 'ohlc', 'quote', 'orderbook')
         """
         self._active_subscriptions.add((instrument, DataType.from_str(event_type)[0]))
+        self._subscribed_at[(instrument, DataType.from_str(event_type)[0])] = self.time_provider.time()
 
     def unsubscribe(self, instrument: Instrument, event_type: str) -> None:
         """
@@ -206,6 +209,7 @@ class BaseHealthMonitor(IHealthMonitor):
         # Clean up stored metrics immediately
         self._last_event_time.pop(key, None)
         self._event_frequency.pop(key, None)
+        self._subscribed_at.pop(key, None)
 
     def record_order_submit_request(self, exchange: str, client_id: str, event_time: dt_64) -> None:
         """Record order submit request timestamp."""
@@ -400,6 +404,50 @@ class BaseHealthMonitor(IHealthMonitor):
         if last_event_time is None:
             return True
         return bool((current_time - last_event_time) > stale_delta)
+
+    def get_exchange_data_status(
+        self, exchange: str, subscribed: dict[str, set[Instrument]]
+    ) -> ExchangeDataStatus:
+        now = self.time_provider.time()
+        n_subscribed = n_stale = n_grace = 0
+        last_event: dt_64 | None = None
+
+        for event_type, instruments in subscribed.items():
+            base_type = DataType.from_str(event_type)[0]
+            threshold = STALE_THRESHOLDS.get(str(base_type))
+            if threshold is None:
+                continue
+            grace = convert_tf_str_td64(threshold)
+            for instrument in instruments:
+                if instrument.exchange != exchange:
+                    continue
+                key = (instrument, base_type)
+                subscribed_at = self._subscribed_at.get(key)
+                if subscribed_at is not None and now - subscribed_at < grace:
+                    n_grace += 1
+                    continue
+                n_subscribed += 1
+                if self.is_stale(instrument, str(base_type)):
+                    n_stale += 1
+                event_time = self._last_event_time.get(key)
+                if event_time is not None and (last_event is None or event_time > last_event):
+                    last_event = event_time
+
+        connected: bool | None = None
+        if exchange in self._is_connected_callbacks:
+            try:
+                connected = bool(self._is_connected_callbacks[exchange]())
+            except Exception:
+                connected = False
+
+        return ExchangeDataStatus(
+            exchange=exchange,
+            connected=connected,
+            subscribed=n_subscribed,
+            stale=n_stale,
+            in_grace=n_grace,
+            last_event_time=last_event,
+        )
 
     def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
         """Get the events per second for a specific event type on an instrument."""

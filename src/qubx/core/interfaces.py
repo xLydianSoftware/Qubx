@@ -16,7 +16,7 @@ import datetime
 import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -52,6 +52,9 @@ from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.core.status import NORMAL_STATUS, ContextStatus, QubxStatusInfo
 from qubx.data.storage import IReader, IStorage
+
+if TYPE_CHECKING:
+    from qubx.health.status import ExchangeDataStatus
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -2153,6 +2156,12 @@ class IHealthMonitor(IHealthWriter, IHealthReader):
             instrument: The instrument being unsubscribed from
             event_type: The data type being unsubscribed from
         """
+        ...
+
+    def get_exchange_data_status(
+        self, exchange: str, subscribed: dict[str, set[Instrument]]
+    ) -> "ExchangeDataStatus":
+        """Per-exchange data-flow facts. `subscribed` maps data type to instruments."""
         ...
 
 
