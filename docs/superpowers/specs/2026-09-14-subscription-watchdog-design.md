@@ -79,8 +79,9 @@ until data is observed to resume.**
 | D2 | `SubscriptionManager` owns the desired universe (`_desired`) and stops reading current state from the provider. A failed repair leaves the provider wrong and intent intact; the next tick repairs it. |
 | D3 | The watchdog moves into its own class with its own thread, policy and tests. |
 | D4 | Repair stays `unsubscribe → sleep → subscribe`. It is required (see "Why not subscribe-only") and is now safe, because the retry loop — not the ordering — provides correctness. |
-| D5 | A repair is verified on the following tick. An unverified repair retries indefinitely at a capped backoff and is reported at ERROR — it is never abandoned. Transport-level escalation (reconnect / recreate) needs an `IDataProvider` method that does not exist and is deferred with D1. |
+| D5 | A repair is verified on the following tick **by `last_event_time` advancing past the repair**, never by `is_stale()` — which reads `True` right after a successful repair and would loop-repair sparse feeds. An unverified repair retries indefinitely at a backoff capped at `threshold/10`, reported at ERROR; it is never abandoned. Transport-level escalation (reconnect / recreate) needs an `IDataProvider` method that does not exist and is deferred with D1. |
 | D5a | **A partially stale exchange is never marked `EXCHANGE_MAINTENANCE`.** Instruments still delivering prove the venue is up, so the fault is ours; degrading the exchange would be false and would halt trading on the healthy instruments. Only a fully dark exchange (§6) publishes a degradation. |
+| D5b | An instrument is eligible for repair, and counts toward the per-exchange facts, only after `subscribed_at + threshold`. Freshly subscribed instruments report stale until their first message, so without this the watchdog repairs new subscriptions on sight and a full universe swap falsely reads as a dark exchange. |
 | D6 | Per-exchange status is published through the **existing** `ContextStatus` / `DegradeReason.EXCHANGE_MAINTENANCE`, not a new enum. |
 | D7 | `QubxDegradedState` no longer counts toward `MAX_NUMBER_OF_STRATEGY_FAILURES`. |
 | D8 | `synchronized` is replaced with a real shared lock; this is a precondition, not a cleanup. |
@@ -191,6 +192,17 @@ today because there is no seam to write it against.
 Per tick, per exchange:
 
 1. Skip unless `strategy_state.is_on_warmup_finished_called`; skip simulation providers.
+1a. **Drop instruments still in their grace window.** An instrument is eligible for
+   repair — and counts toward the facts in §5 — only once
+   `now >= subscribed_at + STALE_THRESHOLDS[base_type]`. `IHealthMonitor.subscribe` does
+   not seed `_last_event_time` (`health/base.py:185-193`) and `is_stale` returns `True`
+   for a missing entry (`base.py:383-384`), so **every freshly subscribed instrument
+   reports stale until its first message**. Without this gate the watchdog would tear
+   down a brand-new subscription on the very next tick, before it ever had a chance to
+   deliver — and a mid-session universe swap that replaces the whole universe would make
+   `stale == subscribed`, falsely triggering DARK and halting trading (§6). The grace
+   window is the threshold itself, because that is already the framework's statement of
+   how long this data type may legitimately be silent.
 2. Read the exchange facts (§5) and classify:
    - **OK** — nothing stale. Clear any held repair state.
    - **DARK** — see §6. **No per-instrument repair.** This is the 11:16 case where 21
@@ -199,11 +211,43 @@ Per tick, per exchange:
      — `reconcile()` with an empty `refresh`. The connector reconnects on its own; the
      watchdog's job while dark is to stop making it worse.
    - **DEGRADED** — some stale, some live. Call `reconcile(refresh=stale)`.
-3. **Verify on the next tick.** Instruments repaired last tick that are still stale are
-   retried with exponential backoff (1 tick → 2 → 4, capped at 8 ≈ 4 min), **forever**.
-   An instrument is never abandoned: the backoff exists to bound churn, not to give up,
-   and a wedged instrument that silently stops being repaired is the failure mode this
-   whole design exists to remove.
+3. **Verify on the next tick — by advancement, not by staleness.**
+
+   A repair records `repaired_at`. It is verified when
+   `last_event_time > repaired_at` — i.e. *some* message arrived after the repair.
+
+   **Do not verify with `not is_stale()`.** Staleness compares `last_event_time` against
+   a 10- or 30-minute threshold, so it reads `True` immediately after a successful repair
+   and keeps reading `True` until enough fresh data accumulates. On orderbook that
+   resolves in milliseconds and the distinction looks academic; on `trade` (30 min
+   threshold, legitimately sparse) a repair can succeed and the feed stay quiet for
+   minutes, so a staleness-based check would tear the working subscription down again on
+   the next tick, and again, indefinitely — a self-sustaining repair loop on a healthy
+   feed. Advancement is unambiguous: a message arrived, therefore the subscription is
+   live, whatever the threshold says.
+
+   **The repair must not call `IHealthMonitor.unsubscribe`.** That method pops
+   `_last_event_time` (`health/base.py:207`) and discards the instrument from
+   `_active_subscriptions`. Popping would erase the very evidence this verification
+   depends on. Only `_apply_swap` — which genuinely removes an instrument from the
+   universe — may call it; a repair is not a removal. (Today's watchdog already calls
+   `data_provider.unsubscribe` directly, `subscription.py:487`, so this preserves
+   existing behaviour rather than changing it.)
+
+   **Backoff.** An unverified repair is retried at the next tick, then at doubling
+   intervals, capped at `STALE_THRESHOLDS[base_type] / 10` — 1 min for quote/orderbook,
+   3 min for trade. Tying the cap to that type's own threshold rather than a flat
+   constant makes retries aggressive exactly where feeds tick continuously and patient
+   where they do not, and avoids a second tuning knob that can drift out of sync with the
+   first. Backoff resets on verification.
+
+   Starting faster than one tick is not worth building: detection is bounded by the
+   staleness threshold, so an instrument is already 10+ minutes dark before the first
+   repair. Shaving the first retry from 30s to 5s is noise against that.
+
+   Retries continue **forever**. An instrument is never abandoned: the backoff exists to
+   bound churn, not to give up, and a wedged instrument that silently stops being
+   repaired is the failure mode this whole design exists to remove.
 
    Escalation here is **reporting only**, never a degradation (D5a). On the first
    unverified retry the log moves from INFO to WARNING; at the backoff cap it moves to
@@ -235,14 +279,24 @@ selects the remedy; it never suppresses action.
 class ExchangeDataStatus:
     exchange: str
     connected: bool | None       # None = no callback registered
-    subscribed: int
+    subscribed: int              # eligible only — excludes instruments in grace
     stale: int                   # per-instrument count, NOT max() over the exchange
+    in_grace: int                # subscribed too recently to judge
     last_event_time: dt_64 | None
 ```
 
 `IHealthMonitor.get_exchange_data_status(exchange, subscribed_instruments)` computes it.
-Both inputs already exist (`_last_event_time`, `_is_connected_callbacks`); nothing new is
-plumbed.
+
+**`subscribed` and `stale` count only instruments past their grace window** (§4.1a).
+Counting in-grace instruments as stale would make `stale == subscribed` immediately after
+a full universe swap and falsely publish `EXCHANGE_MAINTENANCE`, halting trading on a
+healthy venue. `in_grace` is carried separately so the condition stays visible rather than
+silently hidden.
+
+This requires one new piece of state: `_subscribed_at[(instrument, base_type)]`, recorded
+in `IHealthMonitor.subscribe` (`base.py:185-193`, which today records only membership) and
+cleared in `unsubscribe` alongside `_last_event_time`. The other two inputs
+(`_last_event_time`, `_is_connected_callbacks`) already exist.
 
 Two existing pieces are deliberately *not* reused as-is:
 
@@ -333,6 +387,8 @@ is not usable as designed; this removes that sharp edge.
 | repair succeeds but data does not resume, whole venue dark | no repair attempted at all; `EXCHANGE_MAINTENANCE` held (§6) |
 | venue rejects the subscribe asynchronously | indistinguishable from the above, and handled identically — this is the `30009` case |
 | `NotSupported` | recorded in `_unsupported`, never retried |
+| sparse feed quiet but healthy | verification by advancement (§4.3) prevents the repair loop; backoff caps residual churn at `threshold/10` |
+| instrument subscribed seconds ago | in grace (D5b) — not repaired, not counted, cannot trigger DARK |
 | one exchange failing | isolated; other exchanges reconcile normally |
 | watchdog tick raises | caught, logged with traceback, thread survives (as today) |
 
@@ -342,7 +398,7 @@ Unit, against a fake `IDataProvider` — the seam that does not exist today:
 
 1. `subscribe` raises during repair → `_desired` unchanged; next tick retries; provider converges.
 2. Provider registry emptied behind the manager's back → reconcile restores it from `_desired`. **This is the incident, reduced to a test.**
-3. Repair "succeeds" but the fake keeps reporting stale for 2 of 5 instruments → retries back off 1/2/4/8 ticks and **continue indefinitely** at the cap; log level climbs INFO → WARNING → ERROR; `EXCHANGE_MAINTENANCE` is **never** held and the exchange stays tradeable (D5a).
+3. Repair "succeeds" but 2 of 5 orderbook instruments never deliver → retries double from one tick and **continue indefinitely** at the 1 min cap (`threshold/10`); log level climbs INFO → WARNING → ERROR; `EXCHANGE_MAINTENANCE` is **never** held and the exchange stays tradeable (D5a).
 3a. The same instruments recover at tick 20 → retries stop, backoff resets, no degradation was ever published.
 4. DARK exchange → zero `subscribe`/`unsubscribe` calls issued (the `30009` regression).
 5. `NotSupported` → recorded once, never retried.
@@ -350,6 +406,10 @@ Unit, against a fake `IDataProvider` — the seam that does not exist today:
 7. `connected is None` does not trigger (A); `subscribed == 1` does not trigger (B).
 8. `QubxDegradedState` in `on_event` 20 times in a row → run does not stop; any other exception 10 times → it does.
 9. Concurrency: `commit()` on one thread and `reconcile()` on the watchdog thread do not interleave (regression for the `synchronized` bug).
+10. **Sparse-feed repair loop (D5).** A `trade` subscription is repaired, then delivers exactly one message and goes quiet for 20 ticks → verified on the first tick after the message and **never repaired again**, even though `is_stale()` stays `True` throughout. Asserting on `is_stale` instead of advancement must fail this test.
+11. **Grace period (D5b).** An instrument subscribed at t=0 reports no data → not repaired and not counted as stale before `t + threshold`; repaired on the first tick after it.
+12. **False DARK on universe swap (D5b).** The entire universe is replaced mid-session → every instrument is in grace, `subscribed` is 0, and `EXCHANGE_MAINTENANCE` is not published. Without the grace gate this test halts trading on a healthy venue.
+13. A repair never calls `IHealthMonitor.unsubscribe` — assert on a spy, since popping `_last_event_time` would silently destroy the verification signal in test 10.
 
 Integration: existing live-connector suites must pass unchanged — no `IDataProvider`
 signature moves, so `qubx-lighter` and `qubx-hyperliquid` build against this without a
@@ -357,10 +417,13 @@ release.
 
 ## Observability
 
-- Watchdog logs one line per repair with exchange, subscription key, instrument count,
-  and rung; one line per escalation; one per `EXCHANGE_MAINTENANCE` add/clear.
-- `ExchangeDataStatus` (`stale`/`subscribed` per exchange) goes into the state snapshot
-  the health monitor already writes. This is the signal
+- Watchdog logs one line per repair with exchange, subscription key and instrument count;
+  one line per `EXCHANGE_MAINTENANCE` add/clear. Unverified repairs escalate INFO →
+  WARNING → ERROR and then repeat only once per capped backoff interval, not once per
+  tick — a permanently wedged instrument must stay visible without flooding the log for
+  days, which is the shape the 2026-09-13 logs would have had.
+- `ExchangeDataStatus` (`stale` / `subscribed` / `in_grace` per exchange) goes into the
+  state snapshot the health monitor already writes. This is the signal
   `bot_data_last_event_timestamp_seconds` is missing platform-side: that gauge is
   labelled `(bot_id, exchange, data_type)`, so one live instrument clears it for the
   whole exchange. Exporting the counts lets the platform alert on a *fraction*, which
