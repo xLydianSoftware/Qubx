@@ -349,11 +349,31 @@ terminal retention 30s, history ring 10k.
 One protocol (`core/connector.py`): `submit_order`, `cancel_order` / `update_order` /
 `request_order_status` (addressed by **either id** — the connector picks the id the venue
 accepts), `request_snapshot`, `is_ws_ready` / `reconnect` / `connect` / `disconnect`,
-`make_client_id`, `set_instrument_leverage` / `set_margin_mode`. Live
+`make_client_id`, `set_instrument_leverage` / `set_margin_mode`, `convert_currency`. Live
 connectors resolve via the `ConnectorRegistry` (`@connector("name")`) — a new venue is
 one IConnector + a registry entry. The connector is a **pure adapter**: its only outbound
 surface is `send(event)` on the channel; it holds no AM/PM reference. Connectors stay
 dumb — the reducer correlates deals to orders, absorbing split-stream stitching.
+
+### Cash conversion (`convert_currency`)
+
+The one venue write that is **not** an order. It swaps currencies on the venue's own market
+for the pair (`USDC/USDT`, bought or sold depending on which side the caller is spending) and
+is never registered with the AccountManager: no order, no position, no deal — the change
+reaches the framework only as the balances of the next snapshot, which the connector requests
+itself once something fills. Modelling it as a trade would misfile it everywhere downstream:
+`gross_leverage` sums every position's notional, the reconciler sees a local position the
+venue's positionRisk never reports (`LocalPositionMissing` → a synthesized close), and a
+strategy that closes unhedged positions would convert straight back.
+
+Blocking (the caller needs the outcome) and exactly ONE IOC attempt — nothing rests on the
+book, so the returned `CurrencyConversion` is the whole story and there is nothing to cancel
+or reconcile. A short fill is a `PARTIAL` record, not an exception: the connector never
+retries, because only the caller knows how much it still needs after the balances moved.
+`limit_price` bounds the fill absolutely (the guard that holds when a stablecoin depegs);
+`max_slippage_bps` only bounds it relative to a book that a depeg has already moved. The
+default in `ChannelEmitter` raises `NotImplementedError`, so a venue with no cash market —
+simulation included — stays conformant without implementing it.
 
 ### Rejection boundary
 

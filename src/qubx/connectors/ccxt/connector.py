@@ -45,6 +45,7 @@ from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
     Balance,
     CtrlChannel,
+    CurrencyConversion,
     Deal,
     Instrument,
     Order,
@@ -929,6 +930,103 @@ class CcxtConnector(ChannelEmitter):
         logger.info(
             f"[{self.exchange_name}] leverage cache refreshed: {len(configured)} configured, {len(maxima)} maxima"
         )
+
+    def convert_currency(
+        self,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        *,
+        limit_price: float | None = None,
+        max_slippage_bps: float = 10.0,
+    ) -> CurrencyConversion:
+        """Swap ``amount`` of one currency for another on the venue's own market for the pair.
+
+        One IOC attempt, priced to protect rather than to chase: nothing rests on the book
+        afterwards, so the returned record is the whole outcome and there is nothing to cancel
+        or reconcile. The trade is deliberately NOT registered with the AccountManager — it
+        moves cash, not exposure, and the balances arrive with the next account snapshot.
+
+        ``amount`` is denominated in ``from_currency``, whichever side of the venue's pair that
+        happens to be; only one direction is normally listed (USDC/USDT, never USDT/USDC), so
+        buying the base is how you spend the quote. ``limit_price`` (in the market's own quote
+        terms) bounds the fill absolutely — the guard that matters when a stablecoin depegs,
+        where a relative ``max_slippage_bps`` off a broken book would still convert.
+        """
+        if not amount > 0:
+            raise ValueError(f"[{self.exchange_name}] conversion amount must be positive, got {amount}")
+        ex = self._em.exchange
+        symbol, side = self._conversion_market(from_currency, to_currency)
+
+        if limit_price is None:
+            tickers = self._run_sync(ex.fetch_bids_asks([symbol]))
+            top = tickers[symbol]["bid"] if side == "sell" else tickers[symbol]["ask"]
+            slippage = max_slippage_bps / 10_000
+            limit_price = top * (1 - slippage) if side == "sell" else top * (1 + slippage)
+
+        price = float(ex.price_to_precision(symbol, limit_price))
+        # amount is in from_currency: already the base on a sell, the budget to spend on a buy
+        # (bounded by the limit price, and truncated to the step so it can never exceed it).
+        qty = float(ex.amount_to_precision(symbol, amount if side == "sell" else amount / price))
+
+        market = ex.market(symbol)
+        min_amount = market["limits"]["amount"]["min"] or 0.0
+        min_notional = market["limits"]["cost"]["min"] or 0.0
+        if qty < min_amount or qty * price < min_notional:
+            raise ValueError(
+                f"[{self.exchange_name}] {amount} {from_currency} is below {symbol}'s floor "
+                f"(min amount {min_amount}, min notional {min_notional})"
+            )
+
+        response = self._run_sync(
+            ex.create_order(
+                symbol=symbol,
+                type="limit",
+                side=side,
+                amount=qty,
+                price=price,
+                params={"timeInForce": "IOC"},
+            )
+        )
+        filled = float(response.get("filled") or 0.0)
+        cost = float(response.get("cost") or 0.0)
+        if filled <= 0:
+            status = "UNFILLED"
+        elif filled >= qty * (1 - 1e-9):
+            status = "FILLED"
+        else:
+            status = "PARTIAL"
+        if filled > 0:
+            # the venue moved cash the poller has not seen yet; a caller reading balances
+            # right after this (or on its next tick) must not act on the pre-conversion ones
+            self.request_snapshot(include_orders=False)
+        # no order record carries this: the bot log is its only local trace
+        logger.info(
+            f"[{self.exchange_name}] convert {amount} {from_currency} -> {to_currency}: {status} "
+            f"({filled} / {qty} {symbol.split('/')[0]} @ {response.get('average')}, limit {price})"
+        )
+        return CurrencyConversion(
+            exchange=self.exchange_name,
+            from_currency=from_currency,
+            to_currency=to_currency,
+            requested=amount,
+            filled_from=filled if side == "sell" else cost,
+            filled_to=cost if side == "sell" else filled,
+            status=status,
+            avg_price=response.get("average"),
+            venue_order_id=str(response["id"]) if response.get("id") is not None else None,
+        )
+
+    def _conversion_market(self, from_currency: str, to_currency: str) -> tuple[str, str]:
+        """The venue's market for the pair and the side that spends ``from_currency``."""
+        ex = self._em.exchange
+        if not ex.markets:
+            # a trading-only connector (market data via xdata) may never have loaded them
+            self._run_sync(ex.load_markets())
+        for symbol, side in ((f"{from_currency}/{to_currency}", "sell"), (f"{to_currency}/{from_currency}", "buy")):
+            if symbol in ex.markets:
+                return symbol, side
+        raise ValueError(f"[{self.exchange_name}] no market to convert {from_currency} -> {to_currency}")
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         try:

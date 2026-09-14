@@ -510,3 +510,13 @@ def test_update_order_preserves_options(setup):
     assert order.price == new_stop_price
     # The recreated order must still carry the original fill_at_signal_price flag.
     assert order.options.get(OPTION_FILL_AT_SIGNAL_PRICE) is True
+
+
+def test_convert_currency_is_unsupported_in_simulation():
+    """Simulation has no cash market to convert on: callers must gate on ctx.is_live rather
+    than silently get a fictional swap."""
+    channel, _ = _channel()
+    conn = SimulatedConnector(channel=channel, exchange_name="BINANCE.UM", time_provider=_TimeService(), tcc=ZERO_COSTS)
+
+    with pytest.raises(NotImplementedError):
+        conn.convert_currency("USDC", "USDT", 100.0)

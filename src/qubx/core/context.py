@@ -16,6 +16,7 @@ from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     Balance,
     CtrlChannel,
+    CurrencyConversion,
     DataType,
     Instrument,
     ITimeProvider,
@@ -864,6 +865,21 @@ class StrategyContext(IStrategyContext):
         # TODO: we need to generate target position and apply it in the processing manager
         # - one of the options is to have multiple entry levels in TargetPosition class
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
+
+    def convert_currency(
+        self,
+        exchange: str,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        *,
+        limit_price: float | None = None,
+        max_slippage_bps: float = 10.0,
+    ) -> CurrencyConversion:
+        self._assert_not_fit_thread("convert_currency")
+        return self._trading_manager.convert_currency(
+            exchange, from_currency, to_currency, amount, limit_price=limit_price, max_slippage_bps=max_slippage_bps
+        )
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         self._assert_not_fit_thread("submit_orders")

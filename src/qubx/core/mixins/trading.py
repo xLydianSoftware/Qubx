@@ -4,6 +4,7 @@ from qubx import logger
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
+    CurrencyConversion,
     Instrument,
     MarketType,
     Order,
@@ -554,6 +555,21 @@ class TradingManager(ITradingManager):
         if (stp_type := options.get("stop_type")) is not None:
             return f"stop_{stp_type}"
         return "limit"
+
+    def convert_currency(
+        self,
+        exchange: str,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        *,
+        limit_price: float | None = None,
+        max_slippage_bps: float = 10.0,
+    ) -> CurrencyConversion:
+        self._ensure_writable()
+        return self._get_connector(exchange).convert_currency(
+            from_currency, to_currency, amount, limit_price=limit_price, max_slippage_bps=max_slippage_bps
+        )
 
     def _get_connector(self, exchange: str) -> IConnector:
         # Connectors are keyed by the canonical exchange (the runner canonicalizes

@@ -25,6 +25,7 @@ from qubx import logger
 from qubx.core.basics import (
     Balance,
     CtrlChannel,
+    CurrencyConversion,
     Deal,
     Instrument,
     ITimeProvider,
@@ -999,6 +1000,29 @@ class ITradingManager:
         Exactly one identifier must be provided:
         - order_id: Exchange/server order id
         - client_order_id: Client-generated id
+        """
+        ...
+
+    def convert_currency(
+        self,
+        exchange: str,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        *,
+        limit_price: float | None = None,
+        max_slippage_bps: float = 10.0,
+    ) -> CurrencyConversion:
+        """Swap ``amount`` of ``from_currency`` into ``to_currency`` on ``exchange``.
+
+        Cash, not exposure: the venue trade behind it is never registered with the
+        AccountManager, so it opens no position and the change shows up in the balances of
+        the next account snapshot. Blocks until the venue answers and submits one IOC
+        attempt — a short fill returns a PARTIAL record rather than raising, leaving the
+        retry decision (and the recomputed amount) to the caller. ``limit_price``, in the
+        venue pair's own quote terms, bounds the fill absolutely; ``max_slippage_bps`` only
+        bounds it relative to the book, which a depeg moves. Venues with no cash market
+        (simulation included) raise NotImplementedError.
         """
         ...
 
