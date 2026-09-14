@@ -185,8 +185,10 @@ def test_grace_prevents_false_dark_on_universe_swap(rig):
 # --- verification and backoff (spec 4.3, D5) ---
 
 def test_verification_is_by_advancement_not_by_staleness(rig):
-    """A trade feed that delivers once and goes quiet stays stale by threshold
-    but must never be repaired again."""
+    """A trade feed that delivers once and goes quiet is not repaired again while
+    its silence stays under the staleness threshold. Once its silence genuinely
+    exceeds the threshold again, it is correctly repaired again - verification is
+    not a permanent exemption, only proof that a specific repair worked."""
     watchdog, monitor, status, clock, universe, reconciled = rig
     btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
     universe[DataType.TRADE] = {btc, eth}
@@ -198,15 +200,56 @@ def test_verification_is_by_advancement_not_by_staleness(rig):
     watchdog.tick()
     assert reconciled and reconciled[-1] == {eth}
 
-    # eth delivers once, then nothing for a long time
+    # eth delivers once, then nothing for a long time. btc keeps delivering on every
+    # tick so the exchange stays PARTIAL rather than DARK - otherwise D5b's
+    # no-repair-when-DARK would suppress repair for a reason unrelated to
+    # verification, and the repair path for eth would never actually run.
     monitor.on_data_arrival(eth, DataType.TRADE, clock.time())
     before = len(reconciled)
-    for _ in range(31):  # must clear the 30min trade threshold from eth's single event
+    for _ in range(29):  # stay strictly under the 30min trade threshold
         clock.advance(1)
+        monitor.on_data_arrival(btc, DataType.TRADE, clock.time())
         watchdog.tick()
 
+    assert monitor.is_stale(eth, DataType.TRADE) is False
+    assert len(reconciled) == before  # not repaired again while still under threshold
+
+    # push eth's silence past the threshold: now it is correctly repaired again
+    clock.advance(2)
+    monitor.on_data_arrival(btc, DataType.TRADE, clock.time())
+    watchdog.tick()
+
     assert monitor.is_stale(eth, DataType.TRADE) is True
-    assert len(reconciled) == before
+    assert len(reconciled) == before + 1
+    assert reconciled[-1] == {eth}
+
+
+def test_verification_requires_delivery_after_the_repair(rig):
+    """A last_event_time that predates the repair is not evidence the repair
+    worked - only a message that arrives after it proves the subscription is live.
+    Distinguishes advancement from a plain is_stale/'has ever delivered' check:
+    the two agree except in exactly this ordering."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {btc, eth}
+    monitor.subscribe(btc, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    clock.advance(11)  # past the 10min orderbook grace
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
+    monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())  # eth's only ever message
+    clock.advance(11)  # that message is now itself stale - keep btc fresh throughout
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
+
+    watchdog.tick()  # eth is genuinely stale (no message in >10min): a real repair
+    assert reconciled and reconciled[-1] == {eth}
+    assert (eth, "orderbook") in watchdog._repair_state
+
+    clock.advance(1)
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())  # eth still gets nothing
+    watchdog.tick()
+
+    # eth's last_event_time (set before the repair) has not moved: not verified.
+    assert (eth, "orderbook") in watchdog._repair_state
 
 
 def test_unverified_repair_backs_off_and_never_stops(rig):
