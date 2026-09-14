@@ -12,7 +12,7 @@ from collections.abc import Callable
 from functools import wraps
 from os.path import abspath, exists, expanduser
 from pathlib import Path
-from threading import Lock, Thread
+from threading import Lock, RLock, Thread
 from typing import Any, Union
 
 import joblib
@@ -21,6 +21,8 @@ import pandas as pd
 from tqdm.auto import tqdm
 
 from qubx.utils.time import to_timedelta
+
+_SYNCHRONIZED_INIT_LOCK = Lock()
 
 
 def version() -> str:
@@ -505,13 +507,26 @@ class BackgroundEventLoop:
 
 
 def synchronized(func: Callable):
-    """Decorator that ensures only one thread can execute the decorated function at a time."""
-    lock = Lock()
+    """Serialize calls to the decorated methods of one instance.
+
+    The lock is per-instance and shared by every method decorated in that class, so
+    subscribe/unsubscribe/commit exclude each other. Re-entrant: commit() -> _apply_swap()
+    -> reconcile() is one call chain on one thread.
+    """
 
     @wraps(func)
-    def wrapper(*args, **kwargs):
+    def wrapper(self, *args, **kwargs):
+        lock = getattr(self, "_synchronized_lock", None)
+        if lock is None:
+            # - double-checked under a module-level lock: two threads may reach an
+            #   instance's first synchronized call at once and must agree on one lock
+            with _SYNCHRONIZED_INIT_LOCK:
+                lock = getattr(self, "_synchronized_lock", None)
+                if lock is None:
+                    lock = RLock()
+                    object.__setattr__(self, "_synchronized_lock", lock)
         with lock:
-            return func(*args, **kwargs)
+            return func(self, *args, **kwargs)
 
     return wrapper
 
