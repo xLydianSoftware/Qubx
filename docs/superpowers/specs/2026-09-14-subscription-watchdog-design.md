@@ -203,14 +203,33 @@ Per tick, per exchange:
    `stale == subscribed`, falsely triggering DARK and halting trading (§6). The grace
    window is the threshold itself, because that is already the framework's statement of
    how long this data type may legitimately be silent.
-2. Read the exchange facts (§5) and classify:
-   - **OK** — nothing stale. Clear any held repair state.
-   - **DARK** — see §6. **No per-instrument repair.** This is the 11:16 case where 21
-     simultaneous subscribes tripped `30009` and cost the recovery. Hold
-     `EXCHANGE_MAINTENANCE` (§6), wait, and re-assert intent **once** when data returns
-     — `reconcile()` with an empty `refresh`. The connector reconnects on its own; the
-     watchdog's job while dark is to stop making it worse.
-   - **DEGRADED** — some stale, some live. Call `reconcile(refresh=stale)`.
+2. Read the exchange facts (§5) and classify. All three are computed from **eligible**
+   instruments only — those past their grace window (§4.1a):
+
+   | classification | condition | meaning | action |
+   |---|---|---|---|
+   | **OK** | `stale == 0` | everything is delivering | clear any held repair state |
+   | **DARK** | `connected is False` **or** (`stale == subscribed` and `subscribed >= 2`) | *nothing* is delivering — the venue is not serving us | no repair; §6 |
+   | **PARTIAL** | `stale > 0` and not DARK | some delivering, some not — the venue is up, so the fault is ours | `reconcile(refresh=stale)` |
+
+   The three are exhaustive and mutually exclusive. `subscribed == 1 and stale == 1`
+   falls into PARTIAL by construction: with one instrument, "nothing is delivering" and
+   "one stream is wedged" are the same observation, and PARTIAL is the safe reading.
+
+   **DARK is a per-tick classification, not a published status.** It becomes
+   `EXCHANGE_MAINTENANCE` only after holding for 2 consecutive ticks (§6); the hysteresis
+   lives in the publication step, not here.
+
+   **On DARK, issue no per-instrument repair at all.** This is the 11:16 case where 21
+   simultaneous subscribes tripped `30009` and cost the recovery. Hold
+   `EXCHANGE_MAINTENANCE`, wait, and re-assert intent **once** when data returns —
+   `reconcile()` with an empty `refresh`. The connector reconnects on its own; the
+   watchdog's job while dark is to stop making it worse.
+
+   *Naming note:* the third state is **PARTIAL**, not "DEGRADED". `QubxStatus.DEGRADED`
+   already exists (`core/status.py:22-24`) and means the context is degraded — which is
+   precisely what this state does **not** do (D5a). Reusing the word would put two
+   opposite meanings on one term in the same subsystem.
 3. **Verify on the next tick — by advancement, not by staleness.**
 
    A repair records `repaired_at`. It is verified when
@@ -319,20 +338,23 @@ writer. Its **reader is fully built**: `trading.py:127-135` refuses every order 
 degraded exchange with `QubxDegradedState`, including position-reducing ones, and its
 docstring already reasons about precisely this case.
 
-Held when, for **2 consecutive ticks**, either:
+**Held when the exchange classifies DARK (§4.2) on 2 consecutive ticks.** §4.2 owns the
+definition; this section owns only the hysteresis and the clear rule. The two limbs of
+DARK exist because each covers what the other misses:
 
-- **(A)** `connected is False` — the fast path. Catches a refused or dropped socket in
+- **(A) `connected is False`** — the fast path. Catches a refused or dropped socket in
   ~60s. In the incident this would have published at ~11:03:30, eight minutes before
-  staleness could say anything.
-- **(B)** `stale == subscribed and subscribed >= 2` — the slow path. Catches a provider
-  that believes it is connected and delivers nothing. This is the case that mattered:
-  from 11:17 onward `is_connected()` was `True` for 22 hours
+  staleness could say anything at all.
+- **(B) `stale == subscribed and subscribed >= 2`** — the slow path. Catches a provider
+  that believes it is connected and delivers nothing. This is the limb that mattered:
+  from 11:17 onward `is_connected()` returned `True` for 22 hours
   (`websocket_manager.py:168` — `state == CONNECTED and _ws is not None`) while every
-  message was being dropped. (B) would have held from ~11:22.
+  message was being dropped, so (A) was blind for the entire outage. (B) would have held
+  from ~11:22.
 
-`connected is None` is not a trigger for (A) — we cannot tell — but (B) still applies.
-`subscribed >= 2` because with one instrument, "all stale" and "one wedged stream" are
-the same observation.
+`connected is None` does not satisfy (A) — we cannot tell — but (B) still applies.
+`subscribed >= 2` because with one instrument, "nothing is delivering" and "one stream
+is wedged" are the same observation; that case is PARTIAL (§4.2).
 
 Cleared on the first tick where any instrument on the exchange delivers. Asymmetric on
 purpose: slow to halt trading, quick to resume.
