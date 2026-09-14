@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from qubx import logger
 from qubx.connectors.ccxt.utils import (
     FRAMEWORK_ONLY_OPTIONS,
     ccxt_convert_balance,
@@ -76,6 +77,33 @@ class TestCcxtOrderbookRelatedStuff:
         for ob in obs:
             assert ob is not None
             assert ob.tick_size == i1.tick_size
+
+    @pytest.mark.parametrize(
+        "bids, asks",
+        [
+            ([], []),
+            ([[100.0, 1.0]], []),
+            ([], [[101.0, 1.0]]),
+        ],
+        ids=["both-empty", "bids-only", "asks-only"],
+    )
+    def test_empty_and_one_sided_books_are_dropped_without_error(self, bids, asks):
+        """An illiquid or halted symbol serves a side-less book. It cannot become a two-sided
+        aggregated book, so it is dropped — quietly, not through the exception handler."""
+        i1 = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert i1 is not None
+        ob = {"bids": bids, "asks": asks, "datetime": "2026-09-14T15:21:00.861Z", "timestamp": 1789399260861}
+
+        records: list = []
+        sink_id = logger.add(lambda m: records.append(m.record), level="ERROR")
+        try:
+            assert ccxt_convert_orderbook(ob, i1) is None
+            assert ccxt_convert_orderbook(ob, i1, levels=1, tick_size_pct=0) is None
+            assert ccxt_convert_orderbook(ob, i1, tick_size_pct=0) is None
+        finally:
+            logger.remove(sink_id)
+
+        assert records == []
 
     def test_ccxt_liquidation_conversion(self):
         liquidations = []

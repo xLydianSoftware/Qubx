@@ -417,7 +417,11 @@ def ccxt_convert_orderbook(
         # Convert timestamp to nanoseconds as a long long integer
         dt = recognize_time(ob["datetime"]) if ob["datetime"] is not None else current_timestamp
 
-        if levels == 1 and tick_size_pct == 0 and ob["bids"] and ob["asks"]:
+        # an aggregated book needs both sides; a half book would publish top=0
+        if not ob["bids"] or not ob["asks"]:
+            return None
+
+        if levels == 1 and tick_size_pct == 0:
             return OrderBook(
                 time=dt,
                 top_bid=ob["bids"][0][0],
@@ -431,15 +435,7 @@ def ccxt_convert_orderbook(
         if tick_size_pct == 0:
             tick_size = instr.tick_size
         else:
-            # Calculate mid price from the top of the book
-            top_bid = ob["bids"][0][0] if ob["bids"] else 0
-            top_ask = ob["asks"][0][0] if ob["asks"] else 0
-
-            if top_bid == 0 or top_ask == 0:
-                # If either is missing, use the other one
-                mid_price = top_bid or top_ask
-            else:
-                mid_price = (top_bid + top_ask) / 2
+            mid_price = (ob["bids"][0][0] + ob["asks"][0][0]) / 2
 
             # Calculate tick size as percentage of mid price
             raw_tick_size = max(mid_price * tick_size_pct / 100, instr.tick_size)
