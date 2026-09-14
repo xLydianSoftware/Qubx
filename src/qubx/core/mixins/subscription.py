@@ -88,6 +88,7 @@ class SubscriptionManager(ISubscriptionManager):
         #   socket) must not take the universe with it.
         self._desired: dict[str, set[Instrument]] = defaultdict(set)
         self._unsupported: set[tuple[str, str]] = set()
+        self._repair_settle_seconds: float = 3.0
         self._auto_subscribe = auto_subscribe
         self._monitor_interval_seconds = monitor_interval_seconds
         self._is_simulation = all(data_provider.is_simulation for data_provider in data_providers)
@@ -258,6 +259,40 @@ class SubscriptionManager(ISubscriptionManager):
             # Notify health monitor to cleanup unsubscribed data
             for instr in _removed_instruments:
                 self._health_monitor.unsubscribe(instr, _sub)
+
+    @synchronized
+    def reconcile(self, refresh: set[Instrument] = frozenset()) -> None:
+        """Drive every provider toward `_desired`.
+
+        `refresh` names instruments whose transport must be re-established even though
+        intent has not changed — a provider may believe it is subscribed while delivering
+        nothing. Raising is safe: `_desired` is untouched, so the caller retries.
+        """
+        for _sub, _instruments in list(self._desired.items()):
+            if not _instruments:
+                continue
+            _by_exchange: dict[str, set[Instrument]] = defaultdict(set)
+            for instr in _instruments:
+                _by_exchange[instr.exchange].add(instr)
+
+            for _exchange, _desired_here in _by_exchange.items():
+                if (_exchange, _sub) in self._unsupported:
+                    continue
+                _refresh_here = {i for i in refresh if i.exchange == _exchange} & _desired_here
+                try:
+                    _data_provider = self._get_data_provider(_exchange)
+                    if _refresh_here:
+                        _data_provider.unsubscribe(_sub, _refresh_here)
+                        # - the settle delay guards against the venue processing our
+                        #   unsubscribe after the resubscribe. It bounds churn; it is NOT
+                        #   the safety net - that is the caller's retry (D4).
+                        time.sleep(self._repair_settle_seconds)
+                    _data_provider.subscribe(_sub, set(_desired_here), reset=True)
+                except NotSupported as e:
+                    self._unsupported.add((_exchange, _sub))
+                    logger.warning(f"[{_exchange}] :: {_sub} not supported: {e}")
+                except Exception as e:
+                    logger.error(f"[{_exchange}] :: reconcile of {_sub} failed: {e}")
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         return instrument in self._desired.get(subscription_type, set())

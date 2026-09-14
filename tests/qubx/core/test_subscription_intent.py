@@ -74,3 +74,89 @@ def test_not_supported_is_recorded_once(manager_and_provider):
     manager.commit()
 
     assert (EXCHANGE, DataType.ORDERBOOK) in manager._unsupported
+
+
+def test_reconcile_refresh_unsubscribes_then_resubscribes_full_set(manager_and_provider):
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.0
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    manager.subscribe(DataType.ORDERBOOK, [btc, eth])
+    manager.commit()
+    provider.reset_mock()
+
+    manager.reconcile(refresh={btc})
+
+    provider.unsubscribe.assert_called_once_with(DataType.ORDERBOOK, {btc})
+    provider.subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc, eth}, reset=True)
+
+
+def test_reconcile_without_refresh_reasserts_and_never_unsubscribes(manager_and_provider):
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.0
+    btc = _instrument("BTCUSDT")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.commit()
+    provider.reset_mock()
+
+    manager.reconcile()
+
+    provider.unsubscribe.assert_not_called()
+    provider.subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
+
+
+def test_reconcile_failure_leaves_desired_intact_and_retries(manager_and_provider):
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.0
+    btc = _instrument("BTCUSDT")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.commit()
+    provider.reset_mock()
+    provider.subscribe.side_effect = TimeoutError("WebSocket connection not ready after 5.0s")
+
+    manager.reconcile(refresh={btc})
+
+    assert manager._desired[DataType.ORDERBOOK] == {btc}
+
+    provider.subscribe.side_effect = None
+    manager.reconcile(refresh={btc})
+    provider.subscribe.assert_called_with(DataType.ORDERBOOK, {btc}, reset=True)
+
+
+def test_reconcile_skips_unsupported_pairs(manager_and_provider):
+    from qubx.core.exceptions import NotSupported
+
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.0
+    btc = _instrument("BTCUSDT")
+    provider.subscribe.side_effect = NotSupported("nope")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.commit()
+    provider.reset_mock()
+    provider.subscribe.side_effect = None
+
+    manager.reconcile(refresh={btc})
+
+    provider.subscribe.assert_not_called()
+    provider.unsubscribe.assert_not_called()
+
+
+def test_reconcile_isolates_a_failing_exchange(manager_and_provider):
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.0
+    btc = _instrument("BTCUSDT")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.subscribe(DataType.TRADE, btc)
+    manager.commit()
+    provider.reset_mock()
+
+    calls: list[str] = []
+
+    def record(sub, instruments, reset=False):
+        calls.append(sub)
+        if sub == DataType.ORDERBOOK:
+            raise TimeoutError("boom")
+
+    provider.subscribe.side_effect = record
+    manager.reconcile()
+
+    assert DataType.ORDERBOOK in calls and DataType.TRADE in calls
