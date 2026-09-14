@@ -274,12 +274,22 @@ class SubscriptionManager(ISubscriptionManager):
             for instr in _removed_instruments:
                 self._health_monitor.unsubscribe(instr, _sub)
 
-    def reconcile(self, refresh: set[Instrument] = frozenset()) -> None:
+    def reconcile(self, refresh: set[tuple[Instrument, str]] = frozenset()) -> None:
         """Drive every provider toward `_desired`.
 
-        `refresh` names instruments whose transport must be re-established even though
-        intent has not changed — a provider may believe it is subscribed while delivering
-        nothing. Raising is safe: `_desired` is untouched, so the caller retries.
+        `refresh` names (instrument, base data type) pairs whose transport must be
+        re-established even though intent has not changed — a provider may believe it is
+        subscribed while delivering nothing. It is keyed by type, not by bare instrument,
+        so repairing a wedged `trade` feed does not tear down that instrument's
+        `orderbook`. Raising is safe: `_desired` is untouched, so the caller retries.
+
+        A non-empty `refresh` also narrows the work to the (subscription, exchange) pairs
+        it names. Re-asserting an exchange nothing is wrong with is not free — `reset=True`
+        replays the whole stream on ccxt and rebuilds it on hyperliquid — and unverified
+        repairs retry forever, so an unscoped partial repair is an indefinite resubscribe
+        storm against venues that were never suspect, including ones classified DARK. An
+        empty `refresh` keeps its wholesale meaning: re-assert every pair everywhere, the
+        post-recovery path.
 
         Deliberately NOT @synchronized: this runs on the watchdog thread, while
         commit()/_apply_swap run on the ProcessorThread, qubx's single event loop, which a
@@ -299,16 +309,25 @@ class SubscriptionManager(ISubscriptionManager):
                 _snapshot[_sub] = {_exchange: frozenset(_instrs) for _exchange, _instrs in _by_exchange.items()}
             _unsupported_snapshot = set(self._unsupported)
 
-        _targets = [
-            (_sub, _exchange, _desired_here)
-            for _sub, _by_exchange in _snapshot.items()
-            for _exchange, _desired_here in _by_exchange.items()
-            if (_exchange, _sub) not in _unsupported_snapshot
-        ]
+        _refresh_by_type: dict[str, set[Instrument]] = defaultdict(set)
+        for _instrument, _base_type in refresh:
+            _refresh_by_type[_base_type].add(_instrument)
+
+        # - one target list for both loops: every unsubscribe below is paired with the
+        #   subscribe that restores it, and nothing else is touched
+        _targets: list[tuple[str, str, frozenset[Instrument], set[Instrument]]] = []
+        for _sub, _by_exchange in _snapshot.items():
+            _refresh_for_sub = _refresh_by_type.get(str(DataType.from_str(_sub)[0]), set())
+            for _exchange, _desired_here in _by_exchange.items():
+                if (_exchange, _sub) in _unsupported_snapshot:
+                    continue
+                _refresh_here = _refresh_for_sub & _desired_here
+                if refresh and not _refresh_here:
+                    continue
+                _targets.append((_sub, _exchange, _desired_here, _refresh_here))
 
         _did_unsubscribe = False
-        for _sub, _exchange, _desired_here in _targets:
-            _refresh_here = {i for i in refresh if i.exchange == _exchange} & _desired_here
+        for _sub, _exchange, _, _refresh_here in _targets:
             if not _refresh_here:
                 continue
             try:
@@ -326,7 +345,7 @@ class SubscriptionManager(ISubscriptionManager):
             #   churn; it is NOT the safety net - that is the caller's retry (D4).
             time.sleep(self._repair_settle_seconds)
 
-        for _sub, _exchange, _desired_here in _targets:
+        for _sub, _exchange, _desired_here, _ in _targets:
             try:
                 self._get_data_provider(_exchange).subscribe(_sub, set(_desired_here), reset=True)
             except NotSupported as e:

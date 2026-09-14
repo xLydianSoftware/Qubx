@@ -157,13 +157,17 @@ this bug.
 provider at startup: an empty intent plus an empty provider is consistent, and any
 divergence introduced later is what reconciliation exists to fix.
 
-### 3. `reconcile(refresh: set[Instrument] = frozenset())`
+### 3. `reconcile(refresh: set[tuple[Instrument, str]] = frozenset())`
 
 Drives each provider toward `_desired`, under the lock from §1.
 
 - **Targeted repair** — for each `(exchange, subscription key)` with instruments in
   `refresh`: `unsubscribe(key, refresh_subset)` → `sleep(3s)` →
-  `subscribe(key, desired_subset, reset=True)`.
+  `subscribe(key, desired_subset, reset=True)`. Nothing else is touched: a partial repair
+  on one venue must not re-assert another's universe (`reset=True` replays the whole
+  stream on ccxt, rebuilds it on hyperliquid) or fire subscribes at an exchange §4.2
+  classified DARK. `refresh` is keyed by `(instrument, base data type)` so repairing a
+  wedged `trade` feed does not tear down that instrument's `orderbook`.
 - **Wholesale re-assertion** — an empty `refresh` re-asserts `_desired` for every
   `(exchange, key)` with `subscribe(key, desired_subset, reset=True)` and no unsubscribe.
   Used after a reconnect and after a provider recreation, where the transport is known
@@ -209,7 +213,7 @@ Per tick, per exchange:
    | classification | condition | meaning | action |
    |---|---|---|---|
    | **OK** | `stale == 0` | everything is delivering | clear any held repair state |
-   | **DARK** | `connected is False` **or** (`stale == subscribed` and `subscribed >= 2`) | *nothing* is delivering — the venue is not serving us | no repair; §6 |
+   | **DARK** | (`connected is False` and `subscribed >= 1`) **or** (`stale == subscribed` and `subscribed >= 2`) | *nothing* is delivering — the venue is not serving us | no repair; §6 |
    | **PARTIAL** | `stale > 0` and not DARK | some delivering, some not — the venue is up, so the fault is ours | `reconcile(refresh=stale)` |
 
    The three are exhaustive and mutually exclusive. `subscribed == 1 and stale == 1`
@@ -342,9 +346,14 @@ docstring already reasons about precisely this case.
 definition; this section owns only the hysteresis and the clear rule. The two limbs of
 DARK exist because each covers what the other misses:
 
-- **(A) `connected is False`** — the fast path. Catches a refused or dropped socket in
-  ~60s. In the incident this would have published at ~11:03:30, eight minutes before
-  staleness could say anything at all.
+- **(A) `connected is False` and `subscribed >= 1`** — the fast path. Catches a refused
+  or dropped socket in ~60s. In the incident this would have published at ~11:03:30,
+  eight minutes before staleness could say anything at all. The eligibility term is what
+  keeps it honest: `tick()` visits every provider, not only those carrying a policed
+  subscription, so without it an exchange whose only feed is `ohlc` — or whose universe
+  is still entirely in grace — would halt trading off a connection flag alone, on a venue
+  the watchdog is not policing. `is_connected()` also reads `False` when the callback
+  raises. The incident had 21 eligible instruments, so this weakens nothing there.
 - **(B) `stale == subscribed and subscribed >= 2`** — the slow path. Catches a provider
   that believes it is connected and delivers nothing. This is the limb that mattered:
   from 11:17 onward `is_connected()` returned `True` for 22 hours

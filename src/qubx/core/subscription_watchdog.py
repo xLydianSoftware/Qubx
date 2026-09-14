@@ -23,6 +23,12 @@ _DARK_TICKS_BEFORE_MAINTENANCE = 2
 # and patient where they legitimately do not.
 _BACKOFF_CAP_DIVISOR = 10
 
+# Bound on stop()'s join. StrategyContext.stop() calls it AFTER the data providers are
+# closed, so an in-flight tick can be sitting in reconcile's settle sleep or blocking
+# against a just-closed provider; the thread is a daemon, so abandoning it is safer than
+# hanging teardown. Comfortably over the 3s settle sleep.
+_STOP_JOIN_TIMEOUT_SECONDS = 5.0
+
 
 class ExchangeClassification(StrEnum):
     OK = "ok"
@@ -73,7 +79,12 @@ class SubscriptionWatchdog:
 
     @staticmethod
     def classify(status: ExchangeDataStatus) -> ExchangeClassification:
-        if status.connected is False:
+        # - limb (A) needs something to be dark ABOUT: with no eligible instrument (an
+        #   exchange carrying only unpoliced types, or one whose whole universe is still
+        #   in grace) a flapping or unanswerable is_connected() would otherwise publish
+        #   EXCHANGE_MAINTENANCE and refuse every order - reduce-only included - on a
+        #   venue this watchdog is not policing at all. The incident had 21 eligible.
+        if status.connected is False and status.subscribed >= 1:
             return ExchangeClassification.DARK
         if status.stale == 0:
             return ExchangeClassification.OK
@@ -92,9 +103,19 @@ class SubscriptionWatchdog:
 
     def stop(self) -> None:
         self._stop.set()
-        if self._thread is not None:
-            self._thread.join()
-        self._thread = None
+        thread, self._thread = self._thread, None
+        if thread is None:
+            return
+        if thread is threading.current_thread():
+            # - stop() from inside a tick: joining self raises RuntimeError. The set event
+            #   already guarantees the loop exits at its next wait().
+            return
+        thread.join(timeout=_STOP_JOIN_TIMEOUT_SECONDS)
+        if thread.is_alive():
+            logger.warning(
+                f"[SubscriptionWatchdog] :: thread still running after {_STOP_JOIN_TIMEOUT_SECONDS}s; "
+                "abandoning it (daemon) rather than blocking shutdown"
+            )
 
     def _loop(self) -> None:
         while not self._stop.wait(self._interval_seconds):
@@ -158,7 +179,6 @@ class SubscriptionWatchdog:
     # ----- repair -----
 
     def _repair_stale(self, exchange: str, universe: dict[str, set[Instrument]]) -> None:
-        now = self._health_monitor.time_provider.time()
         self._prune_dropped_from_universe(exchange, universe)
 
         # - keyed by (instrument, base_type), not bare instrument: an instrument
@@ -192,7 +212,14 @@ class SubscriptionWatchdog:
         if not due:
             return
 
-        self._reconcile_fn(refresh={instrument for instrument, _ in due})
+        # - passed keyed by (instrument, base type): a bare-instrument refresh would tear
+        #   down every other type the instrument is subscribed to
+        self._reconcile_fn(refresh=due)
+
+        # - stamped AFTER reconcile returns, which sleeps at least the settle delay: a
+        #   message that arrived before the unsubscribe must not read as proof the repair
+        #   worked, or a permanently wedged instrument never escalates to ERROR
+        now = self._health_monitor.time_provider.time()
 
         for sub, instruments in universe.items():
             base_type = str(DataType.from_str(sub)[0])

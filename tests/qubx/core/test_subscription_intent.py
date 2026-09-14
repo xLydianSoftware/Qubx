@@ -10,10 +10,11 @@ from qubx.core.status import ContextStatus
 from qubx.health.dummy import DummyHealthMonitor
 
 EXCHANGE = "BINANCE.UM"
+OTHER_EXCHANGE = "BITFINEX.F"
 
 
-def _instrument(symbol: str) -> Instrument:
-    instr = lookup.find_symbol(EXCHANGE, symbol)
+def _instrument(symbol: str, exchange: str = EXCHANGE) -> Instrument:
+    instr = lookup.find_symbol(exchange, symbol)
     assert instr is not None
     return instr
 
@@ -31,6 +32,32 @@ def manager_and_provider():
         time_provider, [provider], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
     )
     return manager, provider
+
+
+@pytest.fixture
+def two_exchange_manager():
+    """Every other reconcile rig in this file is single-exchange - which is why an
+    unscoped subscribe loop survived six reviews of this branch."""
+    providers = {}
+    for exchange in (EXCHANGE, OTHER_EXCHANGE):
+        provider = Mock()
+        provider.is_simulation = False
+        provider.exchange.return_value = exchange
+        provider.get_subscribed_instruments.return_value = []
+        provider.get_subscriptions.return_value = []
+        providers[exchange] = provider
+    time_provider = Mock()
+    time_provider.time.return_value = 0.0
+    manager = SubscriptionManager(
+        time_provider,
+        list(providers.values()),
+        CtrlChannel("test"),
+        DummyHealthMonitor(),
+        StrategyState(),
+        ContextStatus(),
+    )
+    manager._repair_settle_seconds = 0.0
+    return manager, providers
 
 
 def test_intent_survives_provider_losing_its_registry(manager_and_provider):
@@ -84,10 +111,67 @@ def test_reconcile_refresh_unsubscribes_then_resubscribes_full_set(manager_and_p
     manager.commit()
     provider.reset_mock()
 
-    manager.reconcile(refresh={btc})
+    manager.reconcile(refresh={(btc, "orderbook")})
 
     provider.unsubscribe.assert_called_once_with(DataType.ORDERBOOK, {btc})
     provider.subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc, eth}, reset=True)
+
+
+def test_reconcile_refresh_leaves_other_exchanges_untouched(two_exchange_manager):
+    """A partial repair on one venue must not re-assert another venue's universe:
+    reset=True replays the whole stream on ccxt and rebuilds it on hyperliquid, and an
+    unverified repair retries forever - so an unscoped subscribe loop is an indefinite
+    resubscribe storm against a venue that was never suspect, and issues subscribes at
+    an exchange the watchdog classified DARK."""
+    manager, providers = two_exchange_manager
+    btc = _instrument("BTCUSDT")
+    other_btc = _instrument("BTCUSDT", OTHER_EXCHANGE)
+    manager.subscribe(DataType.ORDERBOOK, [btc, other_btc])
+    manager.commit()
+    for provider in providers.values():
+        provider.reset_mock()
+
+    manager.reconcile(refresh={(btc, "orderbook")})
+
+    providers[EXCHANGE].unsubscribe.assert_called_once_with(DataType.ORDERBOOK, {btc})
+    providers[EXCHANGE].subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
+    providers[OTHER_EXCHANGE].unsubscribe.assert_not_called()
+    providers[OTHER_EXCHANGE].subscribe.assert_not_called()
+
+
+def test_reconcile_without_refresh_reasserts_every_exchange(two_exchange_manager):
+    """The post-recovery path: an empty refresh keeps its wholesale meaning across all
+    exchanges - only the refresh-scoped path is narrowed."""
+    manager, providers = two_exchange_manager
+    btc = _instrument("BTCUSDT")
+    other_btc = _instrument("BTCUSDT", OTHER_EXCHANGE)
+    manager.subscribe(DataType.ORDERBOOK, [btc, other_btc])
+    manager.commit()
+    for provider in providers.values():
+        provider.reset_mock()
+
+    manager.reconcile()
+
+    providers[EXCHANGE].subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
+    providers[OTHER_EXCHANGE].subscribe.assert_called_once_with(DataType.ORDERBOOK, {other_btc}, reset=True)
+    for provider in providers.values():
+        provider.unsubscribe.assert_not_called()
+
+
+def test_reconcile_refresh_is_scoped_to_the_data_type(manager_and_provider):
+    """A wedged trade feed must not tear down the same instrument's orderbook."""
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.0
+    btc = _instrument("BTCUSDT")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.subscribe(DataType.TRADE, btc)
+    manager.commit()
+    provider.reset_mock()
+
+    manager.reconcile(refresh={(btc, "trade")})
+
+    provider.unsubscribe.assert_called_once_with(DataType.TRADE, {btc})
+    provider.subscribe.assert_called_once_with(DataType.TRADE, {btc}, reset=True)
 
 
 def test_reconcile_without_refresh_reasserts_and_never_unsubscribes(manager_and_provider):
@@ -113,12 +197,12 @@ def test_reconcile_failure_leaves_desired_intact_and_retries(manager_and_provide
     provider.reset_mock()
     provider.subscribe.side_effect = TimeoutError("WebSocket connection not ready after 5.0s")
 
-    manager.reconcile(refresh={btc})
+    manager.reconcile(refresh={(btc, "orderbook")})
 
     assert manager._desired[DataType.ORDERBOOK] == {btc}
 
     provider.subscribe.side_effect = None
-    manager.reconcile(refresh={btc})
+    manager.reconcile(refresh={(btc, "orderbook")})
     provider.subscribe.assert_called_with(DataType.ORDERBOOK, {btc}, reset=True)
 
 
@@ -134,7 +218,7 @@ def test_reconcile_skips_unsupported_pairs(manager_and_provider):
     provider.reset_mock()
     provider.subscribe.side_effect = None
 
-    manager.reconcile(refresh={btc})
+    manager.reconcile(refresh={(btc, "orderbook")})
 
     provider.subscribe.assert_not_called()
     provider.unsubscribe.assert_not_called()
@@ -171,7 +255,7 @@ def test_reconcile_subscribes_even_when_unsubscribe_fails(manager_and_provider):
     provider.reset_mock()
     provider.unsubscribe.side_effect = TimeoutError("boom")
 
-    manager.reconcile(refresh={btc})
+    manager.reconcile(refresh={(btc, "orderbook")})
 
     provider.unsubscribe.assert_called_once_with(DataType.ORDERBOOK, {btc})
     provider.subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
@@ -192,7 +276,7 @@ def test_concurrent_apply_swap_during_reconcile_does_not_corrupt_desired(manager
 
     def do_reconcile():
         try:
-            manager.reconcile(refresh={btc})
+            manager.reconcile(refresh={(btc, "orderbook")})
         except Exception as e:  # pragma: no cover - failure path asserted below
             errors.append(e)
 
@@ -271,7 +355,7 @@ def test_concurrent_deferred_apply_swap_during_reconcile_does_not_corrupt_desire
         # let the hammer thread get going before reconcile takes its snapshot, so the
         # snapshot and the settle sleep both land inside the hammering window
         time_module.sleep(0.005)
-        manager.reconcile(refresh={btc, eth, sol})
+        manager.reconcile(refresh={(i, DataType.from_str(sub)[0]) for sub in subs for i in (btc, eth, sol)})
     except BaseException as e:
         reconcile_errors.append(e)
     finally:

@@ -1,9 +1,11 @@
+import threading
 import time
 from unittest.mock import Mock
 
 import numpy as np
 import pytest
 
+from qubx.core import subscription_watchdog as watchdog_module
 from qubx.core.basics import DataType, ITimeProvider
 from qubx.core.interfaces import StrategyState
 from qubx.core.lookups import lookup
@@ -93,6 +95,14 @@ def test_single_instrument_all_stale_is_partial_not_dark():
 
 def test_connected_none_does_not_make_it_dark():
     s = _status(connected=None, subscribed=5, stale=0)
+    assert SubscriptionWatchdog.classify(s) is ExchangeClassification.OK
+
+
+def test_disconnected_with_nothing_eligible_is_not_dark():
+    """Limb (A) must have something to be dark about. is_connected() reads False for a
+    provider whose callback raises too, so without this an exchange the watchdog polices
+    nothing on would refuse every order - reduce-only included."""
+    s = _status(connected=False, subscribed=0, stale=0, in_grace=3)
     assert SubscriptionWatchdog.classify(s) is ExchangeClassification.OK
 
 
@@ -189,7 +199,7 @@ def test_partial_never_publishes_maintenance(rig):
         watchdog.tick()
 
     assert status.info.status is QubxStatus.NORMAL
-    assert reconciled and reconciled[0] == {eth}
+    assert reconciled and reconciled[0] == {(eth, "orderbook")}
 
 
 def test_grace_prevents_false_dark_on_universe_swap(rig):
@@ -209,6 +219,61 @@ def test_grace_prevents_false_dark_on_universe_swap(rig):
     assert reconciled == []
 
 
+def test_disconnected_exchange_with_only_unpoliced_types_never_publishes(rig):
+    """tick() visits every provider, not just the ones carrying a policed subscription.
+    An exchange whose only feed is ohlc has zero eligible instruments, so a dropped
+    connection flag alone must not halt trading on it."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc = _instrument("BTCUSDT")
+    universe[DataType.OHLC["1h"]] = {btc}
+    monitor.subscribe(btc, DataType.OHLC["1h"])
+    monitor.set_is_connected(EXCHANGE, lambda: False)
+    clock.advance(60)
+
+    for _ in range(3):
+        watchdog.tick()
+
+    assert status.info.status is QubxStatus.NORMAL
+    assert reconciled == []
+
+
+def test_disconnected_exchange_with_everything_in_grace_never_publishes(rig):
+    """Mid-universe-swap: every instrument is too fresh to judge, so `subscribed` is 0.
+    Combined with a down connection flag this used to publish EXCHANGE_MAINTENANCE."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {btc, eth}
+    monitor.subscribe(btc, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    monitor.set_is_connected(EXCHANGE, lambda: False)
+
+    for _ in range(3):
+        watchdog.tick()
+
+    assert status.info.status is QubxStatus.NORMAL
+    assert reconciled == []
+
+
+def test_disconnected_exchange_with_eligible_instruments_still_publishes(rig):
+    """The incident case (21 eligible instruments) is untouched by the eligibility gate."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {btc, eth}
+    monitor.subscribe(btc, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    monitor.set_is_connected(EXCHANGE, lambda: False)
+    clock.advance(11)
+    # - fresh data on both: only limb (A) can classify this DARK
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
+    monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())
+
+    watchdog.tick()
+    assert status.info.status is QubxStatus.NORMAL
+
+    watchdog.tick()
+    assert status.info.is_degraded_for(EXCHANGE)
+
+
 # --- verification and backoff (spec 4.3, D5) ---
 
 
@@ -226,7 +291,7 @@ def test_verification_is_by_advancement_not_by_staleness(rig):
     monitor.on_data_arrival(btc, DataType.TRADE, clock.time())
 
     watchdog.tick()
-    assert reconciled and reconciled[-1] == {eth}
+    assert reconciled and reconciled[-1] == {(eth, "trade")}
 
     # eth delivers once, then nothing for a long time. btc keeps delivering on every
     # tick so the exchange stays PARTIAL rather than DARK - otherwise D5b's
@@ -249,7 +314,7 @@ def test_verification_is_by_advancement_not_by_staleness(rig):
 
     assert monitor.is_stale(eth, DataType.TRADE) is True
     assert len(reconciled) == before + 1
-    assert reconciled[-1] == {eth}
+    assert reconciled[-1] == {(eth, "trade")}
 
 
 def test_verification_requires_delivery_after_the_repair(rig):
@@ -269,7 +334,7 @@ def test_verification_requires_delivery_after_the_repair(rig):
     monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
 
     watchdog.tick()  # eth is genuinely stale (no message in >10min): a real repair
-    assert reconciled and reconciled[-1] == {eth}
+    assert reconciled and reconciled[-1] == {(eth, "orderbook")}
     assert (eth, "orderbook") in watchdog._repair_state
 
     clock.advance(1)
@@ -295,7 +360,7 @@ def test_advancement_pops_record_on_relapse_without_new_repair(rig):
     clock.advance(11)  # eth never delivered: genuinely stale
 
     watchdog.tick()
-    assert reconciled == [{eth}]
+    assert reconciled == [{(eth, "orderbook")}]
 
     clock.advance(1)
     monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())  # verifies the repair
@@ -303,7 +368,7 @@ def test_advancement_pops_record_on_relapse_without_new_repair(rig):
 
     watchdog.tick()
 
-    assert reconciled == [{eth}], "advancement must issue 0 new repairs on relapse"
+    assert reconciled == [{(eth, "orderbook")}], "advancement must issue 0 new repairs on relapse"
     assert (eth, "orderbook") not in watchdog._repair_state
 
 
@@ -374,6 +439,43 @@ def test_repair_does_not_contaminate_other_subscription_types(rig):
 
     assert (eth, "orderbook") in watchdog._repair_state
     assert (eth, "trade") not in watchdog._repair_state
+    # - the refresh handed to reconcile carries the type too: a bare-instrument refresh
+    #   would make reconcile tear down the healthy trade feed as well
+    assert reconciled == [{(eth, "orderbook")}]
+
+
+def test_repaired_at_is_stamped_after_the_repair_returns(rig):
+    """reconcile() sleeps at least the settle delay before it returns. Stamping
+    repaired_at before calling it lets a message that was already in flight when the
+    repair started count as proof the repair worked - so the backoff resets every tick
+    and a permanently wedged instrument never escalates to ERROR."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {btc, eth}
+    monitor.subscribe(btc, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    clock.advance(11)
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())  # keep the exchange PARTIAL
+
+    def slow_reconcile(refresh=frozenset()):
+        reconciled.append(set(refresh))
+        clock.advance(1)
+        monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())  # in flight pre-unsubscribe
+        clock.advance(3)
+
+    watchdog._reconcile_fn = slow_reconcile
+    watchdog.tick()
+
+    assert watchdog._repair_state[(eth, "orderbook")].repaired_at == clock.time()
+
+    watchdog._reconcile_fn = lambda refresh=frozenset(): reconciled.append(set(refresh))
+    clock.advance(11)  # eth silent since that mid-repair message: stale again
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
+    watchdog.tick()
+
+    record = watchdog._repair_state.get((eth, "orderbook"))
+    assert record is not None, "a message predating the repair must not verify it"
+    assert record.interval_ticks == 2, "the backoff must escalate rather than reset"
 
 
 def test_repair_state_pruned_when_instrument_leaves_universe(rig):
@@ -421,7 +523,7 @@ def test_repair_reaches_reconcile_with_parameterised_subscription_key(rig):
 
     watchdog.tick()
 
-    assert reconciled and reconciled[-1] == {eth}
+    assert reconciled and reconciled[-1] == {(eth, "orderbook")}
 
 
 def test_all_stale_classifies_dark_with_parameterised_subscription_key(rig):
@@ -455,7 +557,7 @@ def test_unpoliced_types_are_excluded_from_repair_and_classification(rig):
 
     watchdog.tick()
 
-    assert reconciled and reconciled[-1] == {btc}
+    assert reconciled and reconciled[-1] == {(btc, "orderbook")}
     assert (eth, "ohlc") not in watchdog._repair_state
     assert status.info.status is QubxStatus.NORMAL  # a single-instrument orderbook exchange is PARTIAL, not DARK
 
@@ -519,3 +621,60 @@ def test_start_stop_start_leaves_a_live_ticking_thread(rig):
         watchdog.stop()
 
     assert tick_count > 0, "second start() produced a silently dead watchdog"
+
+
+def test_stop_does_not_block_on_a_wedged_tick(rig, monkeypatch):
+    """StrategyContext.stop() calls this AFTER the data providers are closed, so an
+    in-flight tick can be stuck in reconcile's settle sleep or blocking against a closed
+    provider. The thread is a daemon: abandoning it beats hanging teardown forever."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    monkeypatch.setattr(watchdog_module, "_STOP_JOIN_TIMEOUT_SECONDS", 0.2)
+    in_tick = threading.Event()
+    release = threading.Event()
+
+    def wedged_tick():
+        in_tick.set()
+        release.wait(timeout=10)
+
+    watchdog._interval_seconds = 0.01
+    watchdog.tick = wedged_tick
+    watchdog.start()
+    thread = watchdog._thread
+    assert in_tick.wait(timeout=5)
+
+    started = time.monotonic()
+    watchdog.stop()
+    elapsed = time.monotonic() - started
+
+    assert elapsed < 5.0, f"stop() blocked on the in-flight tick for {elapsed:.1f}s"
+    assert thread is not None and thread.is_alive()  # abandoned, not joined
+    release.set()
+    thread.join(timeout=5)
+    assert not thread.is_alive()
+
+
+def test_stop_from_inside_the_watchdog_thread_does_not_raise(rig):
+    """join()ing the current thread raises RuntimeError; the loop exits on the set event
+    anyway."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    errors: list[BaseException] = []
+    captured: list[threading.Thread] = []
+    done = threading.Event()
+
+    def tick_that_stops():
+        captured.append(threading.current_thread())
+        try:
+            watchdog.stop()
+        except BaseException as e:  # pragma: no cover - asserted below
+            errors.append(e)
+        finally:
+            done.set()
+
+    watchdog._interval_seconds = 0.01
+    watchdog.tick = tick_that_stops
+    watchdog.start()
+
+    assert done.wait(timeout=5)
+    assert not errors, f"stop() from the watchdog thread raised: {errors!r}"
+    captured[0].join(timeout=5)
+    assert not captured[0].is_alive()
