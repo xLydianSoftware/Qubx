@@ -1,13 +1,24 @@
 from typing import Callable
 
-from qubx.core.basics import Instrument, dt_64, td_64
+from qubx.core.basics import Instrument, ITimeProvider, dt_64, td_64
 from qubx.core.interfaces import IHealthMonitor, LatencyMetrics
 from qubx.core.status import ContextStatus
 from qubx.health.status import ExchangeDataStatus
 
 
+class _NoopTimeProvider(ITimeProvider):
+    """Epoch stand-in so a bare DummyHealthMonitor() always has a usable
+    time_provider. Callers that need real time should use a real health monitor."""
+
+    def time(self) -> dt_64:
+        return dt_64(0, "ns")
+
+
 class DummyHealthMonitor(IHealthMonitor):
     """No-op implementation of health metrics monitoring."""
+
+    def __init__(self) -> None:
+        self.time_provider: ITimeProvider = _NoopTimeProvider()
 
     def __call__(self, event_type: str) -> "DummyHealthMonitor":
         return self

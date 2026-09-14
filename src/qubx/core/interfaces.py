@@ -2122,6 +2122,8 @@ class IHealthReader(Protocol):
 class IHealthMonitor(IHealthWriter, IHealthReader):
     """Interface for health metrics monitoring that combines writing and reading capabilities."""
 
+    time_provider: ITimeProvider
+
     def start(self) -> None:
         """Start the health metrics monitor."""
         ...

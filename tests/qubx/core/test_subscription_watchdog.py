@@ -1,3 +1,4 @@
+import time
 from unittest.mock import Mock
 
 import numpy as np
@@ -115,7 +116,10 @@ def test_maintenance_needs_two_consecutive_dark_ticks(rig):
 
 
 def test_maintenance_clears_on_first_delivering_tick(rig):
-    watchdog, monitor, status, clock, universe, _ = rig
+    """A genuine DARK episode (maintenance actually held) issues exactly one
+    full-universe re-assert on recovery - contrast with test_flapping_exchange_
+    issues_no_reassert, where maintenance never gets held at all."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
     btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
     universe[DataType.ORDERBOOK] = {btc, eth}
     monitor.subscribe(btc, DataType.ORDERBOOK)
@@ -129,6 +133,29 @@ def test_maintenance_clears_on_first_delivering_tick(rig):
     monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())
     watchdog.tick()
 
+    assert status.info.status is QubxStatus.NORMAL
+    assert reconciled == [set()]  # one full re-assert (refresh=frozenset() -> whole universe)
+
+
+def test_flapping_exchange_issues_no_reassert(rig):
+    """The resubscribe-storm case from the 2026-09-13 incident: single-tick DARK
+    blips that never reach the maintenance threshold must not repeatedly tear down
+    and re-assert the whole universe."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {btc, eth}
+    monitor.subscribe(btc, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    clock.advance(11)
+
+    for _ in range(4):  # 8 alternating ticks total, matching the incident reproduction
+        watchdog.tick()  # one DARK tick: below the 2-tick maintenance threshold
+        monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
+        monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())
+        watchdog.tick()  # recovers within the tick: OK, no maintenance was ever held
+        clock.advance(11)  # both age past threshold again for the next iteration
+
+    assert reconciled == []
     assert status.info.status is QubxStatus.NORMAL
 
 
@@ -252,6 +279,33 @@ def test_verification_requires_delivery_after_the_repair(rig):
     assert (eth, "orderbook") in watchdog._repair_state
 
 
+def test_advancement_pops_record_on_relapse_without_new_repair(rig):
+    """The case that actually discriminates advancement from is_stale: a sparse
+    feed delivers once after the repair (verifying it), then goes stale again by
+    threshold with no intervening tick observing the fresh window. Advancement
+    pops the record on relapse and issues 0 new repairs; an is_stale-only rule
+    would see "still stale" and issue 1. Confirmed by temporarily swapping the
+    check to is_stale-only: this assertion then fails with reconciled growing by
+    one (see task report for the swap and its output)."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    eth = _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {eth}
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    clock.advance(11)  # eth never delivered: genuinely stale
+
+    watchdog.tick()
+    assert reconciled == [{eth}]
+
+    clock.advance(1)
+    monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())  # verifies the repair
+    clock.advance(11)  # no tick during the fresh window; now stale again purely by elapse
+
+    watchdog.tick()
+
+    assert reconciled == [{eth}], "advancement must issue 0 new repairs on relapse"
+    assert (eth, "orderbook") not in watchdog._repair_state
+
+
 def test_unverified_repair_backs_off_and_never_stops(rig):
     watchdog, monitor, status, clock, universe, reconciled = rig
     btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
@@ -301,6 +355,49 @@ def test_repair_never_calls_health_monitor_unsubscribe(rig):
         watchdog.tick()
 
 
+def test_repair_does_not_contaminate_other_subscription_types(rig):
+    """due used to pool instruments across all subscription types, so an
+    instrument due on one type got a bogus _RepairRecord stamped (and a false
+    "repairing" log line) on every other type it happens to also be subscribed
+    to, even one that was never stale."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    eth = _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {eth}
+    universe[DataType.TRADE] = {eth}
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.TRADE)
+    clock.advance(11)  # orderbook (10min threshold) now stale
+    monitor.on_data_arrival(eth, DataType.TRADE, clock.time())  # trade freshly delivering
+
+    watchdog.tick()
+
+    assert (eth, "orderbook") in watchdog._repair_state
+    assert (eth, "trade") not in watchdog._repair_state
+
+
+def test_repair_state_pruned_when_instrument_leaves_universe(rig):
+    """_forget_repairs only runs on the OK branch, and _repair_stale only iterates
+    the current universe - without explicit pruning, an instrument dropped from
+    the universe while the exchange stays PARTIAL keeps its record forever."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {btc, eth}
+    monitor.subscribe(btc, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    clock.advance(11)
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())  # keep btc fresh: stay PARTIAL
+
+    watchdog.tick()
+    assert (eth, "orderbook") in watchdog._repair_state
+
+    universe[DataType.ORDERBOOK] = {btc}  # eth unsubscribed at the manager level
+    clock.advance(1)
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
+    watchdog.tick()
+
+    assert (eth, "orderbook") not in watchdog._repair_state
+
+
 # --- gating ---
 
 def test_does_nothing_before_warmup_finished(rig):
@@ -322,3 +419,36 @@ def test_tick_survives_an_exception(rig):
     watchdog, monitor, status, clock, universe, reconciled = rig
     watchdog._subscriptions_fn = Mock(side_effect=RuntimeError("boom"))
     watchdog.tick()  # must not raise
+
+
+# --- thread lifecycle ---
+
+def test_start_stop_start_leaves_a_live_ticking_thread(rig):
+    """stop() must clear the stop event and join the thread; otherwise a later
+    start() spawns a thread whose wait() returns immediately (the event is still
+    set) and tick() never runs - a silently dead watchdog, which is exactly the
+    22-hour failure this module exists to prevent."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    watchdog._interval_seconds = 0.02  # real wall-clock ticks, kept small for the test
+
+    watchdog.start()
+    watchdog.stop()  # first cycle: must fully tear down, not just drop the handle
+
+    tick_count = 0
+    original_tick = watchdog.tick
+
+    def counting_tick():
+        nonlocal tick_count
+        tick_count += 1
+        original_tick()
+
+    watchdog.tick = counting_tick
+    watchdog.start()
+    try:
+        deadline = time.monotonic() + 2.0
+        while tick_count == 0 and time.monotonic() < deadline:
+            time.sleep(0.01)
+    finally:
+        watchdog.stop()
+
+    assert tick_count > 0, "second start() produced a silently dead watchdog"

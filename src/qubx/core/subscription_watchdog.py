@@ -86,11 +86,14 @@ class SubscriptionWatchdog:
     def start(self) -> None:
         if self._thread is not None:
             return
+        self._stop.clear()
         self._thread = threading.Thread(target=self._loop, daemon=True, name="SubscriptionWatchdog")
         self._thread.start()
 
     def stop(self) -> None:
         self._stop.set()
+        if self._thread is not None:
+            self._thread.join()
         self._thread = None
 
     def _loop(self) -> None:
@@ -102,12 +105,18 @@ class SubscriptionWatchdog:
             if not self._strategy_state.is_on_warmup_finished_called:
                 return
             universe = self._watchdog_subscriptions()
-            for provider in self._data_providers:
+        except Exception as e:
+            logger.error(f"[SubscriptionWatchdog] :: tick failed: {e}")
+            return
+
+        # - per-provider try/except: one exchange's failure must not skip the rest
+        for provider in self._data_providers:
+            try:
                 if provider.is_simulation:
                     continue
                 self._tick_exchange(provider.exchange(), universe)
-        except Exception as e:
-            logger.error(f"[SubscriptionWatchdog] :: tick failed: {e}")
+            except Exception as e:
+                logger.error(f"[SubscriptionWatchdog] :: tick failed: {e}")
 
     def _watchdog_subscriptions(self) -> dict[str, set[Instrument]]:
         return {
@@ -126,10 +135,15 @@ class SubscriptionWatchdog:
                 self._hold_maintenance(exchange, status)
             return
 
-        was_dark = self._dark_ticks[exchange] > 0
+        # - gated on maintenance having actually been held (not merely "was dark for
+        #   one tick"): a single-tick blip tore nothing down and needs no re-assert.
+        #   A flapping exchange that never reaches the threshold must not repeatedly
+        #   re-subscribe the whole universe - that resubscribe pressure is what cost
+        #   the 2026-09-13 recovery.
+        recovering_from_maintenance = self._dark_ticks[exchange] >= _DARK_TICKS_BEFORE_MAINTENANCE
         self._dark_ticks[exchange] = 0
         self._clear_maintenance(exchange)
-        if was_dark:
+        if recovering_from_maintenance:
             # - transport is back: re-assert the whole universe once rather than
             #   repairing instrument by instrument
             self._reconcile_fn()
@@ -145,7 +159,12 @@ class SubscriptionWatchdog:
 
     def _repair_stale(self, exchange: str, universe: dict[str, set[Instrument]]) -> None:
         now = self._health_monitor.time_provider.time()
-        due: set[Instrument] = set()
+        self._prune_dropped_from_universe(exchange, universe)
+
+        # - keyed by (instrument, base_type), not bare instrument: an instrument
+        #   subscribed to multiple types must not have a due repair on one type stamp
+        #   a bogus record on a type that was never stale
+        due: set[tuple[Instrument, str]] = set()
 
         for sub, instruments in universe.items():
             base_type = str(DataType.from_str(sub)[0])
@@ -158,7 +177,7 @@ class SubscriptionWatchdog:
                     continue
                 record = self._repair_state.get(key)
                 if record is None:
-                    due.add(instrument)
+                    due.add(key)
                     continue
                 last_event = self._health_monitor.get_last_event_time(instrument, base_type)
                 if last_event is not None and last_event > record.repaired_at:
@@ -168,18 +187,20 @@ class SubscriptionWatchdog:
                     continue
                 record.ticks_until_retry -= 1
                 if record.ticks_until_retry <= 0:
-                    due.add(instrument)
+                    due.add(key)
 
         if not due:
             return
 
-        self._reconcile_fn(refresh=due)
+        self._reconcile_fn(refresh={instrument for instrument, _ in due})
 
         for sub, instruments in universe.items():
             base_type = str(DataType.from_str(sub)[0])
             cap = self._backoff_cap_ticks(base_type)
-            for instrument in due & instruments:
+            for instrument in instruments:
                 key = (instrument, base_type)
+                if key not in due:
+                    continue
                 record = self._repair_state.get(key)
                 if record is None:
                     self._repair_state[key] = _RepairRecord(now, 1)
@@ -193,6 +214,16 @@ class SubscriptionWatchdog:
                         f"[{exchange}] :: {sub} for {instrument.symbol} still not delivering "
                         f"after repair; retrying every {record.interval_ticks} ticks"
                     )
+
+    def _prune_dropped_from_universe(self, exchange: str, universe: dict[str, set[Instrument]]) -> None:
+        current_keys = {
+            (instrument, str(DataType.from_str(sub)[0]))
+            for sub, instruments in universe.items()
+            for instrument in instruments
+            if instrument.exchange == exchange
+        }
+        for key in [k for k in self._repair_state if k[0].exchange == exchange and k not in current_keys]:
+            self._repair_state.pop(key, None)
 
     def _backoff_cap_ticks(self, base_type: str) -> int:
         from qubx.health.base import STALE_THRESHOLDS
