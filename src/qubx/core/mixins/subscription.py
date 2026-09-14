@@ -89,6 +89,11 @@ class SubscriptionManager(ISubscriptionManager):
         self._desired: dict[str, set[Instrument]] = defaultdict(set)
         self._unsupported: set[tuple[str, str]] = set()
         self._repair_settle_seconds: float = 3.0
+        # - created eagerly (not left to @synchronized's lazy path) because reconcile()
+        #   takes it directly, by name, to snapshot _desired/_unsupported without going
+        #   through a decorated method; it must be the SAME lock @synchronized uses, or
+        #   the mutual exclusion with commit()/_apply_swap is worthless.
+        self._synchronized_lock = threading.RLock()
         self._auto_subscribe = auto_subscribe
         self._monitor_interval_seconds = monitor_interval_seconds
         self._is_simulation = all(data_provider.is_simulation for data_provider in data_providers)
@@ -201,8 +206,12 @@ class SubscriptionManager(ISubscriptionManager):
             with self._warmup_inflight_lock:
                 self._warmup_inflight -= 1
 
+    @synchronized
     def _apply_swap(self, plan: _CommitPlan) -> None:
-        # - apply: the subscribe/unsubscribe swap (fast)
+        # - apply: the subscribe/unsubscribe swap (fast). @synchronized so the
+        #   ProcessorThread-side deferred path (_apply_deferred_swap, uncontrolled
+        #   otherwise) excludes reconcile()'s snapshot the same way commit() already does
+        #   via re-entrancy.
         for _sub in self._get_updated_subs(plan):
             _current_sub_instruments = set(self._desired.get(_sub, set()))
             _removed_instruments = plan.stream_unsubscriptions.get(_sub, set())
@@ -260,39 +269,67 @@ class SubscriptionManager(ISubscriptionManager):
             for instr in _removed_instruments:
                 self._health_monitor.unsubscribe(instr, _sub)
 
-    @synchronized
     def reconcile(self, refresh: set[Instrument] = frozenset()) -> None:
         """Drive every provider toward `_desired`.
 
         `refresh` names instruments whose transport must be re-established even though
         intent has not changed — a provider may believe it is subscribed while delivering
         nothing. Raising is safe: `_desired` is untouched, so the caller retries.
-        """
-        for _sub, _instruments in list(self._desired.items()):
-            if not _instruments:
-                continue
-            _by_exchange: dict[str, set[Instrument]] = defaultdict(set)
-            for instr in _instruments:
-                _by_exchange[instr.exchange].add(instr)
 
-            for _exchange, _desired_here in _by_exchange.items():
-                if (_exchange, _sub) in self._unsupported:
+        Deliberately NOT @synchronized: this runs on the watchdog thread, while
+        commit()/_apply_swap run on the ProcessorThread, qubx's single event loop, which a
+        multi-second lock hold (the settle sleep, per exchange) would stall. Only a
+        snapshot of _desired/_unsupported is taken under the lock; all provider I/O and
+        the sleep happen outside it. A universe change landing mid-reconcile is read as
+        slightly stale and simply acted on next call — this design converges by retry.
+        """
+        with self._synchronized_lock:
+            _snapshot: dict[str, dict[str, frozenset[Instrument]]] = {}
+            for _sub, _instruments in self._desired.items():
+                if not _instruments:
                     continue
-                _refresh_here = {i for i in refresh if i.exchange == _exchange} & _desired_here
-                try:
-                    _data_provider = self._get_data_provider(_exchange)
-                    if _refresh_here:
-                        _data_provider.unsubscribe(_sub, _refresh_here)
-                        # - the settle delay guards against the venue processing our
-                        #   unsubscribe after the resubscribe. It bounds churn; it is NOT
-                        #   the safety net - that is the caller's retry (D4).
-                        time.sleep(self._repair_settle_seconds)
-                    _data_provider.subscribe(_sub, set(_desired_here), reset=True)
-                except NotSupported as e:
+                _by_exchange: dict[str, set[Instrument]] = defaultdict(set)
+                for instr in _instruments:
+                    _by_exchange[instr.exchange].add(instr)
+                _snapshot[_sub] = {_exchange: frozenset(_instrs) for _exchange, _instrs in _by_exchange.items()}
+            _unsupported_snapshot = set(self._unsupported)
+
+        _targets = [
+            (_sub, _exchange, _desired_here)
+            for _sub, _by_exchange in _snapshot.items()
+            for _exchange, _desired_here in _by_exchange.items()
+            if (_exchange, _sub) not in _unsupported_snapshot
+        ]
+
+        _did_unsubscribe = False
+        for _sub, _exchange, _desired_here in _targets:
+            _refresh_here = {i for i in refresh if i.exchange == _exchange} & _desired_here
+            if not _refresh_here:
+                continue
+            try:
+                self._get_data_provider(_exchange).unsubscribe(_sub, _refresh_here)
+            except Exception as e:
+                # - a failed unsubscribe still gets its paired subscribe attempt below;
+                #   re-subscribing is idempotent on every connector, so trying is never
+                #   worse than leaving the instruments torn down until the next reconcile.
+                logger.error(f"[{_exchange}] :: reconcile unsubscribe of {_sub} failed: {e}")
+            _did_unsubscribe = True
+
+        if _did_unsubscribe:
+            # - one settle delay per reconcile call, not per exchange: it guards against
+            #   the venue processing our unsubscribe after the resubscribe. It bounds
+            #   churn; it is NOT the safety net - that is the caller's retry (D4).
+            time.sleep(self._repair_settle_seconds)
+
+        for _sub, _exchange, _desired_here in _targets:
+            try:
+                self._get_data_provider(_exchange).subscribe(_sub, set(_desired_here), reset=True)
+            except NotSupported as e:
+                with self._synchronized_lock:
                     self._unsupported.add((_exchange, _sub))
-                    logger.warning(f"[{_exchange}] :: {_sub} not supported: {e}")
-                except Exception as e:
-                    logger.error(f"[{_exchange}] :: reconcile of {_sub} failed: {e}")
+                logger.warning(f"[{_exchange}] :: {_sub} not supported: {e}")
+            except Exception as e:
+                logger.error(f"[{_exchange}] :: reconcile of {_sub} failed: {e}")
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         return instrument in self._desired.get(subscription_type, set())

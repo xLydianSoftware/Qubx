@@ -160,3 +160,51 @@ def test_reconcile_isolates_a_failing_exchange(manager_and_provider):
     manager.reconcile()
 
     assert DataType.ORDERBOOK in calls and DataType.TRADE in calls
+
+
+def test_reconcile_subscribes_even_when_unsubscribe_fails(manager_and_provider):
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.0
+    btc = _instrument("BTCUSDT")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.commit()
+    provider.reset_mock()
+    provider.unsubscribe.side_effect = TimeoutError("boom")
+
+    manager.reconcile(refresh={btc})
+
+    provider.unsubscribe.assert_called_once_with(DataType.ORDERBOOK, {btc})
+    provider.subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
+
+
+def test_concurrent_apply_swap_during_reconcile_does_not_corrupt_desired(manager_and_provider):
+    import threading
+    import time as time_module
+
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.05
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.commit()
+    provider.reset_mock()
+
+    errors: list[Exception] = []
+
+    def do_reconcile():
+        try:
+            manager.reconcile(refresh={btc})
+        except Exception as e:  # pragma: no cover - failure path asserted below
+            errors.append(e)
+
+    reconciler = threading.Thread(target=do_reconcile)
+    reconciler.start()
+    # give reconcile time to snapshot and enter its settle sleep, so this commit's
+    # _apply_swap lands while reconcile is doing I/O with the lock released
+    time_module.sleep(0.01)
+    manager.subscribe(DataType.ORDERBOOK, eth)
+    manager.commit()
+    reconciler.join(timeout=2)
+
+    assert not reconciler.is_alive()
+    assert not errors
+    assert manager._desired[DataType.ORDERBOOK] == {btc, eth}
