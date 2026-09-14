@@ -2,7 +2,7 @@
 
 **Date:** 2026-09-14
 **Incident:** Lighter venue outage 2026-09-13 11:01–11:15 UTC — four prod bots blind for 10–22h
-**Status:** approved design, pre-implementation
+**Status:** implemented on `fix/subscription-watchdog`
 
 ## Problem
 
