@@ -1,6 +1,6 @@
 from typing import Protocol, runtime_checkable
 
-from qubx.core.basics import CtrlChannel, CurrencyConversion, Instrument, Order, OrderRequest, Timestamped, dt_64
+from qubx.core.basics import CtrlChannel, Instrument, Order, OrderRequest, Timestamped, dt_64
 from qubx.core.events import ChannelMessage
 
 
@@ -29,7 +29,7 @@ class ChannelEmitter:
         *,
         limit_price: float | None = None,
         max_slippage_bps: float = 10.0,
-    ) -> CurrencyConversion:
+    ) -> str:
         raise NotImplementedError(f"{type(self).__name__} does not support currency conversion")
 
 
@@ -109,12 +109,14 @@ class IConnector(Protocol):
 
     # Cash, not exposure: swaps one currency for another on the venue's own market for the
     # pair and is never registered with the AccountManager — the only trace it leaves is the
-    # balances of the next snapshot. Blocks (the caller needs the outcome) and submits ONE
-    # IOC attempt, so nothing rests on the book and a short fill comes back as a PARTIAL
-    # record rather than an exception; retry policy belongs to the caller, which can recompute
-    # how much it still needs. ``amount`` is denominated in ``from_currency``; ``limit_price``
-    # (in the market's quote terms) bounds the fill absolutely, ``max_slippage_bps`` only
-    # relative to the book. Venues without a cash market raise NotImplementedError.
+    # balances of the next snapshot. Returns the conversion's id immediately (the venue round
+    # trip runs off-thread, so the ProcessorThread keeps draining) and emits EXACTLY ONE
+    # CurrencyConversionEvent per accepted call, failures included — only argument mistakes
+    # raise. ONE IOC attempt: nothing rests on the book, and a short fill comes back as a
+    # PARTIAL record, since only the caller knows how much it still needs once balances have
+    # moved. ``amount`` is denominated in ``from_currency``; ``limit_price`` (in the market's
+    # quote terms) bounds the fill absolutely, ``max_slippage_bps`` only relative to the book.
+    # Venues without a cash market raise NotImplementedError.
     def convert_currency(
         self,
         from_currency: str,
@@ -123,4 +125,4 @@ class IConnector(Protocol):
         *,
         limit_price: float | None = None,
         max_slippage_bps: float = 10.0,
-    ) -> CurrencyConversion: ...
+    ) -> str: ...

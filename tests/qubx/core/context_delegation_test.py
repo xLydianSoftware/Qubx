@@ -21,14 +21,14 @@ def test_is_instrument_listed_delegates_to_market_manager(mocker: MockerFixture)
 def test_convert_currency_delegates_to_trading_manager(mocker: MockerFixture):
     ctx = StrategyContext.__new__(StrategyContext)  # bypass heavy __init__
     tm = mocker.Mock()
-    tm.convert_currency.return_value = "record"
+    tm.convert_currency.return_value = "conv-1"
     ctx._trading_manager = tm
     ctx._fit_state = mocker.Mock()
     ctx._fit_state.is_fit_thread.return_value = False
 
     result = ctx.convert_currency("BINANCE.UM", "USDC", "USDT", 100.0, limit_price=0.995)
 
-    assert result == "record"
+    assert result == "conv-1"
     tm.convert_currency.assert_called_once_with(
         "BINANCE.UM", "USDC", "USDT", 100.0, limit_price=0.995, max_slippage_bps=10.0
     )

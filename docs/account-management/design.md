@@ -366,14 +366,27 @@ itself once something fills. Modelling it as a trade would misfile it everywhere
 venue's positionRisk never reports (`LocalPositionMissing` → a synthesized close), and a
 strategy that closes unhedged positions would convert straight back.
 
-Blocking (the caller needs the outcome) and exactly ONE IOC attempt — nothing rests on the
-book, so the returned `CurrencyConversion` is the whole story and there is nothing to cancel
-or reconcile. A short fill is a `PARTIAL` record, not an exception: the connector never
-retries, because only the caller knows how much it still needs after the balances moved.
-`limit_price` bounds the fill absolutely (the guard that holds when a stablecoin depegs);
-`max_slippage_bps` only bounds it relative to a book that a depeg has already moved. The
-default in `ChannelEmitter` raises `NotImplementedError`, so a venue with no cash market —
-simulation included — stays conformant without implementing it.
+**It does not block.** `convert_currency` returns a conversion id and fires the venue round
+trip on the exchange loop, so the ProcessorThread keeps draining its queue — fills and quotes
+never queue behind a cash swap. The outcome comes back as a `CurrencyConversionEvent`, which
+`ProcessingManager.process_event` routes to `IStrategy.on_currency_conversion`. The event is
+deliberately **not** an `AccountMessage`: that marker is what `AccountManager.apply()` accepts,
+so staying off it is the structural guarantee that a conversion never becomes an order.
+
+**Exactly one record per accepted call** — `FILLED` / `PARTIAL` / `UNFILLED` / `FAILED`, the
+last carrying `failure_reason`. Failures ride the same callback rather than `on_error`: a
+caller clearing a pending flag must not have to watch two paths, or a refusal leaves it
+pending forever. Only argument mistakes (non-positive amount, a currency into itself) raise
+synchronously; anything venue-dependent — an unlisted pair, a notional below the market's
+floor, a venue refusal — arrives as a `FAILED` record, since resolving those needs the
+markets loaded.
+
+Exactly ONE IOC attempt, never retried: nothing rests on the book, so the record is the whole
+outcome and there is nothing to cancel or reconcile, and only the caller knows how much it
+still needs once the balances have moved. `limit_price` bounds the fill absolutely (the guard
+that holds when a stablecoin depegs); `max_slippage_bps` only bounds it relative to a book a
+depeg has already moved. The default in `ChannelEmitter` raises `NotImplementedError`, so a
+venue with no cash market — simulation included — stays conformant without implementing it.
 
 ### Rejection boundary
 

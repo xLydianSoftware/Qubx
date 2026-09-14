@@ -1012,17 +1012,21 @@ class ITradingManager:
         *,
         limit_price: float | None = None,
         max_slippage_bps: float = 10.0,
-    ) -> CurrencyConversion:
+    ) -> str:
         """Swap ``amount`` of ``from_currency`` into ``to_currency`` on ``exchange``.
 
         Cash, not exposure: the venue trade behind it is never registered with the
         AccountManager, so it opens no position and the change shows up in the balances of
-        the next account snapshot. Blocks until the venue answers and submits one IOC
-        attempt — a short fill returns a PARTIAL record rather than raising, leaving the
-        retry decision (and the recomputed amount) to the caller. ``limit_price``, in the
-        venue pair's own quote terms, bounds the fill absolutely; ``max_slippage_bps`` only
-        bounds it relative to the book, which a depeg moves. Venues with no cash market
-        (simulation included) raise NotImplementedError.
+        the next account snapshot. Returns the conversion's id immediately — the venue round
+        trip runs off the caller's thread and the outcome arrives at
+        ``IStrategy.on_currency_conversion``, exactly one record per accepted call (FILLED /
+        PARTIAL / UNFILLED / FAILED). Only argument mistakes raise here.
+
+        One IOC attempt, never retried: nothing rests on the book, and only the caller knows
+        how much it still needs once the balances have moved. ``limit_price``, in the venue
+        pair's own quote terms, bounds the fill absolutely; ``max_slippage_bps`` only bounds
+        it relative to the book, which a depeg moves. Venues with no cash market (simulation
+        included) raise NotImplementedError.
         """
         ...
 
@@ -2730,6 +2734,18 @@ class IStrategy(metaclass=Mixable):
         account state silently.
         """
         ...
+
+    def on_currency_conversion(self, ctx: IStrategyContext, conversion: CurrencyConversion) -> None:
+        """
+        Called with the outcome of a ``ctx.convert_currency`` request — exactly one record per
+        accepted call, whatever happened (FILLED / PARTIAL / UNFILLED / FAILED), so a strategy
+        tracking a pending conversion always gets its answer on one path.
+
+        Args:
+            ctx: Strategy context.
+            conversion: What the venue did, keyed by the id convert_currency returned.
+        """
+        pass
 
     def on_error(self, ctx: IStrategyContext, error: BaseErrorEvent) -> None:
         """

@@ -16,7 +16,6 @@ from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     Balance,
     CtrlChannel,
-    CurrencyConversion,
     DataType,
     Instrument,
     ITimeProvider,
@@ -875,7 +874,7 @@ class StrategyContext(IStrategyContext):
         *,
         limit_price: float | None = None,
         max_slippage_bps: float = 10.0,
-    ) -> CurrencyConversion:
+    ) -> str:
         self._assert_not_fit_thread("convert_currency")
         return self._trading_manager.convert_currency(
             exchange, from_currency, to_currency, amount, limit_price=limit_price, max_slippage_bps=max_slippage_bps

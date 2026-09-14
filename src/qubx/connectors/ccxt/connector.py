@@ -63,6 +63,7 @@ from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
     BalanceUpdateEvent,
+    CurrencyConversionEvent,
     DealEvent,
     FundingPaymentEvent,
     OrderAcceptedEvent,
@@ -939,13 +940,19 @@ class CcxtConnector(ChannelEmitter):
         *,
         limit_price: float | None = None,
         max_slippage_bps: float = 10.0,
-    ) -> CurrencyConversion:
+    ) -> str:
         """Swap ``amount`` of one currency for another on the venue's own market for the pair.
 
+        Returns immediately with the conversion's id — the venue round trip runs on the
+        exchange loop and the outcome arrives as a ``CurrencyConversionEvent``, so the caller
+        (the ProcessorThread) keeps draining its queue. EXACTLY ONE event follows every call
+        that returned an id, failures included, so a caller tracking a pending conversion
+        always gets its answer. Only argument mistakes raise here.
+
         One IOC attempt, priced to protect rather than to chase: nothing rests on the book
-        afterwards, so the returned record is the whole outcome and there is nothing to cancel
-        or reconcile. The trade is deliberately NOT registered with the AccountManager — it
-        moves cash, not exposure, and the balances arrive with the next account snapshot.
+        afterwards, so the event is the whole outcome and there is nothing to cancel or
+        reconcile. The trade is deliberately NOT registered with the AccountManager — it moves
+        cash, not exposure, and the balances arrive with the next account snapshot.
 
         ``amount`` is denominated in ``from_currency``, whichever side of the venue's pair that
         happens to be; only one direction is normally listed (USDC/USDT, never USDT/USDC), so
@@ -955,11 +962,63 @@ class CcxtConnector(ChannelEmitter):
         """
         if not amount > 0:
             raise ValueError(f"[{self.exchange_name}] conversion amount must be positive, got {amount}")
+        if from_currency.upper() == to_currency.upper():
+            raise ValueError(f"[{self.exchange_name}] cannot convert {from_currency} into itself")
+        conversion_id = self.make_client_id(f"conv{from_currency.upper()}{to_currency.upper()}")
+        self._spawn(
+            self._convert_currency(conversion_id, from_currency, to_currency, amount, limit_price, max_slippage_bps)
+        )
+        return conversion_id
+
+    async def _convert_currency(
+        self,
+        conversion_id: str,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        limit_price: float | None,
+        max_slippage_bps: float,
+    ) -> None:
+        """Run one conversion to a terminal record and emit it. Never raises: a failure the
+        caller cannot see is a conversion it would wait on forever."""
+        try:
+            record = await self._run_conversion(
+                conversion_id, from_currency, to_currency, amount, limit_price, max_slippage_bps
+            )
+            logger.info(f"[{self.exchange_name}] {record.status} conversion {record.to_dict()}")
+        except Exception as e:  # noqa: BLE001 — every failure is reported, not raised
+            reason = f"{type(e).__name__}: {e}"
+            logger.error(f"[{self.exchange_name}] conversion {conversion_id} FAILED — {reason}")
+            record = CurrencyConversion(
+                conversion_id=conversion_id,
+                exchange=self.exchange_name,
+                from_currency=from_currency,
+                to_currency=to_currency,
+                requested=amount,
+                filled_from=0.0,
+                filled_to=0.0,
+                status="FAILED",
+                failure_reason=reason,
+            )
+        self.send(CurrencyConversionEvent(instrument=None, conversion=record))
+
+    async def _run_conversion(
+        self,
+        conversion_id: str,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        limit_price: float | None,
+        max_slippage_bps: float,
+    ) -> CurrencyConversion:
         ex = self._em.exchange
+        if not ex.markets:
+            # a trading-only connector (market data via xdata) may never have loaded them
+            await ex.load_markets()
         symbol, side = self._conversion_market(from_currency, to_currency)
 
         if limit_price is None:
-            tickers = self._run_sync(ex.fetch_bids_asks([symbol]))
+            tickers = await ex.fetch_bids_asks([symbol])
             top = tickers[symbol]["bid"] if side == "sell" else tickers[symbol]["ask"]
             slippage = max_slippage_bps / 10_000
             limit_price = top * (1 - slippage) if side == "sell" else top * (1 + slippage)
@@ -974,19 +1033,17 @@ class CcxtConnector(ChannelEmitter):
         min_notional = market["limits"]["cost"]["min"] or 0.0
         if qty < min_amount or qty * price < min_notional:
             raise ValueError(
-                f"[{self.exchange_name}] {amount} {from_currency} is below {symbol}'s floor "
+                f"{amount} {from_currency} is below {symbol}'s floor "
                 f"(min amount {min_amount}, min notional {min_notional})"
             )
 
-        response = self._run_sync(
-            ex.create_order(
-                symbol=symbol,
-                type="limit",
-                side=side,
-                amount=qty,
-                price=price,
-                params={"timeInForce": "IOC"},
-            )
+        response = await ex.create_order(
+            symbol=symbol,
+            type="limit",
+            side=side,
+            amount=qty,
+            price=price,
+            params={"timeInForce": "IOC", "clientOrderId": conversion_id},
         )
         filled = float(response.get("filled") or 0.0)
         cost = float(response.get("cost") or 0.0)
@@ -997,15 +1054,11 @@ class CcxtConnector(ChannelEmitter):
         else:
             status = "PARTIAL"
         if filled > 0:
-            # the venue moved cash the poller has not seen yet; a caller reading balances
-            # right after this (or on its next tick) must not act on the pre-conversion ones
+            # the venue moved cash the poller has not seen yet; a caller reading balances on
+            # its next tick must not act on the pre-conversion ones
             self.request_snapshot(include_orders=False)
-        # no order record carries this: the bot log is its only local trace
-        logger.info(
-            f"[{self.exchange_name}] convert {amount} {from_currency} -> {to_currency}: {status} "
-            f"({filled} / {qty} {symbol.split('/')[0]} @ {response.get('average')}, limit {price})"
-        )
         return CurrencyConversion(
+            conversion_id=conversion_id,
             exchange=self.exchange_name,
             from_currency=from_currency,
             to_currency=to_currency,
@@ -1020,13 +1073,10 @@ class CcxtConnector(ChannelEmitter):
     def _conversion_market(self, from_currency: str, to_currency: str) -> tuple[str, str]:
         """The venue's market for the pair and the side that spends ``from_currency``."""
         ex = self._em.exchange
-        if not ex.markets:
-            # a trading-only connector (market data via xdata) may never have loaded them
-            self._run_sync(ex.load_markets())
         for symbol, side in ((f"{from_currency}/{to_currency}", "sell"), (f"{to_currency}/{from_currency}", "buy")):
             if symbol in ex.markets:
                 return symbol, side
-        raise ValueError(f"[{self.exchange_name}] no market to convert {from_currency} -> {to_currency}")
+        raise ValueError(f"no market to convert {from_currency} -> {to_currency}")
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         try:

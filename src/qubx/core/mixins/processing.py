@@ -35,6 +35,7 @@ from qubx.core.errors import BaseErrorEvent
 from qubx.core.events import (
     AccountMessage,
     ChannelMessage,
+    CurrencyConversionEvent,
     DealEvent,
     OrderCancelRejectedEvent,
     OrderEvent,
@@ -1665,6 +1666,11 @@ class ProcessingManager(IProcessingManager):
         # here like any other account event.
         if isinstance(event, AccountMessage):
             self._dispatch_account(event)
+            return
+        # Cash, not exposure: it must not reach the AM (there it would become an order and a
+        # position), so it routes straight to the strategy.
+        if isinstance(event, CurrencyConversionEvent):
+            self._safe_call(self._strategy.on_currency_conversion, event.conversion)
             return
         logger.warning(f"unknown event type: {type(event)}")
 

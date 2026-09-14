@@ -4,7 +4,6 @@ from qubx import logger
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
-    CurrencyConversion,
     Instrument,
     MarketType,
     Order,
@@ -565,7 +564,7 @@ class TradingManager(ITradingManager):
         *,
         limit_price: float | None = None,
         max_slippage_bps: float = 10.0,
-    ) -> CurrencyConversion:
+    ) -> str:
         self._ensure_writable()
         return self._get_connector(exchange).convert_currency(
             from_currency, to_currency, amount, limit_price=limit_price, max_slippage_bps=max_slippage_bps
