@@ -208,3 +208,138 @@ def test_concurrent_apply_swap_during_reconcile_does_not_corrupt_desired(manager
     assert not reconciler.is_alive()
     assert not errors
     assert manager._desired[DataType.ORDERBOOK] == {btc, eth}
+
+
+def test_concurrent_deferred_apply_swap_during_reconcile_does_not_corrupt_desired(manager_and_provider):
+    """Reproduces the actual pre-fix race behind Finding 1: the ProcessorThread reaches
+    _apply_swap via _apply_deferred_swap (no lock of its own before the fix), concurrently
+    with reconcile() running on the watchdog thread. Drives _apply_deferred_swap directly
+    rather than standing up the WarmupThread/channel machinery, since that IS the call the
+    channel dispatcher makes.
+    """
+    import threading
+    import time as time_module
+
+    from qubx.core.mixins.subscription import _CommitPlan
+
+    manager, provider = manager_and_provider
+    manager._repair_settle_seconds = 0.02
+
+    btc, eth, sol = _instrument("BTCUSDT"), _instrument("ETHUSDT"), _instrument("SOLUSDT")
+    subs = [DataType.ORDERBOOK, DataType.TRADE, DataType.QUOTE, DataType.LIQUIDATION, DataType.OPEN_INTEREST]
+    for sub in subs:
+        manager.subscribe(sub, [btc, eth, sol])
+    manager.commit()
+    provider.reset_mock()
+
+    # spy on _apply_swap (an instance attribute shadows the decorated class method for
+    # lookups via self._apply_swap) so an exception raised inside it is observed here
+    # even though _apply_deferred_swap swallows it by design before it reaches the
+    # thread that called _apply_deferred_swap
+    apply_swap_errors: list[BaseException] = []
+    original_apply_swap = manager._apply_swap
+
+    def spying_apply_swap(plan):
+        try:
+            return original_apply_swap(plan)
+        except BaseException as e:
+            apply_swap_errors.append(e)
+            raise
+
+    manager._apply_swap = spying_apply_swap
+
+    stop = threading.Event()
+
+    def hammer() -> None:
+        toggle = True
+        while not stop.is_set():
+            plan = (
+                _CommitPlan(stream_subscriptions={sub: {btc} for sub in subs})
+                if toggle
+                else _CommitPlan(stream_unsubscriptions={sub: {btc} for sub in subs})
+            )
+            toggle = not toggle
+            with manager._warmup_inflight_lock:
+                manager._warmup_inflight += 1
+            manager._apply_deferred_swap(plan)
+
+    hammer_thread = threading.Thread(target=hammer)
+    hammer_thread.start()
+
+    reconcile_errors: list[BaseException] = []
+    try:
+        # let the hammer thread get going before reconcile takes its snapshot, so the
+        # snapshot and the settle sleep both land inside the hammering window
+        time_module.sleep(0.005)
+        manager.reconcile(refresh={btc, eth, sol})
+    except BaseException as e:
+        reconcile_errors.append(e)
+    finally:
+        stop.set()
+        hammer_thread.join(timeout=5)
+
+    assert not hammer_thread.is_alive()
+    assert not reconcile_errors, f"reconcile() raised: {reconcile_errors!r}"
+    assert not apply_swap_errors, f"_apply_swap raised under concurrent reconcile: {apply_swap_errors!r}"
+
+    # internal consistency: the hammer plan only ever adds/removes btc, so eth/sol must
+    # survive untouched in every sub, and every sub's value must still be a well-formed set
+    for sub in subs:
+        instruments = manager._desired.get(sub, set())
+        assert isinstance(instruments, set)
+        assert instruments <= {btc, eth, sol}
+        assert {eth, sol} <= instruments
+
+
+def test_apply_swap_is_gated_by_the_shared_instance_lock(manager_and_provider):
+    """Deterministic guard for Finding 1: _apply_swap must acquire the same instance lock
+    @synchronized uses elsewhere, so the ProcessorThread-side deferred writer
+    (_apply_deferred_swap) can never proceed while another synchronized method (commit,
+    subscribe, or reconcile's snapshot) is mid-flight. This checks the exclusion property
+    directly rather than trying to catch the resulting corruption under the GIL's atomic
+    dict/set ops (see test_concurrent_deferred_apply_swap_during_reconcile_does_not_corrupt_desired's
+    report note: that race is not reliably observable this way), so removing @synchronized
+    from _apply_swap fails this test every time, not just under the right interleaving.
+    """
+    import threading
+
+    from qubx.core.mixins.subscription import _CommitPlan
+
+    manager, provider = manager_and_provider
+    btc = _instrument("BTCUSDT")
+    manager.subscribe(DataType.ORDERBOOK, btc)
+    manager.commit()  # exercises a @synchronized call so manager._synchronized_lock exists
+
+    plan = _CommitPlan(stream_subscriptions={DataType.TRADE: {btc}})
+
+    holder_acquired = threading.Event()
+    release_holder = threading.Event()
+
+    def hold_lock() -> None:
+        with manager._synchronized_lock:
+            holder_acquired.set()
+            release_holder.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_lock)
+    holder.start()
+    assert holder_acquired.wait(timeout=2)
+
+    call_returned = threading.Event()
+
+    def call_apply_swap() -> None:
+        manager._apply_swap(plan)
+        call_returned.set()
+
+    caller = threading.Thread(target=call_apply_swap)
+    caller.start()
+
+    try:
+        # the instance lock is held elsewhere: a synchronized _apply_swap must block
+        # rather than proceed
+        assert not call_returned.wait(timeout=0.2)
+    finally:
+        release_holder.set()
+        holder.join(timeout=2)
+
+    assert call_returned.wait(timeout=2)
+    caller.join(timeout=2)
