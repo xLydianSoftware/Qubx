@@ -205,6 +205,7 @@ from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.interfaces import StrategyState
 from qubx.core.lookups import lookup
 from qubx.core.mixins.subscription import SubscriptionManager
+from qubx.core.status import ContextStatus
 from qubx.health.dummy import DummyHealthMonitor
 
 EXCHANGE = "BINANCE.UM"
@@ -226,7 +227,7 @@ def manager_and_provider():
     time_provider = Mock()
     time_provider.time.return_value = 0.0
     manager = SubscriptionManager(
-        time_provider, [provider], CtrlChannel("test"), DummyHealthMonitor(), StrategyState()
+        time_provider, [provider], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
     )
     return manager, provider
 
@@ -1427,7 +1428,7 @@ def test_watchdog_is_started_for_live_and_absent_in_simulation():
     time_provider = Mock()
     time_provider.time.return_value = 0.0
     manager = SubscriptionManager(
-        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState()
+        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
     )
     assert isinstance(manager._watchdog, SubscriptionWatchdog)
 
@@ -1435,7 +1436,7 @@ def test_watchdog_is_started_for_live_and_absent_in_simulation():
     sim.is_simulation = True
     sim.exchange.return_value = EXCHANGE
     sim_manager = SubscriptionManager(
-        time_provider, [sim], CtrlChannel("test"), DummyHealthMonitor(), StrategyState()
+        time_provider, [sim], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
     )
     assert sim_manager._watchdog is None
 
@@ -1448,7 +1449,7 @@ def test_watchdog_sees_the_desired_universe():
     time_provider = Mock()
     time_provider.time.return_value = 0.0
     manager = SubscriptionManager(
-        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState()
+        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
     )
     btc = _instrument("BTCUSDT")
     manager.subscribe(DataType.ORDERBOOK, btc)
@@ -1460,6 +1461,29 @@ def test_watchdog_sees_the_desired_universe():
 def test_old_monitor_entry_points_are_gone():
     assert not hasattr(SubscriptionManager, "_monitor_subscription_status")
     assert not hasattr(SubscriptionManager, "_monitor_loop")
+
+
+def test_watchdog_publishes_into_the_caller_s_status_object():
+    """A defaulted ContextStatus would let the watchdog degrade an object the order
+    path never reads — visible in the status, inert in trading."""
+    live = Mock()
+    live.is_simulation = False
+    live.exchange.return_value = EXCHANGE
+    time_provider = Mock()
+    time_provider.time.return_value = 0.0
+    status = ContextStatus()
+    manager = SubscriptionManager(
+        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), status
+    )
+
+    assert manager._watchdog._status is status
+
+
+def test_status_is_a_required_argument():
+    import inspect
+
+    parameter = inspect.signature(SubscriptionManager.__init__).parameters["status"]
+    assert parameter.default is inspect.Parameter.empty
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
@@ -1496,7 +1520,62 @@ from qubx.core.subscription_watchdog import SubscriptionWatchdog
 
 Remove `_WATCHDOG_DATA_TYPES` from `subscription.py` (line 27) and remove the now-unused `pprint` import if nothing else uses it.
 
-`SubscriptionManager` needs the `ContextStatus`. It is owned by `StrategyContext` (`context.py:233`). Add a `status: ContextStatus` parameter to `SubscriptionManager.__init__` with default `None`, store it as `self._status = status if status is not None else ContextStatus()`, and pass `self._status` from `context.py` where the manager is constructed. A standalone `ContextStatus` is the correct default for the existing tests that build the manager directly — they have no context to share one with.
+`SubscriptionManager` needs the `ContextStatus` that `StrategyContext` owns (`context.py:233`). Add it as a **required** parameter — no default:
+
+```python
+def __init__(
+    self,
+    time_provider: ITimeProvider,
+    data_providers: list[IDataProvider],
+    channel: CtrlChannel,
+    health_monitor: IHealthMonitor,
+    strategy_state: StrategyState,
+    status: ContextStatus,
+    auto_subscribe: bool = True,
+    default_base_subscription: str = DataType.NONE,
+    monitor_interval_seconds: float = 30.0,
+) -> None:
+```
+
+store it as `self._status = status`, and add `from qubx.core.status import ContextStatus` to the imports.
+
+**Required, not defaulted, and this matters.** A default of `ContextStatus()` would give the watchdog its own private status object to publish `EXCHANGE_MAINTENANCE` into — accepted, stored, and read by nobody, because `trading.py` consults the context's instance. The degradation would appear to work while having no effect on the order path: the same silent-no-op class as instrument-scoping a `Degradation` (spec §6). A required parameter makes that mistake impossible to make by accident.
+
+Pass it at `context.py:268`, which already uses keyword arguments and where `self._status` is set 35 lines earlier:
+
+```python
+self._subscription_manager = SubscriptionManager(
+    time_provider=self._time_provider,
+    data_providers=self._data_providers,
+    channel=self._channel,
+    health_monitor=self._health_monitor,
+    strategy_state=self._strategy_state,
+    status=self._status,
+    default_base_subscription=DataType.ORDERBOOK[0, 1]
+    if not self._data_providers[0].is_simulation
+    else DataType.NONE,
+)
+```
+
+Then update the four test call sites, all of which pass positionally today. Add `ContextStatus()` as the sixth positional argument after `StrategyState()`, and `from qubx.core.status import ContextStatus` to each file:
+
+- `tests/qubx/core/subscription_test.py:24` and `:262`
+- `tests/qubx/core/mixins/fit_executor_test.py:881` and `:1056`
+
+Each becomes:
+
+```python
+SubscriptionManager(
+    self.mock_time_provider,
+    [self.mock_broker],
+    CtrlChannel("test"),
+    DummyHealthMonitor(),
+    StrategyState(),
+    ContextStatus(),
+)
+```
+
+A fresh `ContextStatus()` is correct in those tests — they assert on provider calls, not on status — but it is now written at the call site rather than conjured by a default.
 
 - [ ] **Step 4: Run test to verify it passes**
 
