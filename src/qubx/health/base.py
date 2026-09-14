@@ -405,9 +405,7 @@ class BaseHealthMonitor(IHealthMonitor):
             return True
         return bool((current_time - last_event_time) > stale_delta)
 
-    def get_exchange_data_status(
-        self, exchange: str, subscribed: dict[str, set[Instrument]]
-    ) -> ExchangeDataStatus:
+    def get_exchange_data_status(self, exchange: str, subscribed: dict[str, set[Instrument]]) -> ExchangeDataStatus:
         now = self.time_provider.time()
         n_subscribed = n_stale = n_grace = 0
         last_event: dt_64 | None = None

@@ -80,9 +80,7 @@ class DummyHealthMonitor(IHealthMonitor):
     def is_exchange_stale(self, exchange: str, event_type: str, stale_delta: str | td_64 | None = None) -> bool:
         return False
 
-    def get_exchange_data_status(
-        self, exchange: str, subscribed: dict[str, set[Instrument]]
-    ) -> ExchangeDataStatus:
+    def get_exchange_data_status(self, exchange: str, subscribed: dict[str, set[Instrument]]) -> ExchangeDataStatus:
         return ExchangeDataStatus(
             exchange=exchange, connected=None, subscribed=0, stale=0, in_grace=0, last_event_time=None
         )

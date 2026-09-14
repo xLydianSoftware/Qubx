@@ -2164,9 +2164,7 @@ class IHealthMonitor(IHealthWriter, IHealthReader):
         """
         ...
 
-    def get_exchange_data_status(
-        self, exchange: str, subscribed: dict[str, set[Instrument]]
-    ) -> "ExchangeDataStatus":
+    def get_exchange_data_status(self, exchange: str, subscribed: dict[str, set[Instrument]]) -> "ExchangeDataStatus":
         """Per-exchange data-flow facts. `subscribed` maps data type to instruments."""
         ...
 

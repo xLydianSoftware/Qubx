@@ -33,9 +33,7 @@ def _instrument(symbol: str):
 
 
 def _status(**kw) -> ExchangeDataStatus:
-    base = dict(
-        exchange=EXCHANGE, connected=True, subscribed=0, stale=0, in_grace=0, last_event_time=None
-    )
+    base = dict(exchange=EXCHANGE, connected=True, subscribed=0, stale=0, in_grace=0, last_event_time=None)
     base.update(kw)
     return ExchangeDataStatus(**base)
 
@@ -68,6 +66,7 @@ def rig():
 
 # --- classification (spec 4.2) ---
 
+
 def test_classify_ok():
     assert SubscriptionWatchdog.classify(_status(subscribed=5, stale=0)) is ExchangeClassification.OK
 
@@ -98,6 +97,7 @@ def test_connected_none_does_not_make_it_dark():
 
 
 # --- maintenance publication (spec 6) ---
+
 
 def test_maintenance_needs_two_consecutive_dark_ticks(rig):
     watchdog, monitor, status, clock, universe, _ = rig
@@ -210,6 +210,7 @@ def test_grace_prevents_false_dark_on_universe_swap(rig):
 
 
 # --- verification and backoff (spec 4.3, D5) ---
+
 
 def test_verification_is_by_advancement_not_by_staleness(rig):
     """A trade feed that delivers once and goes quiet is not repaired again while
@@ -464,6 +465,7 @@ def test_unpoliced_types_are_excluded_from_repair_and_classification(rig):
 
 # --- gating ---
 
+
 def test_does_nothing_before_warmup_finished(rig):
     watchdog, monitor, status, clock, universe, reconciled = rig
     watchdog._strategy_state.is_on_warmup_finished_called = False
@@ -486,6 +488,7 @@ def test_tick_survives_an_exception(rig):
 
 
 # --- thread lifecycle ---
+
 
 def test_start_stop_start_leaves_a_live_ticking_thread(rig):
     """stop() must clear the stop event and join the thread; otherwise a later

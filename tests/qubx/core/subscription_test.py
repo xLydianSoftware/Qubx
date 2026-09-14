@@ -252,4 +252,3 @@ class TestSubscriptionStuff:
             | {(DataType.TRADE, i): "10m" for i in instruments}
         )
         self.mock_broker.warmup.assert_called_once_with(expected_warmup)
-
