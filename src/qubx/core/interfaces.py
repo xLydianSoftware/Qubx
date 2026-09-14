@@ -1272,6 +1272,10 @@ class ISubscriptionManager:
         """
         ...
 
+    def stop(self) -> None:
+        """Stop the subscription watchdog thread, if one is running (no-op in simulation)."""
+        ...
+
     @property
     def is_warming_up(self) -> bool:
         """

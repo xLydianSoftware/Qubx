@@ -398,6 +398,70 @@ def test_repair_state_pruned_when_instrument_leaves_universe(rig):
     assert (eth, "orderbook") not in watchdog._repair_state
 
 
+# --- parameterised subscription keys and the unpoliced-type filter (spec 4.1/4.2) ---
+
+# "orderbook(0, 1)" - what the platform actually subscribes (context.py:275). Every rig test
+# above keys its universe with the bare DataType.ORDERBOOK, which passes whether
+# _watchdog_subscriptions / _repair_stale / BaseHealthMonitor.get_exchange_data_status
+# normalise the key through DataType.from_str(sub)[0] or do a bare-key lookup that silently
+# matches nothing - the exact blind spot that let the 2026-09-13 incident's deleted monitor
+# go quiet. See task-6-report.md for the revert check pinning all three sites.
+PARAM_ORDERBOOK = DataType.ORDERBOOK[0, 1]
+
+
+def test_repair_reaches_reconcile_with_parameterised_subscription_key(rig):
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[PARAM_ORDERBOOK] = {btc, eth}
+    monitor.subscribe(btc, PARAM_ORDERBOOK)
+    monitor.subscribe(eth, PARAM_ORDERBOOK)
+    clock.advance(11)
+    monitor.on_data_arrival(btc, PARAM_ORDERBOOK, clock.time())
+
+    watchdog.tick()
+
+    assert reconciled and reconciled[-1] == {eth}
+
+
+def test_all_stale_classifies_dark_with_parameterised_subscription_key(rig):
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[PARAM_ORDERBOOK] = {btc, eth}
+    monitor.subscribe(btc, PARAM_ORDERBOOK)
+    monitor.subscribe(eth, PARAM_ORDERBOOK)
+    clock.advance(11)
+
+    watchdog.tick()
+    assert status.info.status is QubxStatus.NORMAL  # one dark tick, below the maintenance threshold
+
+    watchdog.tick()
+    assert status.info.is_degraded_for(EXCHANGE)
+    assert status.info.degradations[0].reason is DegradeReason.EXCHANGE_MAINTENANCE
+
+
+def test_unpoliced_types_are_excluded_from_repair_and_classification(rig):
+    """No test put an unpoliced type (ohlc, funding, ...) in the universe before this one,
+    so _watchdog_subscriptions' _WATCHDOG_DATA_TYPES filter could be deleted outright and
+    the suite would stay green. An ohlc instrument must never be repaired and must never be
+    counted toward the exchange's subscribed/stale ratio."""
+    watchdog, monitor, status, clock, universe, reconciled = rig
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    universe[DataType.ORDERBOOK] = {btc}
+    universe[DataType.OHLC["1h"]] = {eth}
+    monitor.subscribe(btc, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.OHLC["1h"])
+    clock.advance(11)  # past the orderbook threshold; ohlc has no STALE_THRESHOLDS entry at all
+
+    watchdog.tick()
+
+    assert reconciled and reconciled[-1] == {btc}
+    assert (eth, "ohlc") not in watchdog._repair_state
+    assert status.info.status is QubxStatus.NORMAL  # a single-instrument orderbook exchange is PARTIAL, not DARK
+
+    exchange_status = monitor.get_exchange_data_status(EXCHANGE, universe)
+    assert exchange_status.subscribed == 1  # eth (ohlc) never counted
+
+
 # --- gating ---
 
 def test_does_nothing_before_warmup_finished(rig):

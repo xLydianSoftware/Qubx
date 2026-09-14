@@ -410,3 +410,43 @@ def test_status_is_a_required_argument():
 
     parameter = inspect.signature(SubscriptionManager.__init__).parameters["status"]
     assert parameter.default is inspect.Parameter.empty
+
+
+def test_stop_joins_the_watchdog_thread():
+    """SubscriptionManager had no shutdown hook at all until this test existed: the
+    watchdog thread outlived every manager that created it. Daemon status made process
+    exit safe, but a manager recreated in-process left a ticking thread behind."""
+    live = Mock()
+    live.is_simulation = False
+    live.exchange.return_value = EXCHANGE
+    time_provider = Mock()
+    time_provider.time.return_value = 0.0
+    manager = SubscriptionManager(
+        time_provider,
+        [live],
+        CtrlChannel("test"),
+        DummyHealthMonitor(),
+        StrategyState(),
+        ContextStatus(),
+        monitor_interval_seconds=0.02,  # real wall-clock ticks, kept small for the test
+    )
+    assert manager._watchdog._thread is not None
+    assert manager._watchdog._thread.is_alive()
+
+    manager.stop()
+
+    assert manager._watchdog._thread is None
+
+
+def test_stop_is_a_noop_in_simulation():
+    sim = Mock()
+    sim.is_simulation = True
+    sim.exchange.return_value = EXCHANGE
+    time_provider = Mock()
+    time_provider.time.return_value = 0.0
+    manager = SubscriptionManager(
+        time_provider, [sim], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
+    )
+    assert manager._watchdog is None
+
+    manager.stop()  # must not raise

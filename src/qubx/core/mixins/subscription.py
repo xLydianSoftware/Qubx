@@ -164,6 +164,12 @@ class SubscriptionManager(ISubscriptionManager):
             self._warmup_inflight += 1
         self._warmup_worker.submit(partial(self._warmup_and_post_swap, _warmups, plan))
 
+    def stop(self) -> None:
+        # - None in simulation, or if a context is stopped before init_subscription_monitoring
+        #   ran (there is no such path today, but this must not assume otherwise)
+        if self._watchdog is not None:
+            self._watchdog.stop()
+
     def _run_warmup(self, warmups: dict[IDataProvider, dict[tuple[str, Instrument], str]]) -> None:
         for _data_provider, _configs in warmups.items():
             _data_provider.warmup(_configs)
