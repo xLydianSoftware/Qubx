@@ -79,7 +79,8 @@ until data is observed to resume.**
 | D2 | `SubscriptionManager` owns the desired universe (`_desired`) and stops reading current state from the provider. A failed repair leaves the provider wrong and intent intact; the next tick repairs it. |
 | D3 | The watchdog moves into its own class with its own thread, policy and tests. |
 | D4 | Repair stays `unsubscribe → sleep → subscribe`. It is required (see "Why not subscribe-only") and is now safe, because the retry loop — not the ordering — provides correctness. |
-| D5 | A repair is verified on the following tick. An unverified repair retries with backoff and, once exhausted, escalates to *visibility* — `EXCHANGE_MAINTENANCE` plus ERROR logging. Transport-level escalation (reconnect / recreate) needs an `IDataProvider` method that does not exist and is deferred with D1. |
+| D5 | A repair is verified on the following tick. An unverified repair retries indefinitely at a capped backoff and is reported at ERROR — it is never abandoned. Transport-level escalation (reconnect / recreate) needs an `IDataProvider` method that does not exist and is deferred with D1. |
+| D5a | **A partially stale exchange is never marked `EXCHANGE_MAINTENANCE`.** Instruments still delivering prove the venue is up, so the fault is ours; degrading the exchange would be false and would halt trading on the healthy instruments. Only a fully dark exchange (§6) publishes a degradation. |
 | D6 | Per-exchange status is published through the **existing** `ContextStatus` / `DegradeReason.EXCHANGE_MAINTENANCE`, not a new enum. |
 | D7 | `QubxDegradedState` no longer counts toward `MAX_NUMBER_OF_STRATEGY_FAILURES`. |
 | D8 | `synchronized` is replaced with a real shared lock; this is a precondition, not a cleanup. |
@@ -199,11 +200,18 @@ Per tick, per exchange:
      watchdog's job while dark is to stop making it worse.
    - **DEGRADED** — some stale, some live. Call `reconcile(refresh=stale)`.
 3. **Verify on the next tick.** Instruments repaired last tick that are still stale are
-   retried, with exponential backoff (1 tick → 2 → 4, capped at 8) so a persistently
-   unreachable instrument does not churn every 30s. After the cap is reached twice
-   without recovery, the watchdog stops repairing that instrument and escalates to
-   **visibility**: hold `EXCHANGE_MAINTENANCE` for the exchange, log at ERROR naming the
-   instruments, keep exporting the counts. It does not keep retrying silently.
+   retried with exponential backoff (1 tick → 2 → 4, capped at 8 ≈ 4 min), **forever**.
+   An instrument is never abandoned: the backoff exists to bound churn, not to give up,
+   and a wedged instrument that silently stops being repaired is the failure mode this
+   whole design exists to remove.
+
+   Escalation here is **reporting only**, never a degradation (D5a). On the first
+   unverified retry the log moves from INFO to WARNING; at the backoff cap it moves to
+   ERROR and names the instruments, repeating once per capped interval rather than once
+   per tick. The exchange stays tradeable throughout, because it demonstrably works —
+   other instruments on it are delivering. Protecting the strategy from the stale subset
+   is an operator/platform decision on the exported counts, not something this watchdog
+   decides unilaterally.
 
    **Transport escalation is out of reach in this PR.** `IDataProvider` exposes
    `start()`, `close()` and `is_connected()` but no `reconnect()`
@@ -275,9 +283,24 @@ the same observation.
 Cleared on the first tick where any instrument on the exchange delivers. Asymmetric on
 purpose: slow to halt trading, quick to resume.
 
-**Partial staleness never publishes a degradation.** `is_degraded_for` is scoped to the
-exchange, not the instrument, so publishing on 2-of-21 wedged instruments would refuse
-orders on the 19 healthy ones.
+**Partial staleness never publishes a degradation** (D5a). Two independent reasons:
+
+- **It would be false.** Instruments still delivering are proof the venue is serving us.
+  A wedged subset means something is wrong on *our* side — a dropped handler, a rejected
+  subscribe, a stream the venue silently closed. `EXCHANGE_MAINTENANCE` would attribute
+  our bug to the exchange, and anyone reading the status later would draw the wrong
+  conclusion.
+- **It would be harmful.** `is_degraded_for` matches on exchange, so degrading on
+  2-of-21 wedged instruments refuses orders on the 19 healthy ones — and under
+  `deny_trading_when_degraded` that includes position-reducing orders.
+
+**Do not attempt to fix this by scoping a degradation to an instrument.**
+`QubxStatusInfo._scopes` is a flat `frozenset` of scope strings and `is_degraded_for`
+tests `exchange in self._scopes` (`core/status.py:52-60`). An instrument-scoped entry
+would never match any exchange, so it would be accepted, stored, reported in
+`degradations` — and have **no effect on the order path at all**. A silent no-op is
+worse than an absent feature. Instrument-level protection needs a real reader change
+and is a follow-up.
 
 Why 2 ticks: every healthy reconnect in the incident logs completed in 1–4s
 (`0.56s`, `0.73s`, `0.80s`…). A single-tick rule would flap the order path on routine
@@ -306,7 +329,8 @@ is not usable as designed; this removes that sharp edge.
 |---|---|
 | `subscribe` raises during repair | `_desired` intact; logged; retried next tick |
 | `unsubscribe` raises during repair | same; the provider may be left with a live stream the manager will re-assert |
-| repair succeeds but data does not resume | caught by verification (§4.3); retried with backoff, then escalated to `EXCHANGE_MAINTENANCE` + ERROR |
+| repair succeeds but data does not resume, others on the venue are live | caught by verification (§4.3); retried indefinitely at capped backoff, reported at ERROR. Exchange stays tradeable (D5a) |
+| repair succeeds but data does not resume, whole venue dark | no repair attempted at all; `EXCHANGE_MAINTENANCE` held (§6) |
 | venue rejects the subscribe asynchronously | indistinguishable from the above, and handled identically — this is the `30009` case |
 | `NotSupported` | recorded in `_unsupported`, never retried |
 | one exchange failing | isolated; other exchanges reconcile normally |
@@ -318,7 +342,8 @@ Unit, against a fake `IDataProvider` — the seam that does not exist today:
 
 1. `subscribe` raises during repair → `_desired` unchanged; next tick retries; provider converges.
 2. Provider registry emptied behind the manager's back → reconcile restores it from `_desired`. **This is the incident, reduced to a test.**
-3. Repair "succeeds" but the fake keeps reporting stale → retries back off 1/2/4/8 ticks, then stop; `EXCHANGE_MAINTENANCE` held and one ERROR logged, no further per-instrument churn.
+3. Repair "succeeds" but the fake keeps reporting stale for 2 of 5 instruments → retries back off 1/2/4/8 ticks and **continue indefinitely** at the cap; log level climbs INFO → WARNING → ERROR; `EXCHANGE_MAINTENANCE` is **never** held and the exchange stays tradeable (D5a).
+3a. The same instruments recover at tick 20 → retries stop, backoff resets, no degradation was ever published.
 4. DARK exchange → zero `subscribe`/`unsubscribe` calls issued (the `30009` regression).
 5. `NotSupported` → recorded once, never retried.
 6. (A) and (B) each independently hold `EXCHANGE_MAINTENANCE` after exactly 2 ticks, not 1; cleared after one delivering tick.
@@ -364,3 +389,11 @@ release.
    exchange can be recreated underneath a watchdog that is mid-repair.
 5. **Platform alert** — per-instrument or fraction-based staleness rule in
    `k8s/apps/{dev,prod}/kube-prometheus-stack.yaml`.
+6. **Instrument-level trading protection.** D5a leaves a real, accepted gap: a
+   persistently wedged subset on a working venue means the strategy keeps trading those
+   instruments on stale prices, with nothing but a log line and a metric to stop it.
+   Degrading the exchange is the wrong remedy (§6) and instrument-scoping the existing
+   `Degradation` is a silent no-op (§6). Closing it properly needs
+   `QubxStatusInfo.is_degraded_for` to take an optional instrument and the order path to
+   consult it — a reader change with its own design discussion. Until then the exported
+   `stale`/`subscribed` counts are the signal an operator acts on.
