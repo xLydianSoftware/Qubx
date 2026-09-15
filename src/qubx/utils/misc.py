@@ -511,7 +511,7 @@ def synchronized(func: Callable):
 
     The lock is per-instance and shared by every method decorated in that class, so
     subscribe/unsubscribe/commit exclude each other. Re-entrant: commit() -> _apply_swap()
-    -> reconcile() is one call chain on one thread.
+    is one call chain on one thread.
     """
 
     @wraps(func)

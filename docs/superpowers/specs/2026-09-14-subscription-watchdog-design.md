@@ -128,18 +128,16 @@ delete it (as the author of this spec first proposed) or come to depend on it.
 `synchronized` builds its lock at **decoration** time, one per function
 (`misc.py:507-516`). `subscribe`, `unsubscribe` and `commit` therefore hold *different*
 locks and do not exclude each other, and today's watchdog calls providers holding none
-at all. A reconcile racing a commit would corrupt `_desired` itself.
+at all. A snapshot racing a commit would corrupt `_desired` itself.
 
 Replace with a single per-instance `threading.RLock` held across intent mutation and
-reconciliation. Re-entrant because `commit()` → `_apply_swap()` → `reconcile()` is one
-call chain. Audit every current `@synchronized` user; anything relying on the accidental
+the snapshot. Re-entrant because `commit()` → `_apply_swap()` is one call chain. Audit every current `@synchronized` user; anything relying on the accidental
 cross-instance exclusion must be called out rather than silently changed.
 
 ### 2. `qubx/core/mixins/subscription.py` — intent ownership
 
 ```python
 _desired: dict[str, set[Instrument]]      # subscription key -> instruments
-_unsupported: set[tuple[str, str]]        # (exchange, subscription key)
 ```
 
 `_apply_swap` maintains `_desired` and no longer sources `_current_sub_instruments`
@@ -157,41 +155,59 @@ this bug.
 provider at startup: an empty intent plus an empty provider is consistent, and any
 divergence introduced later is what reconciliation exists to fix.
 
-### 3. `reconcile(refresh: set[tuple[Instrument, str]] = frozenset())`
+### 3. `desired_snapshot()` and the repair mechanism
 
-Drives each provider toward `_desired`, under the lock from §1.
+The manager exposes exactly one thing to the watchdog:
 
-- **Targeted repair** — for each `(exchange, subscription key)` with instruments in
-  `refresh`: `unsubscribe(key, refresh_subset)` → `sleep(3s)` →
-  `subscribe(key, desired_subset, reset=True)`. Nothing else is touched: a partial repair
-  on one venue must not re-assert another's universe (`reset=True` replays the whole
-  stream on ccxt, rebuilds it on hyperliquid) or fire subscribes at an exchange §4.2
-  classified DARK. `refresh` is keyed by `(instrument, base data type)` so repairing a
-  wedged `trade` feed does not tear down that instrument's `orderbook`.
-- **Wholesale re-assertion** — an empty `refresh` re-asserts `_desired` for every
-  `(exchange, key)` with `subscribe(key, desired_subset, reset=True)` and no unsubscribe.
-  Used after a reconnect and after a provider recreation, where the transport is known
-  to have lost state but no instrument is individually suspect.
+```python
+@synchronized
+def desired_snapshot(self) -> dict[str, dict[str, frozenset[Instrument]]]:
+    # exchange -> subscription key -> instruments; copied under the lock
+```
 
-  Note this cannot detect drift on its own: §2 deliberately stops reading the provider,
-  so the manager has no view of transport state to diff against. Staleness is the only
-  drift signal, and it arrives through `refresh`. That is intentional — a second source
-  of truth to compare against is exactly what this design removes.
-- Per-exchange `try/except` so one bad venue cannot abort the rest.
-- `NotSupported` records `(exchange, key)` in `_unsupported` and is never retried.
-  Without this the watchdog spins forever on a capability the venue does not have —
-  `_apply_swap` currently only warns (`subscription.py:231`), which is adequate for a
-  one-shot call and not for a loop.
+Keyed by the canonical exchange instruments carry, so the consumer never filters. It is
+the only manager method the watchdog thread calls, and it holds the lock for a dict copy —
+microseconds — so `commit()` on the ProcessorThread is never stalled.
 
-A raised exception leaves `_desired` untouched. That is the entire fix.
+The repair itself lives in the watchdog, because everything it needs is the watchdog's:
+the snapshot, the provider, the settle delay, and the memory of which subscription keys a
+venue rejected. It holds no reference to manager state.
+
+- **Targeted repair** — `_repair(state, subs, refresh)`, for one exchange: for each
+  subscription whose base type has instruments in `refresh`: `unsubscribe(key, hit)` →
+  one `sleep(settle)` per call → `subscribe(key, full_desired_set, reset=True)`.
+  Scoping is by construction: the watchdog only ever holds one exchange's subs, so a
+  repair on one venue cannot re-assert another's universe (`reset=True` replays the
+  whole stream on ccxt, rebuilds it on hyperliquid) or fire subscribes at an exchange
+  §4.2 classified DARK. `refresh` is keyed by `(instrument, base data type)` so repairing
+  a wedged `trade` feed does not tear down that instrument's `orderbook`. A failed
+  `unsubscribe` still gets its paired `subscribe`; re-subscribing is idempotent on every
+  connector.
+- **Re-assertion** — `_reassert(state, subs)` after a genuine DARK episode: `subscribe`
+  every subscription on that exchange with `reset=True`, policed or not, and no
+  unsubscribe. The connector may have lost everything during the outage, not only the
+  types the watchdog polices. Scoped to the recovering exchange; the others were never
+  dark.
+
+  Neither can detect drift on its own: §2 deliberately stops reading the provider, so
+  there is no transport state to diff against. Staleness is the only drift signal. That
+  is intentional — a second source of truth is exactly what this design removes.
+- `NotSupported` is remembered per exchange (`_ExchangeState.unsupported`) and never
+  retried. `_apply_swap` keeps its pre-existing warning; the watchdog learns from its own
+  first attempt, which costs one wasted repair.
+
+A raised exception leaves `_desired` untouched — the watchdog never holds a reference to
+it. That is the entire fix.
 
 ### 4. `qubx/core/subscription_watchdog.py` — `SubscriptionWatchdog` (new)
 
-Owns the thread, the interval, and all policy. Constructed with
-`(data_providers, health_monitor, status, reconcile_fn, strategy_state, interval=30.0)` —
-no dependency on `SubscriptionManager` beyond the callable, so it is unit-testable
-against a fake provider whose `subscribe` raises on command. That test does not exist
-today because there is no seam to write it against.
+Owns the thread, the interval, the repair mechanism (§3) and all policy. Constructed with
+`(data_providers, health_monitor, status, snapshot_fn, strategy_state, interval_seconds=30.0, settle_seconds=3.0)`
+— no dependency on `SubscriptionManager` beyond the one callable, so it is unit-testable
+against a fake provider whose `subscribe` raises on command. Per-exchange state
+(`dark_ticks`, `maintenance_held`, `repairs`, `unsupported`, the provider and its venue
+name) lives in one `_ExchangeState` keyed by the canonical exchange, so "forget this
+exchange" is one `dict` operation and nothing downstream filters by exchange.
 
 Per tick, per exchange:
 
@@ -207,6 +223,12 @@ Per tick, per exchange:
    `stale == subscribed`, falsely triggering DARK and halting trading (§6). The grace
    window is the threshold itself, because that is already the framework's statement of
    how long this data type may legitimately be silent.
+
+   The gate protects repair as well as classification: §5 returns the eligible stale
+   **keys**, and repair iterates those rather than re-deriving staleness with `is_stale`
+   (which reads `True` for any instrument with no event yet). Otherwise a mixed universe
+   — one genuinely stale, one just subscribed — classifies PARTIAL and tears the new
+   instrument down on sight.
 2. Read the exchange facts (§5) and classify. All three are computed from **eligible**
    instruments only — those past their grace window (§4.1a):
 
@@ -214,7 +236,7 @@ Per tick, per exchange:
    |---|---|---|---|
    | **OK** | `stale == 0` | everything is delivering | clear any held repair state |
    | **DARK** | (`connected is False` and `subscribed >= 1`) **or** (`stale == subscribed` and `subscribed >= 2`) | *nothing* is delivering — the venue is not serving us | no repair; §6 |
-   | **PARTIAL** | `stale > 0` and not DARK | some delivering, some not — the venue is up, so the fault is ours | `reconcile(refresh=stale)` |
+   | **PARTIAL** | `stale > 0` and not DARK | some delivering, some not — the venue is up, so the fault is ours | `_repair(stale_keys)` |
 
    The three are exhaustive and mutually exclusive. `subscribed == 1 and stale == 1`
    falls into PARTIAL by construction: with one instrument, "nothing is delivering" and
@@ -226,9 +248,9 @@ Per tick, per exchange:
 
    **On DARK, issue no per-instrument repair at all.** This is the 11:16 case where 21
    simultaneous subscribes tripped `30009` and cost the recovery. Hold
-   `EXCHANGE_MAINTENANCE`, wait, and re-assert intent **once** when data returns —
-   `reconcile()` with an empty `refresh`. The connector reconnects on its own; the
-   watchdog's job while dark is to stop making it worse.
+   `EXCHANGE_MAINTENANCE`, wait, and re-assert that exchange **once** when data returns
+   (`_reassert`, §3). The connector reconnects on its own; the watchdog's job while dark
+   is to stop making it worse.
 
    *Naming note:* the third state is **PARTIAL**, not "DEGRADED". `QubxStatus.DEGRADED`
    already exists (`core/status.py:22-24`) and means the context is degraded — which is
@@ -303,12 +325,20 @@ class ExchangeDataStatus:
     exchange: str
     connected: bool | None       # None = no callback registered
     subscribed: int              # eligible only — excludes instruments in grace
-    stale: int                   # per-instrument count, NOT max() over the exchange
+    stale_keys: frozenset[tuple[Instrument, str]]   # (instrument, base type); NOT max() over the exchange
     in_grace: int                # subscribed too recently to judge
     last_event_time: dt_64 | None
+
+    @property
+    def stale(self) -> int: ...  # len(stale_keys)
 ```
 
-`IHealthMonitor.get_exchange_data_status(exchange, subscribed_instruments)` computes it.
+`IHealthMonitor.get_exchange_data_status(exchange, subscribed)` computes it. `subscribed`
+arrives already scoped to the exchange (the watchdog's snapshot is keyed that way), so
+the method does no filtering; `exchange` only keys the `is_connected` callback lookup,
+which is registered under the provider's venue name. Returning the stale **keys** rather
+than a count is what lets repair (§3) honour the grace window without re-deriving
+staleness.
 
 **`subscribed` and `stale` count only instruments past their grace window** (§4.1a).
 Counting in-grace instruments as stale would make `stale == subscribed` immediately after
@@ -417,10 +447,10 @@ is not usable as designed; this removes that sharp edge.
 | repair succeeds but data does not resume, others on the venue are live | caught by verification (§4.3); retried indefinitely at capped backoff, reported at ERROR. Exchange stays tradeable (D5a) |
 | repair succeeds but data does not resume, whole venue dark | no repair attempted at all; `EXCHANGE_MAINTENANCE` held (§6) |
 | venue rejects the subscribe asynchronously | indistinguishable from the above, and handled identically — this is the `30009` case |
-| `NotSupported` | recorded in `_unsupported`, never retried |
+| `NotSupported` | recorded in that exchange's `_ExchangeState.unsupported`, never retried |
 | sparse feed quiet but healthy | verification by advancement (§4.3) prevents the repair loop; backoff caps residual churn at `threshold/10` |
 | instrument subscribed seconds ago | in grace (D5b) — not repaired, not counted, cannot trigger DARK |
-| one exchange failing | isolated; other exchanges reconcile normally |
+| one exchange failing | isolated; other exchanges repair normally |
 | watchdog tick raises | caught, logged with traceback, thread survives (as today) |
 
 ## Testing
@@ -428,7 +458,7 @@ is not usable as designed; this removes that sharp edge.
 Unit, against a fake `IDataProvider` — the seam that does not exist today:
 
 1. `subscribe` raises during repair → `_desired` unchanged; next tick retries; provider converges.
-2. Provider registry emptied behind the manager's back → reconcile restores it from `_desired`. **This is the incident, reduced to a test.**
+2. Provider registry emptied behind the manager's back → the manager still reports the universe from `_desired`, and the watchdog's next repair restores it. **This is the incident, reduced to a test.**
 3. Repair "succeeds" but 2 of 5 orderbook instruments never deliver → retries double from one tick and **continue indefinitely** at the 1 min cap (`threshold/10`); log level climbs INFO → WARNING → ERROR; `EXCHANGE_MAINTENANCE` is **never** held and the exchange stays tradeable (D5a).
 3a. The same instruments recover at tick 20 → retries stop, backoff resets, no degradation was ever published.
 4. DARK exchange → zero `subscribe`/`unsubscribe` calls issued (the `30009` regression).
@@ -436,7 +466,7 @@ Unit, against a fake `IDataProvider` — the seam that does not exist today:
 6. (A) and (B) each independently hold `EXCHANGE_MAINTENANCE` after exactly 2 ticks, not 1; cleared after one delivering tick.
 7. `connected is None` does not trigger (A); `subscribed == 1` does not trigger (B).
 8. `QubxDegradedState` in `on_event` 20 times in a row → run does not stop; any other exception 10 times → it does.
-9. Concurrency: `commit()` on one thread and `reconcile()` on the watchdog thread do not interleave (regression for the `synchronized` bug).
+9. Concurrency: `commit()` / `_apply_deferred_swap` on one thread and `desired_snapshot()` on the watchdog thread do not interleave (regression for the `synchronized` bug).
 10. **Sparse-feed repair loop (D5).** A `trade` subscription is repaired, then delivers exactly one message and goes quiet for 20 ticks → verified on the first tick after the message and **never repaired again**, even though `is_stale()` stays `True` throughout. Asserting on `is_stale` instead of advancement must fail this test.
 11. **Grace period (D5b).** An instrument subscribed at t=0 reports no data → not repaired and not counted as stale before `t + threshold`; repaired on the first tick after it.
 12. **False DARK on universe swap (D5b).** The entire universe is replaced mid-session → every instrument is in grace, `subscribed` is 0, and `EXCHANGE_MAINTENANCE` is not published. Without the grace gate this test halts trading on a healthy venue.

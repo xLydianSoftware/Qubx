@@ -106,3 +106,21 @@ def test_unsubscribe_clears_subscribed_at():
     status = monitor.get_exchange_data_status(EXCHANGE, {DataType.ORDERBOOK: {btc}})
 
     assert status.in_grace == 1
+
+
+def test_stale_keys_name_the_eligible_stale_instruments():
+    """The watchdog repairs exactly these keys, so they must exclude grace and fresh
+    instruments and carry the base type as a plain string."""
+    monitor, clock = _monitor()
+    btc, eth, sol = _instrument("BTCUSDT"), _instrument("ETHUSDT"), _instrument("SOLUSDT")
+    monitor.subscribe(btc, DataType.ORDERBOOK)
+    monitor.subscribe(eth, DataType.ORDERBOOK)
+    clock.advance(11)
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
+    monitor.subscribe(sol, DataType.ORDERBOOK)  # in grace
+
+    status = monitor.get_exchange_data_status(EXCHANGE, {DataType.ORDERBOOK: {btc, eth, sol}})
+
+    assert status.stale_keys == frozenset({(eth, "orderbook")})
+    assert status.stale == 1
+    assert status.in_grace == 1

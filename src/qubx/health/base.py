@@ -406,8 +406,10 @@ class BaseHealthMonitor(IHealthMonitor):
         return bool((current_time - last_event_time) > stale_delta)
 
     def get_exchange_data_status(self, exchange: str, subscribed: dict[str, set[Instrument]]) -> ExchangeDataStatus:
+        """`subscribed` is already scoped to this exchange; `exchange` keys the is_connected lookup."""
         now = self.time_provider.time()
-        n_subscribed = n_stale = n_grace = 0
+        n_subscribed = n_grace = 0
+        stale: set[tuple[Instrument, str]] = set()
         last_event: dt_64 | None = None
 
         for event_type, instruments in subscribed.items():
@@ -417,8 +419,6 @@ class BaseHealthMonitor(IHealthMonitor):
                 continue
             grace = convert_tf_str_td64(threshold)
             for instrument in instruments:
-                if instrument.exchange != exchange:
-                    continue
                 key = (instrument, base_type)
                 subscribed_at = self._subscribed_at.get(key)
                 if subscribed_at is not None and now - subscribed_at < grace:
@@ -426,7 +426,7 @@ class BaseHealthMonitor(IHealthMonitor):
                     continue
                 n_subscribed += 1
                 if self.is_stale(instrument, str(base_type)):
-                    n_stale += 1
+                    stale.add((instrument, str(base_type)))
                 event_time = self._last_event_time.get(key)
                 if event_time is not None and (last_event is None or event_time > last_event):
                     last_event = event_time
@@ -442,7 +442,7 @@ class BaseHealthMonitor(IHealthMonitor):
             exchange=exchange,
             connected=connected,
             subscribed=n_subscribed,
-            stale=n_stale,
+            stale_keys=frozenset(stale),
             in_grace=n_grace,
             last_event_time=last_event,
         )

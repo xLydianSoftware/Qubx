@@ -1,5 +1,4 @@
 import threading
-import time
 import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -86,13 +85,6 @@ class SubscriptionManager(ISubscriptionManager):
         #   providers. A provider that loses its registry (a failed repair, a dropped
         #   socket) must not take the universe with it.
         self._desired: dict[str, set[Instrument]] = defaultdict(set)
-        self._unsupported: set[tuple[str, str]] = set()
-        self._repair_settle_seconds: float = 3.0
-        # - created eagerly (not left to @synchronized's lazy path) because reconcile()
-        #   takes it directly, by name, to snapshot _desired/_unsupported without going
-        #   through a decorated method; it must be the SAME lock @synchronized uses, or
-        #   the mutual exclusion with commit()/_apply_swap is worthless.
-        self._synchronized_lock = threading.RLock()
         self._auto_subscribe = auto_subscribe
         self._monitor_interval_seconds = monitor_interval_seconds
         self._is_simulation = all(data_provider.is_simulation for data_provider in data_providers)
@@ -215,7 +207,7 @@ class SubscriptionManager(ISubscriptionManager):
     def _apply_swap(self, plan: _CommitPlan) -> None:
         # - apply: the subscribe/unsubscribe swap (fast). @synchronized so the
         #   ProcessorThread-side deferred path (_apply_deferred_swap, uncontrolled
-        #   otherwise) excludes reconcile()'s snapshot the same way commit() already does
+        #   otherwise) excludes desired_snapshot() the same way commit() already does
         #   via re-entrancy.
         for _sub in self._get_updated_subs(plan):
             _current_sub_instruments = set(self._desired.get(_sub, set()))
@@ -231,7 +223,7 @@ class SubscriptionManager(ISubscriptionManager):
             # - subscribe collection
             _updated_instruments = _current_sub_instruments.union(_added_instruments).difference(_removed_instruments)
             # - intent is recorded BEFORE the provider calls, so a raising provider leaves
-            #   the universe intact and the next reconcile repairs it
+            #   the universe intact and the watchdog repairs it
             if _updated_instruments:
                 self._desired[_sub] = set(_updated_instruments)
             else:
@@ -254,7 +246,6 @@ class SubscriptionManager(ISubscriptionManager):
                     try:
                         _data_provider.subscribe(_sub, _exchange_updated_instruments, reset=True)
                     except NotSupported as e:
-                        self._unsupported.add((_exchange, _sub))
                         logger.warning(f"Subscription not supported for {_exchange}: {e}")
 
             # Notify health monitor of new subscriptions
@@ -274,86 +265,18 @@ class SubscriptionManager(ISubscriptionManager):
             for instr in _removed_instruments:
                 self._health_monitor.unsubscribe(instr, _sub)
 
-    def reconcile(self, refresh: set[tuple[Instrument, str]] = frozenset()) -> None:
-        """Drive every provider toward `_desired`.
-
-        `refresh` names (instrument, base data type) pairs whose transport must be
-        re-established even though intent has not changed — a provider may believe it is
-        subscribed while delivering nothing. It is keyed by type, not by bare instrument,
-        so repairing a wedged `trade` feed does not tear down that instrument's
-        `orderbook`. Raising is safe: `_desired` is untouched, so the caller retries.
-
-        A non-empty `refresh` also narrows the work to the (subscription, exchange) pairs
-        it names. Re-asserting an exchange nothing is wrong with is not free — `reset=True`
-        replays the whole stream on ccxt and rebuilds it on hyperliquid — and unverified
-        repairs retry forever, so an unscoped partial repair is an indefinite resubscribe
-        storm against venues that were never suspect, including ones classified DARK. An
-        empty `refresh` keeps its wholesale meaning: re-assert every pair everywhere, the
-        post-recovery path.
-
-        Deliberately NOT @synchronized: this runs on the watchdog thread, while
-        commit()/_apply_swap run on the ProcessorThread, qubx's single event loop, which a
-        multi-second lock hold (the settle sleep, per exchange) would stall. Only a
-        snapshot of _desired/_unsupported is taken under the lock; all provider I/O and
-        the sleep happen outside it. A universe change landing mid-reconcile is read as
-        slightly stale and simply acted on next call — this design converges by retry.
-        """
-        with self._synchronized_lock:
-            _snapshot: dict[str, dict[str, frozenset[Instrument]]] = {}
-            for _sub, _instruments in self._desired.items():
-                if not _instruments:
-                    continue
-                _by_exchange: dict[str, set[Instrument]] = defaultdict(set)
-                for instr in _instruments:
-                    _by_exchange[instr.exchange].add(instr)
-                _snapshot[_sub] = {_exchange: frozenset(_instrs) for _exchange, _instrs in _by_exchange.items()}
-            _unsupported_snapshot = set(self._unsupported)
-
-        _refresh_by_type: dict[str, set[Instrument]] = defaultdict(set)
-        for _instrument, _base_type in refresh:
-            _refresh_by_type[_base_type].add(_instrument)
-
-        # - one target list for both loops: every unsubscribe below is paired with the
-        #   subscribe that restores it, and nothing else is touched
-        _targets: list[tuple[str, str, frozenset[Instrument], set[Instrument]]] = []
-        for _sub, _by_exchange in _snapshot.items():
-            _refresh_for_sub = _refresh_by_type.get(str(DataType.from_str(_sub)[0]), set())
-            for _exchange, _desired_here in _by_exchange.items():
-                if (_exchange, _sub) in _unsupported_snapshot:
-                    continue
-                _refresh_here = _refresh_for_sub & _desired_here
-                if refresh and not _refresh_here:
-                    continue
-                _targets.append((_sub, _exchange, _desired_here, _refresh_here))
-
-        _did_unsubscribe = False
-        for _sub, _exchange, _, _refresh_here in _targets:
-            if not _refresh_here:
-                continue
-            try:
-                self._get_data_provider(_exchange).unsubscribe(_sub, _refresh_here)
-            except Exception as e:
-                # - a failed unsubscribe still gets its paired subscribe attempt below;
-                #   re-subscribing is idempotent on every connector, so trying is never
-                #   worse than leaving the instruments torn down until the next reconcile.
-                logger.error(f"[{_exchange}] :: reconcile unsubscribe of {_sub} failed: {e}")
-            _did_unsubscribe = True
-
-        if _did_unsubscribe:
-            # - one settle delay per reconcile call, not per exchange: it guards against
-            #   the venue processing our unsubscribe after the resubscribe. It bounds
-            #   churn; it is NOT the safety net - that is the caller's retry (D4).
-            time.sleep(self._repair_settle_seconds)
-
-        for _sub, _exchange, _desired_here, _ in _targets:
-            try:
-                self._get_data_provider(_exchange).subscribe(_sub, set(_desired_here), reset=True)
-            except NotSupported as e:
-                with self._synchronized_lock:
-                    self._unsupported.add((_exchange, _sub))
-                logger.warning(f"[{_exchange}] :: {_sub} not supported: {e}")
-            except Exception as e:
-                logger.error(f"[{_exchange}] :: reconcile of {_sub} failed: {e}")
+    @synchronized
+    def desired_snapshot(self) -> dict[str, dict[str, frozenset[Instrument]]]:
+        """The desired universe as exchange -> subscription -> instruments, copied under
+        the lock. The watchdog's only view of intent, read on its own thread."""
+        snapshot: dict[str, dict[str, frozenset[Instrument]]] = defaultdict(dict)
+        for sub, instruments in self._desired.items():
+            by_exchange: dict[str, set[Instrument]] = defaultdict(set)
+            for instrument in instruments:
+                by_exchange[instrument.exchange].add(instrument)
+            for exchange, instrs in by_exchange.items():
+                snapshot[exchange][sub] = frozenset(instrs)
+        return dict(snapshot)
 
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
         return instrument in self._desired.get(subscription_type, set())
@@ -551,8 +474,7 @@ class SubscriptionManager(ISubscriptionManager):
             data_providers=self._data_providers,
             health_monitor=self._health_monitor,
             status=self._status,
-            reconcile_fn=self.reconcile,
-            subscriptions_fn=lambda: dict(self._desired),
+            snapshot_fn=self.desired_snapshot,
             strategy_state=self._strategy_state,
             interval_seconds=self._monitor_interval_seconds,
         )

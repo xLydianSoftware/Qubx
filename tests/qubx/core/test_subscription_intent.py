@@ -1,3 +1,6 @@
+import inspect
+import threading
+import time
 from unittest.mock import Mock
 
 import pytest
@@ -5,8 +8,9 @@ import pytest
 from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.interfaces import StrategyState
 from qubx.core.lookups import lookup
-from qubx.core.mixins.subscription import SubscriptionManager
+from qubx.core.mixins.subscription import SubscriptionManager, _CommitPlan
 from qubx.core.status import ContextStatus
+from qubx.core.subscription_watchdog import SubscriptionWatchdog
 from qubx.health.dummy import DummyHealthMonitor
 
 EXCHANGE = "BINANCE.UM"
@@ -19,45 +23,36 @@ def _instrument(symbol: str, exchange: str = EXCHANGE) -> Instrument:
     return instr
 
 
-@pytest.fixture
-def manager_and_provider():
+def _provider(exchange: str = EXCHANGE, simulation: bool = False) -> Mock:
     provider = Mock()
-    provider.is_simulation = False
-    provider.exchange.return_value = EXCHANGE
+    provider.is_simulation = simulation
+    provider.exchange.return_value = exchange
     provider.get_subscribed_instruments.return_value = []
     provider.get_subscriptions.return_value = []
-    time_provider = Mock()
-    time_provider.time.return_value = 0.0
-    manager = SubscriptionManager(
-        time_provider, [provider], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
-    )
-    return manager, provider
+    return provider
 
 
-@pytest.fixture
-def two_exchange_manager():
-    """Every other reconcile rig in this file is single-exchange - which is why an
-    unscoped subscribe loop survived six reviews of this branch."""
-    providers = {}
-    for exchange in (EXCHANGE, OTHER_EXCHANGE):
-        provider = Mock()
-        provider.is_simulation = False
-        provider.exchange.return_value = exchange
-        provider.get_subscribed_instruments.return_value = []
-        provider.get_subscriptions.return_value = []
-        providers[exchange] = provider
+def _manager(*providers: Mock, status: ContextStatus | None = None, **kwargs) -> SubscriptionManager:
     time_provider = Mock()
     time_provider.time.return_value = 0.0
-    manager = SubscriptionManager(
+    return SubscriptionManager(
         time_provider,
-        list(providers.values()),
+        list(providers),
         CtrlChannel("test"),
         DummyHealthMonitor(),
         StrategyState(),
-        ContextStatus(),
+        status if status is not None else ContextStatus(),
+        **kwargs,
     )
-    manager._repair_settle_seconds = 0.0
-    return manager, providers
+
+
+@pytest.fixture
+def manager_and_provider():
+    provider = _provider()
+    return _manager(provider), provider
+
+
+# --- intent ownership (spec 2) ---
 
 
 def test_intent_survives_provider_losing_its_registry(manager_and_provider):
@@ -91,235 +86,71 @@ def test_desired_tracks_adds_and_removes(manager_and_provider):
     assert not manager.has_subscription(eth, DataType.ORDERBOOK)
 
 
-def test_not_supported_is_recorded_once(manager_and_provider):
-    from qubx.core.exceptions import NotSupported
-
-    manager, provider = manager_and_provider
-    provider.subscribe.side_effect = NotSupported("no orderbook here")
-
-    manager.subscribe(DataType.ORDERBOOK, _instrument("BTCUSDT"))
-    manager.commit()
-
-    assert (EXCHANGE, DataType.ORDERBOOK) in manager._unsupported
-
-
-def test_reconcile_refresh_unsubscribes_then_resubscribes_full_set(manager_and_provider):
-    manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.0
+def test_desired_snapshot_is_keyed_by_exchange_and_is_a_copy():
+    """The watchdog's only view of intent: scoped by exchange so it never has to filter,
+    and detached from the live sets so mutation on the ProcessorThread cannot reach it."""
+    manager = _manager(_provider(EXCHANGE), _provider(OTHER_EXCHANGE))
     btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
-    manager.subscribe(DataType.ORDERBOOK, [btc, eth])
-    manager.commit()
-    provider.reset_mock()
-
-    manager.reconcile(refresh={(btc, "orderbook")})
-
-    provider.unsubscribe.assert_called_once_with(DataType.ORDERBOOK, {btc})
-    provider.subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc, eth}, reset=True)
-
-
-def test_reconcile_refresh_leaves_other_exchanges_untouched(two_exchange_manager):
-    """A partial repair on one venue must not re-assert another venue's universe:
-    reset=True replays the whole stream on ccxt and rebuilds it on hyperliquid, and an
-    unverified repair retries forever - so an unscoped subscribe loop is an indefinite
-    resubscribe storm against a venue that was never suspect, and issues subscribes at
-    an exchange the watchdog classified DARK."""
-    manager, providers = two_exchange_manager
-    btc = _instrument("BTCUSDT")
-    other_btc = _instrument("BTCUSDT", OTHER_EXCHANGE)
-    manager.subscribe(DataType.ORDERBOOK, [btc, other_btc])
-    manager.commit()
-    for provider in providers.values():
-        provider.reset_mock()
-
-    manager.reconcile(refresh={(btc, "orderbook")})
-
-    providers[EXCHANGE].unsubscribe.assert_called_once_with(DataType.ORDERBOOK, {btc})
-    providers[EXCHANGE].subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
-    providers[OTHER_EXCHANGE].unsubscribe.assert_not_called()
-    providers[OTHER_EXCHANGE].subscribe.assert_not_called()
-
-
-def test_reconcile_without_refresh_reasserts_every_exchange(two_exchange_manager):
-    """The post-recovery path: an empty refresh keeps its wholesale meaning across all
-    exchanges - only the refresh-scoped path is narrowed."""
-    manager, providers = two_exchange_manager
-    btc = _instrument("BTCUSDT")
-    other_btc = _instrument("BTCUSDT", OTHER_EXCHANGE)
-    manager.subscribe(DataType.ORDERBOOK, [btc, other_btc])
-    manager.commit()
-    for provider in providers.values():
-        provider.reset_mock()
-
-    manager.reconcile()
-
-    providers[EXCHANGE].subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
-    providers[OTHER_EXCHANGE].subscribe.assert_called_once_with(DataType.ORDERBOOK, {other_btc}, reset=True)
-    for provider in providers.values():
-        provider.unsubscribe.assert_not_called()
-
-
-def test_reconcile_refresh_is_scoped_to_the_data_type(manager_and_provider):
-    """A wedged trade feed must not tear down the same instrument's orderbook."""
-    manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.0
-    btc = _instrument("BTCUSDT")
-    manager.subscribe(DataType.ORDERBOOK, btc)
+    other = _instrument("BTCUSDT", OTHER_EXCHANGE)
+    manager.subscribe(DataType.ORDERBOOK, [btc, eth, other])
     manager.subscribe(DataType.TRADE, btc)
     manager.commit()
-    provider.reset_mock()
 
-    manager.reconcile(refresh={(btc, "trade")})
+    snapshot = manager.desired_snapshot()
 
-    provider.unsubscribe.assert_called_once_with(DataType.TRADE, {btc})
-    provider.subscribe.assert_called_once_with(DataType.TRADE, {btc}, reset=True)
-
-
-def test_reconcile_without_refresh_reasserts_and_never_unsubscribes(manager_and_provider):
-    manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.0
-    btc = _instrument("BTCUSDT")
-    manager.subscribe(DataType.ORDERBOOK, btc)
+    assert snapshot == {
+        EXCHANGE: {DataType.ORDERBOOK: frozenset({btc, eth}), DataType.TRADE: frozenset({btc})},
+        OTHER_EXCHANGE: {DataType.ORDERBOOK: frozenset({other})},
+    }
+    manager.unsubscribe(DataType.ORDERBOOK, eth)
     manager.commit()
-    provider.reset_mock()
-
-    manager.reconcile()
-
-    provider.unsubscribe.assert_not_called()
-    provider.subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
+    assert eth in snapshot[EXCHANGE][DataType.ORDERBOOK]  # the copy is unaffected
 
 
-def test_reconcile_failure_leaves_desired_intact_and_retries(manager_and_provider):
+# --- the shared instance lock (spec 1) ---
+
+
+def test_concurrent_apply_swap_during_snapshot_does_not_corrupt_desired(manager_and_provider):
     manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.0
-    btc = _instrument("BTCUSDT")
-    manager.subscribe(DataType.ORDERBOOK, btc)
-    manager.commit()
-    provider.reset_mock()
-    provider.subscribe.side_effect = TimeoutError("WebSocket connection not ready after 5.0s")
-
-    manager.reconcile(refresh={(btc, "orderbook")})
-
-    assert manager._desired[DataType.ORDERBOOK] == {btc}
-
-    provider.subscribe.side_effect = None
-    manager.reconcile(refresh={(btc, "orderbook")})
-    provider.subscribe.assert_called_with(DataType.ORDERBOOK, {btc}, reset=True)
-
-
-def test_reconcile_skips_unsupported_pairs(manager_and_provider):
-    from qubx.core.exceptions import NotSupported
-
-    manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.0
-    btc = _instrument("BTCUSDT")
-    provider.subscribe.side_effect = NotSupported("nope")
-    manager.subscribe(DataType.ORDERBOOK, btc)
-    manager.commit()
-    provider.reset_mock()
-    provider.subscribe.side_effect = None
-
-    manager.reconcile(refresh={(btc, "orderbook")})
-
-    provider.subscribe.assert_not_called()
-    provider.unsubscribe.assert_not_called()
-
-
-def test_reconcile_isolates_a_failing_exchange(manager_and_provider):
-    manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.0
-    btc = _instrument("BTCUSDT")
-    manager.subscribe(DataType.ORDERBOOK, btc)
-    manager.subscribe(DataType.TRADE, btc)
-    manager.commit()
-    provider.reset_mock()
-
-    calls: list[str] = []
-
-    def record(sub, instruments, reset=False):
-        calls.append(sub)
-        if sub == DataType.ORDERBOOK:
-            raise TimeoutError("boom")
-
-    provider.subscribe.side_effect = record
-    manager.reconcile()
-
-    assert DataType.ORDERBOOK in calls and DataType.TRADE in calls
-
-
-def test_reconcile_subscribes_even_when_unsubscribe_fails(manager_and_provider):
-    manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.0
-    btc = _instrument("BTCUSDT")
-    manager.subscribe(DataType.ORDERBOOK, btc)
-    manager.commit()
-    provider.reset_mock()
-    provider.unsubscribe.side_effect = TimeoutError("boom")
-
-    manager.reconcile(refresh={(btc, "orderbook")})
-
-    provider.unsubscribe.assert_called_once_with(DataType.ORDERBOOK, {btc})
-    provider.subscribe.assert_called_once_with(DataType.ORDERBOOK, {btc}, reset=True)
-
-
-def test_concurrent_apply_swap_during_reconcile_does_not_corrupt_desired(manager_and_provider):
-    import threading
-    import time as time_module
-
-    manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.05
     btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
     manager.subscribe(DataType.ORDERBOOK, btc)
     manager.commit()
-    provider.reset_mock()
 
     errors: list[Exception] = []
+    stop = threading.Event()
 
-    def do_reconcile():
+    def snapshot_loop():
         try:
-            manager.reconcile(refresh={(btc, "orderbook")})
+            while not stop.is_set():
+                manager.desired_snapshot()
         except Exception as e:  # pragma: no cover - failure path asserted below
             errors.append(e)
 
-    reconciler = threading.Thread(target=do_reconcile)
-    reconciler.start()
-    # give reconcile time to snapshot and enter its settle sleep, so this commit's
-    # _apply_swap lands while reconcile is doing I/O with the lock released
-    time_module.sleep(0.01)
+    reader = threading.Thread(target=snapshot_loop)
+    reader.start()
+    time.sleep(0.01)
     manager.subscribe(DataType.ORDERBOOK, eth)
     manager.commit()
-    reconciler.join(timeout=2)
+    stop.set()
+    reader.join(timeout=2)
 
-    assert not reconciler.is_alive()
+    assert not reader.is_alive()
     assert not errors
     assert manager._desired[DataType.ORDERBOOK] == {btc, eth}
 
 
-def test_concurrent_deferred_apply_swap_during_reconcile_does_not_corrupt_desired(manager_and_provider):
-    """Reproduces the actual pre-fix race behind Finding 1: the ProcessorThread reaches
-    _apply_swap via _apply_deferred_swap (no lock of its own before the fix), concurrently
-    with reconcile() running on the watchdog thread. Drives _apply_deferred_swap directly
-    rather than standing up the WarmupThread/channel machinery, since that IS the call the
-    channel dispatcher makes.
-    """
-    import threading
-    import time as time_module
-
-    from qubx.core.mixins.subscription import _CommitPlan
-
+def test_concurrent_deferred_apply_swap_during_snapshot_does_not_corrupt_desired(manager_and_provider):
+    """The ProcessorThread reaches _apply_swap via _apply_deferred_swap (which had no lock
+    of its own before this branch), concurrently with the watchdog reading a snapshot.
+    Drives _apply_deferred_swap directly rather than standing up the WarmupThread/channel
+    machinery, since that IS the call the channel dispatcher makes."""
     manager, provider = manager_and_provider
-    manager._repair_settle_seconds = 0.02
-
     btc, eth, sol = _instrument("BTCUSDT"), _instrument("ETHUSDT"), _instrument("SOLUSDT")
     subs = [DataType.ORDERBOOK, DataType.TRADE, DataType.QUOTE, DataType.LIQUIDATION, DataType.OPEN_INTEREST]
     for sub in subs:
         manager.subscribe(sub, [btc, eth, sol])
     manager.commit()
-    provider.reset_mock()
 
-    # spy on _apply_swap (an instance attribute shadows the decorated class method for
-    # lookups via self._apply_swap) so an exception raised inside it is observed here
-    # even though _apply_deferred_swap swallows it by design before it reaches the
-    # thread that called _apply_deferred_swap
     apply_swap_errors: list[BaseException] = []
     original_apply_swap = manager._apply_swap
 
@@ -331,7 +162,6 @@ def test_concurrent_deferred_apply_swap_during_reconcile_does_not_corrupt_desire
             raise
 
     manager._apply_swap = spying_apply_swap
-
     stop = threading.Event()
 
     def hammer() -> None:
@@ -350,52 +180,40 @@ def test_concurrent_deferred_apply_swap_during_reconcile_does_not_corrupt_desire
     hammer_thread = threading.Thread(target=hammer)
     hammer_thread.start()
 
-    reconcile_errors: list[BaseException] = []
+    snapshot_errors: list[BaseException] = []
     try:
-        # let the hammer thread get going before reconcile takes its snapshot, so the
-        # snapshot and the settle sleep both land inside the hammering window
-        time_module.sleep(0.005)
-        manager.reconcile(refresh={(i, DataType.from_str(sub)[0]) for sub in subs for i in (btc, eth, sol)})
+        deadline = time.monotonic() + 0.1
+        while time.monotonic() < deadline:
+            manager.desired_snapshot()
     except BaseException as e:
-        reconcile_errors.append(e)
+        snapshot_errors.append(e)
     finally:
         stop.set()
         hammer_thread.join(timeout=5)
 
     assert not hammer_thread.is_alive()
-    assert not reconcile_errors, f"reconcile() raised: {reconcile_errors!r}"
-    assert not apply_swap_errors, f"_apply_swap raised under concurrent reconcile: {apply_swap_errors!r}"
-
-    # internal consistency: the hammer plan only ever adds/removes btc, so eth/sol must
-    # survive untouched in every sub, and every sub's value must still be a well-formed set
+    assert not snapshot_errors, f"desired_snapshot() raised: {snapshot_errors!r}"
+    assert not apply_swap_errors, f"_apply_swap raised under concurrent snapshot: {apply_swap_errors!r}"
+    # - the hammer plan only ever adds/removes btc, so eth/sol must survive untouched
     for sub in subs:
         instruments = manager._desired.get(sub, set())
         assert isinstance(instruments, set)
-        assert instruments <= {btc, eth, sol}
-        assert {eth, sol} <= instruments
+        assert {eth, sol} <= instruments <= {btc, eth, sol}
 
 
 def test_apply_swap_is_gated_by_the_shared_instance_lock(manager_and_provider):
-    """Deterministic guard for Finding 1: _apply_swap must acquire the same instance lock
-    @synchronized uses elsewhere, so the ProcessorThread-side deferred writer
-    (_apply_deferred_swap) can never proceed while another synchronized method (commit,
-    subscribe, or reconcile's snapshot) is mid-flight. This checks the exclusion property
-    directly rather than trying to catch the resulting corruption under the GIL's atomic
-    dict/set ops (see test_concurrent_deferred_apply_swap_during_reconcile_does_not_corrupt_desired's
-    report note: that race is not reliably observable this way), so removing @synchronized
-    from _apply_swap fails this test every time, not just under the right interleaving.
-    """
-    import threading
-
-    from qubx.core.mixins.subscription import _CommitPlan
-
+    """Deterministic guard: _apply_swap must acquire the same instance lock @synchronized
+    uses elsewhere, so the ProcessorThread-side deferred writer (_apply_deferred_swap) can
+    never proceed while another synchronized method (commit, subscribe, desired_snapshot)
+    is mid-flight. Checks the exclusion property directly rather than trying to catch the
+    resulting corruption under the GIL's atomic dict/set ops, so removing @synchronized
+    from _apply_swap fails this test every time, not just under the right interleaving."""
     manager, provider = manager_and_provider
     btc = _instrument("BTCUSDT")
     manager.subscribe(DataType.ORDERBOOK, btc)
     manager.commit()  # exercises a @synchronized call so manager._synchronized_lock exists
 
     plan = _CommitPlan(stream_subscriptions={DataType.TRADE: {btc}})
-
     holder_acquired = threading.Event()
     release_holder = threading.Event()
 
@@ -416,10 +234,8 @@ def test_apply_swap_is_gated_by_the_shared_instance_lock(manager_and_provider):
 
     caller = threading.Thread(target=call_apply_swap)
     caller.start()
-
     try:
         # the instance lock is held elsewhere: a synchronized _apply_swap must block
-        # rather than proceed
         assert not call_returned.wait(timeout=0.2)
     finally:
         release_holder.set()
@@ -429,91 +245,45 @@ def test_apply_swap_is_gated_by_the_shared_instance_lock(manager_and_provider):
     caller.join(timeout=2)
 
 
+# --- watchdog wiring (spec 4/6) ---
+
+
 def test_watchdog_is_started_for_live_and_absent_in_simulation():
-    from qubx.core.subscription_watchdog import SubscriptionWatchdog
-
-    live = Mock()
-    live.is_simulation = False
-    live.exchange.return_value = EXCHANGE
-    time_provider = Mock()
-    time_provider.time.return_value = 0.0
-    manager = SubscriptionManager(
-        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
-    )
-    assert isinstance(manager._watchdog, SubscriptionWatchdog)
-
-    sim = Mock()
-    sim.is_simulation = True
-    sim.exchange.return_value = EXCHANGE
-    sim_manager = SubscriptionManager(
-        time_provider, [sim], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
-    )
-    assert sim_manager._watchdog is None
+    assert isinstance(_manager(_provider())._watchdog, SubscriptionWatchdog)
+    assert _manager(_provider(simulation=True))._watchdog is None
 
 
-def test_watchdog_sees_the_desired_universe():
-    live = Mock()
-    live.is_simulation = False
-    live.exchange.return_value = EXCHANGE
-    live.get_subscribed_instruments.return_value = []
-    time_provider = Mock()
-    time_provider.time.return_value = 0.0
-    manager = SubscriptionManager(
-        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
-    )
+def test_watchdog_reads_the_desired_snapshot():
+    manager = _manager(_provider())
     btc = _instrument("BTCUSDT")
     manager.subscribe(DataType.ORDERBOOK, btc)
     manager.commit()
 
-    assert manager._watchdog._subscriptions_fn() == {DataType.ORDERBOOK: {btc}}
+    assert manager._watchdog._snapshot_fn() == {EXCHANGE: {DataType.ORDERBOOK: frozenset({btc})}}
 
 
 def test_old_monitor_entry_points_are_gone():
     assert not hasattr(SubscriptionManager, "_monitor_subscription_status")
     assert not hasattr(SubscriptionManager, "_monitor_loop")
+    assert not hasattr(SubscriptionManager, "reconcile")
 
 
 def test_watchdog_publishes_into_the_caller_s_status_object():
     """A defaulted ContextStatus would let the watchdog degrade an object the order
-    path never reads — visible in the status, inert in trading."""
-    live = Mock()
-    live.is_simulation = False
-    live.exchange.return_value = EXCHANGE
-    time_provider = Mock()
-    time_provider.time.return_value = 0.0
+    path never reads - visible in the status, inert in trading."""
     status = ContextStatus()
-    manager = SubscriptionManager(
-        time_provider, [live], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), status
-    )
+    manager = _manager(_provider(), status=status)
 
     assert manager._watchdog._status is status
 
 
 def test_status_is_a_required_argument():
-    import inspect
-
     parameter = inspect.signature(SubscriptionManager.__init__).parameters["status"]
     assert parameter.default is inspect.Parameter.empty
 
 
 def test_stop_joins_the_watchdog_thread():
-    """SubscriptionManager had no shutdown hook at all until this test existed: the
-    watchdog thread outlived every manager that created it. Daemon status made process
-    exit safe, but a manager recreated in-process left a ticking thread behind."""
-    live = Mock()
-    live.is_simulation = False
-    live.exchange.return_value = EXCHANGE
-    time_provider = Mock()
-    time_provider.time.return_value = 0.0
-    manager = SubscriptionManager(
-        time_provider,
-        [live],
-        CtrlChannel("test"),
-        DummyHealthMonitor(),
-        StrategyState(),
-        ContextStatus(),
-        monitor_interval_seconds=0.02,  # real wall-clock ticks, kept small for the test
-    )
+    manager = _manager(_provider(), monitor_interval_seconds=0.02)  # real wall-clock ticks
     assert manager._watchdog._thread is not None
     assert manager._watchdog._thread.is_alive()
 
@@ -523,14 +293,6 @@ def test_stop_joins_the_watchdog_thread():
 
 
 def test_stop_is_a_noop_in_simulation():
-    sim = Mock()
-    sim.is_simulation = True
-    sim.exchange.return_value = EXCHANGE
-    time_provider = Mock()
-    time_provider.time.return_value = 0.0
-    manager = SubscriptionManager(
-        time_provider, [sim], CtrlChannel("test"), DummyHealthMonitor(), StrategyState(), ContextStatus()
-    )
+    manager = _manager(_provider(simulation=True))
     assert manager._watchdog is None
-
     manager.stop()  # must not raise

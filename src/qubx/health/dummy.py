@@ -82,7 +82,7 @@ class DummyHealthMonitor(IHealthMonitor):
 
     def get_exchange_data_status(self, exchange: str, subscribed: dict[str, set[Instrument]]) -> ExchangeDataStatus:
         return ExchangeDataStatus(
-            exchange=exchange, connected=None, subscribed=0, stale=0, in_grace=0, last_event_time=None
+            exchange=exchange, connected=None, subscribed=0, stale_keys=frozenset(), in_grace=0, last_event_time=None
         )
 
     def get_event_frequency(self, instrument: Instrument, event_type: str) -> float:
