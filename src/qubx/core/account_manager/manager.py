@@ -600,7 +600,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
         An explicit set PINS the instrument for the life of the process: the default-leverage
         apply that runs on every universe rotation leaves pinned instruments alone, so an
-        operator's edit survives one. A later explicit set replaces the pin.
+        operator's edit survives one. A later explicit set replaces the pin. The pin set is
+        bounded by the universe over the process life, and there is no unpin — a restart
+        clears them.
         """
         # Recorded before the send: the send is fire-and-forget, so a venue refusal arrives on
         # the channel rather than here and cannot be waited on to decide whether to pin.
@@ -637,16 +639,16 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         leveraged = [i for i in instruments if i.market_type in _LEVERAGED_MARKET_TYPES]
         if not leveraged:
             return
-        wanted = [i for i in leveraged if i not in self._pinned_leverage]
-        for instrument in wanted:
+        unpinned = [i for i in leveraged if i not in self._pinned_leverage]
+        for instrument in unpinned:
             try:
                 # never the public setter: the default must not pin what it touches
                 self._send_instrument_leverage(instrument, leverage)
             except Exception as exc:  # noqa: BLE001 — one refusal must not block the rest
                 logger.error(f"leverage {leverage}x for {instrument.symbol} failed: {exc}")
-        pinned = len(leveraged) - len(wanted)
+        pinned = len(leveraged) - len(unpinned)
         logger.info(
-            f"set {leverage}x leverage on {len(wanted)} instrument(s)"
+            f"set {leverage}x leverage on {len(unpinned)} instrument(s)"
             + (f", {pinned} pinned by explicit sets left alone" if pinned else "")
         )
 

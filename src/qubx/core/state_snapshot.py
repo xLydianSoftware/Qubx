@@ -15,7 +15,7 @@ def finite(value: float | None) -> float | None:
     """None for None, NaN and ±inf.
 
     The snapshot is plain ``json.dumps`` and the platform's Go decoder rejects Infinity/NaN,
-    which would blank the whole bot state.
+    which would blank the whole bot state — the document, not the field.
     """
     return float(value) if value is not None and math.isfinite(value) else None
 
@@ -23,15 +23,22 @@ def finite(value: float | None) -> float | None:
 def position_entry(account: IAccountViewer, instrument: Instrument, position: Position) -> dict[str, Any]:
     """One position's snapshot entry: what we hold, plus the venue's settings for it.
 
+    This runs on the ProcessorThread for every universe instrument every 5s, so every
+    ``IAccountViewer`` implementation of ``get_instrument_leverage`` /
+    ``get_max_instrument_leverage`` / ``get_max_instrument_notional`` must answer from a cache
+    and never touch the venue inline — None is the contract for "not populated yet".
+
+    Every value passes through ``finite``: a position the universe seated but no quote has
+    reached yet marks at NaN, which would otherwise make the whole document unparseable.
     ``notional`` carries the quantity's sign. ``max_notional`` is ``float('inf')`` from the
     account manager when the venue publishes no cap, and None here.
     """
     return {
         "quantity": position.quantity,
-        "avg_price": position.position_avg_price,
-        "market_value": position.market_value_funds,
-        "unrealized_pnl": position.unrealized_pnl(),
-        "current_price": position.last_update_price,
+        "avg_price": finite(position.position_avg_price),
+        "market_value": finite(position.market_value_funds),
+        "unrealized_pnl": finite(position.unrealized_pnl()),
+        "current_price": finite(position.last_update_price),
         "leverage": account.get_leverage(instrument),
         "notional": finite(position.notional_value),
         "instrument_leverage": finite(account.get_instrument_leverage(instrument)),

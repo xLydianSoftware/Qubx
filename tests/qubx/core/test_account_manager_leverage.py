@@ -306,10 +306,10 @@ def test_the_default_apply_skips_pinned_instruments_and_still_sends_the_rest():
 def test_the_default_apply_does_not_pin_what_it_touches():
     am = _am()
     inst = _instrument("BTCUSDT")
-    am.apply_default_instrument_leverage([inst])  # default is None here: nothing sent
     am.set_default_instrument_leverage(3.0)
     am.apply_default_instrument_leverage([inst])
 
+    am._connectors["binance"].set_instrument_leverage.assert_called_once_with(inst, 3.0)
     assert am._pinned_leverage == {}
 
 

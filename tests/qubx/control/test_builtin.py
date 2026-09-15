@@ -1,3 +1,5 @@
+import json
+import math
 from unittest.mock import MagicMock
 
 from qubx.control.builtin import BUILTIN_ACTIONS, _refresh_instrument_service
@@ -165,6 +167,38 @@ class TestGetState:
         assert "positions" in exch
         assert "orders" in exch
         assert "balances" in exch
+
+    def test_the_per_position_key_order_is_unchanged(self):
+        ctx = _make_mock_ctx()
+        _, handler = BUILTIN_ACTIONS["get_state"]
+        pos = handler(ctx).data["exchanges"]["BINANCE.UM"]["positions"]["BTCUSDT"]
+        assert list(pos)[:6] == [
+            "quantity",
+            "avg_price",
+            "market_price",
+            "unrealized_pnl",
+            "market_value",
+            "leverage",
+        ]
+
+    def test_an_unmarked_position_serializes(self):
+        """A position seated by set_universe before its first quote marks at NaN, and one NaN
+        makes the whole document unparseable to the platform's decoder."""
+        ctx = _make_mock_ctx()
+        pos = ctx.instruments[0]
+        pos = ctx.account.get_positions.return_value[pos]
+        pos.last_update_price = math.nan
+        pos.unrealized_pnl.return_value = math.nan
+        pos.market_value_funds = math.nan
+        pos.notional_value = math.nan
+        _, handler = BUILTIN_ACTIONS["get_state"]
+
+        data = handler(ctx).data
+        json.dumps(data, allow_nan=False)
+        entry = data["exchanges"]["BINANCE.UM"]["positions"]["BTCUSDT"]
+        assert entry["market_price"] is None
+        assert entry["unrealized_pnl"] is None
+        assert entry["market_value"] is None
 
     def test_positions_carry_the_venue_settings(self):
         """Same per-position entry as the 5s state snapshot, in this action's rounded

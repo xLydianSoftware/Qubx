@@ -51,20 +51,27 @@ def _rms(v: float) -> float:
     return round(v, 1)
 
 
+def _opt(value: float | None, rounder: Callable[[float], float]) -> float | None:
+    """Round unless the value is None — ``position_entry`` reports an unknown as None."""
+    return rounder(value) if value is not None else None
+
+
 def _rounded_position_entry(account: IAccountViewer, instrument: Instrument, position: Position) -> dict:
     """``position_entry`` in this action's display contract: ``market_price`` rather than
-    ``current_price``, and every figure rounded. None passes through unrounded."""
-    entry = {
-        ("market_price" if k == "current_price" else k): v
-        for k, v in position_entry(account, instrument, position).items()
+    ``current_price``, the original key order, and the figures rounded."""
+    e = position_entry(account, instrument, position)
+    return {
+        "quantity": e["quantity"],
+        "avg_price": e["avg_price"],
+        "market_price": e["current_price"],
+        "unrealized_pnl": _opt(e["unrealized_pnl"], _rm),
+        "market_value": _opt(e["market_value"], _rm),
+        "leverage": _opt(e["leverage"], _rl),
+        "notional": _opt(e["notional"], _rm),
+        "instrument_leverage": _opt(e["instrument_leverage"], _rl),
+        "max_instrument_leverage": _opt(e["max_instrument_leverage"], _rl),
+        "max_notional": _opt(e["max_notional"], _rm),
     }
-    for key in ("unrealized_pnl", "market_value", "notional", "max_notional"):
-        if entry[key] is not None:
-            entry[key] = _rm(entry[key])
-    for key in ("leverage", "instrument_leverage", "max_instrument_leverage"):
-        if entry[key] is not None:
-            entry[key] = _rl(entry[key])
-    return entry
 
 
 # --- Universe actions ---

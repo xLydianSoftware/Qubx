@@ -2,7 +2,7 @@
 
 The snapshot is serialized with a plain ``json.dumps``, and the platform reads it with a Go
 decoder that rejects ``Infinity``/``NaN`` — one of those blanks the whole bot state, not just
-the field — so the keys this module adds are asserted to survive ``allow_nan=False``.
+the field — so every case here asserts the entry survives ``allow_nan=False``.
 """
 
 import json
@@ -54,10 +54,6 @@ def _account(
     return account
 
 
-# The four keys this module adds on top of what the snapshot already emitted.
-_VENUE_SETTING_KEYS = ("notional", "instrument_leverage", "max_instrument_leverage", "max_notional")
-
-
 def _dumps(entry: dict) -> str:
     return json.dumps(entry, allow_nan=False)
 
@@ -68,6 +64,7 @@ class TestFinite:
         assert finite(value) is None
 
     def test_finite_passes_through_as_float(self):
+        assert isinstance(finite(3), float)
         assert finite(3) == 3.0
         assert finite(-2.5) == -2.5
 
@@ -108,20 +105,19 @@ class TestPositionEntry:
         assert entry["max_notional"] is None
         _dumps(entry)
 
-    def test_an_unmarked_position_reports_no_notional(self):
-        """A position the universe added but no quote has reached yet marks at NaN.
-
-        ``current_price`` carries that NaN through unchanged — it is one of the six keys the
-        snapshot has always emitted, and guarding it would change what the platform reads.
-        """
+    def test_an_unmarked_position_serializes(self):
+        """Every `set_universe` seats a flat position per new instrument, and each marks at NaN
+        until its first quote — so this is the shape the whole document is written in right
+        after a universe rotation, not an edge case."""
         instrument = _instrument()
         position = Position(instrument=instrument, quantity=1.0, pos_average_price=50_000.0)
         assert np.isnan(position.notional_value)
+        assert np.isnan(position.last_update_price)
         entry = position_entry(_account(), instrument, position)
 
         assert entry["notional"] is None
-        assert np.isnan(entry["current_price"])
-        _dumps({k: entry[k] for k in _VENUE_SETTING_KEYS})
+        assert entry["current_price"] is None
+        _dumps(entry)
 
     def test_a_connector_with_nothing_cached_reports_no_venue_settings(self):
         """None is the read side's "not populated yet" — it must not become a number here."""
