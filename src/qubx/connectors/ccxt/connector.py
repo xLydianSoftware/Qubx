@@ -30,6 +30,7 @@ import asyncio
 import math
 import threading
 import time
+import uuid
 from asyncio.exceptions import CancelledError
 from collections.abc import Coroutine
 from dataclasses import dataclass
@@ -45,6 +46,7 @@ from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
     Balance,
     CtrlChannel,
+    CurrencyConversion,
     Deal,
     Instrument,
     Order,
@@ -62,6 +64,7 @@ from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
     BalanceUpdateEvent,
+    CurrencyConversionEvent,
     DealEvent,
     FundingPaymentEvent,
     OrderAcceptedEvent,
@@ -929,6 +932,158 @@ class CcxtConnector(ChannelEmitter):
         logger.info(
             f"[{self.exchange_name}] leverage cache refreshed: {len(configured)} configured, {len(maxima)} maxima"
         )
+
+    def convert_currency(
+        self,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        *,
+        limit_price: float | None = None,
+        max_slippage_bps: float = 10.0,
+    ) -> str:
+        """Swap ``amount`` of one currency for another on the venue's own market for the pair.
+
+        Returns immediately with the conversion's id — the venue round trip runs on the
+        exchange loop and the outcome arrives as a ``CurrencyConversionEvent``, so the caller
+        (the ProcessorThread) keeps draining its queue. EXACTLY ONE event follows every call
+        that returned an id, failures included, so a caller tracking a pending conversion
+        always gets its answer. Only argument mistakes raise here.
+
+        One IOC attempt, priced to protect rather than to chase: nothing rests on the book
+        afterwards, so the event is the whole outcome and there is nothing to cancel or
+        reconcile. The trade is deliberately NOT registered with the AccountManager — it moves
+        cash, not exposure, and the balances arrive with the next account snapshot.
+
+        ``amount`` is denominated in ``from_currency``, whichever side of the venue's pair that
+        happens to be; only one direction is normally listed (USDC/USDT, never USDT/USDC), so
+        buying the base is how you spend the quote. ``limit_price`` (in the market's own quote
+        terms) bounds the fill absolutely — the guard that matters when a stablecoin depegs,
+        where a relative ``max_slippage_bps`` off a broken book would still convert.
+        """
+        if not amount > 0:
+            raise ValueError(f"[{self.exchange_name}] conversion amount must be positive, got {amount}")
+        if from_currency.upper() == to_currency.upper():
+            raise ValueError(f"[{self.exchange_name}] cannot convert {from_currency} into itself")
+        # unique per call: make_client_id only enforces the framework prefix (order ids get
+        # their uniqueness from the TradingManager's store), and this one is the venue's
+        # clientOrderId — a constant would be rejected as a duplicate on the second call
+        suffix = uuid.uuid4().hex[:8]
+        conversion_id = self.make_client_id(f"conv{from_currency.upper()[:6]}{to_currency.upper()[:6]}{suffix}")
+        self._spawn(
+            self._convert_currency(conversion_id, from_currency, to_currency, amount, limit_price, max_slippage_bps)
+        )
+        return conversion_id
+
+    async def _convert_currency(
+        self,
+        conversion_id: str,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        limit_price: float | None,
+        max_slippage_bps: float,
+    ) -> None:
+        """Run one conversion to a terminal record and emit it. Never raises: a failure the
+        caller cannot see is a conversion it would wait on forever."""
+        try:
+            record = await self._run_conversion(
+                conversion_id, from_currency, to_currency, amount, limit_price, max_slippage_bps
+            )
+            logger.info(f"[{self.exchange_name}] {record.status} conversion {record.to_dict()}")
+        except Exception as e:  # noqa: BLE001 — every failure is reported, not raised
+            reason = f"{type(e).__name__}: {e}"
+            logger.error(f"[{self.exchange_name}] conversion {conversion_id} FAILED — {reason}")
+            record = CurrencyConversion(
+                conversion_id=conversion_id,
+                exchange=self.exchange_name,
+                from_currency=from_currency,
+                to_currency=to_currency,
+                requested=amount,
+                filled_from=0.0,
+                filled_to=0.0,
+                status="FAILED",
+                failure_reason=reason,
+            )
+        self.send(CurrencyConversionEvent(instrument=None, conversion=record))
+
+    async def _run_conversion(
+        self,
+        conversion_id: str,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        limit_price: float | None,
+        max_slippage_bps: float,
+    ) -> CurrencyConversion:
+        ex = self._em.exchange
+        if not ex.markets:
+            # a trading-only connector (market data via xdata) may never have loaded them
+            await ex.load_markets()
+        symbol, side = self._conversion_market(from_currency, to_currency)
+
+        if limit_price is None:
+            # per-symbol, never the venue-wide fetch_bids_asks: that resolves its market type
+            # from defaultType (swap on a PM venue) and comes back without the spot pair
+            ticker = await ex.fetch_ticker(symbol)
+            top = ticker["bid"] if side == "sell" else ticker["ask"]
+            slippage = max_slippage_bps / 10_000
+            limit_price = top * (1 - slippage) if side == "sell" else top * (1 + slippage)
+
+        price = float(ex.price_to_precision(symbol, limit_price))
+        # amount is in from_currency: already the base on a sell, the budget to spend on a buy
+        # (bounded by the limit price, and truncated to the step so it can never exceed it).
+        qty = float(ex.amount_to_precision(symbol, amount if side == "sell" else amount / price))
+
+        market = ex.market(symbol)
+        min_amount = market["limits"]["amount"]["min"] or 0.0
+        min_notional = market["limits"]["cost"]["min"] or 0.0
+        if qty < min_amount or qty * price < min_notional:
+            raise ValueError(
+                f"{amount} {from_currency} is below {symbol}'s floor "
+                f"(min amount {min_amount}, min notional {min_notional})"
+            )
+
+        response = await ex.create_order(
+            symbol=symbol,
+            type="limit",
+            side=side,
+            amount=qty,
+            price=price,
+            params={"timeInForce": "IOC", "clientOrderId": conversion_id},
+        )
+        filled = float(response.get("filled") or 0.0)
+        cost = float(response.get("cost") or 0.0)
+        if filled <= 0:
+            status = "UNFILLED"
+        elif filled >= qty * (1 - 1e-9):
+            status = "FILLED"
+        else:
+            status = "PARTIAL"
+        if filled > 0:
+            # the venue moved cash the poller has not seen yet; a caller reading balances on
+            # its next tick must not act on the pre-conversion ones
+            self.request_snapshot(include_orders=False)
+        return CurrencyConversion(
+            conversion_id=conversion_id,
+            exchange=self.exchange_name,
+            from_currency=from_currency,
+            to_currency=to_currency,
+            requested=amount,
+            filled_from=filled if side == "sell" else cost,
+            filled_to=cost if side == "sell" else filled,
+            status=status,
+            avg_price=response.get("average"),
+            venue_order_id=str(response["id"]) if response.get("id") is not None else None,
+        )
+
+    def _conversion_market(self, from_currency: str, to_currency: str) -> tuple[str, str]:
+        """The venue's market for the pair and the side that spends ``from_currency``."""
+        ex = self._em.exchange
+        for symbol, side in ((f"{from_currency}/{to_currency}", "sell"), (f"{to_currency}/{from_currency}", "buy")):
+            if symbol in ex.markets:
+                return symbol, side
+        raise ValueError(f"no market to convert {from_currency} -> {to_currency}")
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
         try:

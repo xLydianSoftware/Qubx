@@ -59,6 +59,15 @@ class TestBinancePmRouting:
         finally:
             run(ex.close())
 
+    def test_spot_markets_stay_loaded_for_cash_conversion(self):
+        """convert_currency trades the venue's spot pair (USDC/USDT) on the papi margin
+        surface — dropping "spot" from fetchMarkets would leave it unresolvable."""
+        ex = _pm_exchange()
+        try:
+            assert "spot" in ex.options["fetchMarkets"]
+        finally:
+            run(ex.close())
+
     def test_watch_and_fetch_paths_resolve_linear(self):
         """The exact decisions watch_orders / fetch_open_orders make param-less: any
         non-linear outcome regresses to the spot ws-api / papi margin surfaces."""

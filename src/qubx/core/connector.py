@@ -18,6 +18,20 @@ class ChannelEmitter:
     def send(self, event: ChannelMessage) -> None:
         self.channel.send(event)
 
+    # Default for every connector whose venue has no cash market to convert on (simulation,
+    # and the venues that hold a single currency). Lives here rather than as a bare protocol
+    # member so an out-of-tree connector keeps satisfying IConnector without implementing it.
+    def convert_currency(
+        self,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        *,
+        limit_price: float | None = None,
+        max_slippage_bps: float = 10.0,
+    ) -> str:
+        raise NotImplementedError(f"{type(self).__name__} does not support currency conversion")
+
 
 @runtime_checkable
 class IMarketDataSink(Protocol):
@@ -92,3 +106,23 @@ class IConnector(Protocol):
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None: ...
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool: ...
+
+    # Cash, not exposure: swaps one currency for another on the venue's own market for the
+    # pair and is never registered with the AccountManager — the only trace it leaves is the
+    # balances of the next snapshot. Returns the conversion's id immediately (the venue round
+    # trip runs off-thread, so the ProcessorThread keeps draining) and emits EXACTLY ONE
+    # CurrencyConversionEvent per accepted call, failures included — only argument mistakes
+    # raise. ONE IOC attempt: nothing rests on the book, and a short fill comes back as a
+    # PARTIAL record, since only the caller knows how much it still needs once balances have
+    # moved. ``amount`` is denominated in ``from_currency``; ``limit_price`` (in the market's
+    # quote terms) bounds the fill absolutely, ``max_slippage_bps`` only relative to the book.
+    # Venues without a cash market raise NotImplementedError.
+    def convert_currency(
+        self,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        *,
+        limit_price: float | None = None,
+        max_slippage_bps: float = 10.0,
+    ) -> str: ...

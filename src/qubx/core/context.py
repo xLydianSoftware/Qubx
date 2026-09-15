@@ -865,6 +865,21 @@ class StrategyContext(IStrategyContext):
         # - one of the options is to have multiple entry levels in TargetPosition class
         return self._trading_manager.trade(instrument, amount, price, time_in_force, **options)
 
+    def convert_currency(
+        self,
+        exchange: str,
+        from_currency: str,
+        to_currency: str,
+        amount: float,
+        *,
+        limit_price: float | None = None,
+        max_slippage_bps: float = 10.0,
+    ) -> str:
+        self._assert_not_fit_thread("convert_currency")
+        return self._trading_manager.convert_currency(
+            exchange, from_currency, to_currency, amount, limit_price=limit_price, max_slippage_bps=max_slippage_bps
+        )
+
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         self._assert_not_fit_thread("submit_orders")
         return self._trading_manager.submit_orders(order_requests)
