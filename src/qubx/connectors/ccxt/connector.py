@@ -1101,17 +1101,16 @@ class CcxtConnector(ChannelEmitter):
 
     # Authoritative venue pull for the per-instrument settings
     def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        # - the poller's cache first: it already holds every symbol's configured leverage
-        #   and costs nothing, where the fallbacks below each block on a venue round trip
+        """The configured leverage, from the poller's cache only. Never blocks.
+
+        Cache-only because the 5s state snapshot reads this for every universe instrument on
+        the ProcessorThread: a venue round trip per instrument would park that thread for the
+        whole universe. The hourly poller (``_refresh_leverage_cache``, also run on connect)
+        and the write path's adopt-on-send keep the cache warm; None means it has not landed
+        yet, which is the interface's "unknown".
+        """
         cached = self._leverage_cache.get(instrument_to_ccxt_symbol(instrument))
-        if cached is not None and cached.configured is not None:
-            return float(cached.configured)
-        # - symbolConfig next: Binance v3 positionRisk has no `leverage` at all
-        leverage, _ = self._fetch_leverage_row(instrument)
-        if leverage is not None:
-            return leverage
-        row = self._fetch_position_row(instrument)
-        return info_float(row, "leverage") if row is not None else None
+        return float(cached.configured) if cached is not None and cached.configured is not None else None
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         """The venue's published maximum, from the poller's cache.

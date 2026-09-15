@@ -64,6 +64,14 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
     # happens to start with "qubx" reads as RECOVERED (unavoidable given the charset).
     cid_framework_prefix = _OKX_CLIENT_ID_RE.sub("", FRAMEWORK_CID_PREFIX)
 
+    # - ccxt symbols whose leverage fill is in flight, so a burst of reads for the same
+    #   symbol between the miss and the store schedules one venue call, not one per read
+    _leverage_fills: set[str]
+
+    def __init__(self, **kwargs: Any):
+        super().__init__(**kwargs)
+        self._leverage_fills = set()
+
     def _account_streams(self) -> list[Coroutine[Any, Any, None]]:
         """
         Watch the algo book as well: OKX streams trigger/conditional orders on their own channel.
@@ -133,29 +141,41 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
                 maximum=await self._read_max_leverage(symbol),
             )
 
+    def _schedule_leverage_fill(self, symbol: str) -> None:
+        """Ask OKX for one symbol's settings off-thread, at most once per symbol.
+
+        ``_store`` always leaves an entry behind, even when both reads answer None, so a
+        symbol the venue has nothing for is retried by the hourly refresh rather than by
+        every 5s snapshot read.
+        """
+        if symbol in self._leverage_cache or symbol in self._leverage_fills:
+            return
+        self._leverage_fills.add(symbol)
+        self._spawn(self._fill_leverage_entry(symbol))
+
+    async def _fill_leverage_entry(self, symbol: str) -> None:
+        try:
+            self._store(
+                symbol,
+                configured=await self._read_configured_leverage(symbol),
+                maximum=await self._read_max_leverage(symbol),
+            )
+        finally:
+            self._leverage_fills.discard(symbol)
+
     def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        """Read it from OKX when the cache and the position row have nothing, and keep it."""
+        """Cache only: entries land asynchronously on first ask, None until then."""
         leverage = super().get_instrument_leverage(instrument)
-        if leverage is not None:
-            return leverage
-        symbol = instrument_to_ccxt_symbol(instrument)
-        configured = self._run_sync(self._read_configured_leverage(symbol))
-        if configured is None:
-            return None
-        self._store(symbol, configured=configured)
-        return float(configured)
+        if leverage is None:
+            self._schedule_leverage_fill(instrument_to_ccxt_symbol(instrument))
+        return leverage
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        """Read the venue cap per symbol and keep it: the base's source does not exist here."""
-        cached = super().get_max_instrument_leverage(instrument)
-        if cached is not None:
-            return cached
-        symbol = instrument_to_ccxt_symbol(instrument)
-        maximum = self._run_sync(self._read_max_leverage(symbol))
+        """Cache only: entries land asynchronously on first ask, None until then."""
+        maximum = super().get_max_instrument_leverage(instrument)
         if maximum is None:
-            return None
-        self._store(symbol, maximum=maximum)
-        return float(maximum)
+            self._schedule_leverage_fill(instrument_to_ccxt_symbol(instrument))
+        return maximum
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         """Use OKX ``cashBal``/``frozenBal`` per currency from the raw response.
