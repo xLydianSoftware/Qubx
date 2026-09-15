@@ -5,9 +5,10 @@ from typing import Callable
 
 import pandas as pd
 
-from qubx.core.basics import DataType, Instrument, MarketType, Signal
-from qubx.core.interfaces import IStrategyContext
+from qubx.core.basics import DataType, Instrument, MarketType, Position, Signal
+from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.core.lookups import lookup
+from qubx.core.state_snapshot import position_entry
 from qubx.utils.time import to_timedelta, to_timestamp
 
 from .decorator import collect_state, collect_state_schema
@@ -48,6 +49,22 @@ def _rl(v: float) -> float:
 def _rms(v: float) -> float:
     """Round latency (ms) to 1 decimal."""
     return round(v, 1)
+
+
+def _rounded_position_entry(account: IAccountViewer, instrument: Instrument, position: Position) -> dict:
+    """``position_entry`` in this action's display contract: ``market_price`` rather than
+    ``current_price``, and every figure rounded. None passes through unrounded."""
+    entry = {
+        ("market_price" if k == "current_price" else k): v
+        for k, v in position_entry(account, instrument, position).items()
+    }
+    for key in ("unrealized_pnl", "market_value", "notional", "max_notional"):
+        if entry[key] is not None:
+            entry[key] = _rm(entry[key])
+    for key in ("leverage", "instrument_leverage", "max_instrument_leverage"):
+        if entry[key] is not None:
+            entry[key] = _rl(entry[key])
+    return entry
 
 
 # --- Universe actions ---
@@ -477,14 +494,7 @@ def _get_state(ctx: IStrategyContext, **kwargs) -> ActionResult:
         for instr, pos in positions.items():
             if pos.is_open():
                 open_positions += 1
-            positions_snapshot[instr.symbol] = {
-                "quantity": pos.quantity,
-                "avg_price": pos.position_avg_price,
-                "market_price": pos.last_update_price,
-                "unrealized_pnl": _rm(pos.unrealized_pnl()),
-                "market_value": _rm(pos.market_value_funds),
-                "leverage": _rl(account.get_leverage(instr)),
-            }
+            positions_snapshot[instr.symbol] = _rounded_position_entry(account, instr, pos)
 
         # Build balances snapshot
         balances_snapshot: dict[str, dict] = {}

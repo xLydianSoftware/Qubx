@@ -65,6 +65,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.core.state_snapshot import position_entry
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.state.dummy import DummyStatePersistence
 from qubx.state.runtime_info import RUNTIME_INFO_KEY, build_runtime_info
@@ -1603,14 +1604,7 @@ class ProcessingManager(IProcessingManager):
             for instr, pos in positions.items():
                 if pos.is_open():
                     open_positions += 1
-                positions_snapshot[instr.symbol] = {
-                    "quantity": pos.quantity,
-                    "avg_price": pos.position_avg_price,
-                    "market_value": pos.market_value_funds,
-                    "unrealized_pnl": pos.unrealized_pnl(),
-                    "current_price": pos.last_update_price,
-                    "leverage": account.get_leverage(instr),
-                }
+                positions_snapshot[instr.symbol] = position_entry(account, instr, pos)
 
             # Add order-only instruments (no position yet) to orders snapshot
             for symbol in orders_by_symbol:

@@ -39,6 +39,7 @@ def _make_mock_ctx():
     pos1.unrealized_pnl.return_value = 250.0
     pos1.r_pnl = 100.0
     pos1.market_value_funds = 34000.0
+    pos1.notional_value = 34000.0
     pos1.is_open.return_value = True
     pos2 = MagicMock()
     pos2.quantity = 0.0
@@ -47,12 +48,16 @@ def _make_mock_ctx():
     pos2.unrealized_pnl.return_value = 0.0
     pos2.r_pnl = 0.0
     pos2.market_value_funds = 0.0
+    pos2.notional_value = 0.0
     pos2.is_open.return_value = False
 
     ctx.get_positions.return_value = {instr1: pos1, instr2: pos2}
     account.get_positions.return_value = {instr1: pos1, instr2: pos2}
     account.get_orders.return_value = {}
     account.get_leverage.return_value = 0.34
+    account.get_instrument_leverage.return_value = None
+    account.get_max_instrument_leverage.return_value = None
+    account.get_max_instrument_notional.return_value = float("inf")
     account.get_total_capital.return_value = 10000.0
     account.get_available_margin.return_value = 9500.0
     account.get_net_leverage.return_value = 0.15
@@ -160,6 +165,27 @@ class TestGetState:
         assert "positions" in exch
         assert "orders" in exch
         assert "balances" in exch
+
+    def test_positions_carry_the_venue_settings(self):
+        """Same per-position entry as the 5s state snapshot, in this action's rounded
+        display form: `market_price` rather than `current_price`."""
+        ctx = _make_mock_ctx()
+        ctx.account.get_instrument_leverage.return_value = 3.0
+        ctx.account.get_max_instrument_leverage.return_value = 125.0
+        ctx.account.get_max_instrument_notional.return_value = float("inf")
+        _, handler = BUILTIN_ACTIONS["get_state"]
+
+        pos = handler(ctx).data["exchanges"]["BINANCE.UM"]["positions"]["BTCUSDT"]
+        assert "current_price" not in pos
+        assert pos["market_price"] == 68000.0
+        assert pos["quantity"] == 0.5
+        assert pos["unrealized_pnl"] == 250.0
+        assert pos["market_value"] == 34000.0
+        assert pos["notional"] == 34000.0
+        assert pos["instrument_leverage"] == 3.0
+        assert pos["max_instrument_leverage"] == 125.0
+        # inf is the account manager's "the venue publishes no cap"
+        assert pos["max_notional"] is None
 
     def test_includes_custom_state(self):
         ctx = _make_mock_ctx()
