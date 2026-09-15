@@ -236,17 +236,70 @@ def test_flapping_exchange_issues_no_reassert(rig):
     assert status.info.status is QubxStatus.NORMAL
 
 
-def test_dark_issues_no_repair(rig):
+def test_dark_issues_no_repair_before_the_first_probe(rig):
     """The 11:16 regression: 21 simultaneous subscribes tripped the venue's
-    message rate limit and cost the recovery."""
+    message rate limit and cost the recovery. Nothing is sent for the first
+    _DARK_PROBE_FIRST_TICKS - 1 dark ticks."""
     watchdog, monitor, status, clock, universe, provider = rig
     _subscribe_stale_pair(monitor, clock, universe)
 
-    watchdog.tick()
-    watchdog.tick()
-    watchdog.tick()
+    for _ in range(watchdog_module._DARK_PROBE_FIRST_TICKS - 1):
+        watchdog.tick()
 
     assert provider.unsubscribed == [] and provider.subscribed == []
+
+
+def test_dark_with_live_socket_probes_with_a_full_repair_at_doubling_gaps(rig):
+    """Verified live 2026-09-15: deafened handlers on an open socket held
+    EXCHANGE_MAINTENANCE for 75+ ticks with zero repair attempts, and a forced
+    re-assert changed nothing - on lighter a bare re-subscribe against an intact
+    registry is a no-op. The probe is a full unsubscribe -> subscribe of every
+    stale key, at dark tick 4, then 8, 16, 32, 64, then every 64."""
+    watchdog, monitor, status, clock, universe, provider = rig
+    btc, eth = _subscribe_stale_pair(monitor, clock, universe)
+
+    probes_at: list[int] = []
+    for tick in range(1, 200):
+        before = len(provider.unsubscribed)
+        watchdog.tick()
+        if len(provider.unsubscribed) > before:
+            probes_at.append(tick)
+
+    assert probes_at == [4, 8, 16, 32, 64, 128, 192]
+    assert provider.unsubscribed[0] == (DataType.ORDERBOOK, {btc, eth})
+    assert provider.subscribed[0] == (DataType.ORDERBOOK, {btc, eth})
+    assert status.info.is_degraded_for(EXCHANGE)  # maintenance held throughout
+
+
+def test_dark_with_dead_socket_never_probes(rig):
+    """A dead socket means the connector is reconnecting and will replay its own
+    channels; every probe would land on a venue that is still refusing us."""
+    watchdog, monitor, status, clock, universe, provider = rig
+    _subscribe_stale_pair(monitor, clock, universe)
+    monitor.set_is_connected(EXCHANGE, lambda: False)
+
+    for _ in range(100):
+        watchdog.tick()
+
+    assert provider.unsubscribed == [] and provider.subscribed == []
+    assert status.info.is_degraded_for(EXCHANGE)
+
+
+def test_dark_probe_heals_and_backoff_resets(rig):
+    watchdog, monitor, status, clock, universe, provider = rig
+    btc, eth = _subscribe_stale_pair(monitor, clock, universe)
+    state = watchdog._exchanges[EXCHANGE]
+
+    for _ in range(4):
+        watchdog.tick()
+    assert len(provider.unsubscribed) == 1  # the probe fired
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())  # probe worked
+    monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())
+
+    watchdog.tick()
+
+    assert status.info.status is QubxStatus.NORMAL
+    assert (state.dark_ticks, state.next_probe) == (0, 4)
 
 
 def test_partial_never_publishes_maintenance(rig):

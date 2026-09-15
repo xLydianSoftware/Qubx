@@ -246,11 +246,24 @@ Per tick, per exchange:
    `EXCHANGE_MAINTENANCE` only after holding for 2 consecutive ticks (§6); the hysteresis
    lives in the publication step, not here.
 
-   **On DARK, issue no per-instrument repair at all.** This is the 11:16 case where 21
-   simultaneous subscribes tripped `30009` and cost the recovery. Hold
+   **On DARK with a dead socket, issue no repair at all.** This is the 11:16 case where
+   21 simultaneous subscribes tripped `30009` and cost the recovery. Hold
    `EXCHANGE_MAINTENANCE`, wait, and re-assert that exchange **once** when data returns
    (`_reassert`, §3). The connector reconnects on its own; the watchdog's job while dark
    is to stop making it worse.
+
+   **On DARK with a live socket, probe.** `connected is not False` means the connector
+   sees nothing wrong and will never reconnect or replay its channels — yet nothing is
+   delivering. Verified live on 2026-09-15 with the `watchdog-smoke` rig: deafened
+   handlers on an open Lighter socket held `EXCHANGE_MAINTENANCE` for 75+ ticks with zero
+   repair attempts, and a forced `_reassert` changed nothing, because on Lighter a bare
+   re-subscribe against an intact registry is the bookkeeping no-op §3 describes. The
+   only in-process remedy is a full `_repair` of every stale key (unsubscribe → settle →
+   subscribe). It fires at dark tick `_DARK_PROBE_FIRST_TICKS` (4, i.e. 2 min at the 30s
+   tick), then at 8, 16, 32, 64, then every `_DARK_PROBE_CAP_TICKS` (64, i.e. 32 min). The
+   doubling is what bounds the
+   burst on a venue that may itself be throttling — two minutes into a *stable* socket is
+   not the 11:16 regime. Both counters reset the moment the exchange leaves DARK.
 
    *Naming note:* the third state is **PARTIAL**, not "DEGRADED". `QubxStatus.DEGRADED`
    already exists (`core/status.py:22-24`) and means the context is degraded — which is
@@ -445,7 +458,8 @@ is not usable as designed; this removes that sharp edge.
 | `subscribe` raises during repair | `_desired` intact; logged; retried next tick |
 | `unsubscribe` raises during repair | same; the provider may be left with a live stream the manager will re-assert |
 | repair succeeds but data does not resume, others on the venue are live | caught by verification (§4.3); retried indefinitely at capped backoff, reported at ERROR. Exchange stays tradeable (D5a) |
-| repair succeeds but data does not resume, whole venue dark | no repair attempted at all; `EXCHANGE_MAINTENANCE` held (§6) |
+| whole venue dark, socket dead | no repair attempted; `EXCHANGE_MAINTENANCE` held (§6); the connector's own reconnect + channel replay is the remedy |
+| whole venue dark, socket live | `EXCHANGE_MAINTENANCE` held; a full repair of every stale key is probed at dark tick 4, then at doubling gaps (§4.2) |
 | venue rejects the subscribe asynchronously | indistinguishable from the above, and handled identically — this is the `30009` case |
 | `NotSupported` | recorded in that exchange's `_ExchangeState.unsupported`, never retried |
 | sparse feed quiet but healthy | verification by advancement (§4.3) prevents the repair loop; backoff caps residual churn at `threshold/10` |
@@ -461,7 +475,7 @@ Unit, against a fake `IDataProvider` — the seam that does not exist today:
 2. Provider registry emptied behind the manager's back → the manager still reports the universe from `_desired`, and the watchdog's next repair restores it. **This is the incident, reduced to a test.**
 3. Repair "succeeds" but 2 of 5 orderbook instruments never deliver → retries double from one tick and **continue indefinitely** at the 1 min cap (`threshold/10`); log level climbs INFO → WARNING → ERROR; `EXCHANGE_MAINTENANCE` is **never** held and the exchange stays tradeable (D5a).
 3a. The same instruments recover at tick 20 → retries stop, backoff resets, no degradation was ever published.
-4. DARK exchange → zero `subscribe`/`unsubscribe` calls issued (the `30009` regression).
+4. DARK exchange → zero `subscribe`/`unsubscribe` calls for the first three ticks (the `30009` regression); with a dead socket, zero for 100 ticks; with a live socket, one full repair at ticks 4, 8, 16, 32, 64, then every 64.
 5. `NotSupported` → recorded once, never retried.
 6. (A) and (B) each independently hold `EXCHANGE_MAINTENANCE` after exactly 2 ticks, not 1; cleared after one delivering tick.
 7. `connected is None` does not trigger (A); `subscribed == 1` does not trigger (B).

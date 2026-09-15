@@ -27,6 +27,20 @@ _DARK_TICKS_BEFORE_MAINTENANCE = 2
 # and patient where they legitimately do not.
 _BACKOFF_CAP_DIVISOR = 10
 
+# DARK with a LIVE socket gets a full repair (unsubscribe -> subscribe of everything stale)
+# at dark tick 4, then 8, 16, 32, 64, then every 64. A dead socket
+# never probes: the connector reconnects and replays its own channels, and every probe would
+# land on a venue that is still refusing us. A live socket delivering nothing is the case the
+# connector cannot see - and on lighter a bare re-subscribe against an intact registry is a
+# bookkeeping no-op, so unsubscribe -> subscribe is the only in-process remedy. Verified live
+# 2026-09-15: without this, deafened handlers on an open socket held EXCHANGE_MAINTENANCE for
+# 75+ ticks with zero repair attempts, and a forced re-assert changed nothing. The doubling is
+# what bounds the burst on a venue that may itself be throttling - the 21-subscribe storm at
+# 11:16 on 2026-09-13 hit a venue still returning 30009; two minutes into a stable socket is a
+# different regime.
+_DARK_PROBE_FIRST_TICKS = 4
+_DARK_PROBE_CAP_TICKS = 64
+
 # Bound on stop()'s join. StrategyContext.stop() calls it AFTER the data providers are
 # closed, so an in-flight tick can be sitting in the settle sleep or blocking against a
 # just-closed provider; the thread is a daemon, so abandoning it is safer than hanging
@@ -60,6 +74,7 @@ class _ExchangeState:
     maintenance_held: bool = False
     repairs: dict[_Key, _RepairRecord] = field(default_factory=dict)
     unsupported: set[str] = field(default_factory=set)  # subscription keys the venue rejected
+    next_probe: int = _DARK_PROBE_FIRST_TICKS  # dark tick of the next live-socket probe
 
 
 def _base_type(sub: str) -> str:
@@ -177,6 +192,13 @@ class SubscriptionWatchdog:
             state.dark_ticks += 1
             if state.dark_ticks >= _DARK_TICKS_BEFORE_MAINTENANCE:
                 self._hold_maintenance(exchange, state, status)
+            if status.connected is not False and state.dark_ticks >= state.next_probe:
+                state.next_probe = min(state.next_probe * 2, state.next_probe + _DARK_PROBE_CAP_TICKS)
+                logger.warning(
+                    f"[{exchange}] :: dark for {state.dark_ticks} ticks with a live socket - "
+                    f"probing with a full repair (next at dark tick {state.next_probe})"
+                )
+                self._repair(state, policed, set(status.stale_keys))
             return
 
         # - gated on maintenance having actually been held (not merely "was dark for
@@ -186,6 +208,7 @@ class SubscriptionWatchdog:
         #   the 2026-09-13 recovery.
         recovering = state.dark_ticks >= _DARK_TICKS_BEFORE_MAINTENANCE
         state.dark_ticks = 0
+        state.next_probe = _DARK_PROBE_FIRST_TICKS
         self._clear_maintenance(exchange, state)
         if recovering:
             # - transport is back: re-assert everything on this exchange once, policed
