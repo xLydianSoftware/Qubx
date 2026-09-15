@@ -161,36 +161,40 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         """
         if symbol in self._leverage_probed or symbol in self._leverage_fills:
             return
+        # Marked in flight BEFORE the spawn: the loop thread can run the fill to completion
+        # inside this call, and a discard that lands before the add would leave the entry behind
+        # for the life of the process.
+        self._leverage_fills.add(symbol)
         coro = self._fill_leverage_entry(symbol)
         try:
             self._spawn(coro)
         except Exception as exc:  # noqa: BLE001 — the caller is a snapshot read
+            self._leverage_fills.discard(symbol)
             # close it, as _run_sync does, so a rejected schedule does not also surface as
             # "coroutine was never awaited"
             coro.close()
             logger.warning(f"[{self.exchange_name}] leverage fill for {symbol} not scheduled: {exc}")
-            return
-        # After the spawn: a fill that already finished has marked the symbol probed, which is
-        # what makes it final — the in-flight set only covers the window before that.
-        self._leverage_fills.add(symbol)
 
     async def _fill_leverage_entry(self, symbol: str) -> None:
         """One symbol's two venue reads, serialized against every other fill.
 
-        Marked probed whatever happens: ``_store`` leaves a cache entry behind even when both
-        reads answer None, so the hourly refresh — which iterates the cache — owns retries from
-        here, and a symbol the venue publishes nothing for is asked once, not every 5s tick.
+        Probed is marked with ``_store``, never in the ``finally``: the hourly refresh iterates
+        ``_leverage_cache``, so a symbol marked probed without a cache entry would be retried by
+        neither it nor the read path. A completed attempt always leaves an entry — ``_store``
+        writes one even when both reads answer None, which is what stops a symbol the venue
+        publishes nothing for being asked again on every 5s tick — while an abnormal exit
+        (cancellation) leaves the symbol to the next tick.
         """
         try:
             async with self._leverage_fill_lock:
                 configured = await self._read_configured_leverage(symbol)
-                await asyncio.sleep(self._leverage_fill_spacing_s)
                 maximum = await self._read_max_leverage(symbol)
                 self._store(symbol, configured=configured, maximum=maximum)
-                # still holding the lock: this is what spaces the NEXT fill's first read
+                self._leverage_probed.add(symbol)
+                # still holding the lock: this is what spaces the NEXT fill's first read. The two
+                # reads above need none between them — ccxt's own throttle already separates them.
                 await asyncio.sleep(self._leverage_fill_spacing_s)
         finally:
-            self._leverage_probed.add(symbol)
             self._leverage_fills.discard(symbol)
 
     def get_instrument_leverage(self, instrument: Instrument) -> float | None:

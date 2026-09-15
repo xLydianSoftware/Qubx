@@ -410,6 +410,13 @@ class TestLeverageReads:
         )
         # No _run_sync stub: a read that blocked again would reach the Mock exchange's loop
         # and fail loudly instead of quietly passing.
+        #
+        # `run()` uses a fresh loop per call while `_leverage_fill_lock` binds to the first loop
+        # that CONTENDS it, so a test that contends the lock must not then drive the same
+        # connector on another loop — build a fresh connector for that. (Production is unaffected:
+        # the connector's loop is fixed for its life — see `_loop` at connector.py:230, the loop
+        # captured once into `factory_params` at factory.py:123 and reused by every
+        # `_create_exchange`, and `disconnect()` which never tears it down.)
         captured: list = []
         connector._spawn = lambda coro: captured.append(coro)  # type: ignore[method-assign]
         connector._captured = captured  # type: ignore[attr-defined]
@@ -423,6 +430,14 @@ class TestLeverageReads:
         connector._captured.clear()  # type: ignore[attr-defined]
         for coro in scheduled:
             run(coro)
+
+    @staticmethod
+    def _discard(connector: OkxCcxtConnector) -> None:
+        """Drop fills a test deliberately never drives. An open coroutine surfaces as a
+        `never awaited` RuntimeWarning from pytest's gc, attributed to a later, unrelated test."""
+        for coro in connector._captured:  # type: ignore[attr-defined]
+            coro.close()
+        connector._captured.clear()  # type: ignore[attr-defined]
 
     @staticmethod
     def _exchange(**overrides) -> Mock:
@@ -455,6 +470,7 @@ class TestLeverageReads:
         connector = self._connector(exchange)
         assert connector.get_instrument_leverage(self._instrument()) is None
         exchange.fetch_leverage.assert_not_awaited()
+        self._discard(connector)
 
     def test_the_scheduled_fill_lands_and_the_next_read_returns_it(self):
         exchange = self._exchange()
@@ -566,6 +582,34 @@ class TestLeverageReads:
         assert connector.get_instrument_leverage(instrument) is None
         self._drive(connector)
         assert connector.get_instrument_leverage(instrument) == 5.0
+
+    def test_a_fill_that_finishes_inside_the_schedule_leaves_no_in_flight_entry(self):
+        """The loop thread can run the whole fill before the caller's next bytecode. Marking in
+        flight after the spawn would let the fill's discard land first and strand the entry."""
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._spawn = run  # completes the coroutine before returning
+
+        assert connector.get_instrument_leverage(self._instrument()) is None
+
+        assert connector._leverage_fills == set()
+        assert connector._leverage_probed == {"BTC/USDT:USDT"}
+        assert connector.get_instrument_leverage(self._instrument()) == 5.0
+
+    def test_a_cancelled_fill_leaves_the_symbol_unprobed(self):
+        """Probed has to mean "`_store` ran": the hourly refresh iterates the cache, so a symbol
+        marked probed with no cache entry would be retried by neither it nor the read path."""
+        exchange = self._exchange(fetch_leverage=AsyncMock(side_effect=asyncio.CancelledError))
+        connector = self._connector(exchange)
+        instrument = self._instrument()
+        connector.get_instrument_leverage(instrument)
+
+        with pytest.raises(asyncio.CancelledError):
+            self._drive(connector)
+
+        assert connector._leverage_probed == set()
+        assert connector._leverage_fills == set()
+        assert connector._leverage_cache == {}
 
     def test_the_fills_are_serialized_one_at_a_time(self):
         """They share ccxt's REST queue with order placement; the first post-warmup tick asks
