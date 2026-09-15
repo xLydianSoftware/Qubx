@@ -890,6 +890,28 @@ def test_get_max_instrument_notional_reads_position_row() -> None:
     assert conn.get_max_instrument_notional(_instrument()) == 1_000_000.0
 
 
+def test_get_max_instrument_notional_prefers_symbol_config() -> None:
+    """symbolConfig first: `maxNotionalValue` is v2-only on positionRisk, so Binance v3 leaves
+    the position row without it. `_fetch_leverage_row` is the only reader of that endpoint."""
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(
+        return_value={
+            "BTC/USDT:USDT": {
+                "symbol": "BTC/USDT:USDT",
+                "longLeverage": 7,
+                "info": {"maxNotionalValue": "2000000"},
+            }
+        }
+    )
+    exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_max_instrument_notional(_instrument()) == 2_000_000.0
+    exchange.fetch_leverages.assert_awaited_once_with(["BTC/USDT:USDT"])
+    exchange.fetch_positions.assert_not_awaited()
+
+
 def test_get_margin_mode_reads_position_row() -> None:
     exchange = Mock()
     exchange.fetch_positions = AsyncMock(return_value=[_position_row(marginMode="cross")])

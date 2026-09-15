@@ -400,6 +400,7 @@ class TestLeverageReads:
     def _connector(exchange: Mock) -> OkxCcxtConnector:
         exchange_manager = Mock()
         exchange_manager.exchange = exchange
+        exchange_manager.rate_limiter = None
         connector = OkxCcxtConnector(
             exchange_name="OKX.F",
             channel=Mock(spec=CtrlChannel),
@@ -412,15 +413,16 @@ class TestLeverageReads:
         captured: list = []
         connector._spawn = lambda coro: captured.append(coro)  # type: ignore[method-assign]
         connector._captured = captured  # type: ignore[attr-defined]
+        connector._leverage_fill_spacing_s = 0.0
         return connector
 
     @staticmethod
     def _drive(connector: OkxCcxtConnector) -> None:
         """Run the fills the reads scheduled, the way the exchange loop would."""
-        loop = asyncio.new_event_loop()
-        for coro in connector._captured:  # type: ignore[attr-defined]
-            loop.run_until_complete(coro)
+        scheduled = list(connector._captured)  # type: ignore[attr-defined]
         connector._captured.clear()  # type: ignore[attr-defined]
+        for coro in scheduled:
+            run(coro)
 
     @staticmethod
     def _exchange(**overrides) -> Mock:
@@ -519,15 +521,84 @@ class TestLeverageReads:
         connector.get_instrument_leverage(self._instrument())
         self._drive(connector)
         exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 7, "shortLeverage": 7})
-        asyncio.new_event_loop().run_until_complete(connector._refresh_leverage_cache())
+        run(connector._refresh_leverage_cache())
         cached = connector._leverage_cache["BTC/USDT:USDT"]
         assert (cached.configured, cached.maximum) == (7, 125)
 
     def test_the_poller_reads_nothing_when_the_cache_is_empty(self):
         exchange = self._exchange()
         connector = self._connector(exchange)
-        asyncio.new_event_loop().run_until_complete(connector._refresh_leverage_cache())
+        run(connector._refresh_leverage_cache())
         assert exchange.fetch_leverage.await_count == 0
+
+    def test_an_adopted_write_does_not_suppress_the_tier_read(self):
+        """`set_instrument_leverage` seats `configured` with `maximum` still None. Gating the
+        fill on a cache entry would leave the venue cap null fleet-wide until the hourly
+        sweep, since the default-leverage apply writes one for every universe instrument."""
+        exchange = self._exchange()
+        exchange.set_leverage = AsyncMock(return_value={})
+        connector = self._connector(exchange)
+        instrument = self._instrument()
+
+        connector.set_instrument_leverage(instrument, 10.0)
+        self._drive(connector)
+        assert connector._leverage_cache["BTC/USDT:USDT"].maximum is None
+
+        assert connector.get_max_instrument_leverage(instrument) is None
+        assert len(connector._captured) == 1
+        self._drive(connector)
+
+        assert connector.get_max_instrument_leverage(instrument) == 125.0
+
+    def test_a_loop_that_is_gone_neither_raises_nor_wedges_the_symbol(self):
+        """The read runs on the ProcessorThread inside the 5s snapshot: raising there loses the
+        tick for every exchange, and leaving the symbol marked in flight loses it for good."""
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._spawn = Mock(side_effect=RuntimeError("Event loop is closed"))
+        instrument = self._instrument()
+
+        assert connector.get_instrument_leverage(instrument) is None
+        assert connector._leverage_fills == set()
+        assert connector._leverage_probed == set()
+
+        connector._spawn = lambda coro: connector._captured.append(coro)
+        assert connector.get_instrument_leverage(instrument) is None
+        self._drive(connector)
+        assert connector.get_instrument_leverage(instrument) == 5.0
+
+    def test_the_fills_are_serialized_one_at_a_time(self):
+        """They share ccxt's REST queue with order placement; the first post-warmup tick asks
+        for the whole universe at once."""
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        in_flight = 0
+        peak = 0
+
+        async def _read(symbol):
+            nonlocal in_flight, peak
+            in_flight += 1
+            peak = max(peak, in_flight)
+            await asyncio.sleep(0)
+            in_flight -= 1
+            return 5
+
+        connector._read_configured_leverage = _read
+        connector._read_max_leverage = _read
+
+        symbols = ["BTC/USDT:USDT", "ETH/USDT:USDT", "SOL/USDT:USDT"]
+        for symbol in symbols:
+            connector._schedule_leverage_fill(symbol)
+        scheduled = list(connector._captured)
+        connector._captured.clear()
+
+        async def _all_at_once():
+            await asyncio.gather(*scheduled)
+
+        run(_all_at_once())
+
+        assert peak == 1
+        assert set(connector._leverage_probed) == set(symbols)
 
 
 class TestOrderBookChecksumDisabled:
