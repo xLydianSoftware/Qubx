@@ -1012,6 +1012,46 @@ class Transfer:
         }
 
 
+@dataclass(frozen=True)
+class CurrencyConversion:
+    """The outcome of one ``IConnector.convert_currency`` call: cash swapped at a venue.
+
+    Delivered to ``IStrategy.on_currency_conversion`` — exactly one record per accepted
+    ``convert_currency`` call, whatever happened. Not an order and not a position: the venue
+    trade behind it is never registered with the AccountManager, so the only trace it leaves
+    in the framework is the balances of the next account snapshot. A partial or empty fill is
+    a normal outcome (the conversion is submitted IOC) and so is FAILED — reported here rather
+    than raised, so a caller tracking a pending conversion always gets its answer.
+    """
+
+    conversion_id: str  # the id convert_currency returned, and the venue order's client id
+    exchange: str
+    from_currency: str
+    to_currency: str
+    requested: float  # in from_currency, as asked (before rounding to the market's step)
+    filled_from: float  # spent, in from_currency
+    filled_to: float  # received, in to_currency
+    status: Literal["FILLED", "PARTIAL", "UNFILLED", "FAILED"]
+    avg_price: float | None = None  # venue fill price of the market's own pair, None when unfilled
+    venue_order_id: str | None = None
+    failure_reason: str | None = None  # populated when status is FAILED
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "conversion_id": self.conversion_id,
+            "exchange": self.exchange,
+            "from_currency": self.from_currency,
+            "to_currency": self.to_currency,
+            "requested": self.requested,
+            "filled_from": self.filled_from,
+            "filled_to": self.filled_to,
+            "status": self.status,
+            "avg_price": self.avg_price,
+            "venue_order_id": self.venue_order_id,
+            "failure_reason": self.failure_reason,
+        }
+
+
 DEFAULT_MAINTENANCE_MARGIN = 0.05
 
 # - venue leverage applied to every perp on universe add unless the config or the strategy says

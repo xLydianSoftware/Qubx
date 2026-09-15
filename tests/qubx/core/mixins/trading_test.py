@@ -5,7 +5,14 @@ import pandas as pd
 import pytest
 
 from qubx.core.account_manager import SimulatedAccountManager
-from qubx.core.basics import Instrument, MarketType, Order, OrderOrigin, OrderStatus, Position
+from qubx.core.basics import (
+    Instrument,
+    MarketType,
+    Order,
+    OrderOrigin,
+    OrderStatus,
+    Position,
+)
 from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
 from qubx.core.exceptions import (
     InvalidOrderSize,
@@ -1141,3 +1148,29 @@ class TestTradingWhileDegraded:
         tm = self._tm(mock_connector, mock_account, QubxStatusInfo(QubxStatus.NORMAL))
 
         assert tm.trade(instrument, 1.0) is not None
+
+
+class TestConvertCurrency:
+    """Cash conversion routes to the named venue's connector and returns its id."""
+
+    def test_routes_to_the_connector_for_the_exchange(self, trading_manager, mock_connector):
+        mock_connector.convert_currency = Mock(return_value="conv-1")
+
+        result = trading_manager.convert_currency("BINANCE.UM", "USDC", "USDT", 6844.38, limit_price=0.995)
+
+        assert result == "conv-1"  # the id the outcome event will carry
+        mock_connector.convert_currency.assert_called_once_with(
+            "USDC", "USDT", 6844.38, limit_price=0.995, max_slippage_bps=10.0
+        )
+
+    def test_unknown_exchange_raises(self, trading_manager):
+        with pytest.raises(ValueError, match="KRAKEN"):
+            trading_manager.convert_currency("KRAKEN", "USDC", "USDT", 100.0)
+
+    def test_blocked_when_read_only(self, read_only_trading_manager, mock_connector):
+        mock_connector.convert_currency = Mock()
+
+        with pytest.raises(ReadOnlyConnector):
+            read_only_trading_manager.convert_currency("BINANCE.UM", "USDC", "USDT", 100.0)
+
+        mock_connector.convert_currency.assert_not_called()

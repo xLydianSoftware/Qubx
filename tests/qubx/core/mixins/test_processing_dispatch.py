@@ -6,11 +6,12 @@ import pytest
 
 from qubx import logger
 from qubx.core.account_manager.reducer import ApplyResult
-from qubx.core.basics import DataType, Deal, FundingPayment, MarketEvent, OrderChange
+from qubx.core.basics import CurrencyConversion, DataType, Deal, FundingPayment, MarketEvent, OrderChange
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
     BalanceUpdateEvent,
+    CurrencyConversionEvent,
     DealEvent,
     FundingPaymentEvent,
     OrderAcceptedEvent,
@@ -776,3 +777,48 @@ def test_raising_gatherer_on_order_does_not_halt_dispatch():
     pm._strategy.on_position_change.assert_called_once()
     pm._position_gathering.on_position_change.assert_called_once()
     assert any(name == "strategy_callback_errors" for name, _, _ in emitter.calls)
+
+
+def _conversion(status: str = "FILLED") -> CurrencyConversion:
+    return CurrencyConversion(
+        conversion_id="conv1",
+        exchange="BINANCE.PM",
+        from_currency="USDC",
+        to_currency="USDT",
+        requested=6844.38,
+        filled_from=6844.0,
+        filled_to=6845.37,
+        status=status,  # type: ignore[arg-type]
+    )
+
+
+def test_currency_conversion_routes_to_the_strategy_and_never_to_the_account_manager():
+    # A conversion moves cash, not exposure: the AM must never see it (it would become an
+    # order and a position), and the strategy gets the record as it stands.
+    pm = make_pm()
+    record = _conversion()
+
+    pm.process_event(CurrencyConversionEvent(instrument=None, conversion=record))
+
+    pm._account_manager.apply.assert_not_called()
+    pm._strategy.on_currency_conversion.assert_called_once()
+    assert pm._strategy.on_currency_conversion.call_args.args[1] is record
+
+
+def test_failed_conversion_fires_the_same_callback():
+    # One guaranteed path per conversion: a caller clearing a pending flag must not have to
+    # watch two callbacks, or a failure leaves it pending forever.
+    pm = make_pm()
+    record = _conversion(status="FAILED")
+
+    pm.process_event(CurrencyConversionEvent(instrument=None, conversion=record))
+
+    pm._strategy.on_currency_conversion.assert_called_once()
+    assert pm._strategy.on_currency_conversion.call_args.args[1].status == "FAILED"
+
+
+def test_strategy_raising_in_on_currency_conversion_is_isolated():
+    pm = make_pm()
+    pm._strategy.on_currency_conversion.side_effect = RuntimeError("boom")
+
+    pm.process_event(CurrencyConversionEvent(instrument=None, conversion=_conversion()))  # must not raise

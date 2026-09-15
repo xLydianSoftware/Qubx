@@ -6,6 +6,7 @@ import numpy as np
 from qubx.core.basics import (
     Balance,
     Bar,
+    CurrencyConversion,
     Deal,
     FundingRate,
     Instrument,
@@ -201,6 +202,19 @@ class AccountSnapshot:
 @msg
 class AccountSnapshotEvent(AccountMessage):
     snapshot: AccountSnapshot
+
+
+@msg
+class CurrencyConversionEvent(ChannelMessage):
+    """Outcome of one ``IConnector.convert_currency`` — cash swapped at a venue.
+
+    Deliberately NOT an AccountMessage: the swap moves balances, not exposure, and
+    AccountManager.apply() is typed to accept only account messages, so staying off that
+    marker is what keeps it from being booked as an order and a position. ProcessingManager
+    routes it straight to ``IStrategy.on_currency_conversion``.
+    """
+
+    conversion: CurrencyConversion
 
 
 @msg

@@ -373,6 +373,7 @@ class FitContext(ITimeProvider):
     set_default_instrument_leverage = _denied("set_default_instrument_leverage")
     set_margin_mode = _denied("set_margin_mode")
     transfer_funds = _denied("transfer_funds")
+    convert_currency = _denied("convert_currency")
     # subscription/schedule plumbing with no deferred story (on_init-time concerns)
     set_base_subscription = _denied("set_base_subscription", "an on_init-time setting")
     set_warmup = _denied("set_warmup", "an on_init-time setting")

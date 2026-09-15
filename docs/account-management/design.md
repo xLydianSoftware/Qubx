@@ -349,11 +349,44 @@ terminal retention 30s, history ring 10k.
 One protocol (`core/connector.py`): `submit_order`, `cancel_order` / `update_order` /
 `request_order_status` (addressed by **either id** — the connector picks the id the venue
 accepts), `request_snapshot`, `is_ws_ready` / `reconnect` / `connect` / `disconnect`,
-`make_client_id`, `set_instrument_leverage` / `set_margin_mode`. Live
+`make_client_id`, `set_instrument_leverage` / `set_margin_mode`, `convert_currency`. Live
 connectors resolve via the `ConnectorRegistry` (`@connector("name")`) — a new venue is
 one IConnector + a registry entry. The connector is a **pure adapter**: its only outbound
 surface is `send(event)` on the channel; it holds no AM/PM reference. Connectors stay
 dumb — the reducer correlates deals to orders, absorbing split-stream stitching.
+
+### Cash conversion (`convert_currency`)
+
+The one venue write that is **not** an order. It swaps currencies on the venue's own market
+for the pair (`USDC/USDT`, bought or sold depending on which side the caller is spending) and
+is never registered with the AccountManager: no order, no position, no deal — the change
+reaches the framework only as the balances of the next snapshot, which the connector requests
+itself once something fills. Modelling it as a trade would misfile it everywhere downstream:
+`gross_leverage` sums every position's notional, the reconciler sees a local position the
+venue's positionRisk never reports (`LocalPositionMissing` → a synthesized close), and a
+strategy that closes unhedged positions would convert straight back.
+
+**It does not block.** `convert_currency` returns a conversion id and fires the venue round
+trip on the exchange loop, so the ProcessorThread keeps draining its queue — fills and quotes
+never queue behind a cash swap. The outcome comes back as a `CurrencyConversionEvent`, which
+`ProcessingManager.process_event` routes to `IStrategy.on_currency_conversion`. The event is
+deliberately **not** an `AccountMessage`: that marker is what `AccountManager.apply()` accepts,
+so staying off it is the structural guarantee that a conversion never becomes an order.
+
+**Exactly one record per accepted call** — `FILLED` / `PARTIAL` / `UNFILLED` / `FAILED`, the
+last carrying `failure_reason`. Failures ride the same callback rather than `on_error`: a
+caller clearing a pending flag must not have to watch two paths, or a refusal leaves it
+pending forever. Only argument mistakes (non-positive amount, a currency into itself) raise
+synchronously; anything venue-dependent — an unlisted pair, a notional below the market's
+floor, a venue refusal — arrives as a `FAILED` record, since resolving those needs the
+markets loaded.
+
+Exactly ONE IOC attempt, never retried: nothing rests on the book, so the record is the whole
+outcome and there is nothing to cancel or reconcile, and only the caller knows how much it
+still needs once the balances have moved. `limit_price` bounds the fill absolutely (the guard
+that holds when a stablecoin depegs); `max_slippage_bps` only bounds it relative to a book a
+depeg has already moved. The default in `ChannelEmitter` raises `NotImplementedError`, so a
+venue with no cash market — simulation included — stays conformant without implementing it.
 
 ### Rejection boundary
 
