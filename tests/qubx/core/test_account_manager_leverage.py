@@ -275,3 +275,47 @@ def test_instrument_leverage_prefers_the_snapshot_over_the_connector():
 
     assert am.get_instrument_leverage(inst) == 5.0
     am._connectors["binance"].get_instrument_leverage.assert_not_called()
+
+
+# ---- explicit sets pin against the default apply ---------------------------- #
+
+
+def test_an_explicit_set_pins_the_instrument():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am.set_instrument_leverage(inst, 7.0)
+    assert am._pinned_leverage == {inst: 7.0}
+
+
+def test_the_default_apply_skips_pinned_instruments_and_still_sends_the_rest():
+    """LiveConfig re-applies the default to the WHOLE universe on every set_universe, so
+    without the pin an operator's per-instrument edit is reverted at the next rotation."""
+    am = _am()
+    pinned = _instrument("BTCUSDT")
+    other = _instrument("ETHUSDT")
+    am.set_instrument_leverage(pinned, 7.0)
+    connector = am._connectors["binance"]
+    connector.set_instrument_leverage.reset_mock()
+
+    am.set_default_instrument_leverage(3.0)
+    am.apply_default_instrument_leverage([pinned, other])
+
+    connector.set_instrument_leverage.assert_called_once_with(other, 3.0)
+
+
+def test_the_default_apply_does_not_pin_what_it_touches():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am.apply_default_instrument_leverage([inst])  # default is None here: nothing sent
+    am.set_default_instrument_leverage(3.0)
+    am.apply_default_instrument_leverage([inst])
+
+    assert am._pinned_leverage == {}
+
+
+def test_a_second_explicit_set_replaces_the_pin():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am.set_instrument_leverage(inst, 7.0)
+    am.set_instrument_leverage(inst, 12.0)
+    assert am._pinned_leverage == {inst: 12.0}

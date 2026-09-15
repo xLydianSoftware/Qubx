@@ -290,16 +290,24 @@ class TestBuiltinRegistry:
 
     def test_dangerous_actions_are_marked(self):
         dangerous = {
-            "trade", "set_target_position", "set_target_leverage", "close_position",
-            "close_positions", "emit_signal", "remove_instruments", "set_universe",
-            "settle_position", "trigger_fit",
+            "trade",
+            "set_target_position",
+            "set_target_leverage",
+            "set_instrument_leverage",
+            "close_position",
+            "close_positions",
+            "emit_signal",
+            "remove_instruments",
+            "set_universe",
+            "settle_position",
+            "trigger_fit",
         }
         for name in dangerous:
             action_def, _ = BUILTIN_ACTIONS[name]
             assert action_def.dangerous is True, f"{name} should be dangerous"
 
     def test_expected_action_count(self):
-        assert len(BUILTIN_ACTIONS) == 28
+        assert len(BUILTIN_ACTIONS) == 29
 
 
 def test_refresh_instrument_service_registered_as_write_action():
@@ -353,3 +361,79 @@ def test_settle_position_action_errors_on_unknown_symbol():
     result = handler(ctx, symbol="NOPEUSDT")
     assert result.status == "error"
     ctx.settle_position.assert_not_called()
+
+
+class TestSetInstrumentLeverage:
+    """The venue-configured per-symbol cap, not a trade — see set_target_leverage for that."""
+
+    @staticmethod
+    def _handler():
+        return BUILTIN_ACTIONS["set_instrument_leverage"][1]
+
+    def test_sends_the_request_and_reports_what_it_replaced(self):
+        ctx = _make_mock_ctx()
+        ctx.get_max_instrument_leverage.return_value = 50.0
+        ctx.get_instrument_leverage.return_value = 3.0
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=10.0)
+
+        assert result.status == "ok"
+        assert result.data == {
+            "exchange": "BINANCE.UM",
+            "symbol": "BTCUSDT",
+            "requested": 10.0,
+            "previous": 3.0,
+            "max": 50.0,
+        }
+        ctx.set_instrument_leverage.assert_called_once_with(ctx.instruments[0], 10.0)
+
+    def test_a_sub_one_leverage_is_refused(self):
+        ctx = _make_mock_ctx()
+        ctx.get_max_instrument_leverage.return_value = 50.0
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=0.5)
+
+        assert result.status == "error"
+        assert "must be >= 1" in result.error
+        ctx.set_instrument_leverage.assert_not_called()
+
+    def test_above_the_venue_maximum_is_refused_not_clamped(self):
+        ctx = _make_mock_ctx()
+        ctx.get_max_instrument_leverage.return_value = 20.0
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=50.0)
+
+        assert result.status == "error"
+        assert "exceeds the venue maximum 20.0x" in result.error
+        ctx.set_instrument_leverage.assert_not_called()
+
+    def test_an_unknown_maximum_sends_it_as_asked(self):
+        """None means the venue publishes no cap or it has not been read yet — the venue
+        still enforces its own, and refuses on the channel."""
+        ctx = _make_mock_ctx()
+        ctx.get_max_instrument_leverage.return_value = None
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=50.0)
+
+        assert result.status == "ok"
+        assert result.data["max"] is None
+        ctx.set_instrument_leverage.assert_called_once_with(ctx.instruments[0], 50.0)
+
+    def test_an_instrument_outside_the_universe_is_refused(self):
+        ctx = _make_mock_ctx()
+        ctx.instruments = [ctx.instruments[1]]  # ETHUSDT only; BTCUSDT still resolves
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=10.0)
+
+        assert result.status == "error"
+        assert "not in the universe" in result.error
+        ctx.set_instrument_leverage.assert_not_called()
+
+    def test_an_unknown_symbol_is_refused(self):
+        ctx = _make_mock_ctx()
+
+        result = self._handler()(ctx, symbol="NOPEUSDT", exchange="BINANCE.UM", leverage=10.0)
+
+        assert result.status == "error"
+        assert "not found on BINANCE.UM" in result.error
+        ctx.set_instrument_leverage.assert_not_called()

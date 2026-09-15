@@ -682,6 +682,44 @@ def _set_target_leverage(
         return ActionResult(status="error", error=str(e))
 
 
+def _set_instrument_leverage(
+    ctx: IStrategyContext, symbol: str, exchange: str, leverage: float, **kwargs
+) -> ActionResult:
+    """Change the venue-configured leverage for one instrument.
+
+    Not a trade: this moves the per-symbol cap the exchange enforces, which also drives the
+    initial-margin requirement and the max position notional.
+    """
+    instrument = _resolve(ctx, symbol, exchange)
+    if instrument is None:
+        return ActionResult(status="error", error=f"instrument {symbol} not found on {exchange}")
+    if instrument not in ctx.instruments:
+        return ActionResult(status="error", error=f"{symbol} is not in the universe")
+    if leverage < 1:
+        return ActionResult(status="error", error=f"leverage must be >= 1, got {leverage}")
+    maximum = ctx.get_max_instrument_leverage(instrument)
+    if maximum is not None and leverage > maximum:
+        # refuse, never clamp: silently trading a leverage nobody asked for is worse than a no-op
+        return ActionResult(status="error", error=f"{leverage}x exceeds the venue maximum {maximum}x for {symbol}")
+
+    previous = ctx.get_instrument_leverage(instrument)
+    ctx.set_instrument_leverage(instrument, leverage)
+    return ActionResult(
+        status="ok",
+        message=(
+            f"requested {leverage:g}x for {symbol} on {exchange}; the venue confirms "
+            f"asynchronously and the state snapshot reflects it within ~10s"
+        ),
+        data={
+            "exchange": exchange,
+            "symbol": symbol,
+            "requested": leverage,
+            "previous": previous,
+            "max": maximum,
+        },
+    )
+
+
 def _close_position(ctx: IStrategyContext, symbol: str, exchange: str | None = None, **kwargs) -> ActionResult:
     instr = _resolve(ctx, symbol, exchange)
     if instr is None:
@@ -1132,6 +1170,23 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             ],
         ),
         _set_target_leverage,
+    ),
+    "set_instrument_leverage": (
+        ActionDef(
+            name="set_instrument_leverage",
+            description=(
+                "Set the venue-configured leverage for one instrument — the per-symbol cap the "
+                "exchange enforces. Not a trade: set_target_leverage trades to a leverage."
+            ),
+            category="trading",
+            dangerous=True,
+            params=[
+                ActionParam(name="symbol", type="string", description="Trading instrument symbol"),
+                ActionParam(name="exchange", type="string", description="Exchange the instrument trades on"),
+                ActionParam(name="leverage", type="number", description=">= 1 and <= the venue maximum"),
+            ],
+        ),
+        _set_instrument_leverage,
     ),
     "close_position": (
         ActionDef(
