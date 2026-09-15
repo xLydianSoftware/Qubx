@@ -39,6 +39,13 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
     # account-wide on a UTA, so one value serves every instrument
     _margin_mode: Literal["cross", "isolated"] | None = None
 
+    def _trade_client_id(self, raw: dict[str, Any]) -> str | None:
+        """Bybit's execution frame carries ``orderLinkId``; ccxt keeps it on ``info``.
+
+        Empty for an order placed outside the framework, which then materializes as EXTERNAL.
+        """
+        return (raw.get("info") or {}).get("orderLinkId") or None
+
     async def _fill_leverage_settings(self, positions: list[Position]) -> None:
         await super()._fill_leverage_settings(positions)
         await self._fill_margin_mode(positions)

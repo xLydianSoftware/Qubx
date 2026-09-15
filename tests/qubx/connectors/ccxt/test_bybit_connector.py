@@ -323,3 +323,44 @@ def _trade_row(**overrides) -> dict:
     }
     row.update(overrides)
     return row
+
+
+def _ws_trade(order_link_id: str = "qubx_BTCUSDT_17894222596", **info) -> dict:
+    """One ccxt parse_ws_trade row: the raw bybit execution frame rides on ``info``."""
+    return {
+        "info": {"orderLinkId": order_link_id, "execId": "e1", **info},
+        "id": "e1",
+        "order": "v-596",
+        "symbol": BTC,
+        "timestamp": 1789399260861,
+        "amount": 0.8,
+        "price": 11.0,
+        "side": "buy",
+        "takerOrMaker": "taker",
+    }
+
+
+def test_ws_trade_carries_the_client_order_id():
+    """A fill can beat its own submit ack; without the cid it would resolve only by venue id and
+    materialize a phantom EXTERNAL order that absorbs the fill."""
+    conn, sent, _ = _make_connector()
+    conn._instrument_for_symbol = Mock(return_value=_instrument())
+
+    conn._handle_ws_trade(_ws_trade())
+
+    assert len(sent) == 1
+    assert sent[0].client_order_id == "qubx_BTCUSDT_17894222596"
+    assert sent[0].venue_order_id == "v-596"
+    assert sent[0].deal.amount == 0.8
+
+
+def test_an_externally_placed_order_still_has_no_client_id():
+    """bybit leaves orderLinkId empty for an order placed outside the framework — it must keep
+    materializing as EXTERNAL rather than claiming a cid."""
+    conn, sent, _ = _make_connector()
+    conn._instrument_for_symbol = Mock(return_value=_instrument())
+
+    conn._handle_ws_trade(_ws_trade(order_link_id=""))
+
+    assert len(sent) == 1
+    assert sent[0].client_order_id is None

@@ -879,3 +879,47 @@ def test_btc_settled_deal_does_not_become_cash():
     assert state.conversion_rate_to_base("BTC") is None
     assert state.get_balance("BTC").total == pytest.approx(0.01)
     assert state.total_capital() == 0.0
+
+
+# - a two-stream venue (bybit/okx/bitfinex) delivers fills on watch_my_trades, separately from the
+#   order-status stream. A market order's fill can beat its own submit ack, and the order is already
+#   in state (registered before submit), so what resolves it decides whether it books correctly.
+def _two_stream_market_fill(deal_cid: str | None) -> tuple[AccountState, Order]:
+    state = _state()
+    order = _order(state, status=OrderStatus.SUBMITTED)  # registered, venue id not yet known
+    state.ensure_position(BTC)
+    deal = DealEvent(instrument=BTC, client_order_id=deal_cid, venue_order_id="v1", deal=_fill("t1", 1.0))
+    apply(state, deal, T0)  # the fill arrives FIRST
+    apply(state, OrderAcceptedEvent(instrument=BTC, client_order_id="c1", venue_order_id="v1", accepted_at=T1), T1)
+    apply(state, OrderFilledEvent(instrument=BTC, client_order_id="c1", venue_order_id="v1"), T1)
+    return state, order
+
+
+def test_venue_id_only_fill_before_ack_orphans_the_order():
+    """The defect the client-id seam exists to avoid: with no cid the deal cannot resolve an order
+    whose venue id is not mapped yet, so it materializes a phantom that absorbs the fill."""
+    state, order = _two_stream_market_fill(deal_cid=None)
+
+    assert order.status is OrderStatus.FILLED
+    assert order.filled_quantity == 0.0  # the fill went somewhere else
+    phantom = _present(state.get_order("ext:v1"))
+    assert phantom.origin is OrderOrigin.EXTERNAL and phantom.filled_quantity == 1.0
+    assert state.ensure_position(BTC).quantity == 1.0  # the position is right either way
+
+
+def test_client_id_on_the_fill_resolves_the_real_order():
+    state, order = _two_stream_market_fill(deal_cid="c1")
+
+    assert order.status is OrderStatus.FILLED
+    assert order.filled_quantity == 1.0
+    assert state.get_order("ext:v1") is None  # no phantom
+    assert state.ensure_position(BTC).quantity == 1.0
+
+
+def test_redelivered_trade_does_not_double_book():
+    """The phantom keeps the seen-trade-ids while the venue-id index points at the real order, so a
+    re-delivery (ws replay, hist-deals) books twice. Resolving by cid keeps the dedup intact."""
+    state, _ = _two_stream_market_fill(deal_cid="c1")
+    apply(state, DealEvent(instrument=BTC, client_order_id="c1", venue_order_id="v1", deal=_fill("t1", 1.0)), T1)
+
+    assert state.ensure_position(BTC).quantity == 1.0
