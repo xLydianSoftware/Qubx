@@ -30,6 +30,7 @@ import asyncio
 import math
 import threading
 import time
+import uuid
 from asyncio.exceptions import CancelledError
 from collections.abc import Coroutine
 from dataclasses import dataclass
@@ -964,7 +965,11 @@ class CcxtConnector(ChannelEmitter):
             raise ValueError(f"[{self.exchange_name}] conversion amount must be positive, got {amount}")
         if from_currency.upper() == to_currency.upper():
             raise ValueError(f"[{self.exchange_name}] cannot convert {from_currency} into itself")
-        conversion_id = self.make_client_id(f"conv{from_currency.upper()}{to_currency.upper()}")
+        # unique per call: make_client_id only enforces the framework prefix (order ids get
+        # their uniqueness from the TradingManager's store), and this one is the venue's
+        # clientOrderId — a constant would be rejected as a duplicate on the second call
+        suffix = uuid.uuid4().hex[:8]
+        conversion_id = self.make_client_id(f"conv{from_currency.upper()[:6]}{to_currency.upper()[:6]}{suffix}")
         self._spawn(
             self._convert_currency(conversion_id, from_currency, to_currency, amount, limit_price, max_slippage_bps)
         )
@@ -1018,8 +1023,10 @@ class CcxtConnector(ChannelEmitter):
         symbol, side = self._conversion_market(from_currency, to_currency)
 
         if limit_price is None:
-            tickers = await ex.fetch_bids_asks([symbol])
-            top = tickers[symbol]["bid"] if side == "sell" else tickers[symbol]["ask"]
+            # per-symbol, never the venue-wide fetch_bids_asks: that resolves its market type
+            # from defaultType (swap on a PM venue) and comes back without the spot pair
+            ticker = await ex.fetch_ticker(symbol)
+            top = ticker["bid"] if side == "sell" else ticker["ask"]
             slippage = max_slippage_bps / 10_000
             limit_price = top * (1 - slippage) if side == "sell" else top * (1 + slippage)
 

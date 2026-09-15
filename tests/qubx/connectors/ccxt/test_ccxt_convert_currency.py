@@ -8,6 +8,7 @@ it themselves, so the async work runs without a real thread/loop boundary.
 """
 
 import io
+import re
 from unittest.mock import AsyncMock, Mock
 
 import ccxt
@@ -15,7 +16,7 @@ import pytest
 
 from qubx import logger
 from qubx.connectors.ccxt.connector import CcxtConnector
-from qubx.core.basics import CtrlChannel
+from qubx.core.basics import FRAMEWORK_CID_PREFIX, CtrlChannel
 from qubx.core.events import AccountMessage, CurrencyConversionEvent
 from tests.qubx.core.utils_test import DummyTimeProvider
 
@@ -65,7 +66,10 @@ def _exchange(
     """A real ccxt binance with injected markets; only the venue calls are mocked."""
     ex = ccxt.binance()
     ex.set_markets([USDC_USDT_MARKET])
-    ex.fetch_bids_asks = AsyncMock(return_value={"USDC/USDT": {"symbol": "USDC/USDT", "bid": bid, "ask": ask}})
+    ex.fetch_ticker = AsyncMock(return_value={"symbol": "USDC/USDT", "bid": bid, "ask": ask})
+    # venue-wide reads resolve their market type from defaultType (swap on a PM exchange) and
+    # silently return no spot pair — live-verified on BINANCE.PM, so fail loudly if used
+    ex.fetch_bids_asks = AsyncMock(side_effect=AssertionError("fetch_bids_asks does not resolve spot on a PM venue"))
     if order_error is not None:
         ex.create_order = AsyncMock(side_effect=order_error)
     else:
@@ -125,7 +129,7 @@ async def test_call_returns_an_id_without_touching_the_venue() -> None:
 
     assert conversion_id
     exchange.create_order.assert_not_awaited()
-    exchange.fetch_bids_asks.assert_not_awaited()
+    exchange.fetch_ticker.assert_not_awaited()
     assert sent == []
 
     await _drive(conn)
@@ -211,6 +215,18 @@ async def test_buy_conversion_uses_the_inverse_market_and_sizes_in_base() -> Non
 
 
 @pytest.mark.asyncio
+async def test_the_book_is_read_per_symbol_not_venue_wide() -> None:
+    """A PM exchange resolves venue-wide reads onto its linear endpoint, where the spot pair
+    does not exist — the quote has to be asked for by symbol."""
+    conn, _sent, exchange = _make_connector()
+
+    conn.convert_currency("USDC", "USDT", 6844.38)
+    await _drive(conn)
+
+    exchange.fetch_ticker.assert_awaited_once_with("USDC/USDT")
+
+
+@pytest.mark.asyncio
 async def test_explicit_limit_price_skips_the_book_read() -> None:
     """An absolute bound the caller already knows (0.995 for a stable pair) needs no quote —
     and must be used verbatim rather than blended with the book."""
@@ -219,7 +235,7 @@ async def test_explicit_limit_price_skips_the_book_read() -> None:
     conn.convert_currency("USDC", "USDT", 6844.38, limit_price=0.995)
     await _drive(conn)
 
-    exchange.fetch_bids_asks.assert_not_awaited()
+    exchange.fetch_ticker.assert_not_awaited()
     assert exchange.create_order.await_args.kwargs["price"] == pytest.approx(0.995)
 
 
@@ -400,3 +416,21 @@ async def test_conversion_is_logged_with_its_outcome() -> None:
 
     logged = sink.getvalue()
     assert "6844" in logged and "USDC" in logged and "USDT" in logged and "FILLED" in logged
+
+
+def test_each_conversion_gets_its_own_id() -> None:
+    """The id is the venue's clientOrderId: a constant one makes the second conversion a
+    duplicate-order rejection, and correlating events ambiguous."""
+    conn, _sent, _ = _make_connector()
+
+    first = conn.convert_currency("USDC", "USDT", 20.0)
+    second = conn.convert_currency("USDC", "USDT", 20.0)
+
+    assert first != second
+    assert first.startswith(FRAMEWORK_CID_PREFIX) and second.startswith(FRAMEWORK_CID_PREFIX)
+    # Binance's clientOrderId charset/length for margin orders
+    for cid in (first, second):
+        assert len(cid) <= 36 and re.fullmatch(r"[\.A-Za-z0-9:/_-]+", cid)
+
+    for coro in conn._captured:  # type: ignore[attr-defined]  # nothing drives them here
+        coro.close()
