@@ -1,6 +1,7 @@
 """Tests for OKX exchange registration and custom class."""
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, Mock
 
 import ccxt
@@ -442,10 +443,46 @@ class TestLeverageReads:
     def _inst_id(base: str) -> str:
         return f"{base}-USDT-SWAP"
 
+    _RAW_SWAP = {
+        "instType": "SWAP",
+        "baseCcy": "",
+        "quoteCcy": "",
+        "settleCcy": "USDT",
+        "ctVal": "1",
+        "ctMult": "1",
+        "optType": "",
+        "stk": "",
+        "listTime": "1700000000000",
+        "expTime": "",
+        "tickSz": "0.001",
+        "lotSz": "1",
+        "minSz": "1",
+        "ctType": "linear",
+        "state": "live",
+    }
+
     @classmethod
-    def _markets(cls, *bases: str, maximum: str | None = "125") -> dict:
-        limits = {"leverage": {"min": 1.0, "max": float(maximum)}} if maximum is not None else {"leverage": {}}
-        return {cls._symbol(b): {"id": cls._inst_id(b), "limits": limits} for b in bases}
+    def _markets(cls, *bases: str, lever: str | None = "125") -> dict:
+        """Markets as ccxt's own okx parser produces them, not as we imagine it does.
+
+        ``lever=None`` is the venue publishing no cap: ccxt normalises that to
+        ``limits.leverage.max == 1.0``, which is why the getter reads ``info.lever``.
+        """
+        parser = ccxt.okx()
+        markets = {}
+        for base in bases:
+            raw = dict(
+                cls._RAW_SWAP,
+                instId=cls._inst_id(base),
+                uly=f"{base}-USDT",
+                instFamily=f"{base}-USDT",
+                ctValCcy=base,
+            )
+            if lever is not None:
+                raw["lever"] = lever
+            market = parser.parse_market(raw)
+            markets[market["symbol"]] = market
+        return markets
 
     @classmethod
     def _rows(cls, *bases: str, lever: str = "5", pos_side: str = "net") -> dict:
@@ -484,17 +521,30 @@ class TestLeverageReads:
 
     # -- the cap: market metadata, never the venue ------------------------------- #
 
-    def test_the_cap_comes_from_the_market_with_no_venue_call(self):
+    @pytest.mark.parametrize("lever, expected", [("125", 125.0), ("50", 50.0)])
+    def test_the_cap_comes_from_the_market_with_no_venue_call(self, lever, expected):
         exchange = self._exchange()
+        exchange.markets = self._markets("BTC", lever=lever)
         connector = self._connector(exchange)
 
-        assert connector.get_max_instrument_leverage(self._instrument()) == 125.0
+        assert connector.get_max_instrument_leverage(self._instrument()) == expected
         assert connector._captured == []
         exchange.privateGetAccountLeverageInfo.assert_not_awaited()
 
     def test_a_market_without_a_published_cap_reads_none(self):
+        """ccxt defaults an absent `lever` to a cap of 1.0. Reading that would have the write
+        path clamp a 3x default down to 1x and call it the venue's decision, where None means
+        "unknown, send it unclamped"."""
         exchange = self._exchange()
-        exchange.markets = self._markets("BTC", maximum=None)
+        exchange.markets = self._markets("BTC", lever=None)
+        connector = self._connector(exchange)
+        assert exchange.markets["BTC/USDT:USDT"]["limits"]["leverage"]["max"] == 1.0
+
+        assert connector.get_max_instrument_leverage(self._instrument()) is None
+
+    def test_a_market_with_an_empty_cap_reads_none(self):
+        exchange = self._exchange()
+        exchange.markets = self._markets("BTC", lever="")
         connector = self._connector(exchange)
 
         assert connector.get_max_instrument_leverage(self._instrument()) is None
@@ -576,23 +626,31 @@ class TestLeverageReads:
         assert connector._leverage_pending == set()
         assert connector._leverage_flush_scheduled is False
 
-    def test_a_hedged_account_reports_the_long_side(self):
-        """One row per (instId, posSide): "net" one-way, "long"/"short" hedged."""
+    @pytest.mark.parametrize(
+        "rows, expected",
+        [
+            ([("short", "7"), ("long", "3")], 3.0),
+            ([("long", "3"), ("short", "7")], 3.0),
+            ([("net", "5")], 5.0),
+            ([("short", "7")], 7.0),
+        ],
+        ids=["short-then-long", "long-then-short", "net", "short-only"],
+    )
+    def test_the_rows_collapse_to_one_configured_value(self, rows, expected):
+        """One row per (instId, posSide): "net" on a one-way account, "long"/"short" hedged.
+        The long side wins whichever order the venue lists them in."""
         exchange = self._exchange()
         exchange.privateGetAccountLeverageInfo = AsyncMock(
             return_value={
                 "code": "0",
-                "data": [
-                    {"instId": self._inst_id("BTC"), "posSide": "short", "lever": "7"},
-                    {"instId": self._inst_id("BTC"), "posSide": "long", "lever": "3"},
-                ],
+                "data": [{"instId": self._inst_id("BTC"), "posSide": side, "lever": lever} for side, lever in rows],
             }
         )
         connector = self._connector(exchange)
         connector.get_instrument_leverage(self._instrument())
         self._drive(connector)
 
-        assert connector.get_instrument_leverage(self._instrument()) == 3.0
+        assert connector.get_instrument_leverage(self._instrument()) == expected
 
     def test_a_symbol_the_venue_returned_no_row_for_is_asked_once(self):
         exchange = self._exchange("BTC", "ETH")
@@ -633,7 +691,10 @@ class TestLeverageReads:
         assert connector.get_instrument_leverage(self._instrument()) is None
         assert len(connector._captured) == 1
 
-    def test_a_failing_call_leaves_the_symbols_unprobed(self):
+    def test_a_failing_call_leaves_the_symbols_unprobed_and_backs_off(self):
+        """Unprobed so a blip recovers, but behind a backoff so a permanent fault (a key with
+        no account read, an account type that rejects cross) costs one call a minute rather
+        than one per symbol per 5s tick."""
         exchange = self._exchange(privateGetAccountLeverageInfo=AsyncMock(side_effect=ccxt.NotSupported("nope")))
         connector = self._connector(exchange)
         connector.get_instrument_leverage(self._instrument())
@@ -641,9 +702,60 @@ class TestLeverageReads:
 
         assert connector._leverage_probed == set()
         assert connector._leverage_cache == {}
+        assert connector._leverage_flush_backoff_until - time.monotonic() == pytest.approx(60.0, abs=1.0)
+
+        connector.get_instrument_leverage(self._instrument())
+        assert connector._captured == []
+
+        connector._leverage_flush_backoff_until = 0.0
         connector.get_instrument_leverage(self._instrument())
         assert len(connector._captured) == 1
         self._discard(connector)
+        assert exchange.privateGetAccountLeverageInfo.await_count == 1
+
+    def test_a_symbol_already_queued_still_starts_a_flush(self):
+        """The queue is never consulted to decide whether to schedule: a symbol left in it by
+        the race below would otherwise be skipped forever, with no task left to fetch it."""
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._leverage_pending.add(self._symbol("BTC"))
+
+        connector.get_instrument_leverage(self._instrument())
+        assert len(connector._captured) == 1
+
+        self._drive(connector)
+        assert connector.get_instrument_leverage(self._instrument()) == 5.0
+
+    def test_a_symbol_queued_during_the_drain_is_flushed_without_another_miss(self):
+        """The drain's last look at the queue and the flag going down are two steps, and a miss
+        landing between them sees the flag still set and does not spawn. Reproduced with a queue
+        that answers the drain empty and then holds the late symbol — an interleaving one thread
+        cannot otherwise produce."""
+
+        class _RacingQueue(set):
+            def __init__(self, late: str) -> None:
+                super().__init__()
+                self._late: str | None = late
+
+            def __iter__(self):
+                if self._late is None:
+                    return super().__iter__()
+                late, self._late = self._late, None
+                empty = iter(())  # what the drain's emptiness check sees
+                super().add(late)  # the miss that lands before the flag goes down
+                return empty
+
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._leverage_pending = _RacingQueue(self._symbol("BTC"))
+        connector._ensure_flush_scheduled()
+
+        self._drive(connector)  # the flush finds nothing, then re-schedules for the late symbol
+        assert len(connector._captured) == 1
+        self._drive(connector)
+
+        assert connector.get_instrument_leverage(self._instrument()) == 5.0
+        assert connector._leverage_flush_scheduled is False
 
     def test_a_loop_that_is_gone_neither_raises_nor_wedges_the_symbol(self):
         """The read runs on the ProcessorThread inside the 5s snapshot: raising there loses the
