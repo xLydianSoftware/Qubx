@@ -1,0 +1,2277 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Qubx - Quantitative Trading Framework">
+      
+      
+      
+        <link rel="canonical" href="https://xlydian.com/stable/superpowers/specs/2026-09-14-subscription-watchdog-design/">
+      
+      
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.5">
+    
+    
+      
+        <title>Subscription watchdog: intent ownership, reconciliation, per-exchange status - Qubx</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.8608ea7d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../stylesheets/qx.extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#subscription-watchdog-intent-ownership-reconciliation-per-exchange-status" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Qubx" class="md-header__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Qubx
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Subscription watchdog: intent ownership, reconciliation, per-exchange status
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+
+<!-- Main navigation -->
+
+
+<div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Qubx" class="md-nav__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Qubx
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quick Start Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/configuration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Core Concepts
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Core Concepts
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/backtesting-framework/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtesting Framework
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/strategies/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategies
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/data-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/release-deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release & Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Backtesting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Backtesting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/simulations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Simulations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtest Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/scheduling/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Scheduling
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/performance-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Metrics
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Trading
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Trading
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/paper-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Paper Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/live-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Live Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/boot-lifecycle/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Boot Lifecycle
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/control-protocol/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Bot Control Protocol
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/risk-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Risk Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Analysis and Reporting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Analysis and Reporting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../analysis/visualization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Visualization
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../analysis/reporting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reporting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    API Reference
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            API Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/core-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Core API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/strategy-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategy API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/data-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Tutorials and Examples
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Tutorials and Examples
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/basic/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Basic
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/data-preparation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Preparation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/questdb-setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    QuestDB setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/signal-export/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Signal Export
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../connectors/creating-connectors/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Creating Connectors
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../connectors/rate-limiting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Rate Limiting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Development
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Development
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Development Setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/release/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release Process
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../about/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    About
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+        </div>
+    </div>
+</div>
+
+
+<!-- Table of contents -->
+<!-- 
+
+<div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      Problem
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Problem">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#root-cause" class="md-nav__link">
+    <span class="md-ellipsis">
+      Root cause
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#contributing-factor" class="md-nav__link">
+    <span class="md-ellipsis">
+      Contributing factor
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design-principle" class="md-nav__link">
+    <span class="md-ellipsis">
+      Design principle
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#decisions-agreed-with-yuriy-2026-09-14" class="md-nav__link">
+    <span class="md-ellipsis">
+      Decisions (agreed with Yuriy, 2026-09-14)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#why-not-subscribe-only" class="md-nav__link">
+    <span class="md-ellipsis">
+      Why not subscribe-only
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Why not subscribe-only">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#on-the-3s-sleep" class="md-nav__link">
+    <span class="md-ellipsis">
+      On the 3s sleep
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#components" class="md-nav__link">
+    <span class="md-ellipsis">
+      Components
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Components">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-qubxutilsmiscpy-fix-synchronized-precondition" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. qubx/utils/misc.py — fix synchronized (precondition)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-qubxcoremixinssubscriptionpy-intent-ownership" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. qubx/core/mixins/subscription.py — intent ownership
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-desired_snapshot-and-the-repair-mechanism" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. desired_snapshot() and the repair mechanism
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-qubxcoresubscription_watchdogpy-subscriptionwatchdog-new" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. qubx/core/subscription_watchdog.py — SubscriptionWatchdog (new)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-qubxhealthbasepy-per-exchange-facts" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. qubx/health/base.py — per-exchange facts
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#6-when-exchange_maintenance-is-held" class="md-nav__link">
+    <span class="md-ellipsis">
+      6. When EXCHANGE_MAINTENANCE is held
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#7-qubxcoremixinsprocessingpy-degradation-is-not-a-strategy-failure" class="md-nav__link">
+    <span class="md-ellipsis">
+      7. qubx/core/mixins/processing.py — degradation is not a strategy failure
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-handling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Error handling
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#observability" class="md-nav__link">
+    <span class="md-ellipsis">
+      Observability
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#out-of-scope-follow-ups" class="md-nav__link">
+    <span class="md-ellipsis">
+      Out of scope / follow-ups
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+        </div>
+    </div>
+</div>
+ -->
+
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="subscription-watchdog-intent-ownership-reconciliation-per-exchange-status">Subscription watchdog: intent ownership, reconciliation, per-exchange status<a class="headerlink" href="#subscription-watchdog-intent-ownership-reconciliation-per-exchange-status" title="Permanent link">&para;</a></h1>
+<p><strong>Date:</strong> 2026-09-14
+<strong>Incident:</strong> Lighter venue outage 2026-09-13 11:01–11:15 UTC — four prod bots blind for 10–22h
+<strong>Status:</strong> implemented on <code>fix/subscription-watchdog</code></p>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>On 2026-09-13 Lighter served nginx <code>503 Service Temporarily Unavailable</code> on both REST
+and the WebSocket upgrade for ~14 minutes. Four prod bots (<code>lighter.nimble</code>,
+<code>lighter.reversals</code>, <code>lighter.prisma-ctm</code>, <code>lighter.prisma-agg</code>) stopped receiving
+market data. Two of them never recovered and needed manual restarts 22 and 20 hours
+later; <code>lighter.nimble</code> reported <code>capital=101,388</code> unchanged for the entire window
+while its thread stayed alive, its heartbeats kept firing, and its socket reconnected
+seven times.</p>
+<p>The socket was never the problem. The connector threw its own subscriptions away and
+nothing could rebuild them.</p>
+<h3 id="root-cause">Root cause<a class="headerlink" href="#root-cause" title="Permanent link">&para;</a></h3>
+<p><code>SubscriptionManager._monitor_subscription_status</code> recovers stale data by
+<strong>unsubscribe → sleep 3s → subscribe</strong> (<code>subscription.py:487-494</code>), with no rollback
+and no retry. Running that <em>during</em> an outage:</p>
+<ol>
+<li><code>unsubscribe()</code> succeeds — on Lighter it deletes <code>_handlers[(sub_type, market_id)]</code>
+   synchronously (<code>qubx_lighter/data.py:229</code>) and removes the instruments from
+   <code>_subscriptions</code>.</li>
+<li><code>subscribe()</code> raises in <code>_ensure_websocket_connected</code> <strong>before recording anything</strong>
+   (<code>qubx_lighter/data.py:158-163</code>), because the venue is still returning 503.</li>
+</ol>
+<p>The consequences compound:</p>
+<ul>
+<li><strong>The watchdog disarms itself.</strong> <code>_monitor_subscription_status</code> iterates
+  <code>data_provider.get_subscriptions()</code> → <code>list(self._subscriptions.keys())</code>. The
+  orderbook set was emptied, so the key was deleted, so there is nothing left to
+  police. Confirmed in Loki: not one <code>Stale data detected</code> line in the following 22
+  hours. The monitor <em>thread</em> survives — its <code>while True</code> catches the exception — it
+  simply has an empty worklist.</li>
+<li><strong>The information is gone system-wide.</strong> <code>_apply_swap</code> computes
+  <code>_current_sub_instruments = set(self.get_subscribed_instruments(_sub))</code>
+  (<code>subscription.py:201</code>), which reads <em>from the provider</em>. The provider's
+  <code>_subscriptions</code> dict is the only record anywhere of what the universe is, so a
+  subsequent <code>set_universe</code> could not repair it either.</li>
+<li><strong>Recovery paths silently no-op.</strong> <code>WebSocketManager._resubscribe_all</code> replays
+  <code>self._subs</code> — a second private copy of the truth, which survived because
+  <code>unsubscribe</code> sends its frame <em>before</em> <code>del self._subs[channel]</code> and <code>send()</code> raises
+  when <code>_ws is None</code>. So every later reconnect re-established all 21 <code>order_book/*</code>
+  channels successfully, and the venue streamed orderbooks into a connector whose
+  callback does <code>self._handlers.get(key)</code> → <code>None</code> → <strong>drops the message with no log</strong>
+  (<code>qubx_lighter/data.py:484</code>).</li>
+</ul>
+<p>The same shape exists elsewhere and is one venue hiccup from the same outcome:
+<code>ccxt/data.py:313-316</code> does the identical unsubscribe→subscribe inside a <code>try/except</code>
+that swallows the failure, and <code>qubx_hyperliquid/data.py:179-181</code> tears down then
+rebuilds inside <code>subscribe(reset=True)</code>.</p>
+<h3 id="contributing-factor">Contributing factor<a class="headerlink" href="#contributing-factor" title="Permanent link">&para;</a></h3>
+<p>At 11:16:30 the socket returned and <code>_resubscribe_all</code> sent ~23 subscribe frames at
+50ms spacing. The venue answered <code>[30009] Too Many Websocket Messages</code>, rejecting them
+<strong>asynchronously</strong> — after the calls had returned successfully.
+<code>_resubscribe_all</code> wraps each send in <code>contextlib.suppress(Exception)</code>
+(<code>websocket_manager.py:399-400</code>), so nothing was logged and nothing retried. No
+ordering discipline or handshake can catch a rejection that arrives after the call
+returns; only checking whether data actually resumed can.</p>
+<h2 id="design-principle">Design principle<a class="headerlink" href="#design-principle" title="Permanent link">&para;</a></h2>
+<p><strong>Subscription intent is owned above the transport, and a loop closes the gap between
+intent and reality. No single failure may destroy intent, and no repair is trusted
+until data is observed to resume.</strong></p>
+<h2 id="decisions-agreed-with-yuriy-2026-09-14">Decisions (agreed with Yuriy, 2026-09-14)<a class="headerlink" href="#decisions-agreed-with-yuriy-2026-09-14" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>Decision</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>D1</td>
+<td>One PR. Scope is <code>qubx</code> only — <strong>no <code>IDataProvider</code> interface change</strong>, so <code>qubx-lighter</code> / <code>qubx-hyperliquid</code> need no release.</td>
+</tr>
+<tr>
+<td>D2</td>
+<td><code>SubscriptionManager</code> owns the desired universe (<code>_desired</code>) and stops reading current state from the provider. A failed repair leaves the provider wrong and intent intact; the next tick repairs it.</td>
+</tr>
+<tr>
+<td>D3</td>
+<td>The watchdog moves into its own class with its own thread, policy and tests.</td>
+</tr>
+<tr>
+<td>D4</td>
+<td>Repair stays <code>unsubscribe → sleep → subscribe</code>. It is required (see "Why not subscribe-only") and is now safe, because the retry loop — not the ordering — provides correctness.</td>
+</tr>
+<tr>
+<td>D5</td>
+<td>A repair is verified on the following tick <strong>by <code>last_event_time</code> advancing past the repair</strong>, never by <code>is_stale()</code> — which reads <code>True</code> right after a successful repair and would loop-repair sparse feeds. An unverified repair retries indefinitely at a backoff capped at <code>threshold/10</code>, reported at ERROR; it is never abandoned. Transport-level escalation (reconnect / recreate) needs an <code>IDataProvider</code> method that does not exist and is deferred with D1.</td>
+</tr>
+<tr>
+<td>D5a</td>
+<td><strong>A partially stale exchange is never marked <code>EXCHANGE_MAINTENANCE</code>.</strong> Instruments still delivering prove the venue is up, so the fault is ours; degrading the exchange would be false and would halt trading on the healthy instruments. Only a fully dark exchange (§6) publishes a degradation.</td>
+</tr>
+<tr>
+<td>D5b</td>
+<td>An instrument is eligible for repair, and counts toward the per-exchange facts, only after <code>subscribed_at + threshold</code>. Freshly subscribed instruments report stale until their first message, so without this the watchdog repairs new subscriptions on sight and a full universe swap falsely reads as a dark exchange.</td>
+</tr>
+<tr>
+<td>D6</td>
+<td>Per-exchange status is published through the <strong>existing</strong> <code>ContextStatus</code> / <code>DegradeReason.EXCHANGE_MAINTENANCE</code>, not a new enum.</td>
+</tr>
+<tr>
+<td>D7</td>
+<td><code>QubxDegradedState</code> no longer counts toward <code>MAX_NUMBER_OF_STRATEGY_FAILURES</code>.</td>
+</tr>
+<tr>
+<td>D8</td>
+<td><code>synchronized</code> is replaced with a real shared lock; this is a precondition, not a cleanup.</td>
+</tr>
+</tbody>
+</table>
+<h2 id="why-not-subscribe-only">Why not subscribe-only<a class="headerlink" href="#why-not-subscribe-only" title="Permanent link">&para;</a></h2>
+<p><code>subscribe(sub, desired_set, reset=True)</code> alone would heal two of the three connectors
+and is the shape the primary path already uses (<code>_apply_swap</code>, <code>subscription.py:229</code>).
+It cannot be used, because <code>reset</code> means three different things:</p>
+<table>
+<thead>
+<tr>
+<th>connector</th>
+<th><code>subscribe(set, reset=True)</code></th>
+<th>heals alone?</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>ccxt</td>
+<td><code>add_subscription(reset=True)</code> → <code>execute_subscription</code> replays the whole stream</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>hyperliquid</td>
+<td>internally unsubscribes existing, then subscribes</td>
+<td>yes</td>
+</tr>
+<tr>
+<td>lighter</td>
+<td>issues transport only for <code>set − already_registered</code>; <code>reset</code> rewrites bookkeeping only</td>
+<td><strong>no — a no-op</strong></td>
+</tr>
+</tbody>
+</table>
+<p>Unifying <code>reset</code> semantics is an <code>IDataProvider</code> change and is deliberately deferred
+(see Follow-ups). Until then the repair sequence must include the unsubscribe, which
+all three connectors do heal from:</p>
+<ul>
+<li><strong>lighter</strong> — <code>new = desired − remaining</code> = the stale instruments →
+  <code>_subscribe_instrument</code> recreates the handler and re-issues the WS subscribe.</li>
+<li><strong>ccxt</strong> — partial unsubscribe resubscribes the remainder, then <code>reset=True</code> replaces
+  the stream.</li>
+<li><strong>hyperliquid</strong> — <code>reset=True</code> tears down and rebuilds.</li>
+</ul>
+<h3 id="on-the-3s-sleep">On the 3s sleep<a class="headerlink" href="#on-the-3s-sleep" title="Permanent link">&para;</a></h3>
+<p>Retained. It guards against unsubscribe/subscribe reordering at the venue, which is a
+real hazard even though it does not currently bite on Lighter: both operations take
+<code>WebSocketManager._subs_lock</code> (<code>websocket_manager.py:224,232</code>) and
+<code>run_coroutine_threadsafe</code> schedules FIFO from one thread, so send order holds and TCP
+preserves it. That is an emergent property of code in another repo, undocumented and
+untested, and it would not survive someone adding batching or a second send path.</p>
+<p>Its <strong>status</strong> changes: it is a churn-reducer, not the safety net. Correctness comes
+from D5. The implementation must carry a comment saying so, or the next reader will
+delete it (as the author of this spec first proposed) or come to depend on it.</p>
+<h2 id="components">Components<a class="headerlink" href="#components" title="Permanent link">&para;</a></h2>
+<h3 id="1-qubxutilsmiscpy-fix-synchronized-precondition">1. <code>qubx/utils/misc.py</code> — fix <code>synchronized</code> (precondition)<a class="headerlink" href="#1-qubxutilsmiscpy-fix-synchronized-precondition" title="Permanent link">&para;</a></h3>
+<p><code>synchronized</code> builds its lock at <strong>decoration</strong> time, one per function
+(<code>misc.py:507-516</code>). <code>subscribe</code>, <code>unsubscribe</code> and <code>commit</code> therefore hold <em>different</em>
+locks and do not exclude each other, and today's watchdog calls providers holding none
+at all. A snapshot racing a commit would corrupt <code>_desired</code> itself.</p>
+<p>Replace with a single per-instance <code>threading.RLock</code> held across intent mutation and
+the snapshot. Re-entrant because <code>commit()</code> → <code>_apply_swap()</code> is one call chain. Audit every current <code>@synchronized</code> user; anything relying on the accidental
+cross-instance exclusion must be called out rather than silently changed.</p>
+<h3 id="2-qubxcoremixinssubscriptionpy-intent-ownership">2. <code>qubx/core/mixins/subscription.py</code> — intent ownership<a class="headerlink" href="#2-qubxcoremixinssubscriptionpy-intent-ownership" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="n">_desired</span><span class="p">:</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">set</span><span class="p">[</span><span class="n">Instrument</span><span class="p">]]</span>      <span class="c1"># subscription key -&gt; instruments</span>
+</code></pre></div>
+<p><code>_apply_swap</code> maintains <code>_desired</code> and no longer sources <code>_current_sub_instruments</code>
+from the provider (<code>subscription.py:201,209</code>). The manager-level accessors
+<code>get_subscribed_instruments</code> / <code>has_subscription</code> read <code>_desired</code>.</p>
+<p><strong>Blast radius is small.</strong> Those accessors are consumed by <code>context.py:996,1009</code> (the
+strategy API, <code>ctx.get_subscribed_instruments</code> / <code>ctx.has_subscription</code>) and internally;
+backtester paths call provider-level methods directly (<code>backtester/data.py:131,140</code>)
+and are untouched. Strategies begin seeing intent rather than transport state — which
+is what they always believed they were getting, since the two never diverged before
+this bug.</p>
+<p><code>_desired</code> is authoritative from the first <code>_apply_swap</code>. It is not seeded from the
+provider at startup: an empty intent plus an empty provider is consistent, and any
+divergence introduced later is what reconciliation exists to fix.</p>
+<h3 id="3-desired_snapshot-and-the-repair-mechanism">3. <code>desired_snapshot()</code> and the repair mechanism<a class="headerlink" href="#3-desired_snapshot-and-the-repair-mechanism" title="Permanent link">&para;</a></h3>
+<p>The manager exposes exactly one thing to the watchdog:</p>
+<div class="highlight"><pre><span></span><code><span class="nd">@synchronized</span>
+<span class="k">def</span><span class="w"> </span><span class="nf">desired_snapshot</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">dict</span><span class="p">[</span><span class="nb">str</span><span class="p">,</span> <span class="nb">frozenset</span><span class="p">[</span><span class="n">Instrument</span><span class="p">]]]:</span>
+    <span class="c1"># exchange -&gt; subscription key -&gt; instruments; copied under the lock</span>
+</code></pre></div>
+<p>Keyed by the canonical exchange instruments carry, so the consumer never filters. It is
+the only manager method the watchdog thread calls, and it holds the lock for a dict copy —
+microseconds — so <code>commit()</code> on the ProcessorThread is never stalled.</p>
+<p>The repair itself lives in the watchdog, because everything it needs is the watchdog's:
+the snapshot, the provider, the settle delay, and the memory of which subscription keys a
+venue rejected. It holds no reference to manager state.</p>
+<ul>
+<li><strong>Targeted repair</strong> — <code>_repair(state, subs, refresh)</code>, for one exchange: for each
+  subscription whose base type has instruments in <code>refresh</code>: <code>unsubscribe(key, hit)</code> →
+  one <code>sleep(settle)</code> per call → <code>subscribe(key, full_desired_set, reset=True)</code>.
+  Scoping is by construction: the watchdog only ever holds one exchange's subs, so a
+  repair on one venue cannot re-assert another's universe (<code>reset=True</code> replays the
+  whole stream on ccxt, rebuilds it on hyperliquid) or fire subscribes at an exchange
+  §4.2 classified DARK. <code>refresh</code> is keyed by <code>(instrument, base data type)</code> so repairing
+  a wedged <code>trade</code> feed does not tear down that instrument's <code>orderbook</code>. A failed
+  <code>unsubscribe</code> still gets its paired <code>subscribe</code>; re-subscribing is idempotent on every
+  connector.</li>
+<li>
+<p><strong>Re-assertion</strong> — <code>_reassert(state, subs)</code> after a genuine DARK episode: <code>subscribe</code>
+  every subscription on that exchange with <code>reset=True</code>, policed or not, and no
+  unsubscribe. The connector may have lost everything during the outage, not only the
+  types the watchdog polices. Scoped to the recovering exchange; the others were never
+  dark.</p>
+<p>Neither can detect drift on its own: §2 deliberately stops reading the provider, so
+there is no transport state to diff against. Staleness is the only drift signal. That
+is intentional — a second source of truth is exactly what this design removes.
+- <code>NotSupported</code> is remembered per exchange (<code>_ExchangeState.unsupported</code>) and never
+retried. <code>_apply_swap</code> keeps its pre-existing warning; the watchdog learns from its own
+first attempt, which costs one wasted repair.</p>
+</li>
+</ul>
+<p>A raised exception leaves <code>_desired</code> untouched — the watchdog never holds a reference to
+it. That is the entire fix.</p>
+<h3 id="4-qubxcoresubscription_watchdogpy-subscriptionwatchdog-new">4. <code>qubx/core/subscription_watchdog.py</code> — <code>SubscriptionWatchdog</code> (new)<a class="headerlink" href="#4-qubxcoresubscription_watchdogpy-subscriptionwatchdog-new" title="Permanent link">&para;</a></h3>
+<p>Owns the thread, the interval, the repair mechanism (§3) and all policy. Constructed with
+<code>(data_providers, health_monitor, status, snapshot_fn, strategy_state, interval_seconds=30.0, settle_seconds=3.0)</code>
+— no dependency on <code>SubscriptionManager</code> beyond the one callable, so it is unit-testable
+against a fake provider whose <code>subscribe</code> raises on command. Per-exchange state
+(<code>dark_ticks</code>, <code>maintenance_held</code>, <code>repairs</code>, <code>unsupported</code>, the provider and its venue
+name) lives in one <code>_ExchangeState</code> keyed by the canonical exchange, so "forget this
+exchange" is one <code>dict</code> operation and nothing downstream filters by exchange.</p>
+<p>Per tick, per exchange:</p>
+<ol>
+<li>
+<p>Skip unless <code>strategy_state.is_on_warmup_finished_called</code>; skip simulation providers.
+1a. <strong>Drop instruments still in their grace window.</strong> An instrument is eligible for
+   repair — and counts toward the facts in §5 — only once
+   <code>now &gt;= subscribed_at + STALE_THRESHOLDS[base_type]</code>. <code>IHealthMonitor.subscribe</code> does
+   not seed <code>_last_event_time</code> (<code>health/base.py:185-193</code>) and <code>is_stale</code> returns <code>True</code>
+   for a missing entry (<code>base.py:383-384</code>), so <strong>every freshly subscribed instrument
+   reports stale until its first message</strong>. Without this gate the watchdog would tear
+   down a brand-new subscription on the very next tick, before it ever had a chance to
+   deliver — and a mid-session universe swap that replaces the whole universe would make
+   <code>stale == subscribed</code>, falsely triggering DARK and halting trading (§6). The grace
+   window is the threshold itself, because that is already the framework's statement of
+   how long this data type may legitimately be silent.</p>
+<p>The gate protects repair as well as classification: §5 returns the eligible stale
+ <strong>keys</strong>, and repair iterates those rather than re-deriving staleness with <code>is_stale</code>
+ (which reads <code>True</code> for any instrument with no event yet). Otherwise a mixed universe
+ — one genuinely stale, one just subscribed — classifies PARTIAL and tears the new
+ instrument down on sight.
+2. Read the exchange facts (§5) and classify. All three are computed from <strong>eligible</strong>
+ instruments only — those past their grace window (§4.1a):</p>
+<table>
+<thead>
+<tr>
+<th>classification</th>
+<th>condition</th>
+<th>meaning</th>
+<th>action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>OK</strong></td>
+<td><code>stale == 0</code></td>
+<td>everything is delivering</td>
+<td>clear any held repair state</td>
+</tr>
+<tr>
+<td><strong>DARK</strong></td>
+<td>(<code>connected is False</code> and <code>subscribed &gt;= 1</code>) <strong>or</strong> (<code>stale == subscribed</code> and <code>subscribed &gt;= 2</code>)</td>
+<td><em>nothing</em> is delivering — the venue is not serving us</td>
+<td>no repair; §6</td>
+</tr>
+<tr>
+<td><strong>PARTIAL</strong></td>
+<td><code>stale &gt; 0</code> and not DARK</td>
+<td>some delivering, some not — the venue is up, so the fault is ours</td>
+<td><code>_repair(stale_keys)</code></td>
+</tr>
+</tbody>
+</table>
+<p>The three are exhaustive and mutually exclusive. <code>subscribed == 1 and stale == 1</code>
+ falls into PARTIAL by construction: with one instrument, "nothing is delivering" and
+ "one stream is wedged" are the same observation, and PARTIAL is the safe reading.</p>
+<p><strong>DARK is a per-tick classification, not a published status.</strong> It becomes
+ <code>EXCHANGE_MAINTENANCE</code> only after holding for 2 consecutive ticks (§6); the hysteresis
+ lives in the publication step, not here.</p>
+<p><strong>On DARK with a dead socket, issue no repair at all.</strong> This is the 11:16 case where
+ 21 simultaneous subscribes tripped <code>30009</code> and cost the recovery. Hold
+ <code>EXCHANGE_MAINTENANCE</code>, wait, and re-assert that exchange <strong>once</strong> when data returns
+ (<code>_reassert</code>, §3). The connector reconnects on its own; the watchdog's job while dark
+ is to stop making it worse.</p>
+<p><strong>On DARK with a live socket, probe.</strong> <code>connected is not False</code> means the connector
+ sees nothing wrong and will never reconnect or replay its channels — yet nothing is
+ delivering. Verified live on 2026-09-15 with the <code>watchdog-smoke</code> rig: deafened
+ handlers on an open Lighter socket held <code>EXCHANGE_MAINTENANCE</code> for 75+ ticks with zero
+ repair attempts, and a forced <code>_reassert</code> changed nothing, because on Lighter a bare
+ re-subscribe against an intact registry is the bookkeeping no-op §3 describes. The
+ only in-process remedy is a full <code>_repair</code> of every stale key (unsubscribe → settle →
+ subscribe). It fires at dark tick <code>_DARK_PROBE_FIRST_TICKS</code> (4, i.e. 2 min at the 30s
+ tick), then at 8, 16, 32, 64, then every <code>_DARK_PROBE_CAP_TICKS</code> (64, i.e. 32 min). The
+ doubling is what bounds the
+ burst on a venue that may itself be throttling — two minutes into a <em>stable</em> socket is
+ not the 11:16 regime. Both counters reset the moment the exchange leaves DARK.</p>
+<p><em>Naming note:</em> the third state is <strong>PARTIAL</strong>, not "DEGRADED". <code>QubxStatus.DEGRADED</code>
+ already exists (<code>core/status.py:22-24</code>) and means the context is degraded — which is
+ precisely what this state does <strong>not</strong> do (D5a). Reusing the word would put two
+ opposite meanings on one term in the same subsystem.
+3. <strong>Verify on the next tick — by advancement, not by staleness.</strong></p>
+<p>A repair records <code>repaired_at</code>. It is verified when
+ <code>last_event_time &gt; repaired_at</code> — i.e. <em>some</em> message arrived after the repair.</p>
+<p><strong>Do not verify with <code>not is_stale()</code>.</strong> Staleness compares <code>last_event_time</code> against
+ a 10- or 30-minute threshold, so it reads <code>True</code> immediately after a successful repair
+ and keeps reading <code>True</code> until enough fresh data accumulates. On orderbook that
+ resolves in milliseconds and the distinction looks academic; on <code>trade</code> (30 min
+ threshold, legitimately sparse) a repair can succeed and the feed stay quiet for
+ minutes, so a staleness-based check would tear the working subscription down again on
+ the next tick, and again, indefinitely — a self-sustaining repair loop on a healthy
+ feed. Advancement is unambiguous: a message arrived, therefore the subscription is
+ live, whatever the threshold says.</p>
+<p><strong>The repair must not call <code>IHealthMonitor.unsubscribe</code>.</strong> That method pops
+ <code>_last_event_time</code> (<code>health/base.py:207</code>) and discards the instrument from
+ <code>_active_subscriptions</code>. Popping would erase the very evidence this verification
+ depends on. Only <code>_apply_swap</code> — which genuinely removes an instrument from the
+ universe — may call it; a repair is not a removal. (Today's watchdog already calls
+ <code>data_provider.unsubscribe</code> directly, <code>subscription.py:487</code>, so this preserves
+ existing behaviour rather than changing it.)</p>
+<p><strong>Backoff.</strong> An unverified repair is retried at the next tick, then at doubling
+ intervals, capped at <code>STALE_THRESHOLDS[base_type] / 10</code> — 1 min for quote/orderbook,
+ 3 min for trade. Tying the cap to that type's own threshold rather than a flat
+ constant makes retries aggressive exactly where feeds tick continuously and patient
+ where they do not, and avoids a second tuning knob that can drift out of sync with the
+ first. Backoff resets on verification.</p>
+<p>Starting faster than one tick is not worth building: detection is bounded by the
+ staleness threshold, so an instrument is already 10+ minutes dark before the first
+ repair. Shaving the first retry from 30s to 5s is noise against that.</p>
+<p>Retries continue <strong>forever</strong>. An instrument is never abandoned: the backoff exists to
+ bound churn, not to give up, and a wedged instrument that silently stops being
+ repaired is the failure mode this whole design exists to remove.</p>
+<p>Escalation here is <strong>reporting only</strong>, never a degradation (D5a). On the first
+ unverified retry the log moves from INFO to WARNING; at the backoff cap it moves to
+ ERROR and names the instruments, repeating once per capped interval rather than once
+ per tick. The exchange stays tradeable throughout, because it demonstrably works —
+ other instruments on it are delivering. Protecting the strategy from the stale subset
+ is an operator/platform decision on the exported counts, not something this watchdog
+ decides unilaterally.</p>
+<p><strong>Transport escalation is out of reach in this PR.</strong> <code>IDataProvider</code> exposes
+ <code>start()</code>, <code>close()</code> and <code>is_connected()</code> but no <code>reconnect()</code>
+ (<code>interfaces.py:594-745</code>), so the watchdog cannot re-establish a socket it did not
+ create, and <code>close()</code>+<code>start()</code> has undefined per-connector semantics — using it here
+ would be guessing. ccxt's <code>ExchangeManager</code> already self-recreates on its own stale
+ signal; lighter and hyperliquid have no equivalent reachable from core. Until
+ <code>IDataProvider.reconnect()</code> exists (see Follow-ups), an unrecoverable wedge is
+ surfaced loudly and left to the supervisor — which in practice means a pod restart,
+ the same action that ended the 2026-09-13 incident, but taken within minutes on a
+ signal rather than within a day on a human noticing.</p>
+</li>
+</ol>
+<p>Not gated on <code>is_connected()</code>. The warning at <code>subscription.py:459-461</code> holds: a wedged
+ccxt provider drops that flag exactly when the watchdog is needed. Connection state
+selects the remedy; it never suppresses action.</p>
+<h3 id="5-qubxhealthbasepy-per-exchange-facts">5. <code>qubx/health/base.py</code> — per-exchange facts<a class="headerlink" href="#5-qubxhealthbasepy-per-exchange-facts" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="nd">@dataclass</span><span class="p">(</span><span class="n">frozen</span><span class="o">=</span><span class="kc">True</span><span class="p">,</span> <span class="n">slots</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+<span class="k">class</span><span class="w"> </span><span class="nc">ExchangeDataStatus</span><span class="p">:</span>
+    <span class="n">exchange</span><span class="p">:</span> <span class="nb">str</span>
+    <span class="n">connected</span><span class="p">:</span> <span class="nb">bool</span> <span class="o">|</span> <span class="kc">None</span>       <span class="c1"># None = no callback registered</span>
+    <span class="n">subscribed</span><span class="p">:</span> <span class="nb">int</span>              <span class="c1"># eligible only — excludes instruments in grace</span>
+    <span class="n">stale_keys</span><span class="p">:</span> <span class="nb">frozenset</span><span class="p">[</span><span class="nb">tuple</span><span class="p">[</span><span class="n">Instrument</span><span class="p">,</span> <span class="nb">str</span><span class="p">]]</span>   <span class="c1"># (instrument, base type); NOT max() over the exchange</span>
+    <span class="n">in_grace</span><span class="p">:</span> <span class="nb">int</span>                <span class="c1"># subscribed too recently to judge</span>
+    <span class="n">last_event_time</span><span class="p">:</span> <span class="n">dt_64</span> <span class="o">|</span> <span class="kc">None</span>
+
+    <span class="nd">@property</span>
+    <span class="k">def</span><span class="w"> </span><span class="nf">stale</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">int</span><span class="p">:</span> <span class="o">...</span>  <span class="c1"># len(stale_keys)</span>
+</code></pre></div>
+<p><code>IHealthMonitor.get_exchange_data_status(exchange, subscribed)</code> computes it. <code>subscribed</code>
+arrives already scoped to the exchange (the watchdog's snapshot is keyed that way), so
+the method does no filtering; <code>exchange</code> only keys the <code>is_connected</code> callback lookup,
+which is registered under the provider's venue name. Returning the stale <strong>keys</strong> rather
+than a count is what lets repair (§3) honour the grace window without re-deriving
+staleness.</p>
+<p><strong><code>subscribed</code> and <code>stale</code> count only instruments past their grace window</strong> (§4.1a).
+Counting in-grace instruments as stale would make <code>stale == subscribed</code> immediately after
+a full universe swap and falsely publish <code>EXCHANGE_MAINTENANCE</code>, halting trading on a
+healthy venue. <code>in_grace</code> is carried separately so the condition stays visible rather than
+silently hidden.</p>
+<p>This requires one new piece of state: <code>_subscribed_at[(instrument, base_type)]</code>, recorded
+in <code>IHealthMonitor.subscribe</code> (<code>base.py:185-193</code>, which today records only membership) and
+cleared in <code>unsubscribe</code> alongside <code>_last_event_time</code>. The other two inputs
+(<code>_last_event_time</code>, <code>_is_connected_callbacks</code>) already exist.</p>
+<p>Two existing pieces are deliberately <em>not</em> reused as-is:</p>
+<ul>
+<li><code>is_exchange_stale</code> (<code>base.py:388</code>) builds on <code>get_last_event_time_by_exchange</code>, a
+  <strong><code>max()</code> across all instruments</strong> (<code>base.py:355-366</code>). One live instrument makes the
+  whole exchange look healthy. This is the same false-clear that resolved
+  <code>lighter.reversals</code>' platform alert at 00:00 while 29 instruments and all 3 open
+  positions stayed dark for another 9.5 hours. <code>max()</code> is the right aggregation for
+  "is the venue entirely dark" and the wrong one for "is everything healthy" — so it
+  informs DARK only, never OK.</li>
+<li><code>is_connected</code> (<code>base.py:343</code>) returns <code>True</code> when no callback is registered.
+  <code>ExchangeDataStatus.connected</code> preserves that as <code>None</code> so callers can distinguish
+  "connected" from "nobody told me"; the fail-open default at the old call site is left
+  alone.</li>
+</ul>
+<h3 id="6-when-exchange_maintenance-is-held">6. When <code>EXCHANGE_MAINTENANCE</code> is held<a class="headerlink" href="#6-when-exchange_maintenance-is-held" title="Permanent link">&para;</a></h3>
+<p><code>DegradeReason.EXCHANGE_MAINTENANCE</code> exists (<code>core/status.py:29</code>) and has never had a
+writer. Its <strong>reader is fully built</strong>: <code>trading.py:127-135</code> refuses every order for a
+degraded exchange with <code>QubxDegradedState</code>, including position-reducing ones, and its
+docstring already reasons about precisely this case.</p>
+<p><strong>Held when the exchange classifies DARK (§4.2) on 2 consecutive ticks.</strong> §4.2 owns the
+definition; this section owns only the hysteresis and the clear rule. The two limbs of
+DARK exist because each covers what the other misses:</p>
+<ul>
+<li><strong>(A) <code>connected is False</code> and <code>subscribed &gt;= 1</code></strong> — the fast path. Catches a refused
+  or dropped socket in ~60s. In the incident this would have published at ~11:03:30,
+  eight minutes before staleness could say anything at all. The eligibility term is what
+  keeps it honest: <code>tick()</code> visits every provider, not only those carrying a policed
+  subscription, so without it an exchange whose only feed is <code>ohlc</code> — or whose universe
+  is still entirely in grace — would halt trading off a connection flag alone, on a venue
+  the watchdog is not policing. <code>is_connected()</code> also reads <code>False</code> when the callback
+  raises. The incident had 21 eligible instruments, so this weakens nothing there.</li>
+<li><strong>(B) <code>stale == subscribed and subscribed &gt;= 2</code></strong> — the slow path. Catches a provider
+  that believes it is connected and delivers nothing. This is the limb that mattered:
+  from 11:17 onward <code>is_connected()</code> returned <code>True</code> for 22 hours
+  (<code>websocket_manager.py:168</code> — <code>state == CONNECTED and _ws is not None</code>) while every
+  message was being dropped, so (A) was blind for the entire outage. (B) would have held
+  from ~11:22.</li>
+</ul>
+<p><code>connected is None</code> does not satisfy (A) — we cannot tell — but (B) still applies.
+<code>subscribed &gt;= 2</code> because with one instrument, "nothing is delivering" and "one stream
+is wedged" are the same observation; that case is PARTIAL (§4.2).</p>
+<p>Cleared on the first tick where any instrument on the exchange delivers. Asymmetric on
+purpose: slow to halt trading, quick to resume.</p>
+<p><strong>Partial staleness never publishes a degradation</strong> (D5a). Two independent reasons:</p>
+<ul>
+<li><strong>It would be false.</strong> Instruments still delivering are proof the venue is serving us.
+  A wedged subset means something is wrong on <em>our</em> side — a dropped handler, a rejected
+  subscribe, a stream the venue silently closed. <code>EXCHANGE_MAINTENANCE</code> would attribute
+  our bug to the exchange, and anyone reading the status later would draw the wrong
+  conclusion.</li>
+<li><strong>It would be harmful.</strong> <code>is_degraded_for</code> matches on exchange, so degrading on
+  2-of-21 wedged instruments refuses orders on the 19 healthy ones — and under
+  <code>deny_trading_when_degraded</code> that includes position-reducing orders.</li>
+</ul>
+<p><strong>Do not attempt to fix this by scoping a degradation to an instrument.</strong>
+<code>QubxStatusInfo._scopes</code> is a flat <code>frozenset</code> of scope strings and <code>is_degraded_for</code>
+tests <code>exchange in self._scopes</code> (<code>core/status.py:52-60</code>). An instrument-scoped entry
+would never match any exchange, so it would be accepted, stored, reported in
+<code>degradations</code> — and have <strong>no effect on the order path at all</strong>. A silent no-op is
+worse than an absent feature. Instrument-level protection needs a real reader change
+and is a follow-up.</p>
+<p>Why 2 ticks: every healthy reconnect in the incident logs completed in 1–4s
+(<code>0.56s</code>, <code>0.73s</code>, <code>0.80s</code>…). A single-tick rule would flap the order path on routine
+blips.</p>
+<h3 id="7-qubxcoremixinsprocessingpy-degradation-is-not-a-strategy-failure">7. <code>qubx/core/mixins/processing.py</code> — degradation is not a strategy failure<a class="headerlink" href="#7-qubxcoremixinsprocessingpy-degradation-is-not-a-strategy-failure" title="Permanent link">&para;</a></h3>
+<p><code>QubxDegradedState</code> raised inside <code>on_event</code> currently propagates into the generic
+handler at <code>processing.py:658-668</code>, which counts 10 <strong>consecutive</strong> failures and raises
+<code>StrategyExceededMaxNumberOfRuntimeFailuresError</code>, stopping the run.</p>
+<p><code>deny_trading_when_degraded</code> defaults to <code>False</code> in qubx (<code>initializer.py:54</code>), but
+<strong>frab defaults it to <code>True</code></strong> (<code>frab/src/frab/strategies/base.py:249</code>). Wiring the
+<code>EXCHANGE_MAINTENANCE</code> writer without this change would convert a 14-minute venue blip
+into a dead frab run.</p>
+<p>Catch <code>QubxDegradedState</code> separately: log at WARNING (throttled), do <strong>not</strong> increment
+<code>_fails_counter</code>, do not reset it either. It is a framework-generated refusal of an
+expected condition, not a strategy bug. frab's own documentation describes the counter
+interaction as something to work around by disabling the flag, which means the feature
+is not usable as designed; this removes that sharp edge.</p>
+<h2 id="error-handling">Error handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h2>
+<table>
+<thead>
+<tr>
+<th>failure</th>
+<th>behaviour</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>subscribe</code> raises during repair</td>
+<td><code>_desired</code> intact; logged; retried next tick</td>
+</tr>
+<tr>
+<td><code>unsubscribe</code> raises during repair</td>
+<td>same; the provider may be left with a live stream the manager will re-assert</td>
+</tr>
+<tr>
+<td>repair succeeds but data does not resume, others on the venue are live</td>
+<td>caught by verification (§4.3); retried indefinitely at capped backoff, reported at ERROR. Exchange stays tradeable (D5a)</td>
+</tr>
+<tr>
+<td>whole venue dark, socket dead</td>
+<td>no repair attempted; <code>EXCHANGE_MAINTENANCE</code> held (§6); the connector's own reconnect + channel replay is the remedy</td>
+</tr>
+<tr>
+<td>whole venue dark, socket live</td>
+<td><code>EXCHANGE_MAINTENANCE</code> held; a full repair of every stale key is probed at dark tick 4, then at doubling gaps (§4.2)</td>
+</tr>
+<tr>
+<td>venue rejects the subscribe asynchronously</td>
+<td>indistinguishable from the above, and handled identically — this is the <code>30009</code> case</td>
+</tr>
+<tr>
+<td><code>NotSupported</code></td>
+<td>recorded in that exchange's <code>_ExchangeState.unsupported</code>, never retried</td>
+</tr>
+<tr>
+<td>sparse feed quiet but healthy</td>
+<td>verification by advancement (§4.3) prevents the repair loop; backoff caps residual churn at <code>threshold/10</code></td>
+</tr>
+<tr>
+<td>instrument subscribed seconds ago</td>
+<td>in grace (D5b) — not repaired, not counted, cannot trigger DARK</td>
+</tr>
+<tr>
+<td>one exchange failing</td>
+<td>isolated; other exchanges repair normally</td>
+</tr>
+<tr>
+<td>watchdog tick raises</td>
+<td>caught, logged with traceback, thread survives (as today)</td>
+</tr>
+</tbody>
+</table>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<p>Unit, against a fake <code>IDataProvider</code> — the seam that does not exist today:</p>
+<ol>
+<li><code>subscribe</code> raises during repair → <code>_desired</code> unchanged; next tick retries; provider converges.</li>
+<li>Provider registry emptied behind the manager's back → the manager still reports the universe from <code>_desired</code>, and the watchdog's next repair restores it. <strong>This is the incident, reduced to a test.</strong></li>
+<li>Repair "succeeds" but 2 of 5 orderbook instruments never deliver → retries double from one tick and <strong>continue indefinitely</strong> at the 1 min cap (<code>threshold/10</code>); log level climbs INFO → WARNING → ERROR; <code>EXCHANGE_MAINTENANCE</code> is <strong>never</strong> held and the exchange stays tradeable (D5a).
+3a. The same instruments recover at tick 20 → retries stop, backoff resets, no degradation was ever published.</li>
+<li>DARK exchange → zero <code>subscribe</code>/<code>unsubscribe</code> calls for the first three ticks (the <code>30009</code> regression); with a dead socket, zero for 100 ticks; with a live socket, one full repair at ticks 4, 8, 16, 32, 64, then every 64.</li>
+<li><code>NotSupported</code> → recorded once, never retried.</li>
+<li>(A) and (B) each independently hold <code>EXCHANGE_MAINTENANCE</code> after exactly 2 ticks, not 1; cleared after one delivering tick.</li>
+<li><code>connected is None</code> does not trigger (A); <code>subscribed == 1</code> does not trigger (B).</li>
+<li><code>QubxDegradedState</code> in <code>on_event</code> 20 times in a row → run does not stop; any other exception 10 times → it does.</li>
+<li>Concurrency: <code>commit()</code> / <code>_apply_deferred_swap</code> on one thread and <code>desired_snapshot()</code> on the watchdog thread do not interleave (regression for the <code>synchronized</code> bug).</li>
+<li><strong>Sparse-feed repair loop (D5).</strong> A <code>trade</code> subscription is repaired, then delivers exactly one message and goes quiet for 20 ticks → verified on the first tick after the message and <strong>never repaired again</strong>, even though <code>is_stale()</code> stays <code>True</code> throughout. Asserting on <code>is_stale</code> instead of advancement must fail this test.</li>
+<li><strong>Grace period (D5b).</strong> An instrument subscribed at t=0 reports no data → not repaired and not counted as stale before <code>t + threshold</code>; repaired on the first tick after it.</li>
+<li><strong>False DARK on universe swap (D5b).</strong> The entire universe is replaced mid-session → every instrument is in grace, <code>subscribed</code> is 0, and <code>EXCHANGE_MAINTENANCE</code> is not published. Without the grace gate this test halts trading on a healthy venue.</li>
+<li>A repair never calls <code>IHealthMonitor.unsubscribe</code> — assert on a spy, since popping <code>_last_event_time</code> would silently destroy the verification signal in test 10.</li>
+</ol>
+<p>Integration: existing live-connector suites must pass unchanged — no <code>IDataProvider</code>
+signature moves, so <code>qubx-lighter</code> and <code>qubx-hyperliquid</code> build against this without a
+release.</p>
+<h2 id="observability">Observability<a class="headerlink" href="#observability" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Watchdog logs one line per repair with exchange, subscription key and instrument count;
+  one line per <code>EXCHANGE_MAINTENANCE</code> add/clear. Unverified repairs escalate INFO →
+  WARNING → ERROR and then repeat only once per capped backoff interval, not once per
+  tick — a permanently wedged instrument must stay visible without flooding the log for
+  days, which is the shape the 2026-09-13 logs would have had.</li>
+<li><code>ExchangeDataStatus</code> (<code>stale</code> / <code>subscribed</code> / <code>in_grace</code> per exchange) goes into the
+  state snapshot the health monitor already writes. This is the signal
+  <code>bot_data_last_event_timestamp_seconds</code> is missing platform-side: that gauge is
+  labelled <code>(bot_id, exchange, data_type)</code>, so one live instrument clears it for the
+  whole exchange. Exporting the counts lets the platform alert on a <em>fraction</em>, which
+  is what the <code>lighter.reversals</code> false-clear needed. The control-api rule change is
+  out of scope here and tracked separately.</li>
+</ul>
+<h2 id="out-of-scope-follow-ups">Out of scope / follow-ups<a class="headerlink" href="#out-of-scope-follow-ups" title="Permanent link">&para;</a></h2>
+<ol>
+<li><strong><code>IDataProvider</code> unification</strong> — two additions, one coordinated release of both
+   connector plugins:<ul>
+<li><code>set_subscriptions(type, instruments, refresh=...)</code> replacing the three-way-ambiguous
+   <code>reset</code> flag. Removes the unsubscribe from the repair path entirely and closes the
+   transient window, retiring the 3s sleep with it.</li>
+<li><code>reconnect()</code>, which unblocks the transport escalation rungs §4 currently cannot
+   reach. Without it an unrecoverable wedge can only be reported, not fixed in-process.
+   This is the single highest-value item on this list.</li>
+</ul>
+</li>
+<li><strong>Lighter silent drop</strong> — <code>qubx_lighter/data.py:484</code> drops a message with no handler
+   and logs nothing. Bounded to one tick by this design, but still undiagnosable. Needs
+   a connector fix.</li>
+<li><strong><code>_resubscribe_all</code>'s blanket <code>contextlib.suppress</code></strong> (<code>websocket_manager.py:399</code>)
+   and its 50ms burst that tripped <code>30009</code>. Should log, and should pace against the
+   venue's inbound budget.</li>
+<li><strong>Fold in ccxt's <code>ExchangeManager._stale_monitor_loop</code></strong> once <code>reconnect()</code> exists.
+   Today it is a second, uncoordinated watchdog acting on the same signal with a
+   different remedy (full exchange recreation), invisible to this one — so a ccxt
+   exchange can be recreated underneath a watchdog that is mid-repair.</li>
+<li><strong>Platform alert</strong> — per-instrument or fraction-based staleness rule in
+   <code>k8s/apps/{dev,prod}/kube-prometheus-stack.yaml</code>.</li>
+<li><strong>Instrument-level trading protection.</strong> D5a leaves a real, accepted gap: a
+   persistently wedged subset on a working venue means the strategy keeps trading those
+   instruments on stale prices, with nothing but a log line and a metric to stop it.
+   Degrading the exchange is the wrong remedy (§6) and instrument-scoping the existing
+   <code>Degradation</code> is a silent no-op (§6). Closing it properly needs
+   <code>QubxStatusInfo.is_degraded_for</code> to take an optional instrument and the order path to
+   consult it — a reader change with its own design discussion. Until then the exported
+   <code>stale</code>/<code>subscribed</code> counts are the signal an operator acts on.</li>
+</ol>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+
+<!-- Place this tag in your head or just before your close body tag. -->
+<script async defer src="https://buttons.github.io/buttons.js"></script>
+<script src="https://code.jquery.com/jquery-3.4.1.min.js"
+    integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
+
+
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["content.code.annotate", "search.share", "content.code.copy", "navigation.top", "navigation.footer"], "search": "../../../assets/javascripts/workers/search.f8cc74c7.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.f1b6f286.min.js"></script>
+      
+        <script src="../../../javascripts/config.js"></script>
+      
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
