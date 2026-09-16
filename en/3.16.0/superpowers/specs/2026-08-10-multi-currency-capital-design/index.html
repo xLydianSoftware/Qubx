@@ -1,0 +1,1925 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+        <meta name="description" content="Qubx - Quantitative Trading Framework">
+      
+      
+      
+        <link rel="canonical" href="https://xlydian.com/stable/superpowers/specs/2026-08-10-multi-currency-capital-design/">
+      
+      
+      
+      
+      <link rel="icon" href="../../../assets/images/favicon.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.6.5">
+    
+    
+      
+        <title>Multi-currency capital: account state, transfers, and reporting - Qubx</title>
+      
+    
+    
+      <link rel="stylesheet" href="../../../assets/stylesheets/main.8608ea7d.min.css">
+      
+        
+        <link rel="stylesheet" href="../../../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../../../stylesheets/qx.extra.css">
+    
+    <script>__md_scope=new URL("../../..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#multi-currency-capital-account-state-transfers-and-reporting" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+      <div data-md-color-scheme="default" data-md-component="outdated" hidden>
+        
+      </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href="../../.." title="Qubx" class="md-header__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            Qubx
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Multi-currency capital: account state, transfers, and reporting
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 6H7c-3.31 0-6 2.69-6 6s2.69 6 6 6h10c3.31 0 6-2.69 6-6s-2.69-6-6-6m0 10H7c-2.21 0-4-1.79-4-4s1.79-4 4-4h10c2.21 0 4 1.79 4 4s-1.79 4-4 4M7 9c-1.66 0-3 1.34-3 3s1.34 3 3 3 3-1.34 3-3-1.34-3-3-3"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="black" data-md-color-accent="tear"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M17 7H7a5 5 0 0 0-5 5 5 5 0 0 0 5 5h10a5 5 0 0 0 5-5 5 5 0 0 0-5-5m0 8a3 3 0 0 1-3-3 3 3 0 0 1 3-3 3 3 0 0 1 3 3 3 3 0 0 1-3 3"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+          <a href="javascript:void(0)" class="md-search__icon md-icon" title="Share" aria-label="Share" data-clipboard data-clipboard-text="" data-md-component="search-share" tabindex="-1">
+            
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M18 16.08c-.76 0-1.44.3-1.96.77L8.91 12.7c.05-.23.09-.46.09-.7s-.04-.47-.09-.7l7.05-4.11c.54.5 1.25.81 2.04.81a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3c0 .24.04.47.09.7L8.04 9.81C7.5 9.31 6.79 9 6 9a3 3 0 0 0-3 3 3 3 0 0 0 3 3c.79 0 1.5-.31 2.04-.81l7.12 4.15c-.05.21-.08.43-.08.66 0 1.61 1.31 2.91 2.92 2.91s2.92-1.3 2.92-2.91A2.92 2.92 0 0 0 18 16.08"/></svg>
+          </a>
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+
+<!-- Main navigation -->
+
+
+<div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href="../../.." title="Qubx" class="md-nav__button md-logo" aria-label="Qubx" data-md-component="logo">
+      
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+
+    </a>
+    Qubx
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/xLydianSoftware/Qubx" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 448 512"><!--! Font Awesome Free 6.7.2 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M439.55 236.05 244 40.45a28.87 28.87 0 0 0-40.81 0l-40.66 40.63 51.52 51.52c27.06-9.14 52.68 16.77 43.39 43.68l49.66 49.66c34.23-11.8 61.18 31 35.47 56.69-26.49 26.49-70.21-2.87-56-37.34L240.22 199v121.85c25.3 12.54 22.26 41.85 9.08 55a34.34 34.34 0 0 1-48.55 0c-17.57-17.6-11.07-46.91 11.25-56v-123c-20.8-8.51-24.6-30.74-18.64-45L142.57 101 8.45 235.14a28.86 28.86 0 0 0 0 40.81l195.61 195.6a28.86 28.86 0 0 0 40.8 0l194.69-194.69a28.86 28.86 0 0 0 0-40.81"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../.." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Home
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_2" >
+        
+          
+          <label class="md-nav__link" for="__nav_2" id="__nav_2_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Getting Started
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_2_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_2">
+            <span class="md-nav__icon md-icon"></span>
+            Getting Started
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/installation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Installation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/quick-start/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Quick Start Guide
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../getting-started/configuration/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Configuration
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_3" >
+        
+          
+          <label class="md-nav__link" for="__nav_3" id="__nav_3_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Core Concepts
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_3_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_3">
+            <span class="md-nav__icon md-icon"></span>
+            Core Concepts
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/backtesting-framework/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtesting Framework
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/strategies/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategies
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/data-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../core-concepts/release-deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release & Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_4" >
+        
+          
+          <label class="md-nav__link" for="__nav_4" id="__nav_4_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Backtesting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_4_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_4">
+            <span class="md-nav__icon md-icon"></span>
+            Backtesting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/simulations/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Simulations
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Backtest Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/scheduling/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Scheduling
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../backtesting/performance-metrics/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Performance Metrics
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_5" >
+        
+          
+          <label class="md-nav__link" for="__nav_5" id="__nav_5_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Trading
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_5_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_5">
+            <span class="md-nav__icon md-icon"></span>
+            Trading
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/paper-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Paper Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/live-trading/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Live Trading
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/boot-lifecycle/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Boot Lifecycle
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/control-protocol/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Bot Control Protocol
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../trading/risk-management/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Risk Management
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_6" >
+        
+          
+          <label class="md-nav__link" for="__nav_6" id="__nav_6_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Analysis and Reporting
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_6_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_6">
+            <span class="md-nav__icon md-icon"></span>
+            Analysis and Reporting
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../analysis/visualization/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Visualization
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../analysis/reporting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Reporting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_7" >
+        
+          
+          <label class="md-nav__link" for="__nav_7" id="__nav_7_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    API Reference
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_7_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_7">
+            <span class="md-nav__icon md-icon"></span>
+            API Reference
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/core-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Core API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/strategy-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Strategy API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../api/data-api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data API
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_8" >
+        
+          
+          <label class="md-nav__link" for="__nav_8" id="__nav_8_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Tutorials and Examples
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_8_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_8">
+            <span class="md-nav__icon md-icon"></span>
+            Tutorials and Examples
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/basic/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Basic
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/data-preparation/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Data Preparation
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/deployment/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Deployment
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/questdb-setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    QuestDB setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../tutorials/signal-export/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Signal Export
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_9" >
+        
+          
+          <label class="md-nav__link" for="__nav_9" id="__nav_9_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Connectors
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_9_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_9">
+            <span class="md-nav__icon md-icon"></span>
+            Connectors
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../connectors/creating-connectors/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Creating Connectors
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../connectors/rate-limiting/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Rate Limiting
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    
+    
+    
+    
+    <li class="md-nav__item md-nav__item--nested">
+      
+        
+        
+        <input class="md-nav__toggle md-toggle " type="checkbox" id="__nav_10" >
+        
+          
+          <label class="md-nav__link" for="__nav_10" id="__nav_10_label" tabindex="0">
+            
+  
+  <span class="md-ellipsis">
+    Development
+    
+  </span>
+  
+
+            <span class="md-nav__icon md-icon"></span>
+          </label>
+        
+        <nav class="md-nav" data-md-level="1" aria-labelledby="__nav_10_label" aria-expanded="false">
+          <label class="md-nav__title" for="__nav_10">
+            <span class="md-nav__icon md-icon"></span>
+            Development
+          </label>
+          <ul class="md-nav__list" data-md-scrollfix>
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/contributing/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Contributing
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/setup/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Development Setup
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+              
+                
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../development/release/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Release Process
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+              
+            
+          </ul>
+        </nav>
+      
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../../../about/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    About
+    
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+  </ul>
+</nav>
+        </div>
+    </div>
+</div>
+
+
+<!-- Table of contents -->
+<!-- 
+
+<div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+    <div class="md-sidebar__scrollwrap">
+        <div class="md-sidebar__inner">
+            
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#problem" class="md-nav__link">
+    <span class="md-ellipsis">
+      Problem
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Problem">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#defect-1-capital-blind-to-non-base-currencies-behavioural" class="md-nav__link">
+    <span class="md-ellipsis">
+      Defect 1 — capital blind to non-base currencies (behavioural)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#defect-2-per-exchange-equity-reporting-read-side" class="md-nav__link">
+    <span class="md-ellipsis">
+      Defect 2 — per-exchange equity reporting (read-side)
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#evidence" class="md-nav__link">
+    <span class="md-ellipsis">
+      Evidence
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#non-goals" class="md-nav__link">
+    <span class="md-ellipsis">
+      Non-goals
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#design" class="md-nav__link">
+    <span class="md-ellipsis">
+      Design
+    </span>
+  </a>
+  
+    <nav class="md-nav" aria-label="Design">
+      <ul class="md-nav__list">
+        
+          <li class="md-nav__item">
+  <a href="#1-per-exchange-base-currency" class="md-nav__link">
+    <span class="md-ellipsis">
+      1. Per-exchange base currency
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#2-currency-agnostic-total-capital" class="md-nav__link">
+    <span class="md-ellipsis">
+      2. Currency-agnostic total capital
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#3-converting-transfers-simulation" class="md-nav__link">
+    <span class="md-ellipsis">
+      3. Converting transfers (simulation)
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#4-reporting-transfer-alignment" class="md-nav__link">
+    <span class="md-ellipsis">
+      4. Reporting — transfer alignment
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#5-reporting-capital-round-trip" class="md-nav__link">
+    <span class="md-ellipsis">
+      5. Reporting — capital round-trip
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#invariant" class="md-nav__link">
+    <span class="md-ellipsis">
+      Invariant
+    </span>
+  </a>
+  
+</li>
+        
+          <li class="md-nav__item">
+  <a href="#deliberately-unchanged" class="md-nav__link">
+    <span class="md-ellipsis">
+      Deliberately unchanged
+    </span>
+  </a>
+  
+</li>
+        
+      </ul>
+    </nav>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#testing" class="md-nav__link">
+    <span class="md-ellipsis">
+      Testing
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#compatibility" class="md-nav__link">
+    <span class="md-ellipsis">
+      Compatibility
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#rollout" class="md-nav__link">
+    <span class="md-ellipsis">
+      Rollout
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#open-question-non-blocking" class="md-nav__link">
+    <span class="md-ellipsis">
+      Open question (non-blocking)
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+        </div>
+    </div>
+</div>
+ -->
+
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+
+  
+  
+
+
+<h1 id="multi-currency-capital-account-state-transfers-and-reporting">Multi-currency capital: account state, transfers, and reporting<a class="headerlink" href="#multi-currency-capital-account-state-transfers-and-reporting" title="Permanent link">&para;</a></h1>
+<p>Date: 2026-08-10
+Status: approved, ready for planning
+Target: single PR against <code>Qubx:main</code></p>
+<h2 id="problem">Problem<a class="headerlink" href="#problem" title="Permanent link">&para;</a></h2>
+<p>A multi-exchange simulation whose venues settle in different currencies reports the wrong
+account capital, sizes positions off that wrong number, and then hides the error in the
+per-exchange reporting. Two independent defects, both reproducible today on <code>main</code>.</p>
+<h3 id="defect-1-capital-blind-to-non-base-currencies-behavioural">Defect 1 — capital blind to non-base currencies (behavioural)<a class="headerlink" href="#defect-1-capital-blind-to-non-base-currencies-behavioural" title="Permanent link">&para;</a></h3>
+<p><code>SimulatedAccountManager</code> gives every venue the same base currency
+(<code>backtester/runner.py:611</code>, <code>base_currencies={exchange: setup.base_currency}</code>) and seeds each
+venue's balance in it (<code>runner.py:622-629</code>). Money, however, books to the <em>instrument's</em> settle
+currency:</p>
+<ul>
+<li>realized PnL and fees — <code>core/account_manager/reducer.py:320</code>,
+  <code>adjust_balance(instrument.settle, realized_pnl - fee)</code>, which creates the balance on demand</li>
+<li>funding — <code>core/account_manager/manager.py:683</code>, same settle currency, but only when that
+  balance already exists</li>
+</ul>
+<p><code>AccountState.total_capital()</code> (<code>core/account_manager/state.py:186-195</code>) reads exactly one
+balance: <code>self._balances.get(self.base_currency)</code>. On a USDC-settled venue seeded in USDT, every
+dollar the venue earns lands in a USDC balance the metric cannot see. The venue's reported
+capital stays pinned near its frozen USDT seed plus unrealized <code>market_value_funds</code>.</p>
+<p>Strategies size off this number. In frab, <code>FundingPair.amount_for_pair_leverage</code> calls
+<code>ctx.get_total_capital()</code>, so the sizing base inherits the blind spot.</p>
+<p>Two existing TODOs mark the same seam: <code>reducer.py:315</code> ("revisit for instruments whose settle
+currency differs from the portfolio base currency") and <code>state.py:245</code> ("convert settle/quote -&gt;
+base_currency via marks").</p>
+<h3 id="defect-2-per-exchange-equity-reporting-read-side">Defect 2 — per-exchange equity reporting (read-side)<a class="headerlink" href="#defect-2-per-exchange-equity-reporting-read-side" title="Permanent link">&para;</a></h3>
+<p><code>TradingSessionResult.get_equity_per_exchange</code> (<code>core/metrics.py:766-837</code>) is wrong in two ways:</p>
+<ol>
+<li><strong>Transfers are silently dropped.</strong> Lines 824 and 829 gate on <code>if ts in transfer_amounts.index</code>
+   — exact membership in the portfolio-log index. Portfolio logs are sampled on a bar boundary;
+   transfers fire on strategy schedules, so their timestamps rarely coincide. The function also
+   counts rows regardless of <code>status</code>, so a pending or failed transfer would book as settled.</li>
+<li><strong>Per-exchange initial capital is wrong after a storage round-trip.</strong> Line 803 reads
+   <code>self.capital[exchange] if isinstance(self.capital, dict) else self.capital</code>, treating a scalar
+   as <em>each</em> venue's seed rather than the total.</li>
+</ol>
+<p>The simulator itself is correct: <code>SimulationSetup.__post_init__</code> (<code>backtester/utils.py:106-110</code>)
+normalizes a scalar into a per-exchange dict, and <code>backtester/simulator.py:327</code> passes that dict
+through. The dict is destroyed by persistence:</p>
+<ul>
+<li><code>utils/results.py:234</code> declares the metadata column as <code>pa.float64()</code></li>
+<li><code>utils/results.py:656</code> writes <code>float(result.get_total_capital())</code></li>
+<li><code>utils/results.py:918</code> reads back <code>capital=float(meta.get("capital", 0.0))</code></li>
+</ul>
+<p>So an in-memory result plots correctly and a reloaded one does not. <code>core/metrics.py:713</code>
+flattens the same way when slicing, recomputing <code>capital</code> as <code>float(equity at the cut)</code>.</p>
+<h2 id="evidence">Evidence<a class="headerlink" href="#evidence" title="Permanent link">&para;</a></h2>
+<p>Diagnosed on frab backtest <code>FARB_V4/v11_00_fp1d_to05/20260716_001508</code> (qubx 1.11.7,
+BINANCE.UM ⇄ HYPERLIQUID.F, <code>capital: 100000</code>, 2025-11-01 → 2026-07-10).</p>
+<p>Sizing base recovered from <code>executions_log</code> and fitted against candidate quantities:</p>
+<table>
+<thead>
+<tr>
+<th>candidate</th>
+<th>median error</th>
+<th>correlation</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>2 × BINANCE equity</code></td>
+<td>+2.2%</td>
+<td>+0.69</td>
+</tr>
+<tr>
+<td><code>BINANCE + HYPERLIQUID</code> (true total)</td>
+<td>+25.9%</td>
+<td><strong>−0.76</strong></td>
+</tr>
+<tr>
+<td><code>2 × HYPERLIQUID equity</code></td>
+<td>+51.3%</td>
+<td>−0.75</td>
+</tr>
+</tbody>
+</table>
+<p>The base tracked the USDT venue and was <em>anti-correlated</em> with true total equity. It fell
+114k → 59k while the account grew 100k → 123k. Position count stayed flat (~9.8 legs per venue)
+while per-leg notional halved, and reported gross leverage decayed from ~400% to ~170%.</p>
+<p>For defect 2 on the same run: 17 completed transfers, every timestamp at <code>HH:02:00</code> against an
+hourly log — zero matched, so none appeared in the chart. Per-exchange equity summed to
+$223,402 against a true equity of $123,402, exactly one scalar capital too much.</p>
+<h2 id="goals">Goals<a class="headerlink" href="#goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li><code>get_total_capital()</code> reflects all of a venue's money regardless of settle currency</li>
+<li>Simulated venues hold the currency they could actually hold</li>
+<li>Cross-venue transfers model the real withdraw-swap-deposit</li>
+<li>Per-exchange equity reconciles with total equity, transfers visible, for both fresh and
+  already-saved results</li>
+<li>Live behaviour unchanged</li>
+</ul>
+<h2 id="non-goals">Non-goals<a class="headerlink" href="#non-goals" title="Permanent link">&para;</a></h2>
+<ul>
+<li>Marks-based currency conversion. <code>conversion_rate_to_base</code> answers 1.0 for cash currencies and
+  <code>None</code> elsewhere; the seam is wired and typed, not filled.</li>
+<li>A live <code>ITransferManager</code>. Qubx ships only the simulated one; live is injected by the strategy
+  (frab supplies quantkit's <code>XChangesTransferService</code>).</li>
+<li>Changing the funding guard at <code>manager.py:682</code>. See "Deliberately unchanged".</li>
+</ul>
+<h2 id="design">Design<a class="headerlink" href="#design" title="Permanent link">&para;</a></h2>
+<h3 id="1-per-exchange-base-currency">1. Per-exchange base currency<a class="headerlink" href="#1-per-exchange-base-currency" title="Permanent link">&para;</a></h3>
+<p><code>SimulationSetup.base_currency</code> accepts <code>str | dict[str, str]</code> and normalizes to a per-exchange
+dict in <code>__post_init__</code>, beside the existing capital split (<code>backtester/utils.py:106-110</code>).
+Resolution order per venue:</p>
+<ol>
+<li>explicit mapping entry, if given</li>
+<li>otherwise, the shared <code>settle</code> of that venue's configured instruments, when they agree <em>and</em>
+   that currency is a recognized stable</li>
+<li>otherwise, the scalar <code>base_currency</code></li>
+</ol>
+<p>An unrecognized settle currency can't be valued at par, so a BTC-settled venue
+(<code>BINANCE.UM:ETHBTC</code>) falls through to the scalar instead of being seeded 100,000 BTC counted as
+capital.</p>
+<p><code>runner.py:611</code> passes the resolved dict to <code>SimulatedAccountManager</code> instead of broadcasting one
+string; <code>runner.py:622-629</code> seeds each venue in its own currency.</p>
+<p>Existing scalar configs are unaffected. A BINANCE.UM/HYPERLIQUID.F config resolves to
+USDT/USDC from its instruments with no config change. Seeding runs once at init, before any
+dynamic universe exists, so resolution reads only the configured instrument list.</p>
+<p>YAML form for the override:</p>
+<div class="highlight"><pre><span></span><code><span class="nt">simulation</span><span class="p">:</span>
+<span class="w">  </span><span class="nt">base_currency</span><span class="p">:</span>
+<span class="w">    </span><span class="nt">BINANCE.UM</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">USDT</span>
+<span class="w">    </span><span class="nt">HYPERLIQUID.F</span><span class="p">:</span><span class="w"> </span><span class="l l-Scalar l-Scalar-Plain">USDC</span>
+</code></pre></div>
+<h3 id="2-currency-agnostic-total-capital">2. Currency-agnostic total capital<a class="headerlink" href="#2-currency-agnostic-total-capital" title="Permanent link">&para;</a></h3>
+<p><code>AccountState.total_capital()</code> (<code>state.py:186</code>) iterates <strong>every</strong> balance instead of reading
+<code>self.base_currency</code> alone, valuing each through a rate lookup that is allowed to answer "unknown":</p>
+<div class="highlight"><pre><span></span><code><span class="k">def</span><span class="w"> </span><span class="nf">conversion_rate_to_base</span><span class="p">(</span><span class="bp">self</span><span class="p">,</span> <span class="n">currency</span><span class="p">:</span> <span class="nb">str</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span> <span class="o">|</span> <span class="kc">None</span><span class="p">:</span>
+<span class="w">    </span><span class="sd">"""Rate from `currency` to this account's base currency, or None when unknown."""</span>
+
+<span class="k">def</span><span class="w"> </span><span class="nf">total_capital</span><span class="p">(</span><span class="bp">self</span><span class="p">)</span> <span class="o">-&gt;</span> <span class="nb">float</span><span class="p">:</span>
+    <span class="n">venue</span> <span class="o">=</span> <span class="bp">self</span><span class="o">.</span><span class="n">_venue_figures</span>
+    <span class="k">if</span> <span class="n">venue</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span> <span class="ow">and</span> <span class="n">venue</span><span class="o">.</span><span class="n">equity</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span><span class="p">:</span>
+        <span class="k">return</span> <span class="n">venue</span><span class="o">.</span><span class="n">equity</span>
+    <span class="n">cash</span> <span class="o">=</span> <span class="nb">sum</span><span class="p">(</span>
+        <span class="n">b</span><span class="o">.</span><span class="n">total</span> <span class="o">*</span> <span class="n">rate</span>
+        <span class="k">for</span> <span class="n">c</span><span class="p">,</span> <span class="n">b</span> <span class="ow">in</span> <span class="bp">self</span><span class="o">.</span><span class="n">_balances</span><span class="o">.</span><span class="n">items</span><span class="p">()</span>
+        <span class="k">if</span> <span class="p">(</span><span class="n">rate</span> <span class="o">:=</span> <span class="bp">self</span><span class="o">.</span><span class="n">conversion_rate_to_base</span><span class="p">(</span><span class="n">c</span><span class="p">))</span> <span class="ow">is</span> <span class="ow">not</span> <span class="kc">None</span>
+    <span class="p">)</span>
+    <span class="k">return</span> <span class="n">cash</span> <span class="o">+</span> <span class="nb">sum</span><span class="p">(</span><span class="n">p</span><span class="o">.</span><span class="n">market_value_funds</span> <span class="k">for</span> <span class="n">p</span> <span class="ow">in</span> <span class="nb">list</span><span class="p">(</span><span class="bp">self</span><span class="o">.</span><span class="n">_positions</span><span class="o">.</span><span class="n">values</span><span class="p">()))</span>
+</code></pre></div>
+<p>The venue-reported-equity short-circuit stays ahead of it untouched, so live continues to prefer
+<code>_venue_figures.equity</code>.</p>
+<p>Summing <em>all</em> balances at 1.0 would be wrong, not merely imprecise: spot fills credit the base
+asset (<code>reducer.py:325</code>, <code>adjust_balance(instrument.base, deal.amount)</code>), so a flat sum values a
+million PEPE at a million dollars. Today's defect understates capital by a bounded amount; that
+would overstate it without bound. <code>tests/qubx/core/account_manager/state_metrics_test.py:61-70</code>
+already pins the correct behaviour and must keep passing unedited.</p>
+<p>The rate table therefore starts narrow and widens later without moving a call site: today it
+answers 1.0 for the venue's cash currencies and <code>None</code> for everything else; when marks-based
+conversion lands (the <code>state.py:245</code> TODO) it answers for everything. PEPE is excluded because it
+is unpriced, not because it is special-cased.</p>
+<p>Cash currencies are tracked explicitly: a persisted <code>_cash_currencies: set[str]</code> on <code>AccountState</code>
+(added to <code>__slots__</code>, <code>state.py:49-67</code>), seeded with <code>base_currency</code> and extended wherever a
+settle balance is adjusted (<code>reducer.py:320</code>, <code>manager.py:683</code>), via <code>mark_cash_currency</code>, which
+only admits recognized stables — the account's own <code>base_currency</code> stays exempt since it is
+seeded in at construction. Persisting rather than deriving from open positions means a flat
+venue's leftover USDC keeps counting.</p>
+<p>This also closes the mixed-settle hole that per-exchange seeding cannot: a BINANCE.UM carrying
+both USDT-M and USDC-M perps resolves to a single base currency, and the USDC-M side's PnL is only
+visible because USDC is a settle currency.</p>
+<h3 id="3-converting-transfers-simulation">3. Converting transfers (simulation)<a class="headerlink" href="#3-converting-transfers-simulation" title="Permanent link">&para;</a></h3>
+<p><code>SimulationTransferManager.transfer_funds</code> (<code>backtester/transfers.py:21-46</code>) resolves each side's
+base currency from the account, debits the source in its currency, credits the destination in its
+currency at <code>conversion_rate</code>, and records both currencies and both amounts on the <code>Transfer</code>.
+The <code>currency</code> argument becomes the <em>source</em> currency. The insufficient-funds check reads the
+source venue's balance in that currency.</p>
+<p>This models withdraw USDC from HPL → arrive as USDT on Binance. It is a simulation model only:
+<code>runner.py:634</code> wires this manager for backtests and paper twins, while live uses whatever the
+strategy injected (<code>runner.py:1058</code>).</p>
+<h3 id="4-reporting-transfer-alignment">4. Reporting — transfer alignment<a class="headerlink" href="#4-reporting-transfer-alignment" title="Permanent link">&para;</a></h3>
+<p>Replace exact membership (<code>metrics.py:824</code>, <code>:829</code>) with as-of alignment: build signed per-venue
+deltas indexed by transfer timestamp, <code>cumsum()</code> in transfer-time order, then
+<code>reindex(portfolio_index, method="ffill").fillna(0.0)</code>.</p>
+<p>This resolves every failure mode at once — off-grid stamps land on the following bar, several
+transfers inside one bar sum instead of colliding, transfers before the first bar still count,
+and transfers after the last bar drop out.</p>
+<p>Two corrections ride along: filter to completed transfers, and apply the debit amount to the
+source venue and the credit amount to the destination now that the two can differ.</p>
+<h3 id="5-reporting-capital-round-trip">5. Reporting — capital round-trip<a class="headerlink" href="#5-reporting-capital-round-trip" title="Permanent link">&para;</a></h3>
+<p>Persist the resolved split. Keep the <code>capital</code> float column as the total so existing DuckDB
+<code>storage.search()</code> queries keep working, and add a <code>capital_by_exchange</code> JSON column
+(<code>utils/results.py:234</code>, <code>:656</code>, <code>:918</code>) that the loader prefers.</p>
+<p>When the column is absent — every result saved so far — split the scalar evenly across
+<code>exchanges</code>, matching what <code>SimulationSetup</code> has done since March 2026 (<code>69ed8448</code>). Results
+already in storage then render correctly without a rerun. Multi-exchange results produced
+<em>before</em> that commit were seeded differently and the even split will misattribute them; they are
+old enough not to warrant a version-conditional path.</p>
+<p>Slicing (<code>metrics.py:713</code>) carries the shape instead of collapsing it: per-venue capital at the
+cut, taken from <code>get_equity_per_exchange</code>.</p>
+<h3 id="invariant">Invariant<a class="headerlink" href="#invariant" title="Permanent link">&para;</a></h3>
+<p><code>get_equity_per_exchange().sum(axis=1) == get_equity()</code> at every bar. This catches the
+capital-split defect: a scalar capital leaking into a multi-exchange result doubles the
+per-exchange sum against total equity (verified; on the run above it reads $223,402 against
+$123,402). It does not catch the transfer defect — a transfer's two legs are exact negatives
+landing on the same bar, so a value-preserving transfer leaves the sum unchanged whether or not
+it is aligned correctly. That defect is caught separately, by asserting the transferred amount
+actually lands on the source and destination venues' own equity curves.</p>
+<h3 id="deliberately-unchanged">Deliberately unchanged<a class="headerlink" href="#deliberately-unchanged" title="Permanent link">&para;</a></h3>
+<p>The funding guard at <code>manager.py:682</code> ("only an existing settle balance is adjusted"). With
+per-exchange seeding the settle balance exists from init, so the guard is satisfied. It exists so
+funding never invents a wallet, and loosening it would mask a genuinely mis-seeded account.</p>
+<h2 id="testing">Testing<a class="headerlink" href="#testing" title="Permanent link">&para;</a></h2>
+<p>Account and currency:</p>
+<ul>
+<li><code>SimulationSetup</code> resolution table: scalar broadcast, explicit override, single-settle
+  derivation, mixed-settle fallback</li>
+<li><code>total_capital()</code> counts a non-base <em>settle</em> balance, still excludes an unpriced asset balance
+  (the existing PEPE pin passes unedited), and the venue-figures short-circuit still wins
+  (this is what keeps live unchanged)</li>
+<li><code>_cash_currencies</code> grows when a settle balance is adjusted and keeps counting after the
+  position closes</li>
+<li>converting transfers, extending <code>tests/qubx/backtester/test_transfers.py</code>: source debited in
+  its currency, destination credited in its own, both amounts recorded, insufficient funds
+  checked against the source balance</li>
+</ul>
+<p>Regression that reproduces the original defect: a two-venue sim, USDT and USDC, one hedged pair,
+funding enabled, asserting <code>ctx.get_total_capital()</code> tracks total equity. The quantity is
+anti-correlated with equity before the fix, so this fails hard on <code>main</code>.</p>
+<p>Reporting, in <code>tests/qubx/core/metrics_test.py</code>:</p>
+<ul>
+<li>the sum-equals-total invariant in memory, after a storage round-trip, after slicing, and with
+  transfers present</li>
+<li>transfer alignment against off-grid stamps, two in one bar, before the first bar, after the
+  last bar, and non-completed statuses</li>
+<li>legacy metadata with no <code>capital_by_exchange</code> splits evenly</li>
+</ul>
+<h2 id="compatibility">Compatibility<a class="headerlink" href="#compatibility" title="Permanent link">&para;</a></h2>
+<p>Summing one balance equals reading it, so same-currency venue pairs are unchanged — BINANCE⇄GATEIO
+simulations produce identical results. Only mixed-settle pairs move: today BINANCE.UM ⇄
+HYPERLIQUID.F, plus Lighter if it is simulated.</p>
+<p>Paper twins share <code>SimulationTransferManager</code> and therefore pick up converting transfers, which is
+intended — paper should mirror simulation.</p>
+<p>Live venues that report equity are unaffected: the <code>_venue_figures</code> short-circuit runs ahead of
+the sum, and no live transfer manager ships in qubx. A live venue with no reported equity falls
+back to the derived path, which now counts every balance instead of one — more complete, and the
+same correction being made for simulation.</p>
+<h2 id="rollout">Rollout<a class="headerlink" href="#rollout" title="Permanent link">&para;</a></h2>
+<p>One PR against <code>Qubx:main</code>, organized as separate commits (account/currency, transfers,
+reporting/persistence, tests) so review stays navigable. Merging <code>main</code> cuts a stable release.</p>
+<ol>
+<li>merge the PR, wait for the release pipeline</li>
+<li>bump frab's qubx pin to the released version</li>
+<li>frab PR: <code>BalanceDifferenceRebalancer</code> stops hardcoding <code>target_currency = "USDT"</code>
+   (<code>components/rebalancer.py:31</code>) and uses the source venue's base currency</li>
+<li>rerun <code>v11_00_fp1d_to05</code></li>
+</ol>
+<p>Expect a genuinely different result rather than a rescaled one: gross leverage flat near the
+configured 2.0× instead of decaying 4.0 → 1.7, with Sharpe and CAGR moving accordingly. That run
+also predates frab's <code>e417def</code> leverage² fix (merged 2026-07-20), which the rerun picks up.</p>
+<h2 id="open-question-non-blocking">Open question (non-blocking)<a class="headerlink" href="#open-question-non-blocking" title="Permanent link">&para;</a></h2>
+<p>Whether quantkit's <code>XChangesTransferService</code> can bridge USDC → USDT in live. Step 3 changes what
+frab asks for in production as well as simulation. Asking to move USDT off a USDC-settled venue is
+likely already wrong today, so this is a latent live issue to confirm rather than one this design
+introduces.</p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+
+        <footer class="md-footer">
+  
+    
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+
+<!-- Place this tag in your head or just before your close body tag. -->
+<script async defer src="https://buttons.github.io/buttons.js"></script>
+<script src="https://code.jquery.com/jquery-3.4.1.min.js"
+    integrity="sha256-CSXorXvZcTkaix6Yvo6HppcZGetbYMGWSFlBw8HfCJo=" crossorigin="anonymous"></script>
+
+
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "../../..", "features": ["content.code.annotate", "search.share", "content.code.copy", "navigation.top", "navigation.footer"], "search": "../../../assets/javascripts/workers/search.f8cc74c7.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}, "version": {"alias": true, "provider": "mike"}}</script>
+    
+    
+      <script src="../../../assets/javascripts/bundle.f1b6f286.min.js"></script>
+      
+        <script src="../../../javascripts/config.js"></script>
+      
+        <script src="https://polyfill.io/v3/polyfill.min.js?features=es6"></script>
+      
+        <script src="https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js"></script>
+      
+    
+  </body>
+</html>
