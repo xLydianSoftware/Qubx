@@ -4,6 +4,8 @@ import asyncio
 import time
 from unittest.mock import AsyncMock, Mock
 
+import numpy as np
+
 import ccxt
 import ccxt.pro as cxp
 import pytest
@@ -13,8 +15,12 @@ from qubx import logger
 from qubx.connectors.ccxt.exchanges import EXCHANGE_ALIASES, OkxFutures
 from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
 from qubx.connectors.ccxt.utils import ccxt_status_to_order_status
+from qubx.connectors.ccxt.connector import _LeverageInfo
+from qubx.connectors.ccxt.exchanges.okx.connector import _max_size_at, _parse_tiers
 from qubx.core.basics import OrderStatus
-from qubx.core.basics import CtrlChannel, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position
+from qubx.core.series import Quote
+from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 
 
 def run(coro):
@@ -387,17 +393,8 @@ class TestOrderBookChecksumFailure:
         assert "BTC/USDT:USDT" in offline_okx.orderbooks
 
 
-class TestLeverageReads:
-    """
-    ccxt's okx has neither `fetchLeverages` nor `fetchLeverageTiers` — the two whole-universe
-    calls the base poller uses — so nothing fills the cache and the getters have nothing to
-    read until a batch lands. The reads must not block: on the 5s state snapshot the caller is
-    the ProcessorThread, once per universe instrument.
-
-    Measured on mainnet with ccxt 4.5.50: `account/leverage-info` takes up to 20 comma-separated
-    instIds and 20 of them cost 270ms against 279ms for one, so the configured leverage is read
-    in batches; the venue cap is in the market metadata already loaded, so it costs nothing.
-    """
+class _OkxLeverageFixtures:
+    """Venue fixtures shared by the leverage and tier suites; not collected (no Test prefix)."""
 
     @staticmethod
     def _connector(exchange: Mock) -> OkxCcxtConnector:
@@ -462,7 +459,7 @@ class TestLeverageReads:
     }
 
     @classmethod
-    def _markets(cls, *bases: str, lever: str | None = "125") -> dict:
+    def _markets(cls, *bases: str, lever: str | None = "125", ct_val: str = "1") -> dict:
         """Markets as ccxt's own okx parser produces them, not as we imagine it does.
 
         ``lever=None`` is the venue publishing no cap: ccxt normalises that to
@@ -477,6 +474,7 @@ class TestLeverageReads:
                 uly=f"{base}-USDT",
                 instFamily=f"{base}-USDT",
                 ctValCcy=base,
+                ctVal=ct_val,
             )
             if lever is not None:
                 raw["lever"] = lever
@@ -488,6 +486,28 @@ class TestLeverageReads:
     def _rows(cls, *bases: str, lever: str = "5", pos_side: str = "net") -> dict:
         return {"code": "0", "data": [{"instId": cls._inst_id(b), "posSide": pos_side, "lever": lever} for b in bases]}
 
+    # BTC-USDT-SWAP's own table, abridged: tier 1 is the smallest size at the highest leverage
+    # and both fall away down the table.
+    _BTC_TIERS = [(1, "100", "1000"), (2, "66.66", "5000"), (3, "50", "20000"), (99, "2", "1940000")]
+
+    @classmethod
+    def _tier_rows(cls, base: str = "BTC") -> list[dict]:
+        """`fetch_market_leverage_tiers` rows: maxSz is a size in CONTRACTS, and ccxt copies it
+        into a unified field it calls `maxNotional`, which the connector must not read."""
+        return [
+            {
+                "maxLeverage": float(max_lever),
+                "maxNotional": float(max_size),
+                "info": {
+                    "tier": str(tier),
+                    "maxLever": max_lever,
+                    "maxSz": max_size,
+                    "instId": cls._inst_id(base),
+                },
+            }
+            for tier, max_lever, max_size in cls._BTC_TIERS
+        ]
+
     @classmethod
     def _exchange(cls, *bases: str, **overrides) -> Mock:
         exchange = Mock()
@@ -495,6 +515,9 @@ class TestLeverageReads:
         exchange.fetch_positions = AsyncMock(return_value=[])
         exchange.markets = cls._markets(*(bases or ("BTC",)))
         exchange.privateGetAccountLeverageInfo = AsyncMock(return_value=cls._rows(*(bases or ("BTC",))))
+        exchange.fetch_market_leverage_tiers = AsyncMock(
+            side_effect=lambda symbol: cls._tier_rows(symbol.split("/")[0])
+        )
         for k, v in overrides.items():
             setattr(exchange, k, v)
         return exchange
@@ -518,6 +541,19 @@ class TestLeverageReads:
     def _asked_ids(exchange: Mock) -> list[list[str]]:
         """The instId lists of every leverage-info call, in order."""
         return [call.args[0]["instId"].split(",") for call in exchange.privateGetAccountLeverageInfo.await_args_list]
+
+
+class TestLeverageReads(_OkxLeverageFixtures):
+    """
+    ccxt's okx has neither `fetchLeverages` nor `fetchLeverageTiers` — the two whole-universe
+    calls the base poller uses — so nothing fills the cache and the getters have nothing to
+    read until a batch lands. The reads must not block: on the 5s state snapshot the caller is
+    the ProcessorThread, once per universe instrument.
+
+    Measured on mainnet with ccxt 4.5.50: `account/leverage-info` takes up to 20 comma-separated
+    instIds and 20 of them cost 270ms against 279ms for one, so the configured leverage is read
+    in batches; the venue cap is in the market metadata already loaded, so it costs nothing.
+    """
 
     # -- the cap: market metadata, never the venue ------------------------------- #
 
@@ -823,6 +859,171 @@ class TestLeverageReads:
         connector = self._connector(exchange)
         run(connector._refresh_leverage_cache())
         exchange.privateGetAccountLeverageInfo.assert_not_awaited()
+
+
+class TestMaxNotionalFromTiers(_OkxLeverageFixtures):
+    """`max_notional` is a size cap, not a notional one: OKX caps a position by contracts,
+    tier by tier, and the cap at the configured leverage is the maxSz of the last tier that
+    still permits it — a notional only after the contract multiplier and the mark price.
+    """
+
+    _CONTRACT_SIZE = 0.01
+    _MARK = 50_000.0
+
+    @classmethod
+    def _markets(cls, *bases: str, lever: str | None = "125", ct_val: str | None = None) -> dict:
+        """BTC-USDT-SWAP's real contract size, so the contracts→notional step is observable."""
+        return super()._markets(*bases, lever=lever, ct_val=ct_val or str(cls._CONTRACT_SIZE))
+
+    @classmethod
+    def _position(cls, base: str = "BTC", *, leverage: float | None = 50.0, mark: float | None = _MARK) -> Position:
+        instrument = ccxt_symbol_to_instrument("okx", cls._markets(base)[cls._symbol(base)])
+        pos = Position(instrument=instrument, quantity=100.0, pos_average_price=cls._MARK)
+        if mark is not None:
+            pos.update_market_price(np.datetime64("2026-09-16T00:00:00"), mark, 1.0)
+        pos.leverage = leverage
+        return pos
+
+    @staticmethod
+    def _tiers() -> list[tuple[float, float]]:
+        return [(100.0, 1000.0), (66.66, 5000.0), (50.0, 20000.0), (2.0, 1940000.0)]
+
+    # -- the tier rule ----------------------------------------------------------- #
+
+    def test_parse_reads_the_raw_size_not_ccxt_s_max_notional(self):
+        parsed = _parse_tiers(self._tier_rows())
+        assert parsed == self._tiers()
+
+    def test_parse_sorts_by_tier_whatever_order_the_venue_lists(self):
+        assert _parse_tiers(list(reversed(self._tier_rows()))) == self._tiers()
+
+    @pytest.mark.parametrize(
+        "leverage, expected",
+        [
+            (100.0, 1000.0),
+            (66.66, 5000.0),
+            (50.0, 20000.0),
+            (1.0, 1940000.0),
+            (60.0, 5000.0),  # between tiers: the last one that still permits it
+            (150.0, 1000.0),  # above tier 1's own maximum: tier 1
+        ],
+        ids=["tier1", "tier2", "tier3", "deepest", "between-tiers", "above-tier1"],
+    )
+    def test_the_cap_is_the_last_tier_that_still_permits_the_leverage(self, leverage, expected):
+        assert _max_size_at(self._tiers(), leverage) == expected
+
+    def test_no_tiers_reads_none(self):
+        assert _max_size_at([], 10.0) is None
+
+    # -- the snapshot fill ------------------------------------------------------- #
+
+    def test_the_snapshot_fill_applies_the_contract_size_and_the_mark(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._tiers[self._symbol("BTC")] = self._tiers()
+        pos = self._position(leverage=50.0)
+
+        run(connector._fill_leverage_settings([pos]))
+
+        assert pos.instrument.quantity_multiplier == self._CONTRACT_SIZE
+        assert pos.max_notional == 20000.0 * self._CONTRACT_SIZE * self._MARK
+
+    def test_the_snapshot_fill_never_blocks(self):
+        """It runs inside the account snapshot; a 275ms tier read per symbol there would push
+        the snapshot out by the size of the universe."""
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+
+        run(connector._fill_leverage_settings([self._position()]))
+
+        exchange.fetch_market_leverage_tiers.assert_not_awaited()
+        self._discard(connector)
+
+    def test_unknown_tiers_leave_the_position_alone_and_queue_one_fetch(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        pos = self._position()
+
+        run(connector._fill_leverage_settings([pos, self._position()]))
+
+        assert pos.max_notional is None
+        assert connector._tiers_pending == {self._symbol("BTC")}
+        assert len(connector._captured) == 1
+
+        self._drive(connector)
+        assert exchange.fetch_market_leverage_tiers.await_count == 1
+        assert connector._tiers[self._symbol("BTC")] == self._tiers()
+
+    def test_the_tiers_are_fetched_once_per_symbol(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        for _ in range(3):
+            run(connector._fill_leverage_settings([self._position()]))
+            self._drive(connector)
+
+        assert exchange.fetch_market_leverage_tiers.await_count == 1
+        assert connector._captured == []
+
+    def test_a_value_the_payload_supplied_is_never_overwritten(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._tiers[self._symbol("BTC")] = self._tiers()
+        pos = self._position()
+        pos.max_notional = 123.0
+
+        run(connector._fill_leverage_settings([pos]))
+
+        assert pos.max_notional == 123.0
+
+    def test_the_configured_leverage_falls_back_to_the_cache(self):
+        """OKX's position payload carries `lever`, but a position the venue reported without
+        one still has the batched read's answer behind it."""
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        exchange.privateGetAccountLeverageInfo = AsyncMock(return_value=self._rows("BTC", lever="1"))
+        connector._tiers[self._symbol("BTC")] = self._tiers()
+        connector.get_instrument_leverage(self._instrument())
+        self._drive(connector)
+        pos = self._position(leverage=None)
+
+        run(connector._fill_leverage_settings([pos]))
+
+        # 1x from the cache reaches the deepest tier; the position's own 50x would stop at 20000
+        assert pos.max_notional == 1940000.0 * self._CONTRACT_SIZE * self._MARK
+
+    def test_an_unmarked_position_is_left_alone(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._tiers[self._symbol("BTC")] = self._tiers()
+        pos = self._position(mark=None)
+        assert np.isnan(pos.last_update_price)
+
+        run(connector._fill_leverage_settings([pos]))
+
+        assert pos.max_notional is None
+
+    # -- the connector getter ---------------------------------------------------- #
+
+    def test_the_getter_prices_the_cap_off_the_last_quote(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._tiers[self._symbol("BTC")] = self._tiers()
+        connector._leverage_cache[self._symbol("BTC")] = _LeverageInfo(configured=50, maximum=None)
+        connector._data_provider.get_quote = Mock(return_value=Quote(0, 49_999.0, 50_001.0, 1.0, 1.0))
+        instrument = self._position().instrument
+
+        assert connector.get_max_instrument_notional(instrument) == 20000.0 * self._CONTRACT_SIZE * self._MARK
+        exchange.fetch_positions.assert_not_awaited()
+
+    def test_the_getter_reads_inf_while_anything_is_unknown(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        connector._data_provider.get_quote = Mock(return_value=None)
+        instrument = self._position().instrument
+
+        assert connector.get_max_instrument_notional(instrument) == float("inf")
+        exchange.fetch_positions.assert_not_awaited()
+        self._discard(connector)
 
 
 class TestOrderBookChecksumDisabled:

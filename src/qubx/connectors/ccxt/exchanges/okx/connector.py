@@ -30,7 +30,7 @@ from functools import partial
 from typing import Any, Coroutine
 
 from qubx import logger
-from qubx.core.basics import FRAMEWORK_CID_PREFIX, Balance, Instrument
+from qubx.core.basics import FRAMEWORK_CID_PREFIX, Balance, Instrument, Position
 
 from ...connector import _LeverageInfo
 from ...utils import info_float, instrument_to_ccxt_symbol
@@ -56,6 +56,36 @@ def _configured_levers(response: dict[str, Any]) -> dict[str, int]:
             continue
         levers[inst_id] = int(lever)
     return levers
+
+
+def _parse_tiers(rows: list[dict[str, Any]] | None) -> list[tuple[float, float]]:
+    """(maxLever, maxSz) per position tier, in the venue's own tier order.
+
+    ``maxSz`` is read RAW: ccxt copies it into its unified ``maxNotional`` field, but it is a
+    position size in CONTRACTS, not a notional.
+    """
+    tiers: list[tuple[float, float]] = []
+    for row in rows or []:
+        raw = row.get("info") or {}
+        max_lever = info_float(raw, "maxLever")
+        max_size = info_float(raw, "maxSz")
+        if max_lever is None or max_size is None:
+            continue
+        tiers.append((info_float(raw, "tier") or float(len(tiers) + 1), max_lever, max_size))  # type: ignore[arg-type]
+    return [(lever, size) for _, lever, size in sorted(tiers)]
+
+
+def _max_size_at(tiers: list[tuple[float, float]], leverage: float) -> float | None:
+    """Contracts allowed at ``leverage``: the LAST tier still permitting it.
+
+    Tier 1 is the smallest size at the highest leverage, and both fall away down the table, so
+    the cap is the deepest tier whose own maximum still covers the configured leverage. A
+    leverage above tier 1's own maximum cannot be configured at all, and reads as tier 1.
+    """
+    allowed = [size for max_lever, size in tiers if max_lever >= leverage]
+    if allowed:
+        return allowed[-1]
+    return tiers[0][1] if tiers else None
 
 
 def _account_data(raw_balance: dict[str, Any]) -> dict[str, Any]:
@@ -92,6 +122,10 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
     _leverage_flush_scheduled: bool
     # - monotonic stamp; no flush starts before it. Set when a batch fails.
     _leverage_flush_backoff_until: float
+    # - position tiers per ccxt symbol, (maxLever, maxSz) in tier order. Static per instrument,
+    #   so a symbol is fetched once per process; the queue rides the same flush task.
+    _tiers: dict[str, list[tuple[float, float]]]
+    _tiers_pending: set[str]
 
     # A snapshot tick asks for every universe instrument in a tight loop; the flush waits this
     # long so they leave as one batch instead of one call per instrument.
@@ -103,6 +137,8 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         self._leverage_probed = set()
         self._leverage_flush_scheduled = False
         self._leverage_flush_backoff_until = 0.0
+        self._tiers = {}
+        self._tiers_pending = set()
 
     def _account_streams(self) -> list[Coroutine[Any, Any, None]]:
         """
@@ -164,6 +200,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         except Exception as exc:  # noqa: BLE001 — the caller is a snapshot read
             self._leverage_flush_scheduled = False
             self._leverage_pending.clear()
+            self._tiers_pending.clear()
             # close it, as _run_sync does, so a rejected schedule does not also surface as
             # "coroutine was never awaited"
             coro.close()
@@ -175,20 +212,26 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             while True:
                 await asyncio.sleep(self._leverage_flush_debounce_s)
                 symbols = sorted(self._leverage_pending)
-                if not symbols:
+                tier_symbols = sorted(self._tiers_pending)
+                if not symbols and not tier_symbols:
                     return
                 self._leverage_pending.difference_update(symbols)
-                await self._read_leverage_batched(symbols)
+                self._tiers_pending.difference_update(tier_symbols)
+                if symbols:
+                    await self._read_leverage_batched(symbols)
+                if tier_symbols:
+                    await self._read_tiers(tier_symbols)
         except BaseException:
-            # abnormal exit (cancellation): drop the queue rather than leave it to a task that no
-            # longer exists. The symbols are unprobed, so the next snapshot tick queues them again.
+            # abnormal exit (cancellation): drop the queues rather than leave them to a task that
+            # no longer exists. Nothing was recorded, so the next snapshot tick queues them again.
             self._leverage_pending.clear()
+            self._tiers_pending.clear()
             raise
         finally:
             self._leverage_flush_scheduled = False
             # A miss that arrived while the flag was still set saw no reason to spawn, so with the
             # flag down this task is the only thing that can notice it.
-            if self._leverage_pending:
+            if self._leverage_pending or self._tiers_pending:
                 self._ensure_flush_scheduled()
 
     async def _read_leverage_batched(self, symbols: list[str]) -> None:
@@ -232,6 +275,87 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             for inst_id, symbol in by_id.items():
                 self._store(symbol, configured=levers.get(inst_id))
                 self._leverage_probed.add(symbol)
+
+    async def _read_tiers(self, symbols: list[str]) -> None:
+        """One ``fetch_market_leverage_tiers`` per symbol (~275ms), through ccxt's throttle.
+
+        Static per instrument, so a symbol that answers is never asked again; one that fails
+        backs the flush off with the rest and is re-queued by the next snapshot.
+        """
+        for symbol in symbols:
+            try:
+                rows = await self._em.exchange.fetch_market_leverage_tiers(symbol)
+            except Exception as e:  # noqa: BLE001
+                self._leverage_flush_backoff_until = time.monotonic() + _OKX_LEVERAGE_BACKOFF_S
+                logger.warning(
+                    f"[{self.exchange_name}] leverage tiers failed for {symbol}, "
+                    f"retrying in {_OKX_LEVERAGE_BACKOFF_S:g}s: {e}"
+                )
+                return
+            self._tiers[symbol] = _parse_tiers(rows)
+
+    def _schedule_tiers_fetch(self, symbol: str) -> None:
+        if symbol in self._tiers:
+            return
+        self._tiers_pending.add(symbol)
+        self._ensure_flush_scheduled()
+
+    def _configured_leverage(self, symbol: str) -> float | None:
+        cached = self._leverage_cache.get(symbol)
+        return float(cached.configured) if cached is not None and cached.configured is not None else None
+
+    def _tier_notional(self, symbol: str, leverage: float | None, multiplier: float, price: float) -> float | None:
+        """``maxSz × contracts→tokens × price`` at ``leverage``, or None while anything is unknown."""
+        tiers = self._tiers.get(symbol)
+        if tiers is None:
+            self._schedule_tiers_fetch(symbol)
+            return None
+        if leverage is None or not price > 0:  # NaN price (never marked) fails this too
+            return None
+        max_size = _max_size_at(tiers, leverage)
+        return max_size * multiplier * price if max_size is not None else None
+
+    async def _fill_leverage_settings(self, positions: list[Position]) -> None:
+        """Set ``max_notional`` on each snapshot position from the venue's position tiers.
+
+        OKX caps a position by SIZE, tier by tier: tier 1 is the smallest size at the highest
+        leverage, and the cap at the configured leverage is the maxSz of the last tier that
+        still permits it. That maxSz is in CONTRACTS — ccxt copies it into a field it calls
+        ``maxNotional``, which it is not — so it becomes a notional only after the contract
+        multiplier and the mark price.
+
+        Held positions only, refreshed every snapshot, the same coverage Binance has. A symbol
+        whose tiers have not been read yet queues the fetch and keeps its previous value; a
+        value the payload itself supplied is never overwritten.
+        """
+        for pos in positions:
+            if pos.max_notional is not None:
+                continue
+            symbol = instrument_to_ccxt_symbol(pos.instrument)
+            notional = self._tier_notional(
+                symbol,
+                pos.leverage if pos.leverage is not None else self._configured_leverage(symbol),
+                pos.instrument.quantity_multiplier,
+                pos.last_update_price,
+            )
+            if notional is not None:
+                pos.max_notional = notional
+
+    def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        """The tier cap at the configured leverage, ``inf`` while anything it needs is unknown.
+
+        Cache and last-quote lookups only — the base reads it off a blocking single-symbol
+        position pull, which the 5s snapshot cannot afford.
+        """
+        symbol = instrument_to_ccxt_symbol(instrument)
+        quote = self._data_provider.get_quote(instrument)
+        notional = self._tier_notional(
+            symbol,
+            self._configured_leverage(symbol),
+            instrument.quantity_multiplier,
+            quote.mid_price() if quote is not None else float("nan"),
+        )
+        return notional if notional is not None else float("inf")
 
     def get_instrument_leverage(self, instrument: Instrument) -> float | None:
         """Cache only: entries land asynchronously on first ask, None until then."""
