@@ -1,3 +1,5 @@
+import json
+import math
 from unittest.mock import MagicMock
 
 from qubx.control.builtin import BUILTIN_ACTIONS, _refresh_instrument_service
@@ -39,6 +41,9 @@ def _make_mock_ctx():
     pos1.unrealized_pnl.return_value = 250.0
     pos1.r_pnl = 100.0
     pos1.market_value_funds = 34000.0
+    pos1.notional_value = 34000.0
+    pos1.initial_margin = 6800.123
+    pos1.maint_margin = 340.456
     pos1.is_open.return_value = True
     pos2 = MagicMock()
     pos2.quantity = 0.0
@@ -47,12 +52,18 @@ def _make_mock_ctx():
     pos2.unrealized_pnl.return_value = 0.0
     pos2.r_pnl = 0.0
     pos2.market_value_funds = 0.0
+    pos2.notional_value = 0.0
+    pos2.initial_margin = 0.0
+    pos2.maint_margin = 0.0
     pos2.is_open.return_value = False
 
     ctx.get_positions.return_value = {instr1: pos1, instr2: pos2}
     account.get_positions.return_value = {instr1: pos1, instr2: pos2}
     account.get_orders.return_value = {}
     account.get_leverage.return_value = 0.34
+    account.get_instrument_leverage.return_value = None
+    account.get_max_instrument_leverage.return_value = None
+    account.get_max_instrument_notional.return_value = float("inf")
     account.get_total_capital.return_value = 10000.0
     account.get_available_margin.return_value = 9500.0
     account.get_net_leverage.return_value = 0.15
@@ -161,6 +172,67 @@ class TestGetState:
         assert "orders" in exch
         assert "balances" in exch
 
+    def test_the_per_position_key_order_is_unchanged(self):
+        ctx = _make_mock_ctx()
+        _, handler = BUILTIN_ACTIONS["get_state"]
+        pos = handler(ctx).data["exchanges"]["BINANCE.UM"]["positions"]["BTCUSDT"]
+        assert list(pos) == [
+            "quantity",
+            "avg_price",
+            "market_price",
+            "unrealized_pnl",
+            "market_value",
+            "leverage",
+            "notional",
+            "instrument_leverage",
+            "max_instrument_leverage",
+            "max_notional",
+            "initial_margin",
+            "maint_margin",
+        ]
+
+    def test_an_unmarked_position_serializes(self):
+        """A position seated by set_universe before its first quote marks at NaN, and one NaN
+        makes the whole document unparseable to the platform's decoder."""
+        ctx = _make_mock_ctx()
+        pos = ctx.instruments[0]
+        pos = ctx.account.get_positions.return_value[pos]
+        pos.last_update_price = math.nan
+        pos.unrealized_pnl.return_value = math.nan
+        pos.market_value_funds = math.nan
+        pos.notional_value = math.nan
+        _, handler = BUILTIN_ACTIONS["get_state"]
+
+        data = handler(ctx).data
+        json.dumps(data, allow_nan=False)
+        entry = data["exchanges"]["BINANCE.UM"]["positions"]["BTCUSDT"]
+        assert entry["market_price"] is None
+        assert entry["unrealized_pnl"] is None
+        assert entry["market_value"] is None
+
+    def test_positions_carry_the_venue_settings(self):
+        """Same per-position entry as the 5s state snapshot, in this action's rounded
+        display form: `market_price` rather than `current_price`."""
+        ctx = _make_mock_ctx()
+        ctx.account.get_instrument_leverage.return_value = 3.0
+        ctx.account.get_max_instrument_leverage.return_value = 125.0
+        ctx.account.get_max_instrument_notional.return_value = float("inf")
+        _, handler = BUILTIN_ACTIONS["get_state"]
+
+        pos = handler(ctx).data["exchanges"]["BINANCE.UM"]["positions"]["BTCUSDT"]
+        assert "current_price" not in pos
+        assert pos["market_price"] == 68000.0
+        assert pos["quantity"] == 0.5
+        assert pos["unrealized_pnl"] == 250.0
+        assert pos["market_value"] == 34000.0
+        assert pos["notional"] == 34000.0
+        assert pos["instrument_leverage"] == 3.0
+        assert pos["max_instrument_leverage"] == 125.0
+        # inf is the account manager's "the venue publishes no cap"
+        assert pos["max_notional"] is None
+        assert pos["initial_margin"] == 6800.12
+        assert pos["maint_margin"] == 340.46
+
     def test_includes_custom_state(self):
         ctx = _make_mock_ctx()
 
@@ -264,16 +336,24 @@ class TestBuiltinRegistry:
 
     def test_dangerous_actions_are_marked(self):
         dangerous = {
-            "trade", "set_target_position", "set_target_leverage", "close_position",
-            "close_positions", "emit_signal", "remove_instruments", "set_universe",
-            "settle_position", "trigger_fit",
+            "trade",
+            "set_target_position",
+            "set_target_leverage",
+            "set_instrument_leverage",
+            "close_position",
+            "close_positions",
+            "emit_signal",
+            "remove_instruments",
+            "set_universe",
+            "settle_position",
+            "trigger_fit",
         }
         for name in dangerous:
             action_def, _ = BUILTIN_ACTIONS[name]
             assert action_def.dangerous is True, f"{name} should be dangerous"
 
     def test_expected_action_count(self):
-        assert len(BUILTIN_ACTIONS) == 28
+        assert len(BUILTIN_ACTIONS) == 29
 
 
 def test_refresh_instrument_service_registered_as_write_action():
@@ -327,3 +407,79 @@ def test_settle_position_action_errors_on_unknown_symbol():
     result = handler(ctx, symbol="NOPEUSDT")
     assert result.status == "error"
     ctx.settle_position.assert_not_called()
+
+
+class TestSetInstrumentLeverage:
+    """The venue-configured per-symbol cap, not a trade — see set_target_leverage for that."""
+
+    @staticmethod
+    def _handler():
+        return BUILTIN_ACTIONS["set_instrument_leverage"][1]
+
+    def test_sends_the_request_and_reports_what_it_replaced(self):
+        ctx = _make_mock_ctx()
+        ctx.get_max_instrument_leverage.return_value = 50.0
+        ctx.get_instrument_leverage.return_value = 3.0
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=10.0)
+
+        assert result.status == "ok"
+        assert result.data == {
+            "exchange": "BINANCE.UM",
+            "symbol": "BTCUSDT",
+            "requested": 10.0,
+            "previous": 3.0,
+            "max": 50.0,
+        }
+        ctx.set_instrument_leverage.assert_called_once_with(ctx.instruments[0], 10.0)
+
+    def test_a_sub_one_leverage_is_refused(self):
+        ctx = _make_mock_ctx()
+        ctx.get_max_instrument_leverage.return_value = 50.0
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=0.5)
+
+        assert result.status == "error"
+        assert "must be >= 1" in result.error
+        ctx.set_instrument_leverage.assert_not_called()
+
+    def test_above_the_venue_maximum_is_refused_not_clamped(self):
+        ctx = _make_mock_ctx()
+        ctx.get_max_instrument_leverage.return_value = 20.0
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=50.0)
+
+        assert result.status == "error"
+        assert "exceeds the venue maximum 20.0x" in result.error
+        ctx.set_instrument_leverage.assert_not_called()
+
+    def test_an_unknown_maximum_sends_it_as_asked(self):
+        """None means the venue publishes no cap or it has not been read yet — the venue
+        still enforces its own, and refuses on the channel."""
+        ctx = _make_mock_ctx()
+        ctx.get_max_instrument_leverage.return_value = None
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=50.0)
+
+        assert result.status == "ok"
+        assert result.data["max"] is None
+        ctx.set_instrument_leverage.assert_called_once_with(ctx.instruments[0], 50.0)
+
+    def test_an_instrument_outside_the_universe_is_refused(self):
+        ctx = _make_mock_ctx()
+        ctx.instruments = [ctx.instruments[1]]  # ETHUSDT only; BTCUSDT still resolves
+
+        result = self._handler()(ctx, symbol="BTCUSDT", exchange="BINANCE.UM", leverage=10.0)
+
+        assert result.status == "error"
+        assert "not in the universe" in result.error
+        ctx.set_instrument_leverage.assert_not_called()
+
+    def test_an_unknown_symbol_is_refused(self):
+        ctx = _make_mock_ctx()
+
+        result = self._handler()(ctx, symbol="NOPEUSDT", exchange="BINANCE.UM", leverage=10.0)
+
+        assert result.status == "error"
+        assert "not found on BINANCE.UM" in result.error
+        ctx.set_instrument_leverage.assert_not_called()

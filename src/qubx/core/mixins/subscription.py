@@ -1,6 +1,4 @@
-import pprint
 import threading
-import time
 import traceback
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -12,6 +10,8 @@ from qubx.core.basics import CtrlChannel, DataType, Instrument
 from qubx.core.exceptions import NotSupported
 from qubx.core.fit_executor import SingleThreadWorker
 from qubx.core.interfaces import IDataProvider, IHealthMonitor, ISubscriptionManager, ITimeProvider, StrategyState
+from qubx.core.status import ContextStatus
+from qubx.core.subscription_watchdog import SubscriptionWatchdog
 from qubx.utils.misc import synchronized
 
 from .utils import EXCHANGE_MAPPINGS
@@ -21,10 +21,6 @@ from .utils import EXCHANGE_MAPPINGS
 # worker when its fetch completes, dispatched to ProcessingManager._handle_subscription_swap
 # and applied on the ProcessorThread.
 SUBSCRIPTION_SWAP_EVENT = "subscription_swap"
-
-# Data types the stale-data watchdog polices. Base types: a subscription may carry parameters
-# ("orderbook(0, 1)"), and only the base type has a staleness threshold in the health monitor.
-_WATCHDOG_DATA_TYPES = frozenset({DataType.QUOTE, DataType.ORDERBOOK, DataType.TRADE})
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,6 +62,7 @@ class SubscriptionManager(ISubscriptionManager):
         channel: CtrlChannel,
         health_monitor: IHealthMonitor,
         strategy_state: StrategyState,
+        status: ContextStatus,
         auto_subscribe: bool = True,
         default_base_subscription: str = DataType.NONE,
         monitor_interval_seconds: float = 30.0,
@@ -76,6 +73,7 @@ class SubscriptionManager(ISubscriptionManager):
         self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
         self._health_monitor = health_monitor
         self._strategy_state = strategy_state
+        self._status = status
         self._base_sub = default_base_subscription
         self._sub_to_warmup = {}
         self._pending_warmups = {}
@@ -83,6 +81,10 @@ class SubscriptionManager(ISubscriptionManager):
         self._pending_global_unsubscriptions = set()
         self._pending_stream_subscriptions = defaultdict(set)
         self._pending_stream_unsubscriptions = defaultdict(set)
+        # - the desired universe: authoritative, and deliberately NOT read back from the
+        #   providers. A provider that loses its registry (a failed repair, a dropped
+        #   socket) must not take the universe with it.
+        self._desired: dict[str, set[Instrument]] = defaultdict(set)
         self._auto_subscribe = auto_subscribe
         self._monitor_interval_seconds = monitor_interval_seconds
         self._is_simulation = all(data_provider.is_simulation for data_provider in data_providers)
@@ -154,6 +156,12 @@ class SubscriptionManager(ISubscriptionManager):
             self._warmup_inflight += 1
         self._warmup_worker.submit(partial(self._warmup_and_post_swap, _warmups, plan))
 
+    def stop(self) -> None:
+        # - None in simulation, or if a context is stopped before init_subscription_monitoring
+        #   ran (there is no such path today, but this must not assume otherwise)
+        if self._watchdog is not None:
+            self._watchdog.stop()
+
     def _run_warmup(self, warmups: dict[IDataProvider, dict[tuple[str, Instrument], str]]) -> None:
         for _data_provider, _configs in warmups.items():
             _data_provider.warmup(_configs)
@@ -195,10 +203,14 @@ class SubscriptionManager(ISubscriptionManager):
             with self._warmup_inflight_lock:
                 self._warmup_inflight -= 1
 
+    @synchronized
     def _apply_swap(self, plan: _CommitPlan) -> None:
-        # - apply: the subscribe/unsubscribe swap (fast)
+        # - apply: the subscribe/unsubscribe swap (fast). @synchronized so the
+        #   ProcessorThread-side deferred path (_apply_deferred_swap, uncontrolled
+        #   otherwise) excludes desired_snapshot() the same way commit() already does
+        #   via re-entrancy.
         for _sub in self._get_updated_subs(plan):
-            _current_sub_instruments = set(self.get_subscribed_instruments(_sub))
+            _current_sub_instruments = set(self._desired.get(_sub, set()))
             _removed_instruments = plan.stream_unsubscriptions.get(_sub, set())
             _added_instruments = plan.stream_subscriptions.get(_sub, set())
 
@@ -206,10 +218,16 @@ class SubscriptionManager(ISubscriptionManager):
                 _removed_instruments.update(_current_sub_instruments)
 
             if _sub in plan.global_subscriptions:
-                _added_instruments.update(self.get_subscribed_instruments())
+                _added_instruments.update({i for instrs in self._desired.values() for i in instrs})
 
             # - subscribe collection
             _updated_instruments = _current_sub_instruments.union(_added_instruments).difference(_removed_instruments)
+            # - intent is recorded BEFORE the provider calls, so a raising provider leaves
+            #   the universe intact and the watchdog repairs it
+            if _updated_instruments:
+                self._desired[_sub] = set(_updated_instruments)
+            else:
+                self._desired.pop(_sub, None)
             _exchange_to_updated_instruments = defaultdict(set)
             _exchange_to_current_sub_instruments = defaultdict(set)
             for instr in _updated_instruments:
@@ -247,9 +265,21 @@ class SubscriptionManager(ISubscriptionManager):
             for instr in _removed_instruments:
                 self._health_monitor.unsubscribe(instr, _sub)
 
+    @synchronized
+    def desired_snapshot(self) -> dict[str, dict[str, frozenset[Instrument]]]:
+        """The desired universe as exchange -> subscription -> instruments, copied under
+        the lock. The watchdog's only view of intent, read on its own thread."""
+        snapshot: dict[str, dict[str, frozenset[Instrument]]] = defaultdict(dict)
+        for sub, instruments in self._desired.items():
+            by_exchange: dict[str, set[Instrument]] = defaultdict(set)
+            for instrument in instruments:
+                by_exchange[instrument.exchange].add(instrument)
+            for exchange, instrs in by_exchange.items():
+                snapshot[exchange][sub] = frozenset(instrs)
+        return dict(snapshot)
+
     def has_subscription(self, instrument: Instrument, subscription_type: str) -> bool:
-        _data_provider = self._get_data_provider(instrument.exchange)
-        return _data_provider.has_subscription(instrument, subscription_type)
+        return instrument in self._desired.get(subscription_type, set())
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         _data_provider = (
@@ -262,10 +292,9 @@ class SubscriptionManager(ISubscriptionManager):
         )
 
     def get_subscribed_instruments(self, subscription_type: str | None = None) -> list[Instrument]:
-        _current_instruments = []
-        for _data_provider in self._data_providers:
-            _current_instruments.extend(_data_provider.get_subscribed_instruments(subscription_type))
-        return _current_instruments
+        if subscription_type is not None:
+            return list(self._desired.get(subscription_type, set()))
+        return list({i for instrs in self._desired.values() for i in instrs})
 
     def get_base_subscription(self) -> str:
         return self._base_sub
@@ -438,58 +467,15 @@ class SubscriptionManager(ISubscriptionManager):
             )
 
     def _init_subscription_monitoring(self) -> None:
+        self._watchdog: SubscriptionWatchdog | None = None
         if self._is_simulation:
             return
-        # - start monitoring thread only if there is at least one live data provider
-        self._monitor_thread = threading.Thread(target=self._monitor_loop, daemon=True)
-        self._monitor_thread.start()
-
-    def _monitor_loop(self) -> None:
-        while True:
-            try:
-                time.sleep(self._monitor_interval_seconds)
-                if self._strategy_state.is_on_warmup_finished_called:
-                    self._monitor_subscription_status()
-            except Exception as e:
-                logger.error(f"Error in subscription monitoring: {e}")
-
-    def _monitor_subscription_status(self) -> None:
-        exch_sub_to_stale_instr = defaultdict(lambda: defaultdict(set))
-        for data_provider in self._data_providers:
-            # Must NOT be gated on `is_connected()`: a wedged CCXT provider drops its
-            # stream-enabled flag before it blocks, so it reports not-connected exactly when this
-            # watchdog is needed - gating here disarms the last recovery path.
-            if data_provider.is_simulation:
-                continue
-            # Iterate the provider's OWN subscription keys, not the bare base types: a subscription
-            # may carry parameters ("orderbook(0, 1)") and get_subscribed_instruments / subscribe /
-            # unsubscribe are all exact-key lookups, so "orderbook" would match nothing. Health is
-            # keyed by base type, the provider by full key - carry both.
-            for sub in data_provider.get_subscriptions():
-                base_type = DataType.from_str(sub)[0]
-                if base_type not in _WATCHDOG_DATA_TYPES:
-                    continue
-                for instrument in data_provider.get_subscribed_instruments(sub):
-                    if self._health_monitor.is_stale(instrument, str(base_type)):
-                        exch_sub_to_stale_instr[data_provider.exchange()][sub].add(instrument)
-
-        if not exch_sub_to_stale_instr:
-            return
-
-        for exchange, sub_to_stale_instr in exch_sub_to_stale_instr.items():
-            logger.warning(
-                f"[<yellow>{exchange}</yellow>] :: Stale data detected for {pprint.pformat(dict(sub_to_stale_instr))} instruments"
-            )
-            logger.info("[1/4] Unsubscribing stale instruments..")
-            data_provider = self._get_data_provider(exchange)
-            # - unsubscribe stale instruments (full subscription key, not the base type)
-            for sub, stale_instruments in sub_to_stale_instr.items():
-                data_provider.unsubscribe(sub, stale_instruments)
-            logger.info("[2/4] Waiting for 3 seconds before resubscribing..")
-            # - wait for 3 seconds before resubscribing
-            time.sleep(3)
-            logger.info("[3/4] Resubscribing stale instruments..")
-            # - resubscribe stale instruments
-            for sub, stale_instruments in sub_to_stale_instr.items():
-                data_provider.subscribe(sub, stale_instruments)
-            logger.info("[4/4] Resubscription complete")
+        self._watchdog = SubscriptionWatchdog(
+            data_providers=self._data_providers,
+            health_monitor=self._health_monitor,
+            status=self._status,
+            snapshot_fn=self.desired_snapshot,
+            strategy_state=self._strategy_state,
+            interval_seconds=self._monitor_interval_seconds,
+        )
+        self._watchdog.start()

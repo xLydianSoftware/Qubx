@@ -114,6 +114,7 @@ Symbols can include the exchange prefix for multi-exchange setups: `"BINANCE.UM:
 | `trade` | Place an order | `symbol`, `amount`, `price?`, `time_in_force?` | Yes |
 | `set_target_position` | Set target position size | `symbol`, `target`, `price?` | Yes |
 | `set_target_leverage` | Set target leverage | `symbol`, `leverage`, `price?` | Yes |
+| `set_instrument_leverage` | Set the venue-configured leverage for one instrument (a per-symbol cap the exchange enforces; not a trade) | `symbol`, `exchange`, `leverage` | Yes |
 | `close_position` | Close one position | `symbol` | Yes |
 | `close_positions` | Close all positions | — | Yes |
 | `cancel_orders` | Cancel open orders | `symbol?` | — |
@@ -251,7 +252,13 @@ The `get_state` response will include:
           "market_price": 68000.0,
           "unrealized_pnl": 250.0,
           "market_value": 34000.0,
-          "leverage": 0.34
+          "leverage": 0.34,
+          "notional": 34000.0,
+          "instrument_leverage": 5.0,
+          "max_instrument_leverage": 125.0,
+          "max_notional": 1000000.0,
+          "initial_margin": 6800.0,
+          "maint_margin": 340.0
         }
       },
       "orders": {
@@ -270,6 +277,8 @@ The `get_state` response will include:
   "custom": { ... }
 }
 ```
+
+Per position, `leverage` is the observed notional/capital ratio (signed) and `notional` the signed dollar value of the held position. `instrument_leverage`, `max_instrument_leverage` and `max_notional` are the venue's per-instrument settings: the configured leverage, the highest leverage the venue accepts, and the notional cap at the current leverage — each `null` when the venue has not reported it, and `max_notional` also `null` where the venue publishes no cap. `initial_margin` and `maint_margin` are dollar amounts: the venue's own figures for a held position, and `0.0` once flat, since venues report margin for open positions only. The same keys are written to the 5s Redis state snapshot, with `current_price` in place of `market_price`.
 
 ## Thread Safety
 

@@ -25,6 +25,7 @@ from qubx.core.mixins.processing import ProcessingManager
 from qubx.core.mixins.subscription import SUBSCRIPTION_SWAP_EVENT, SubscriptionManager
 from qubx.core.mixins.universe import UniverseManager
 from qubx.core.series import Bar, Quote
+from qubx.core.status import ContextStatus
 from qubx.utils.runner.configs import LiveConfig
 
 T0 = np.datetime64("2025-01-01T00:00:00", "ns")
@@ -884,6 +885,7 @@ class TestDeferredSubscriptionCommit:
             channel=channel,
             health_monitor=MagicMock(),
             strategy_state=StrategyState(),
+            status=ContextStatus(),
             monitor_interval_seconds=3600.0,  # keep the live monitoring thread quiet
         )
         return sm, dp, channel
@@ -1059,6 +1061,7 @@ class TestDeferredSubscriptionCommit:
             channel=channel,
             health_monitor=MagicMock(),
             strategy_state=StrategyState(),
+            status=ContextStatus(),
             auto_subscribe=False,
             default_base_subscription=sub,
             monitor_interval_seconds=3600.0,

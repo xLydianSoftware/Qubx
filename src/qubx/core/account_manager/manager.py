@@ -86,6 +86,8 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
     _reconcilers: dict[str, Reconciler]
     # - None leaves every venue's own leverage alone; seeded from the config via the context
     _default_instrument_leverage: float | None
+    # - instruments an explicit set_instrument_leverage claimed, which the default apply skips
+    _pinned_leverage: dict[Instrument, float]
 
     def __init__(
         self,
@@ -100,6 +102,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         default_instrument_leverage: float | None = None,
     ):
         self._pm = pm
+        self._pinned_leverage = {}
         self._init_state(
             connectors=connectors,
             base_currencies=base_currencies,
@@ -580,8 +583,22 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return connector.get_max_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        """Snapshot first, connector second.
+
+        The snapshot only carries a cap for instruments the account holds a position in — the
+        venue reports no row for the rest — so asking about an instrument you are flat in used
+        to read ``inf`` while the connector had the answer for the whole universe.
+
+        Every connector answers this without touching the venue, which it must: the 5s state
+        snapshot asks once per universe instrument on the ProcessorThread. ccxt reads its
+        poller cache, OKX its tier cache and last quote, Lighter its market metadata, and
+        Hyperliquid and the backtester return ``inf`` outright.
+        """
         notional = self.get_position(instrument).max_notional
-        return notional if notional is not None else float("inf")
+        if notional is not None:
+            return notional
+        connector = self._connectors.get(instrument.exchange)
+        return connector.get_max_instrument_notional(instrument) if connector is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
         return self.get_position(instrument).margin_mode
@@ -594,7 +611,19 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         """Request the CONFIGURED leverage for one instrument. Returns nothing: the
         connector sends the venue call off-thread and reports a refusal as a
         VenueOperationError to the strategy's on_error, so there is no outcome to hand back here.
+
+        An explicit set PINS the instrument for the life of the process: the default-leverage
+        apply that runs on every universe rotation leaves pinned instruments alone, so an
+        operator's edit survives one. A later explicit set replaces the pin. The pin set is
+        bounded by the universe over the process life, and there is no unpin — a restart
+        clears them.
         """
+        # Recorded before the send: the send is fire-and-forget, so a venue refusal arrives on
+        # the channel rather than here and cannot be waited on to decide whether to pin.
+        self._pinned_leverage[instrument] = leverage
+        self._send_instrument_leverage(instrument, leverage)
+
+    def _send_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
         connector = self._connectors.get(instrument.exchange)
         if connector is None:
             logger.warning(f"[{instrument.exchange}] no connector; cannot set instrument leverage")
@@ -609,7 +638,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         self.apply_default_instrument_leverage(self.positions)
 
     def apply_default_instrument_leverage(self, instruments: Iterable[Instrument]) -> None:
-        """Set the current default leverage on these instruments.
+        """Set the current default leverage on the instruments no explicit set has pinned.
 
         Setting it again on an instrument that already has it costs nothing: connectors
         either skip it from cache (ccxt, lighter) or send it because reading the current value
@@ -624,12 +653,18 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         leveraged = [i for i in instruments if i.market_type in _LEVERAGED_MARKET_TYPES]
         if not leveraged:
             return
-        for instrument in leveraged:
+        unpinned = [i for i in leveraged if i not in self._pinned_leverage]
+        for instrument in unpinned:
             try:
-                self.set_instrument_leverage(instrument, leverage)
+                # never the public setter: the default must not pin what it touches
+                self._send_instrument_leverage(instrument, leverage)
             except Exception as exc:  # noqa: BLE001 — one refusal must not block the rest
                 logger.error(f"leverage {leverage}x for {instrument.symbol} failed: {exc}")
-        logger.info(f"set {leverage}x leverage on {len(leveraged)} instrument(s)")
+        pinned = len(leveraged) - len(unpinned)
+        logger.info(
+            f"set {leverage}x leverage on {len(unpinned)} instrument(s)"
+            + (f", {pinned} pinned by explicit sets left alone" if pinned else "")
+        )
 
     def get_default_instrument_leverage(self) -> float | None:
         return self._default_instrument_leverage
