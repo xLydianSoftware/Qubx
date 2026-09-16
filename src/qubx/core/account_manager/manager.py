@@ -637,7 +637,8 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 logger.debug(f"[{update.instrument.exchange}] {update.instrument.symbol} not held; dropping {update}")
                 return
             position = self.get_position(update.instrument)
-            assert position is not None  # the state exists, so get_position materializes
+            if position is None:  # unreachable: the state exists, so get_position materializes
+                return
         if update.leverage is not None and update.leverage != position.leverage:
             logger.info(
                 f"[{update.instrument.exchange}] {update.instrument.symbol}: leverage "

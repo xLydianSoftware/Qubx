@@ -872,8 +872,8 @@ async def test_the_sweep_announces_a_value_that_moved_on_the_venue() -> None:
     conn, sent, _ = _make_connector(exchange=exchange)
     conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
 
-    conn._symbol_to_instrument["BTC/USDT:USDT"] = _instrument()
-    await conn._refresh_leverage_cache()
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
 
     (update,) = _settings_updates(sent)
     assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, source="sweep")
@@ -888,30 +888,10 @@ async def test_the_sweep_is_silent_when_nothing_moved() -> None:
     conn, sent, _ = _make_connector(exchange=exchange)
     conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
 
-    conn._symbol_to_instrument["BTC/USDT:USDT"] = _instrument()
-    await conn._refresh_leverage_cache()
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
 
     assert _settings_updates(sent) == []
-
-
-@pytest.mark.asyncio
-async def test_the_sweep_is_silent_for_a_symbol_outside_our_universe() -> None:
-    """The sweep reads the whole venue. Resolving through anything that can MINT an Instrument
-    would announce another bot's instruments on a shared account, and the AM would then be asked
-    to hold a position for each."""
-    exchange = Mock()
-    exchange.fetch_leverages = AsyncMock(
-        return_value={"DOGE/USDT:USDT": {"symbol": "DOGE/USDT:USDT", "longLeverage": 3}}
-    )
-    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
-    exchange.has = {"editOrder": True, "fetchLeverages": True}
-    conn, sent, _ = _make_connector(exchange=exchange)
-    conn._leverage_cache["DOGE/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
-
-    await conn._refresh_leverage_cache()
-
-    assert _settings_updates(sent) == []
-    exchange.market.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -923,8 +903,8 @@ async def test_the_first_sweep_announces_nothing() -> None:
     exchange.has = {"editOrder": True, "fetchLeverages": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    conn._symbol_to_instrument["BTC/USDT:USDT"] = _instrument()
-    await conn._refresh_leverage_cache()
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
 
     assert _settings_updates(sent) == []
 

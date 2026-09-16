@@ -5,15 +5,19 @@ snapshot reconcile, so an operator's 5x->3x showed 5x to every reader of the pos
 snapshot happened to carry it.
 """
 
-from unittest.mock import MagicMock
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
+import ccxt
 import numpy as np
 import pytest
 
 from qubx import logger
+from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     VENUE_SETTINGS_EVENT,
+    CtrlChannel,
     Instrument,
     MarketType,
     Position,
@@ -22,6 +26,14 @@ from qubx.core.basics import (
 )
 from qubx.core.state_snapshot import position_entry
 from tests.qubx.core.conftest import make_pm, real_handler_map
+
+
+def run(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
 
 
 class _T:
@@ -198,6 +210,82 @@ class TestChannelDispatch:
         pm._strategy.on_error.assert_not_called()
         pm._position_gathering.on_error.assert_not_called()
         pm._strategy.on_market_data.assert_not_called()
+
+
+class TestSweepEndToEnd:
+    """A real ccxt connector's sweep into a real AccountManager.
+
+    The connector announces every symbol the venue reports and the AM decides what to keep — the
+    filter lives there because it is the side that knows what we hold. The connector's own memo
+    (`_symbol_to_instrument`) is written only by the order/deal/funding paths, so scoping the
+    emit to it would skip exactly the case below.
+    """
+
+    @staticmethod
+    def _connector(sent: list, *, symbol: str, venue_leverage: int, cached: int):
+        exchange = Mock()
+        exchange.fetch_leverages = AsyncMock(return_value={symbol: {"symbol": symbol, "longLeverage": venue_leverage}})
+        exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+        exchange.has = {"fetchLeverages": True}
+        em = Mock()
+        em.exchange = exchange
+        em.rate_limiter = None
+        channel = Mock(spec=CtrlChannel)
+        channel.send = Mock(side_effect=sent.append)
+        conn = CcxtConnector(
+            exchange_name="binance",
+            channel=channel,
+            time_provider=Mock(),
+            exchange_manager=em,
+            data_provider=Mock(),
+        )
+        conn._leverage_cache[symbol] = _LeverageInfo(configured=cached, maximum=None)
+        return conn
+
+    @staticmethod
+    def _pump(sent: list, am: AccountManager) -> None:
+        pm = make_pm(
+            _account_manager=am,
+            _handlers=real_handler_map(),
+            _data_throttler=None,
+            _time_provider=MagicMock(),
+        )
+        pm._context.emitter = None
+        for event in sent:
+            pm.process_data(*event)
+
+    def test_a_held_position_this_session_never_traded_still_gets_the_change(self):
+        """The position came from the boot snapshot, so the connector's memo has never seen the
+        symbol — and it is precisely the instrument whose leverage we must keep honest."""
+        am = _am()
+        instrument = _instrument()
+        pos = _held(am, instrument, leverage=5.0, max_notional=1_000_000.0)
+        sent: list = []
+        conn = self._connector(sent, symbol="BTC/USDT:USDT", venue_leverage=3, cached=5)
+        assert "BTC/USDT:USDT" not in conn._symbol_to_instrument
+
+        with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=instrument):
+            run(conn._refresh_leverage_cache())
+        self._pump(sent, am)
+
+        assert pos.leverage == 3.0
+        assert pos.max_notional is None
+
+    def test_a_symbol_we_hold_no_position_in_changes_nothing(self):
+        """The sweep announces it — another bot on the same account moved it — and the AM drops
+        it rather than growing this bot a position."""
+        am = _am()
+        other = _instrument("DOGEUSDT")
+        sent: list = []
+        conn = self._connector(sent, symbol="DOGE/USDT:USDT", venue_leverage=3, cached=5)
+
+        with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=other):
+            run(conn._refresh_leverage_cache())
+        assert len(sent) == 1  # announced, not suppressed
+
+        self._pump(sent, am)
+
+        assert am.get_positions() == {}
 
 
 class TestSnapshotEntry:

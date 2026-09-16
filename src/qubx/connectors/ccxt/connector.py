@@ -881,7 +881,9 @@ class CcxtConnector(ChannelEmitter):
         # The cached cap is the venue's number at the leverage we just replaced; on a tiered
         # venue it moves with the bracket. Dropping it reads as "not known yet" (inf -> null)
         # until the sweep or a snapshot refills it, rather than a confidently wrong number —
-        # the same call the AM makes on the Position.
+        # the same call the AM makes on the Position. Also dropped when the previously cached
+        # leverage was unknown (None): the cap may well still be right, but we cannot tell which
+        # bracket it belongs to, and the same rule applies.
         kept_notional = cached.max_notional if cached is not None and cached.configured == leverage else None
         self._leverage_cache[symbol] = _LeverageInfo(
             configured=leverage,
@@ -955,11 +957,14 @@ class CcxtConnector(ChannelEmitter):
         for symbol, value in configured.items():
             held = self._leverage_cache.get(symbol)
             if held is not None and held.configured is not None and held.configured != value:
-                # The memoized map ONLY — `_instrument_for_symbol` would mint an Instrument for
-                # any symbol the exchange knows, and the sweep reads the whole venue. On a shared
-                # account that is every other bot's instruments.
-                instrument = self._symbol_to_instrument.get(symbol)
-                if instrument is None:
+                # Announce every symbol the venue reports and let the AM filter: it drops a
+                # non-ack update for an instrument with no position. Resolving off the memo
+                # instead would silently skip a position restored at boot that this session has
+                # not traded — the memo is written only by the order/deal/funding paths — which
+                # is exactly the held instrument whose external change we need to deliver.
+                try:
+                    instrument = self._instrument_for_symbol(symbol)
+                except Exception:  # noqa: BLE001 — the venue does not know it either
                     continue
                 self.channel.send(
                     create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(value), source="sweep"))
