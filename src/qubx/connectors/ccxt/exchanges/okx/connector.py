@@ -160,11 +160,12 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         )
         return streams
 
-    def _store(self, symbol: str, configured: int | None) -> None:
+    def _store(self, symbol: str, configured: float | None) -> None:
         held = self._leverage_cache.get(symbol)
         self._leverage_cache[symbol] = _LeverageInfo(
             configured=configured if configured is not None else (held.configured if held else None),
             maximum=held.maximum if held else None,
+            max_notional=held.max_notional if held else None,
         )
 
     async def _refresh_leverage_cache(self) -> None:

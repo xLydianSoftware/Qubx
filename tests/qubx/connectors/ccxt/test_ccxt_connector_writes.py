@@ -881,18 +881,31 @@ def test_get_instrument_leverage_asks_the_venue_for_nothing_on_a_miss() -> None:
     exchange.fetch_positions.assert_not_awaited()
 
 
-def test_get_max_instrument_notional_reads_position_row() -> None:
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
-    exchange.has = {"editOrder": True}
+def test_get_max_instrument_notional_reads_the_poller_cache() -> None:
+    exchange = _leverage_read_exchange()
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=7, maximum=20, max_notional=2_000_000.0)
+
+    assert conn.get_max_instrument_notional(_instrument()) == 2_000_000.0
+    exchange.fetch_leverages.assert_not_awaited()
+    exchange.fetch_positions.assert_not_awaited()
+
+
+def test_get_max_instrument_notional_asks_the_venue_for_nothing_on_a_miss() -> None:
+    """The 5s snapshot reads this for every universe instrument on the ProcessorThread; the
+    symbolConfig and position-row pulls it used to fall through to each blocked it."""
+    exchange = _leverage_read_exchange()
     conn, _, _ = _make_connector(exchange=exchange)
 
-    assert conn.get_max_instrument_notional(_instrument()) == 1_000_000.0
+    assert conn.get_max_instrument_notional(_instrument()) == float("inf")
+    exchange.fetch_leverages.assert_not_awaited()
+    exchange.fetch_positions.assert_not_awaited()
 
 
-def test_get_max_instrument_notional_prefers_symbol_config() -> None:
-    """symbolConfig first: `maxNotionalValue` is v2-only on positionRisk, so Binance v3 leaves
-    the position row without it. `_fetch_leverage_row` is the only reader of that endpoint."""
+@pytest.mark.asyncio
+async def test_the_sweep_caches_the_notional_cap_from_symbol_config() -> None:
+    """symbolConfig carries `maxNotionalValue` with no open position required, which is what
+    makes the cap knowable for a flat instrument."""
     exchange = Mock()
     exchange.fetch_leverages = AsyncMock(
         return_value={
@@ -903,13 +916,14 @@ def test_get_max_instrument_notional_prefers_symbol_config() -> None:
             }
         }
     )
-    exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
     exchange.has = {"editOrder": True, "fetchLeverages": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
+    await conn._refresh_leverage_cache()
+
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=7, maximum=None, max_notional=2_000_000.0)
     assert conn.get_max_instrument_notional(_instrument()) == 2_000_000.0
-    exchange.fetch_leverages.assert_awaited_once_with(["BTC/USDT:USDT"])
-    exchange.fetch_positions.assert_not_awaited()
 
 
 def test_get_margin_mode_reads_position_row() -> None:
