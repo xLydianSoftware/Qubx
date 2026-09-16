@@ -896,6 +896,28 @@ class TestLeverageReads(_OkxLeverageFixtures):
         assert connector._leverage_cache[self._symbol("BTC")].configured == 5.0
         assert [payload for _, dtype, payload, _ in sent if dtype == VENUE_SETTINGS_EVENT] == []
 
+    def test_an_ack_carries_no_cap_and_the_tier_cap_answers_instead(self):
+        """okx has no symbolConfig endpoint, so the ack announces the leverage alone — the AM
+        clears the position's cap and falls through to the tier table, which recomputes at the
+        NEW leverage. Nothing to refetch here."""
+        exchange = self._exchange()
+        exchange.set_leverage = AsyncMock(return_value={})
+        connector = self._connector(exchange)
+        connector._tiers[self._symbol("BTC")] = [(100.0, 1000.0), (66.66, 5000.0), (50.0, 20000.0), (2.0, 1940000.0)]
+        connector._leverage_cache[self._symbol("BTC")] = _LeverageInfo(configured=50, maximum=None)
+        connector._data_provider.get_quote = Mock(return_value=Quote(0, 49_999.0, 50_001.0, 1.0, 1.0))
+        sent: list = []
+        connector.channel.send = Mock(side_effect=sent.append)
+        instrument = self._instrument()
+
+        run(connector._do_set_leverage(instrument, self._symbol("BTC"), 2))
+
+        exchange.fetch_leverages.assert_not_called()
+        updates = [payload for _, dtype, payload, _ in sent if dtype == VENUE_SETTINGS_EVENT]
+        assert updates == [VenueSettingsUpdate(instrument, leverage=2.0, max_notional=None)]
+        # the deepest tier, the one 2x reaches, priced off the last quote
+        assert connector.get_max_instrument_notional(instrument) == 1_940_000.0 * 50_000.0
+
     def test_the_refresh_reads_nothing_when_the_cache_is_empty(self):
         exchange = self._exchange()
         connector = self._connector(exchange)

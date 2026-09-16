@@ -616,7 +616,10 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         to carry it. Idempotent: applying the value the position already holds changes nothing.
 
         A leverage change invalidates ``max_notional``: on tiered venues the cap moves with the
-        leverage, and a stale cap is worse than none. The next snapshot refills it.
+        leverage. The update carries the new bracket's cap when the connector could read it, and
+        otherwise the old one is cleared — a stale cap is worse than none, and the next sweep or
+        snapshot refills it. ``inf`` is stored as None, the same "not known here" the read path
+        falls through to the connector on.
 
         ``update.instrument.exchange`` must be the key the connector is registered under — the
         venue alias the AM holds its state by — or the update is warned about and dropped.
@@ -643,6 +646,8 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             )
             position.leverage = update.leverage
             position.max_notional = None
+        if update.max_notional is not None:
+            position.max_notional = update.max_notional if np.isfinite(update.max_notional) else None
         if update.margin_mode is not None:
             position.margin_mode = update.margin_mode
 

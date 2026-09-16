@@ -864,9 +864,18 @@ async def test_a_refused_set_announces_nothing() -> None:
 @pytest.mark.asyncio
 async def test_the_sweep_announces_a_value_that_moved_on_the_venue() -> None:
     """An operator changing leverage in the venue UI never reaches the ack path; without this
-    the position would carry the old value until a snapshot happened to correct it."""
+    the position would carry the old value until a snapshot happened to correct it. The swept
+    row carries the new bracket's cap, so it rides along."""
     exchange = Mock()
-    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "longLeverage": 3}})
+    exchange.fetch_leverages = AsyncMock(
+        return_value={
+            "BTC/USDT:USDT": {
+                "symbol": "BTC/USDT:USDT",
+                "longLeverage": 3,
+                "info": {"maxNotionalValue": "2000000"},
+            }
+        }
+    )
     exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
     exchange.has = {"editOrder": True, "fetchLeverages": True}
     conn, sent, _ = _make_connector(exchange=exchange)
@@ -876,7 +885,7 @@ async def test_the_sweep_announces_a_value_that_moved_on_the_venue() -> None:
         await conn._refresh_leverage_cache()
 
     (update,) = _settings_updates(sent)
-    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, max_notional=2_000_000.0)
 
 
 @pytest.mark.asyncio
@@ -922,37 +931,62 @@ def test_an_accepted_margin_mode_is_announced() -> None:
 
 
 @pytest.mark.asyncio
-async def test_the_adopted_cap_is_dropped_when_the_leverage_moved() -> None:
-    """`maxNotionalValue` is the venue's cap at the bracket we just left. Carrying it forward
-    would have the AM's connector fallthrough answer a confidently wrong number where `inf` (and
-    so `null`) means "not known yet"."""
+async def test_the_new_bracket_cap_is_read_and_announced_with_the_ack() -> None:
+    """The cap belongs to the bracket we just left. Dropping it left the position reading null
+    until the hourly sweep — a snapshot only copies a cap across when the Differ flags that
+    position, which a leverage edit does not cause."""
     exchange = Mock()
     exchange.set_leverage = AsyncMock(return_value={})
-    exchange.has = {"editOrder": True}
-    conn, _, _ = _make_connector(exchange=exchange)
+    exchange.fetch_leverages = AsyncMock(
+        return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "info": {"maxNotionalValue": "2000000"}}}
+    )
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=20, max_notional=1_000_000.0)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    exchange.fetch_leverages.assert_awaited_once_with(["BTC/USDT:USDT"])
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=3, maximum=20, max_notional=2_000_000.0)
+    assert conn.get_max_instrument_notional(_instrument()) == 2_000_000.0
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, max_notional=2_000_000.0)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cap_read_still_drops_the_stale_one_and_announces_the_leverage() -> None:
+    """Keeping the old cap would have the AM answer a confidently wrong number, where None reads
+    as "not known yet". The ack itself already landed, so this is a warning, not an error."""
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.fetch_leverages = AsyncMock(side_effect=ccxt.ExchangeError("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
     conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=20, max_notional=1_000_000.0)
 
     conn.set_instrument_leverage(_instrument(), 3.0)
     await _drive(conn)
 
     assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=3, maximum=20, max_notional=None)
-    assert conn.get_max_instrument_notional(_instrument()) == float("inf")
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, max_notional=None)
 
 
 @pytest.mark.asyncio
-async def test_the_adopted_cap_survives_a_re_send_of_the_same_leverage() -> None:
+async def test_a_venue_without_symbol_config_reads_no_cap_and_asks_for_none() -> None:
     exchange = Mock()
     exchange.set_leverage = AsyncMock(return_value={})
+    exchange.fetch_leverages = AsyncMock(return_value={})
     exchange.has = {"editOrder": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=None, maximum=20, max_notional=1_000_000.0)
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=20, max_notional=1_000_000.0)
 
     conn.set_instrument_leverage(_instrument(), 3.0)
     await _drive(conn)
-    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=3, maximum=20, max_notional=1_000_000.0)
-    await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
 
-    assert conn._leverage_cache["BTC/USDT:USDT"].max_notional == 1_000_000.0
+    exchange.fetch_leverages.assert_not_awaited()
+    assert conn._leverage_cache["BTC/USDT:USDT"].max_notional is None
 
 
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:

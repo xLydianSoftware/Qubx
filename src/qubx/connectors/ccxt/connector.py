@@ -878,21 +878,39 @@ class CcxtConnector(ChannelEmitter):
         # - adopt what we just set, so the next call for the same value is skipped without
         #   waiting for the poller; the poller corrects it if the venue disagrees
         cached = self._leverage_cache.get(symbol)
-        # The cached cap is the venue's number at the leverage we just replaced; on a tiered
-        # venue it moves with the bracket. Dropping it reads as "not known yet" (inf -> null)
-        # until the sweep or a snapshot refills it, rather than a confidently wrong number —
-        # the same call the AM makes on the Position. Also dropped when the previously cached
-        # leverage was unknown (None): the cap may well still be right, but we cannot tell which
-        # bracket it belongs to, and the same rule applies.
-        kept_notional = cached.max_notional if cached is not None and cached.configured == leverage else None
+        # The cap belongs to the bracket we just left, so the new one is read here rather than
+        # carried or dropped: dropping left the position reading null for up to an hour, until
+        # the sweep — a snapshot only copies a cap across when the Differ flags that position
+        # for a size or margin change, which a leverage edit does not cause.
+        max_notional = await self._read_max_notional(symbol)
         self._leverage_cache[symbol] = _LeverageInfo(
             configured=leverage,
             maximum=cached.maximum if cached is not None else None,
-            max_notional=kept_notional,
+            max_notional=max_notional,
         )
         # the cache is private to the connector; the Position is what every reader sees, and
         # only the snapshot writes it — so announce the ack rather than wait for one
-        self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(leverage))))
+        self.channel.send(
+            create_venue_settings_event(
+                VenueSettingsUpdate(instrument, leverage=float(leverage), max_notional=max_notional)
+            )
+        )
+
+    async def _read_max_notional(self, symbol: str) -> float | None:
+        """One symbol's notional cap at its current leverage, from symbolConfig.
+
+        None on any failure — and on a venue without the endpoint — which the AM reads as "not
+        known", clearing the stale value rather than keeping a cap from the wrong bracket.
+        """
+        if not self._em.exchange.has.get("fetchLeverages"):
+            return None
+        try:
+            rows = await self._em.exchange.fetch_leverages([symbol])
+        except Exception as e:  # noqa: BLE001 — the ack itself already landed
+            logger.warning(f"[{self.exchange_name}] cap read for {symbol} after the leverage ack: {e}")
+            return None
+        settings = ccxt_extract_leverage_settings(list(rows.values()) if isinstance(rows, dict) else rows)
+        return settings.get(symbol, (None, None))[1]
 
     def _start_leverage_poller(self) -> None:
         if self._leverage_future is None or self._leverage_future.done():
@@ -966,7 +984,11 @@ class CcxtConnector(ChannelEmitter):
                     instrument = self._instrument_for_symbol(symbol)
                 except Exception:  # noqa: BLE001 — the venue does not know it either
                     continue
-                self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(value))))
+                self.channel.send(
+                    create_venue_settings_event(
+                        VenueSettingsUpdate(instrument, leverage=float(value), max_notional=notionals.get(symbol))
+                    )
+                )
         # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
         self._leverage_cache = {
             symbol: _LeverageInfo(
