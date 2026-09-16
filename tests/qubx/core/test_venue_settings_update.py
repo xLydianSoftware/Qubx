@@ -85,14 +85,46 @@ class TestApply:
 
         assert pos.leverage == 3.0
 
-    def test_a_leverage_change_drops_the_notional_cap(self):
+    def test_a_leverage_change_with_no_cap_carried_drops_the_old_one(self):
         """Tiered venues move the cap with the leverage, so the held one is now wrong — and a
-        wrong cap is worse than none. The next snapshot refills it."""
+        wrong cap is worse than none. The next sweep or snapshot refills it."""
         am = _am()
         instrument = _instrument()
         pos = _held(am, instrument, leverage=5.0, max_notional=1_000_000.0)
 
         am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0))
+
+        assert pos.max_notional is None
+
+    def test_a_carried_cap_replaces_the_old_one(self):
+        """The whole point: the connector read the new bracket's cap with the ack, so the
+        position never passes through a null."""
+        am = _am()
+        instrument = _instrument()
+        pos = _held(am, instrument, leverage=5.0, max_notional=1_000_000.0)
+
+        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0, max_notional=2_000_000.0))
+
+        assert pos.leverage == 3.0
+        assert pos.max_notional == 2_000_000.0
+
+    def test_a_cap_lands_without_a_leverage_change(self):
+        am = _am()
+        instrument = _instrument()
+        pos = _held(am, instrument, leverage=5.0, max_notional=None)
+
+        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=5.0, max_notional=2_000_000.0))
+
+        assert pos.max_notional == 2_000_000.0
+
+    def test_an_uncapped_venue_reads_as_not_known_here(self):
+        """`inf` is the connectors' "no cap"; the Position's is None, and the read path falls
+        through to the connector for it — so storing inf would break that convention."""
+        am = _am()
+        instrument = _instrument()
+        pos = _held(am, instrument, leverage=5.0, max_notional=1_000_000.0)
+
+        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0, max_notional=float("inf")))
 
         assert pos.max_notional is None
 
@@ -288,6 +320,26 @@ class TestSweepEndToEnd:
         pm._context.emitter = None
         for event in sent:
             pm.process_data(*event)
+
+    def test_the_snapshot_entry_carries_the_new_leverage_and_the_new_cap(self):
+        """The dev symptom: after a leverage edit on a held Binance instrument `max_notional`
+        read null for up to an hour, because nothing refetched the new bracket's cap."""
+        am = _am()
+        instrument = _instrument()
+        _held(am, instrument, leverage=5.0, max_notional=1_000_000.0)
+        sent: list = []
+        conn = self._connector(sent, symbol="BTC/USDT:USDT", venue_leverage=3, cached=5)
+        conn._em.exchange.set_leverage = AsyncMock(return_value={})
+        conn._em.exchange.fetch_leverages = AsyncMock(
+            return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "info": {"maxNotionalValue": "2000000"}}}
+        )
+
+        run(conn._do_set_leverage(instrument, "BTC/USDT:USDT", 3))
+        self._pump(sent, am)
+
+        entry = position_entry(am, instrument, am.get_position(instrument))
+        assert entry["instrument_leverage"] == 3.0
+        assert entry["max_notional"] == 2_000_000.0
 
     def test_a_held_position_this_session_never_traded_still_gets_the_change(self):
         """The position came from the boot snapshot, so the connector's memo has never seen the

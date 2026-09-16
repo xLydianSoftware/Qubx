@@ -1647,6 +1647,9 @@ class VenueSettingsUpdate:
     instrument: Instrument
     leverage: float | None = None  # configured leverage as the venue holds it now
     margin_mode: Literal["cross", "isolated"] | None = None
+    # - the venue's notional cap AT that configured leverage. None means this update does not
+    #   carry one, never "the venue has no cap" — a venue with no cap reports inf.
+    max_notional: float | None = None
 
 
 def create_venue_settings_event(update: VenueSettingsUpdate) -> tuple[None, str, VenueSettingsUpdate, bool]:
