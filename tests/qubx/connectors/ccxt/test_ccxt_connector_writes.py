@@ -15,6 +15,7 @@ import pytest
 from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
 from qubx.connectors.ccxt.rate_limits import _default_endpoint_costs
 from qubx.core.basics import (
+    VENUE_SETTINGS_EVENT,
     CtrlChannel,
     Instrument,
     MarketType,
@@ -23,6 +24,7 @@ from qubx.core.basics import (
     OrderSide,
     OrderStatus,
     OrderType,
+    VenueSettingsUpdate,
 )
 from qubx.core.connector import IConnector
 from qubx.core.errors import VenueOperationError
@@ -823,6 +825,100 @@ async def test_a_successful_set_updates_the_cache() -> None:
     conn.set_instrument_leverage(_instrument(), 5.0)
     await _drive(conn)
     assert exchange.set_leverage.await_count == 1
+
+
+def _settings_updates(sent: list) -> list:
+    return [payload for _, dtype, payload, _ in sent if dtype == VENUE_SETTINGS_EVENT]
+
+
+@pytest.mark.asyncio
+async def test_the_venue_s_ack_is_announced_on_the_channel() -> None:
+    """The cache the connector adopts into is private to it; `Position.leverage` is what every
+    reader sees, and only the snapshot reconcile writes it — so the ack has to be announced."""
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, source="ack")
+
+
+@pytest.mark.asyncio
+async def test_a_refused_set_announces_nothing() -> None:
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(side_effect=ccxt.ExchangeError("nope"))
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    assert _settings_updates(sent) == []
+    assert [e for _, dtype, e, _ in sent if dtype == "error"]
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_announces_a_value_that_moved_on_the_venue() -> None:
+    """An operator changing leverage in the venue UI never reaches the ack path; without this
+    the position would carry the old value until a snapshot happened to correct it."""
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "longLeverage": 3}})
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
+
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
+
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, source="sweep")
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_is_silent_when_nothing_moved() -> None:
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "longLeverage": 5}})
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
+
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
+
+    assert _settings_updates(sent) == []
+
+
+@pytest.mark.asyncio
+async def test_the_first_sweep_announces_nothing() -> None:
+    """Nothing held means nothing changed — a fresh cache is not news."""
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "longLeverage": 3}})
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
+
+    assert _settings_updates(sent) == []
+
+
+def test_an_accepted_margin_mode_is_announced() -> None:
+    exchange = Mock()
+    exchange.set_margin_mode = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    assert conn.set_margin_mode(_instrument(), "isolated") is True
+
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), margin_mode="isolated", source="ack")
 
 
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:

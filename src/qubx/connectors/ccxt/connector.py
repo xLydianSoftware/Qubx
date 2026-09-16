@@ -55,6 +55,8 @@ from qubx.core.basics import (
     OrderType,
     Position,
     RejectCause,
+    VenueSettingsUpdate,
+    create_venue_settings_event,
     dt_64,
     resolve_reduce_only,
 )
@@ -881,6 +883,9 @@ class CcxtConnector(ChannelEmitter):
             maximum=cached.maximum if cached is not None else None,
             max_notional=cached.max_notional if cached is not None else None,
         )
+        # the cache is private to the connector; the Position is what every reader sees, and
+        # only the snapshot writes it — so announce the ack rather than wait for one
+        self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(leverage))))
 
     def _start_leverage_poller(self) -> None:
         if self._leverage_future is None or self._leverage_future.done():
@@ -939,6 +944,20 @@ class CcxtConnector(ChannelEmitter):
 
         if not configured and not maxima and not notionals:
             return
+        # A configured value that moved since the last sweep is an EXTERNAL change (the venue UI,
+        # another client) — the ack path never sees it, so without this it would reach the
+        # Position only if a snapshot happened to carry it.
+        for symbol, value in configured.items():
+            held = self._leverage_cache.get(symbol)
+            if held is not None and held.configured is not None and held.configured != value:
+                # the sweep covers the whole venue, most of which we do not trade
+                try:
+                    instrument = self._instrument_for_symbol(symbol)
+                except Exception:  # noqa: BLE001 — not ours; nothing to update
+                    continue
+                self.channel.send(
+                    create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(value), source="sweep"))
+                )
         # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
         self._leverage_cache = {
             symbol: _LeverageInfo(
@@ -1114,6 +1133,9 @@ class CcxtConnector(ChannelEmitter):
                 logger.error(f"[{self.exchange_name}] does not support set_margin_mode")
                 return False
             self._run_sync(fn(mode, symbol))
+            normalized = normalize_margin_mode(mode)
+            if normalized is not None:
+                self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, margin_mode=normalized)))
             return True
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] Failed to set margin mode {mode} for {instrument.symbol}: {e}")
