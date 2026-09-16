@@ -30,7 +30,14 @@ from functools import partial
 from typing import Any, Coroutine
 
 from qubx import logger
-from qubx.core.basics import FRAMEWORK_CID_PREFIX, Balance, Instrument, Position
+from qubx.core.basics import (
+    FRAMEWORK_CID_PREFIX,
+    Balance,
+    Instrument,
+    Position,
+    VenueSettingsUpdate,
+    create_venue_settings_event,
+)
 
 from ...connector import _LeverageInfo
 from ...utils import info_float, instrument_to_ccxt_symbol
@@ -174,6 +181,16 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             maximum=held.maximum if held else None,
             max_notional=held.max_notional if held else None,
         )
+        # The base emits this from its own sweep, which okx replaces wholesale — and both the
+        # batched read and the hourly refresh land here, so a value that moved on the venue UI
+        # reaches the Position from either. A first fill (nothing held) is not a change.
+        if configured is None or held is None or held.configured is None or held.configured == configured:
+            return
+        try:
+            instrument = self._instrument_for_symbol(symbol)
+        except Exception:  # noqa: BLE001 — not ours; nothing to update
+            return
+        self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(configured))))
 
     async def _refresh_leverage_cache(self) -> None:
         """Re-read the configured leverage of every symbol the cache holds, in the same batches.

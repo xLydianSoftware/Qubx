@@ -2,7 +2,7 @@
 
 import asyncio
 import time
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 import numpy as np
 
@@ -19,7 +19,14 @@ from qubx.connectors.ccxt.connector import _LeverageInfo
 from qubx.connectors.ccxt.exchanges.okx.connector import _OKX_TIER_READS_PER_FLUSH, _max_size_at, _parse_tiers
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import OrderStatus
-from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position
+from qubx.core.basics import (
+    VENUE_SETTINGS_EVENT,
+    CtrlChannel,
+    Instrument,
+    MarketType,
+    Position,
+    VenueSettingsUpdate,
+)
 from qubx.core.series import Quote
 from qubx.core.state_snapshot import position_entry
 from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
@@ -860,6 +867,34 @@ class TestLeverageReads(_OkxLeverageFixtures):
 
         assert [len(ids) for ids in self._asked_ids(exchange)] == [20, 2]
         assert connector.get_instrument_leverage(self._instrument("C21")) == 9.0
+
+    def test_a_value_that_moved_on_the_venue_is_announced(self):
+        """okx replaces the base sweep wholesale, so the base's own emit never runs here — and
+        both the batched read and the hourly refresh land in `_store`."""
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        sent: list = []
+        connector.channel.send = Mock(side_effect=sent.append)
+        connector._leverage_cache[self._symbol("BTC")] = _LeverageInfo(configured=10, maximum=None)
+
+        with patch.object(OkxCcxtConnector, "_instrument_for_symbol", return_value=self._instrument()):
+            run(connector._refresh_leverage_cache())
+
+        updates = [payload for _, dtype, payload, _ in sent if dtype == VENUE_SETTINGS_EVENT]
+        assert updates == [VenueSettingsUpdate(self._instrument(), leverage=5.0)]
+
+    def test_a_first_fill_is_not_announced(self):
+        exchange = self._exchange()
+        connector = self._connector(exchange)
+        sent: list = []
+        connector.channel.send = Mock(side_effect=sent.append)
+
+        connector.get_instrument_leverage(self._instrument())
+        with patch.object(OkxCcxtConnector, "_instrument_for_symbol", return_value=self._instrument()):
+            self._drive(connector)
+
+        assert connector._leverage_cache[self._symbol("BTC")].configured == 5.0
+        assert [payload for _, dtype, payload, _ in sent if dtype == VENUE_SETTINGS_EVENT] == []
 
     def test_the_refresh_reads_nothing_when_the_cache_is_empty(self):
         exchange = self._exchange()

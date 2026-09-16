@@ -55,6 +55,8 @@ from qubx.core.basics import (
     OrderType,
     Position,
     RejectCause,
+    VenueSettingsUpdate,
+    create_venue_settings_event,
     dt_64,
     resolve_reduce_only,
 )
@@ -876,11 +878,21 @@ class CcxtConnector(ChannelEmitter):
         # - adopt what we just set, so the next call for the same value is skipped without
         #   waiting for the poller; the poller corrects it if the venue disagrees
         cached = self._leverage_cache.get(symbol)
+        # The cached cap is the venue's number at the leverage we just replaced; on a tiered
+        # venue it moves with the bracket. Dropping it reads as "not known yet" (inf -> null)
+        # until the sweep or a snapshot refills it, rather than a confidently wrong number —
+        # the same call the AM makes on the Position. Also dropped when the previously cached
+        # leverage was unknown (None): the cap may well still be right, but we cannot tell which
+        # bracket it belongs to, and the same rule applies.
+        kept_notional = cached.max_notional if cached is not None and cached.configured == leverage else None
         self._leverage_cache[symbol] = _LeverageInfo(
             configured=leverage,
             maximum=cached.maximum if cached is not None else None,
-            max_notional=cached.max_notional if cached is not None else None,
+            max_notional=kept_notional,
         )
+        # the cache is private to the connector; the Position is what every reader sees, and
+        # only the snapshot writes it — so announce the ack rather than wait for one
+        self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(leverage))))
 
     def _start_leverage_poller(self) -> None:
         if self._leverage_future is None or self._leverage_future.done():
@@ -939,6 +951,22 @@ class CcxtConnector(ChannelEmitter):
 
         if not configured and not maxima and not notionals:
             return
+        # A configured value that moved since the last sweep is an EXTERNAL change (the venue UI,
+        # another client) — the ack path never sees it, so without this it would reach the
+        # Position only if a snapshot happened to carry it.
+        for symbol, value in configured.items():
+            held = self._leverage_cache.get(symbol)
+            if held is not None and held.configured is not None and held.configured != value:
+                # Announce every symbol the venue reports and let the AM filter: it drops a
+                # non-ack update for an instrument with no position. Resolving off the memo
+                # instead would silently skip a position restored at boot that this session has
+                # not traded — the memo is written only by the order/deal/funding paths — which
+                # is exactly the held instrument whose external change we need to deliver.
+                try:
+                    instrument = self._instrument_for_symbol(symbol)
+                except Exception:  # noqa: BLE001 — the venue does not know it either
+                    continue
+                self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(value))))
         # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
         self._leverage_cache = {
             symbol: _LeverageInfo(
@@ -1114,6 +1142,9 @@ class CcxtConnector(ChannelEmitter):
                 logger.error(f"[{self.exchange_name}] does not support set_margin_mode")
                 return False
             self._run_sync(fn(mode, symbol))
+            normalized = normalize_margin_mode(mode)
+            if normalized is not None:
+                self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, margin_mode=normalized)))
             return True
         except Exception as e:  # noqa: BLE001
             logger.error(f"[{self.exchange_name}] Failed to set margin mode {mode} for {instrument.symbol}: {e}")

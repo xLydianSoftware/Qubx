@@ -1627,6 +1627,37 @@ class Position:
             self.initial_margin = 0.0
 
 
+VENUE_SETTINGS_EVENT = "venue_settings"
+
+
+@dataclass(frozen=True, slots=True)
+class VenueSettingsUpdate:
+    """A per-instrument venue setting the connector just learned — from the venue's ack of our
+    own write, from a push, or from a sweep. Not an error; the mirror of VenueOperationError.
+
+    Only the fields the connector actually learned are set; None means "nothing new about this
+    one", never "the venue cleared it". Where the connector learned it is deliberately not
+    carried: the account manager applies an update to an instrument it already tracks and drops
+    it otherwise, and that rule does not depend on provenance.
+
+    ``instrument.exchange`` must be the key the connector is registered under in the account
+    manager, or the update is warned about and dropped.
+    """
+
+    instrument: Instrument
+    leverage: float | None = None  # configured leverage as the venue holds it now
+    margin_mode: Literal["cross", "isolated"] | None = None
+
+
+def create_venue_settings_event(update: VenueSettingsUpdate) -> tuple[None, str, VenueSettingsUpdate, bool]:
+    """Wrap an update as a channel tuple, the way ``create_error_event`` wraps an error.
+
+    The instrument slot is None deliberately: ``ProcessingManager`` routes on the type string
+    and the update carries its own instrument, so this never looks like market data.
+    """
+    return None, VENUE_SETTINGS_EVENT, update, False
+
+
 class CtrlChannel:
     """Unbounded control channel: producers push events on, the strategy thread drains.
 
