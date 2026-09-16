@@ -583,8 +583,22 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return connector.get_max_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        """Snapshot first, connector second.
+
+        The snapshot only carries a cap for instruments the account holds a position in — the
+        venue reports no row for the rest — so asking about an instrument you are flat in used
+        to read ``inf`` while the connector had the answer for the whole universe.
+
+        Every connector answers this without touching the venue, which it must: the 5s state
+        snapshot asks once per universe instrument on the ProcessorThread. ccxt reads its
+        poller cache, OKX its tier cache and last quote, Lighter its market metadata, and
+        Hyperliquid and the backtester return ``inf`` outright.
+        """
         notional = self.get_position(instrument).max_notional
-        return notional if notional is not None else float("inf")
+        if notional is not None:
+            return notional
+        connector = self._connectors.get(instrument.exchange)
+        return connector.get_max_instrument_notional(instrument) if connector is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
         return self.get_position(instrument).margin_mode

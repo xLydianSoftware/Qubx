@@ -218,12 +218,35 @@ def test_venue_settings_neutral_when_not_reported():
     # An instrument the venue never reported reads as None / inf (get_position materializes flat).
     am = _am()
     inst = _instrument("BTCUSDT")
-    # - the leverage fallback asks the connector, which knows nothing about it either
+    # - both fallbacks ask the connector, which knows nothing about it either
     am._connectors["binance"].get_instrument_leverage.return_value = None
+    am._connectors["binance"].get_max_instrument_notional.return_value = float("inf")
     assert am.get_instrument_leverage(inst) is None
     assert am.get_max_instrument_notional(inst) == float("inf")
     assert am.get_margin_mode(inst) is None
     assert am.get_adl_level(inst) is None
+
+
+def test_max_notional_falls_back_to_the_connector_when_flat():
+    """The venue reports no position row for an instrument you are flat in, so the snapshot
+    carries no cap for it — while the connector knows the whole universe's."""
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am._connectors["binance"].get_max_instrument_notional.return_value = 2_000_000.0
+
+    assert am.get_max_instrument_notional(inst) == 2_000_000.0
+    am._connectors["binance"].get_max_instrument_notional.assert_called_once_with(inst)
+
+
+def test_max_notional_prefers_the_snapshot_over_the_connector():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    pos = Position(instrument=inst)
+    pos.max_notional = 1_000_000.0
+    am._states["binance"].set_position(inst, pos)
+
+    assert am.get_max_instrument_notional(inst) == 1_000_000.0
+    am._connectors["binance"].get_max_instrument_notional.assert_not_called()
 
 
 # ---- per-instrument venue settings: write side ------------------------------ #

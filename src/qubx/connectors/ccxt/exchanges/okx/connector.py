@@ -42,19 +42,22 @@ _OKX_LEVERAGE_INFO_MAX_IDS = 20
 _OKX_LEVERAGE_BACKOFF_S = 60.0
 
 
-def _configured_levers(response: dict[str, Any]) -> dict[str, int]:
+def _configured_levers(response: dict[str, Any]) -> dict[str, float]:
     """instId -> configured leverage from a leverage-info payload.
 
     One row per (instId, posSide): "net" on a one-way account, "long"/"short" on a hedged one.
     The long side wins, the rule the single-symbol read applied to longLeverage.
+
+    Kept as the venue reports it, fractions and all: rounding 50.5x down to 50x would pick a
+    deeper notional tier than the account actually has.
     """
-    levers: dict[str, int] = {}
+    levers: dict[str, float] = {}
     for row in (response or {}).get("data") or []:
         inst_id = row.get("instId")
         lever = info_float(row, "lever")
         if not inst_id or lever is None or (inst_id in levers and row.get("posSide") != "long"):
             continue
-        levers[inst_id] = int(lever)
+        levers[inst_id] = lever
     return levers
 
 
@@ -64,15 +67,18 @@ def _parse_tiers(rows: list[dict[str, Any]] | None) -> list[tuple[float, float]]
     ``maxSz`` is read RAW: ccxt copies it into its unified ``maxNotional`` field, but it is a
     position size in CONTRACTS, not a notional.
     """
-    tiers: list[tuple[float, float]] = []
+    tiers: list[tuple[float, float, float]] = []
     for row in rows or []:
         raw = row.get("info") or {}
         max_lever = info_float(raw, "maxLever")
         max_size = info_float(raw, "maxSz")
         if max_lever is None or max_size is None:
             continue
-        tiers.append((info_float(raw, "tier") or float(len(tiers) + 1), max_lever, max_size))  # type: ignore[arg-type]
-    return [(lever, size) for _, lever, size in sorted(tiers)]
+        tiers.append((info_float(raw, "tier") or float(len(tiers) + 1), max_lever, max_size))
+    # keyed on the tier number alone, and a stable sort — rows sharing one keep the venue's
+    # order, where a tiebreak on maxLever would inverted the descending-leverage table
+    # `_max_size_at` walks.
+    return [(lever, size) for _, lever, size in sorted(tiers, key=lambda tier: tier[0])]
 
 
 def _max_size_at(tiers: list[tuple[float, float]], leverage: float) -> float | None:
@@ -293,7 +299,18 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
                     f"retrying in {_OKX_LEVERAGE_BACKOFF_S:g}s: {e}"
                 )
                 return
-            self._tiers[symbol] = _parse_tiers(rows)
+            tiers = _parse_tiers(rows)
+            if rows and not tiers:
+                # NOT cached: `[]` is checked as "asked and answered", so an unreadable response
+                # would leave the symbol capless for the life of the process. An empty response
+                # is different — the venue really has no tiers — and is cached.
+                self._leverage_flush_backoff_until = time.monotonic() + _OKX_LEVERAGE_BACKOFF_S
+                logger.warning(
+                    f"[{self.exchange_name}] leverage tiers for {symbol} carried no readable "
+                    f"maxLever/maxSz; retrying in {_OKX_LEVERAGE_BACKOFF_S:g}s"
+                )
+                return
+            self._tiers[symbol] = tiers
 
     def _schedule_tiers_fetch(self, symbol: str) -> None:
         if symbol in self._tiers:
@@ -306,7 +323,13 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         return float(cached.configured) if cached is not None and cached.configured is not None else None
 
     def _tier_notional(self, symbol: str, leverage: float | None, multiplier: float, price: float) -> float | None:
-        """``maxSz × contracts→tokens × price`` at ``leverage``, or None while anything is unknown."""
+        """``maxSz × contracts→tokens × price`` at ``leverage``, or None while anything is unknown.
+
+        Denominated in the quote currency, with no conversion rate applied — where
+        ``Position.notional_value`` divides by ``last_update_conversion_rate``. The two are
+        directly comparable only while that rate is 1, which is every USDT-settled instrument;
+        Binance's own ``maxNotionalValue`` carries the same caveat.
+        """
         tiers = self._tiers.get(symbol)
         if tiers is None:
             self._schedule_tiers_fetch(symbol)
