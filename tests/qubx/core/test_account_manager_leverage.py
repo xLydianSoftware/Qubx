@@ -303,6 +303,33 @@ def test_instrument_leverage_prefers_the_snapshot_over_the_connector():
 # ---- explicit sets pin against the default apply ---------------------------- #
 
 
+def test_an_adopted_explicit_set_is_read_before_the_snapshot_catches_up():
+    """The connector adopts the value once the venue accepts it (seconds); the position row
+    only refreshes on the next venue snapshot (minutes). The operator's edit must not read
+    as the old value for those minutes."""
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    pos = Position(instrument=inst)
+    pos.leverage = 5.0
+    am._states["binance"].set_position(inst, pos)
+    am.set_instrument_leverage(inst, 3.0)
+    am._connectors["binance"].get_instrument_leverage.return_value = 3.0
+
+    assert am.get_instrument_leverage(inst) == 3.0
+
+
+def test_an_explicit_set_not_yet_adopted_still_reads_the_snapshot():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    pos = Position(instrument=inst)
+    pos.leverage = 5.0
+    am._states["binance"].set_position(inst, pos)
+    am.set_instrument_leverage(inst, 3.0)
+    am._connectors["binance"].get_instrument_leverage.return_value = 5.0  # venue not (yet) at 3x
+
+    assert am.get_instrument_leverage(inst) == 5.0
+
+
 def test_an_explicit_set_pins_the_instrument():
     am = _am()
     inst = _instrument("BTCUSDT")

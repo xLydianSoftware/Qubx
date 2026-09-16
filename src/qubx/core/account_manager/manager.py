@@ -563,17 +563,25 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
     # Per-instrument exchange-side settings
     def get_instrument_leverage(self, instrument: Instrument) -> float | None:
-        """Snapshot first, connector second.
+        """Snapshot first, connector second — except right after an explicit set.
 
         The snapshot only carries leverage for instruments the account holds a position in
         — and on Binance not even then, since v3 positionRisk omits the field. So for the
         common case of asking about an instrument you are flat in, this used to return None
         while the connector had the answer cached for the whole universe.
         """
+        connector = self._connectors.get(instrument.exchange)
+        # An explicit set is adopted into the connector's cache the moment the venue accepts
+        # it, while the position row keeps the previous value until the next venue snapshot
+        # (minutes). Until the snapshot catches up, the adopted value is the truth.
+        pinned = self._pinned_leverage.get(instrument)
+        if pinned is not None and connector is not None:
+            adopted = connector.get_instrument_leverage(instrument)
+            if adopted is not None and adopted == pinned:
+                return adopted
         leverage = self.get_position(instrument).leverage
         if leverage is not None:
             return leverage
-        connector = self._connectors.get(instrument.exchange)
         return connector.get_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
