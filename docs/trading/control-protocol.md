@@ -256,7 +256,9 @@ The `get_state` response will include:
           "notional": 34000.0,
           "instrument_leverage": 5.0,
           "max_instrument_leverage": 125.0,
-          "max_notional": 1000000.0
+          "max_notional": 1000000.0,
+          "initial_margin": 6800.0,
+          "maint_margin": 340.0
         }
       },
       "orders": {
@@ -276,7 +278,7 @@ The `get_state` response will include:
 }
 ```
 
-Per position, `leverage` is the observed notional/capital ratio (signed), `notional` the signed dollar value of the held position, and the last three are the venue's per-instrument settings: the configured leverage, the highest leverage the venue accepts, and the notional cap at the current leverage. Any of the four is `null` when the venue has not reported it (`max_notional` is `null` where the venue publishes no cap). The same keys are written to the 5s Redis state snapshot, with `current_price` in place of `market_price`.
+Per position, `leverage` is the observed notional/capital ratio (signed) and `notional` the signed dollar value of the held position. `instrument_leverage`, `max_instrument_leverage` and `max_notional` are the venue's per-instrument settings: the configured leverage, the highest leverage the venue accepts, and the notional cap at the current leverage — each `null` when the venue has not reported it, and `max_notional` also `null` where the venue publishes no cap. `initial_margin` and `maint_margin` are dollar amounts: the venue's own figures for a held position, and `0.0` once flat, since venues report margin for open positions only. The same keys are written to the 5s Redis state snapshot, with `current_price` in place of `market_price`.
 
 ## Thread Safety
 

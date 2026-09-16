@@ -71,6 +71,8 @@ def _rounded_position_entry(account: IAccountViewer, instrument: Instrument, pos
         "instrument_leverage": _opt(e["instrument_leverage"], _rl),
         "max_instrument_leverage": _opt(e["max_instrument_leverage"], _rl),
         "max_notional": _opt(e["max_notional"], _rm),
+        "initial_margin": _opt(e["initial_margin"], _rm),
+        "maint_margin": _opt(e["maint_margin"], _rm),
     }
 
 

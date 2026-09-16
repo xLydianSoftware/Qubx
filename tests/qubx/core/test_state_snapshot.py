@@ -143,4 +143,43 @@ class TestPositionEntry:
             "instrument_leverage",
             "max_instrument_leverage",
             "max_notional",
+            "initial_margin",
+            "maint_margin",
         ]
+
+    def test_the_venue_s_own_margins_reach_the_entry(self):
+        instrument = _instrument()
+        position = _position(instrument, 1.0, 50_000.0, 50_000.0)
+        position.set_external_initial_margin(10_000.0)
+        position.set_external_maint_margin(2_500.0)
+        entry = position_entry(_account(), instrument, position)
+
+        assert entry["initial_margin"] == 10_000.0
+        assert entry["maint_margin"] == 2_500.0
+        _dumps(entry)
+
+    def test_a_flat_position_reserves_nothing(self):
+        """Venues report margin for OPEN positions only, so a venue value has no refresh path
+        after a close — the Position drops it on going flat rather than leaving it stale."""
+        instrument = _instrument()
+        position = _position(instrument, 1.0, 50_000.0, 50_000.0)
+        position.set_external_initial_margin(10_000.0)
+        position.set_external_maint_margin(2_500.0)
+        position.quantity = 0.0
+        position.update_market_price(_NOW, 51_000.0, 1.0)
+        entry = position_entry(_account(), instrument, position)
+
+        assert entry["initial_margin"] == 0.0
+        assert entry["maint_margin"] == 0.0
+        _dumps(entry)
+
+    def test_a_nan_margin_reports_none(self):
+        instrument = _instrument()
+        position = _position(instrument, 1.0, 50_000.0, 50_000.0)
+        position.set_external_initial_margin(float("nan"))
+        position.set_external_maint_margin(float("nan"))
+        entry = position_entry(_account(), instrument, position)
+
+        assert entry["initial_margin"] is None
+        assert entry["maint_margin"] is None
+        _dumps(entry)

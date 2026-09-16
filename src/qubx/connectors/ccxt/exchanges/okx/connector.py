@@ -40,6 +40,7 @@ _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
 _OKX_CLIENT_ID_MAX_LEN = 32
 _OKX_LEVERAGE_INFO_MAX_IDS = 20
 _OKX_LEVERAGE_BACKOFF_S = 60.0
+_OKX_TIER_READS_PER_FLUSH = 5
 
 
 def _configured_levers(response: dict[str, Any]) -> dict[str, float]:
@@ -219,7 +220,10 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             while True:
                 await asyncio.sleep(self._leverage_flush_debounce_s)
                 symbols = sorted(self._leverage_pending)
-                tier_symbols = sorted(self._tiers_pending)
+                # tiers are read one symbol at a time, so a whole universe's backlog is minutes
+                # long. Taking a slice per iteration keeps a leverage miss arriving mid-run to
+                # one slice of waiting instead of the whole backlog.
+                tier_symbols = sorted(self._tiers_pending)[:_OKX_TIER_READS_PER_FLUSH]
                 if not symbols and not tier_symbols:
                     return
                 self._leverage_pending.difference_update(symbols)
@@ -287,7 +291,8 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         """One ``fetch_market_leverage_tiers`` per symbol (~275ms), through ccxt's throttle.
 
         Static per instrument, so a symbol that answers is never asked again; one that fails
-        backs the flush off with the rest and is re-queued by the next snapshot.
+        backs the flush off with the rest and is re-queued by the next snapshot. The caller
+        hands over a slice, not the whole backlog — see the flush loop.
         """
         for symbol in symbols:
             try:
@@ -300,14 +305,15 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
                 )
                 return
             tiers = _parse_tiers(rows)
-            if rows and not tiers:
+            if rows is None or (rows and not tiers):
                 # NOT cached: `[]` is checked as "asked and answered", so an unreadable response
-                # would leave the symbol capless for the life of the process. An empty response
-                # is different — the venue really has no tiers — and is cached.
+                # would leave the symbol capless for the life of the process. An empty LIST is
+                # different — the venue really has no tiers — and is cached; None is no answer.
                 self._leverage_flush_backoff_until = time.monotonic() + _OKX_LEVERAGE_BACKOFF_S
                 logger.warning(
-                    f"[{self.exchange_name}] leverage tiers for {symbol} carried no readable "
-                    f"maxLever/maxSz; retrying in {_OKX_LEVERAGE_BACKOFF_S:g}s"
+                    f"[{self.exchange_name}] leverage tiers for {symbol} came back unreadable "
+                    f"({'None' if rows is None else 'no maxLever/maxSz'}); "
+                    f"retrying in {_OKX_LEVERAGE_BACKOFF_S:g}s"
                 )
                 return
             self._tiers[symbol] = tiers

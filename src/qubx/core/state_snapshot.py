@@ -31,7 +31,10 @@ def position_entry(account: IAccountViewer, instrument: Instrument, position: Po
     Every value passes through ``finite``: a position the universe seated but no quote has
     reached yet marks at NaN, which would otherwise make the whole document unparseable.
     ``notional`` carries the quantity's sign. ``max_notional`` is ``float('inf')`` from the
-    account manager when the venue publishes no cap, and None here.
+    account manager when the venue publishes no cap, and None here. The two margins are dollar
+    amounts as the Position holds them: the venue's own figures for a held position, and 0.0
+    once flat, since a venue reports margin for open positions only and the framework drops
+    what it can no longer refresh.
     """
     return {
         "quantity": position.quantity,
@@ -44,4 +47,6 @@ def position_entry(account: IAccountViewer, instrument: Instrument, position: Po
         "instrument_leverage": finite(account.get_instrument_leverage(instrument)),
         "max_instrument_leverage": finite(account.get_max_instrument_leverage(instrument)),
         "max_notional": finite(account.get_max_instrument_notional(instrument)),
+        "initial_margin": finite(position.initial_margin),
+        "maint_margin": finite(position.maint_margin),
     }

@@ -16,7 +16,7 @@ from qubx.connectors.ccxt.exchanges import EXCHANGE_ALIASES, OkxFutures
 from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
 from qubx.connectors.ccxt.utils import ccxt_status_to_order_status
 from qubx.connectors.ccxt.connector import _LeverageInfo
-from qubx.connectors.ccxt.exchanges.okx.connector import _max_size_at, _parse_tiers
+from qubx.connectors.ccxt.exchanges.okx.connector import _OKX_TIER_READS_PER_FLUSH, _max_size_at, _parse_tiers
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import OrderStatus
 from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position
@@ -1043,6 +1043,51 @@ class TestMaxNotionalFromTiers(_OkxLeverageFixtures):
         run(connector._fill_leverage_settings([self._position()]))
         assert connector._tiers_pending == {self._symbol("BTC")}
         self._discard(connector)
+
+    def test_a_none_tier_response_is_not_cached_as_no_tiers(self):
+        """`None` is no answer, not "the venue has no tiers" — caching `[]` for it would leave
+        the symbol capless for the life of the process."""
+        exchange = self._exchange()
+        exchange.fetch_market_leverage_tiers = AsyncMock(return_value=None)
+        connector = self._connector(exchange)
+
+        run(connector._fill_leverage_settings([self._position()]))
+        self._drive(connector)
+
+        assert connector._tiers == {}
+        connector._leverage_flush_backoff_until = 0.0
+        run(connector._fill_leverage_settings([self._position()]))
+        assert connector._tiers_pending == {self._symbol("BTC")}
+        self._discard(connector)
+
+    def test_a_leverage_miss_does_not_wait_behind_the_tier_backlog(self):
+        """Tiers are one call per symbol, so a whole universe's backlog runs for minutes. The
+        drain takes a slice per iteration, and the flush's own re-schedule picks up the rest."""
+        bases = [f"C{i:02d}" for i in range(12)]
+        exchange = self._exchange("BTC", *bases)
+        connector = self._connector(exchange)
+        order: list[str] = []
+
+        async def _tiers(symbol):
+            order.append(f"tier:{symbol}")
+            if len(order) == 3:  # a leverage miss lands part-way through the first slice
+                connector.get_instrument_leverage(self._instrument("BTC"))
+            return self._tier_rows(symbol.split("/")[0])
+
+        exchange.fetch_market_leverage_tiers = AsyncMock(side_effect=_tiers)
+        exchange.privateGetAccountLeverageInfo = AsyncMock(
+            side_effect=lambda params: order.append("leverage") or self._rows("BTC")
+        )
+        for base in bases:
+            connector._schedule_tiers_fetch(self._symbol(base))
+
+        self._drive(connector)
+
+        assert order.count("leverage") == 1
+        # the batch went out after the first slice, not after all 12 tier reads
+        assert order.index("leverage") == _OKX_TIER_READS_PER_FLUSH
+        assert len([o for o in order if o.startswith("tier:")]) == 12
+        assert connector._tiers_pending == set()
 
     def test_a_venue_with_no_tiers_is_asked_once(self):
         exchange = self._exchange()

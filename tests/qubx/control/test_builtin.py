@@ -42,6 +42,8 @@ def _make_mock_ctx():
     pos1.r_pnl = 100.0
     pos1.market_value_funds = 34000.0
     pos1.notional_value = 34000.0
+    pos1.initial_margin = 6800.123
+    pos1.maint_margin = 340.456
     pos1.is_open.return_value = True
     pos2 = MagicMock()
     pos2.quantity = 0.0
@@ -51,6 +53,8 @@ def _make_mock_ctx():
     pos2.r_pnl = 0.0
     pos2.market_value_funds = 0.0
     pos2.notional_value = 0.0
+    pos2.initial_margin = 0.0
+    pos2.maint_margin = 0.0
     pos2.is_open.return_value = False
 
     ctx.get_positions.return_value = {instr1: pos1, instr2: pos2}
@@ -172,13 +176,19 @@ class TestGetState:
         ctx = _make_mock_ctx()
         _, handler = BUILTIN_ACTIONS["get_state"]
         pos = handler(ctx).data["exchanges"]["BINANCE.UM"]["positions"]["BTCUSDT"]
-        assert list(pos)[:6] == [
+        assert list(pos) == [
             "quantity",
             "avg_price",
             "market_price",
             "unrealized_pnl",
             "market_value",
             "leverage",
+            "notional",
+            "instrument_leverage",
+            "max_instrument_leverage",
+            "max_notional",
+            "initial_margin",
+            "maint_margin",
         ]
 
     def test_an_unmarked_position_serializes(self):
@@ -220,6 +230,8 @@ class TestGetState:
         assert pos["max_instrument_leverage"] == 125.0
         # inf is the account manager's "the venue publishes no cap"
         assert pos["max_notional"] is None
+        assert pos["initial_margin"] == 6800.12
+        assert pos["maint_margin"] == 340.46
 
     def test_includes_custom_state(self):
         ctx = _make_mock_ctx()
