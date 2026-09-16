@@ -37,6 +37,7 @@ from qubx.core.basics import (
     OrderStatus,
     Position,
     TransactionCostsCalculator,
+    VenueSettingsUpdate,
 )
 from qubx.core.connector import IConnector
 from qubx.core.events import (
@@ -605,6 +606,31 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
         return self.get_position(instrument).adl_level
+
+    def apply_venue_settings(self, update: VenueSettingsUpdate) -> None:
+        """Apply what a connector just learned about one instrument's venue settings.
+
+        The write path is fire-and-forget, and ``Position.leverage`` is otherwise written only
+        by the snapshot reconcile — so without this an operator's 5x->3x showed 5x to every
+        reader of the position (the 5s state snapshot, ``get_state``) until a snapshot happened
+        to carry it. Idempotent: applying the value the position already holds changes nothing.
+
+        A leverage change invalidates ``max_notional``: on tiered venues the cap moves with the
+        leverage, and a stale cap is worse than none. The next snapshot refills it.
+        """
+        position = self.get_position(update.instrument)
+        if position is None:
+            logger.warning(f"[{update.instrument.exchange}] no account state; dropping {update}")
+            return
+        if update.leverage is not None and update.leverage != position.leverage:
+            logger.info(
+                f"[{update.instrument.exchange}] {update.instrument.symbol}: leverage "
+                f"{position.leverage} -> {update.leverage} ({update.source})"
+            )
+            position.leverage = update.leverage
+            position.max_notional = None
+        if update.margin_mode is not None:
+            position.margin_mode = update.margin_mode
 
     # Per-instrument venue-setting writes
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:

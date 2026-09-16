@@ -25,6 +25,7 @@ from qubx.core.basics import (
     TargetPosition,
     Timestamped,
     TriggerEvent,
+    VenueSettingsUpdate,
     dt_64,
     td_64,
 )
@@ -1657,6 +1658,16 @@ class ProcessingManager(IProcessingManager):
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
         self._position_gathering.on_error(self._context, error)
+
+    def _handle_venue_settings(
+        self, instrument: Instrument | None, event_type: str, update: VenueSettingsUpdate
+    ) -> None:
+        """A connector learned a venue setting — apply it to the Position, on this thread.
+
+        Never reaches the strategy: this is the mirror of VenueOperationError, and an accepted
+        write is not something ``on_error`` should hear about.
+        """
+        self._account_manager.apply_venue_settings(update)
 
     # ----------------------------------------------------------------------
     # - Typed-event dispatch (order/account lifecycle)

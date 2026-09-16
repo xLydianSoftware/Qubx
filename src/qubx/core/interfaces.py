@@ -583,6 +583,12 @@ class IAccountConfigurator:
         on the channel, not as a return value: a wide universe called this once per
         instrument on the ProcessorThread, and waiting for each round trip stalled event
         processing for tens of seconds.
+
+        The outcome arrives on the channel either way: the venue's acceptance as a
+        ``VenueSettingsUpdate``, which the AccountManager applies to the Position so every
+        reader of ``Position.leverage`` sees the new value within a tick; a refusal as a
+        ``VenueOperationError`` on the strategy's ``on_error``. The update never reaches
+        ``on_error`` — an accepted write is not an error.
         """
         ...
 
