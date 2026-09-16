@@ -37,6 +37,23 @@ from .._two_stream import _TwoStreamCcxtConnector
 
 _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
 _OKX_CLIENT_ID_MAX_LEN = 32
+_OKX_LEVERAGE_INFO_MAX_IDS = 20
+
+
+def _configured_levers(response: dict[str, Any]) -> dict[str, int]:
+    """instId -> configured leverage from a leverage-info payload.
+
+    One row per (instId, posSide): "net" on a one-way account, "long"/"short" on a hedged one.
+    The long side wins, the rule the single-symbol read applied to longLeverage.
+    """
+    levers: dict[str, int] = {}
+    for row in (response or {}).get("data") or []:
+        inst_id = row.get("instId")
+        lever = info_float(row, "lever")
+        if not inst_id or lever is None or (inst_id in levers and row.get("posSide") != "long"):
+            continue
+        levers[inst_id] = int(lever)
+    return levers
 
 
 def _account_data(raw_balance: dict[str, Any]) -> dict[str, Any]:
@@ -65,24 +82,22 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
     # happens to start with "qubx" reads as RECOVERED (unavoidable given the charset).
     cid_framework_prefix = _OKX_CLIENT_ID_RE.sub("", FRAMEWORK_CID_PREFIX)
 
-    # - ccxt symbols whose leverage fill is in flight, so a burst of reads for the same
-    #   symbol between the miss and the store schedules one venue call, not one per read
-    _leverage_fills: set[str]
-    # - ccxt symbols the read path has already asked the venue about. NOT keyed on the cache:
-    #   the write path's adopt-on-send seats an entry with `maximum` still None, which would
-    #   otherwise suppress the tier read for the whole universe until the hourly sweep.
+    # - ccxt symbols queued for the next batched read, and those a batch has already covered.
+    #   Probed is NOT keyed on the cache: the write path's adopt-on-send seats an entry of its
+    #   own, which would otherwise suppress the read for the whole universe until the sweep.
+    _leverage_pending: set[str]
     _leverage_probed: set[str]
+    _leverage_flush_scheduled: bool
 
-    # Seconds between one fill's venue reads and the next. ccxt's REST throttle is one queue
-    # shared with order placement, so the first post-warmup tick — which asks for the whole
-    # universe at once — must trickle rather than queue ahead of the strategy's orders.
-    _leverage_fill_spacing_s: float = 1.0
+    # A snapshot tick asks for every universe instrument in a tight loop; the flush waits this
+    # long so they leave as one batch instead of one call per instrument.
+    _leverage_flush_debounce_s: float = 0.2
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
-        self._leverage_fills = set()
+        self._leverage_pending = set()
         self._leverage_probed = set()
-        self._leverage_fill_lock = asyncio.Lock()
+        self._leverage_flush_scheduled = False
 
     def _account_streams(self) -> list[Coroutine[Any, Any, None]]:
         """
@@ -104,98 +119,93 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         )
         return streams
 
-    async def _read_configured_leverage(self, symbol: str) -> int | None:
-        """
-        One symbol's configured leverage from OKX's own endpoint.
-
-        ccxt asks for cross margin mode unless told otherwise, which is the mode
-        ``set_leverage`` writes by default, so read and write agree.
-        """
-        try:
-            row = await self._em.exchange.fetch_leverage(symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[{self.exchange_name}] fetch_leverage {symbol}: {e}")
-            return None
-        value = (row.get("longLeverage") or row.get("shortLeverage")) if row else None
-        return int(value) if value is not None else None
-
-    async def _read_max_leverage(self, symbol: str) -> int | None:
-        """One symbol's venue cap: OKX publishes tiers one market at a time."""
-        try:
-            tiers = await self._em.exchange.fetch_market_leverage_tiers(symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[{self.exchange_name}] leverage tiers {symbol}: {e}")
-            return None
-        levels = [t["maxLeverage"] for t in (tiers or []) if t.get("maxLeverage") is not None]
-        return int(max(levels)) if levels else None
-
-    def _store(self, symbol: str, configured: int | None = None, maximum: int | None = None) -> None:
+    def _store(self, symbol: str, configured: int | None) -> None:
         held = self._leverage_cache.get(symbol)
         self._leverage_cache[symbol] = _LeverageInfo(
             configured=configured if configured is not None else (held.configured if held else None),
-            maximum=maximum if maximum is not None else (held.maximum if held else None),
+            maximum=held.maximum if held else None,
         )
 
     async def _refresh_leverage_cache(self) -> None:
-        """
-        Refresh the symbols the cache already holds, one at a time.
+        """Re-read the configured leverage of every symbol the cache holds, in the same batches.
 
-        The base sweep reads ``fetch_leverages`` and ``fetch_leverage_tiers``; okx has neither,
-        so it fills nothing and every getter falls through to a venue round trip — measured at
-        0.93s per ``get_instrument_leverage`` against 16us on Binance, where the sweep works.
-        Entries land here on first ask, and this keeps them as fresh as the hourly sweep does
-        elsewhere.
+        The base sweep reads ``fetch_leverages`` and ``fetch_leverage_tiers``; okx has neither.
+        The venue cap needs no sweep at all — it comes from the loaded market metadata.
         """
-        for symbol in list(self._leverage_cache):
-            self._store(
-                symbol,
-                configured=await self._read_configured_leverage(symbol),
-                maximum=await self._read_max_leverage(symbol),
-            )
+        await self._read_leverage_batched(sorted(self._leverage_cache))
 
     def _schedule_leverage_fill(self, symbol: str) -> None:
-        """Ask OKX for one symbol's settings off-thread, at most once per symbol.
+        """Queue one symbol for the next batched read.
 
         A read on the snapshot path must never raise, so a loop that is gone (shutdown,
         teardown) is logged and left alone rather than aborting the whole tick.
         """
-        if symbol in self._leverage_probed or symbol in self._leverage_fills:
+        if symbol in self._leverage_probed or symbol in self._leverage_pending:
             return
-        # Marked in flight BEFORE the spawn: the loop thread can run the fill to completion
-        # inside this call, and a discard that lands before the add would leave the entry behind
-        # for the life of the process.
-        self._leverage_fills.add(symbol)
-        coro = self._fill_leverage_entry(symbol)
+        # Queued and flagged BEFORE the spawn: the loop thread can run the flush to completion
+        # inside this call, and a clear that lands before the add would strand either one.
+        self._leverage_pending.add(symbol)
+        if self._leverage_flush_scheduled:
+            return
+        self._leverage_flush_scheduled = True
+        coro = self._flush_leverage_pending()
         try:
             self._spawn(coro)
         except Exception as exc:  # noqa: BLE001 — the caller is a snapshot read
-            self._leverage_fills.discard(symbol)
+            self._leverage_flush_scheduled = False
+            self._leverage_pending.clear()
             # close it, as _run_sync does, so a rejected schedule does not also surface as
             # "coroutine was never awaited"
             coro.close()
-            logger.warning(f"[{self.exchange_name}] leverage fill for {symbol} not scheduled: {exc}")
+            logger.warning(f"[{self.exchange_name}] leverage flush not scheduled: {exc}")
 
-    async def _fill_leverage_entry(self, symbol: str) -> None:
-        """One symbol's two venue reads, serialized against every other fill.
-
-        Probed is marked with ``_store``, never in the ``finally``: the hourly refresh iterates
-        ``_leverage_cache``, so a symbol marked probed without a cache entry would be retried by
-        neither it nor the read path. A completed attempt always leaves an entry — ``_store``
-        writes one even when both reads answer None, which is what stops a symbol the venue
-        publishes nothing for being asked again on every 5s tick — while an abnormal exit
-        (cancellation) leaves the symbol to the next tick.
-        """
+    async def _flush_leverage_pending(self) -> None:
+        """Drain the queued symbols, re-draining whatever arrived while the venue answered."""
         try:
-            async with self._leverage_fill_lock:
-                configured = await self._read_configured_leverage(symbol)
-                maximum = await self._read_max_leverage(symbol)
-                self._store(symbol, configured=configured, maximum=maximum)
-                self._leverage_probed.add(symbol)
-                # still holding the lock: this is what spaces the NEXT fill's first read. The two
-                # reads above need none between them — ccxt's own throttle already separates them.
-                await asyncio.sleep(self._leverage_fill_spacing_s)
+            while True:
+                await asyncio.sleep(self._leverage_flush_debounce_s)
+                symbols = sorted(self._leverage_pending)
+                if not symbols:
+                    return
+                self._leverage_pending.difference_update(symbols)
+                await self._read_leverage_batched(symbols)
         finally:
-            self._leverage_fills.discard(symbol)
+            # a cancelled flush drops its queue rather than holding symbols the gate then skips;
+            # they are unprobed, so the next snapshot tick queues them again
+            self._leverage_pending.clear()
+            self._leverage_flush_scheduled = False
+
+    async def _read_leverage_batched(self, symbols: list[str]) -> None:
+        """Configured leverage for many symbols at once.
+
+        ``GET /api/v5/account/leverage-info`` takes up to 20 comma-separated instIds (21 is
+        error 50025) and a batch of 20 costs what one symbol does — 270ms against 279ms,
+        measured on mainnet with ccxt 4.5.50. ``mgnMode=cross`` is what ``set_leverage`` writes,
+        so read and write agree.
+
+        A symbol is marked probed only once a call came back for it, and always with a cache
+        entry — the hourly refresh iterates the cache, so probing without one would strand it.
+        """
+        markets = self._em.exchange.markets or {}
+        for start in range(0, len(symbols), _OKX_LEVERAGE_INFO_MAX_IDS):
+            by_id = {
+                market["id"]: symbol
+                for symbol in symbols[start : start + _OKX_LEVERAGE_INFO_MAX_IDS]
+                if (market := markets.get(symbol)) is not None
+            }
+            if not by_id:
+                continue  # markets not loaded yet; the next tick asks again
+            try:
+                response = await self._em.exchange.privateGetAccountLeverageInfo(
+                    {"instId": ",".join(by_id), "mgnMode": "cross"}
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[{self.exchange_name}] leverage-info for {len(by_id)} instruments: {e}")
+                continue
+            levers = _configured_levers(response)
+            for inst_id, symbol in by_id.items():
+                self._store(symbol, configured=levers.get(inst_id))
+                self._leverage_probed.add(symbol)
 
     def get_instrument_leverage(self, instrument: Instrument) -> float | None:
         """Cache only: entries land asynchronously on first ask, None until then."""
@@ -205,11 +215,17 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         return leverage
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
-        """Cache only: entries land asynchronously on first ask, None until then."""
-        maximum = super().get_max_instrument_leverage(instrument)
-        if maximum is None:
-            self._schedule_leverage_fill(instrument_to_ccxt_symbol(instrument))
-        return maximum
+        """The venue cap off the loaded market metadata — no venue call.
+
+        OKX publishes it per instrument as ``lever``, which ccxt normalises into
+        ``limits.leverage.max``; it matched the top of the ``fetch_market_leverage_tiers``
+        ladder on every sampled symbol, and that call cost ~275ms each.
+        """
+        market = (self._em.exchange.markets or {}).get(instrument_to_ccxt_symbol(instrument))
+        if market is None:
+            return None
+        maximum = (market.get("limits") or {}).get("leverage", {}).get("max")
+        return float(maximum) if maximum is not None else None
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         """Use OKX ``cashBal``/``frozenBal`` per currency from the raw response.

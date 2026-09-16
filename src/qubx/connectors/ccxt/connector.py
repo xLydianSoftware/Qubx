@@ -805,16 +805,15 @@ class CcxtConnector(ChannelEmitter):
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
         """Request the configured leverage. Never blocks and never reports back.
 
-        Three things happen before anything reaches the venue, all off the cache the
-        poller keeps: the request is clamped to the venue maximum, skipped entirely when
-        the venue already has that value, and otherwise sent off-thread. A wide universe
-        called this once per instrument on the ProcessorThread and each round trip cost
-        ~1.2s; skipping the unchanged ones removes most calls outright, and the rest no
-        longer hold the caller.
+        Three things happen before anything reaches the venue, none of them blocking: the
+        request is clamped to the venue maximum, skipped entirely when the venue already has
+        that value, and otherwise sent off-thread. A wide universe called this once per
+        instrument on the ProcessorThread and each round trip cost ~1.2s; skipping the
+        unchanged ones removes most calls outright, and the rest no longer hold the caller.
 
-        With no cache entry (first tick after connect, or a venue whose meta read failed)
-        both checks are skipped and the request goes as asked — the venue still enforces
-        its own cap, and its refusal arrives as a VenueOperationError on on_error.
+        With no cap and no cache entry (first tick after connect, or a venue whose meta read
+        failed) both checks are skipped and the request goes as asked — the venue still
+        enforces its own cap, and its refusal arrives as a VenueOperationError on on_error.
         """
         symbol = instrument_to_ccxt_symbol(instrument)
         # - whole numbers throughout: the venue takes an integer (Binance answers a float
@@ -826,25 +825,27 @@ class CcxtConnector(ChannelEmitter):
                 f"[{self.exchange_name}] {instrument.symbol}: leverage {leverage} is not a whole "
                 f"number; the venue takes integers, requesting {wanted}"
             )
+        # - through the getter, not the cache: a venue whose cap is not in _leverage_cache at all
+        #   (OKX reads it off the market metadata) must still clamp
+        maximum = self.get_max_instrument_leverage(instrument)
+        if maximum is not None and wanted > maximum:
+            logger.warning(
+                f"[{self.exchange_name}] {instrument.symbol}: leverage {wanted} exceeds the venue "
+                f"maximum {maximum}; requesting {maximum}"
+            )
+            wanted = int(maximum)
         cached = self._leverage_cache.get(symbol)
-        if cached is not None:
-            if cached.maximum is not None and wanted > cached.maximum:
-                logger.warning(
-                    f"[{self.exchange_name}] {instrument.symbol}: leverage {wanted} exceeds the venue "
-                    f"maximum {cached.maximum}; requesting {cached.maximum}"
-                )
-                wanted = cached.maximum
-            if cached.configured is not None and cached.configured == wanted:
-                logger.info(
-                    f"[{self.exchange_name}] {instrument.symbol}: venue already at leverage "
-                    f"{cached.configured}, not sending {wanted}"
-                )
-                return
+        if cached is not None and cached.configured is not None and cached.configured == wanted:
+            logger.info(
+                f"[{self.exchange_name}] {instrument.symbol}: venue already at leverage "
+                f"{cached.configured}, not sending {wanted}"
+            )
+            return
         logger.info(
             f"[{self.exchange_name}] {instrument.symbol}: sending leverage {wanted} "
-            f"(cached {cached.configured} / max {cached.maximum})"
+            f"(cached {cached.configured} / max {maximum})"
             if cached is not None
-            else f"[{self.exchange_name}] {instrument.symbol}: sending leverage {wanted} (no cache entry)"
+            else f"[{self.exchange_name}] {instrument.symbol}: sending leverage {wanted} (max {maximum})"
         )
         self._spawn(self._do_set_leverage(instrument, symbol, wanted))
 
