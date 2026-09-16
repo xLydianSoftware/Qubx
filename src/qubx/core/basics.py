@@ -1637,6 +1637,12 @@ class VenueSettingsUpdate:
 
     Only the fields the connector actually learned are set; None means "nothing new about this
     one", never "the venue cleared it".
+
+    ``instrument.exchange`` must be the key the connector is registered under in the account
+    manager, or the update is warned about and dropped. ``source`` decides whether an update may
+    create state: only ``"ack"`` — the venue answering our own write — applies to an instrument
+    with no position yet; an observation of whatever the venue reports must not grow this bot a
+    position for an instrument it does not hold.
     """
 
     instrument: Instrument

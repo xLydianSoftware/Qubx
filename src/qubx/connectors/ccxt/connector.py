@@ -878,10 +878,15 @@ class CcxtConnector(ChannelEmitter):
         # - adopt what we just set, so the next call for the same value is skipped without
         #   waiting for the poller; the poller corrects it if the venue disagrees
         cached = self._leverage_cache.get(symbol)
+        # The cached cap is the venue's number at the leverage we just replaced; on a tiered
+        # venue it moves with the bracket. Dropping it reads as "not known yet" (inf -> null)
+        # until the sweep or a snapshot refills it, rather than a confidently wrong number —
+        # the same call the AM makes on the Position.
+        kept_notional = cached.max_notional if cached is not None and cached.configured == leverage else None
         self._leverage_cache[symbol] = _LeverageInfo(
             configured=leverage,
             maximum=cached.maximum if cached is not None else None,
-            max_notional=cached.max_notional if cached is not None else None,
+            max_notional=kept_notional,
         )
         # the cache is private to the connector; the Position is what every reader sees, and
         # only the snapshot writes it — so announce the ack rather than wait for one
@@ -950,10 +955,11 @@ class CcxtConnector(ChannelEmitter):
         for symbol, value in configured.items():
             held = self._leverage_cache.get(symbol)
             if held is not None and held.configured is not None and held.configured != value:
-                # the sweep covers the whole venue, most of which we do not trade
-                try:
-                    instrument = self._instrument_for_symbol(symbol)
-                except Exception:  # noqa: BLE001 — not ours; nothing to update
+                # The memoized map ONLY — `_instrument_for_symbol` would mint an Instrument for
+                # any symbol the exchange knows, and the sweep reads the whole venue. On a shared
+                # account that is every other bot's instruments.
+                instrument = self._symbol_to_instrument.get(symbol)
+                if instrument is None:
                     continue
                 self.channel.send(
                     create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(value), source="sweep"))

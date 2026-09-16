@@ -589,6 +589,11 @@ class IAccountConfigurator:
         reader of ``Position.leverage`` sees the new value within a tick; a refusal as a
         ``VenueOperationError`` on the strategy's ``on_error``. The update never reaches
         ``on_error`` — an accepted write is not an error.
+
+        A connector emitting one must set ``update.instrument.exchange`` to the key it is
+        registered under in the account manager (the venue alias, not the ccxt exchange name):
+        the AM resolves its state from that field alone, and a mismatch is warned about and
+        dropped rather than raised.
         """
         ...
 

@@ -617,11 +617,27 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
         A leverage change invalidates ``max_notional``: on tiered venues the cap moves with the
         leverage, and a stale cap is worse than none. The next snapshot refills it.
+
+        ``update.instrument.exchange`` must be the key the connector is registered under — the
+        venue alias the AM holds its state by — or the update is warned about and dropped.
+
+        Only an ``ack`` may materialize a position: that one is the venue answering OUR write on
+        an instrument we asked about. A ``sweep``/``push``/``snapshot`` observation covers
+        whatever the venue reports, which on a shared account includes instruments another bot
+        trades — applying those would grow this bot a position for something it does not hold,
+        and every position-shaped reader (the 5s snapshot, ``ctx.positions``) would show it.
         """
-        position = self.get_position(update.instrument)
-        if position is None:
+        state = self._states.get(update.instrument.exchange)
+        if state is None:
             logger.warning(f"[{update.instrument.exchange}] no account state; dropping {update}")
             return
+        position = state.get_position(update.instrument)
+        if position is None:
+            if update.source != "ack":
+                logger.debug(f"[{update.instrument.exchange}] {update.instrument.symbol} not held; dropping {update}")
+                return
+            position = self.get_position(update.instrument)
+            assert position is not None  # the state exists, so get_position materializes
         if update.leverage is not None and update.leverage != position.leverage:
             logger.info(
                 f"[{update.instrument.exchange}] {update.instrument.symbol}: leverage "

@@ -872,8 +872,8 @@ async def test_the_sweep_announces_a_value_that_moved_on_the_venue() -> None:
     conn, sent, _ = _make_connector(exchange=exchange)
     conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
 
-    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
-        await conn._refresh_leverage_cache()
+    conn._symbol_to_instrument["BTC/USDT:USDT"] = _instrument()
+    await conn._refresh_leverage_cache()
 
     (update,) = _settings_updates(sent)
     assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, source="sweep")
@@ -888,10 +888,30 @@ async def test_the_sweep_is_silent_when_nothing_moved() -> None:
     conn, sent, _ = _make_connector(exchange=exchange)
     conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
 
-    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
-        await conn._refresh_leverage_cache()
+    conn._symbol_to_instrument["BTC/USDT:USDT"] = _instrument()
+    await conn._refresh_leverage_cache()
 
     assert _settings_updates(sent) == []
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_is_silent_for_a_symbol_outside_our_universe() -> None:
+    """The sweep reads the whole venue. Resolving through anything that can MINT an Instrument
+    would announce another bot's instruments on a shared account, and the AM would then be asked
+    to hold a position for each."""
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(
+        return_value={"DOGE/USDT:USDT": {"symbol": "DOGE/USDT:USDT", "longLeverage": 3}}
+    )
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["DOGE/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
+
+    await conn._refresh_leverage_cache()
+
+    assert _settings_updates(sent) == []
+    exchange.market.assert_not_called()
 
 
 @pytest.mark.asyncio
@@ -903,8 +923,8 @@ async def test_the_first_sweep_announces_nothing() -> None:
     exchange.has = {"editOrder": True, "fetchLeverages": True}
     conn, sent, _ = _make_connector(exchange=exchange)
 
-    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
-        await conn._refresh_leverage_cache()
+    conn._symbol_to_instrument["BTC/USDT:USDT"] = _instrument()
+    await conn._refresh_leverage_cache()
 
     assert _settings_updates(sent) == []
 
@@ -919,6 +939,40 @@ def test_an_accepted_margin_mode_is_announced() -> None:
 
     (update,) = _settings_updates(sent)
     assert update == VenueSettingsUpdate(_instrument(), margin_mode="isolated", source="ack")
+
+
+@pytest.mark.asyncio
+async def test_the_adopted_cap_is_dropped_when_the_leverage_moved() -> None:
+    """`maxNotionalValue` is the venue's cap at the bracket we just left. Carrying it forward
+    would have the AM's connector fallthrough answer a confidently wrong number where `inf` (and
+    so `null`) means "not known yet"."""
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=20, max_notional=1_000_000.0)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=3, maximum=20, max_notional=None)
+    assert conn.get_max_instrument_notional(_instrument()) == float("inf")
+
+
+@pytest.mark.asyncio
+async def test_the_adopted_cap_survives_a_re_send_of_the_same_leverage() -> None:
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=None, maximum=20, max_notional=1_000_000.0)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=3, maximum=20, max_notional=1_000_000.0)
+    await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+    assert conn._leverage_cache["BTC/USDT:USDT"].max_notional == 1_000_000.0
 
 
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:

@@ -10,6 +10,7 @@ from unittest.mock import MagicMock
 import numpy as np
 import pytest
 
+from qubx import logger
 from qubx.core.account_manager import AccountManager
 from qubx.core.basics import (
     VENUE_SETTINGS_EVENT,
@@ -103,23 +104,43 @@ class TestApply:
         assert pos.leverage == 5.0
         assert pos.max_notional == 1_000_000.0  # untouched: the leverage did not move
 
-    def test_an_instrument_with_no_position_yet_gets_one(self):
-        """The ack can beat the first snapshot — the AM materializes a flat position for any
-        known instrument, so there is always somewhere to put the value."""
+    def test_our_own_ack_may_materialize_the_position(self):
+        """The ack can beat the first snapshot, and it is by definition about an instrument we
+        asked about — so it is the one source allowed to create state."""
         am = _am()
         instrument = _instrument()
 
-        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0))
+        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0, source="ack"))
 
         assert am.get_position(instrument).leverage == 3.0
 
-    def test_an_unmanaged_exchange_is_a_logged_no_op(self):
-        am = _am(exchanges=("binance",))
+    @pytest.mark.parametrize("source", ["sweep", "push", "snapshot"])
+    def test_an_observation_never_grows_a_position(self, source):
+        """A sweep reads whatever the venue reports, which on a shared account is every other
+        bot's instruments. Applying one would put a position this bot does not hold into
+        `ctx.positions` and the 5s snapshot."""
+        am = _am()
 
-        am.apply_venue_settings(VenueSettingsUpdate(_instrument(exchange="bybit"), leverage=3.0))
+        am.apply_venue_settings(VenueSettingsUpdate(_instrument(), leverage=3.0, source=source))
+
+        assert am._states["binance"].get_positions() == {}
+
+    def test_an_unmanaged_exchange_is_a_logged_no_op(self):
+        """A connector must stamp the exchange key the AM holds its state under; a mismatch is
+        warned about and dropped, so a silent one would be invisible to an integrator."""
+        am = _am(exchanges=("binance",))
+        messages: list[str] = []
+        sink_id = logger.add(lambda m: messages.append(m), level="WARNING")
+        try:
+            am.apply_venue_settings(VenueSettingsUpdate(_instrument(exchange="bybit"), leverage=3.0))
+        finally:
+            logger.remove(sink_id)
+
+        assert any(m.record["level"].name == "WARNING" and "no account state" in m for m in messages)
+        assert am.get_positions() == {}
 
     @pytest.mark.parametrize("source", ["ack", "push", "sweep", "snapshot"])
-    def test_every_source_applies_the_same(self, source):
+    def test_every_source_applies_to_a_position_we_hold(self, source):
         am = _am()
         instrument = _instrument()
         pos = _held(am, instrument, leverage=5.0, max_notional=None)
