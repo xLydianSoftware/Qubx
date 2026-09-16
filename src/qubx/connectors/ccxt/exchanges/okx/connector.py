@@ -190,9 +190,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             instrument = self._instrument_for_symbol(symbol)
         except Exception:  # noqa: BLE001 — not ours; nothing to update
             return
-        self.channel.send(
-            create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(configured), source="sweep"))
-        )
+        self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(configured))))
 
     async def _refresh_leverage_cache(self) -> None:
         """Re-read the configured leverage of every symbol the cache holds, in the same batches.

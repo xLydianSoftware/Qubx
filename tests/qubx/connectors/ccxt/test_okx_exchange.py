@@ -881,7 +881,7 @@ class TestLeverageReads(_OkxLeverageFixtures):
             run(connector._refresh_leverage_cache())
 
         updates = [payload for _, dtype, payload, _ in sent if dtype == VENUE_SETTINGS_EVENT]
-        assert updates == [VenueSettingsUpdate(self._instrument(), leverage=5.0, source="sweep")]
+        assert updates == [VenueSettingsUpdate(self._instrument(), leverage=5.0)]
 
     def test_a_first_fill_is_not_announced(self):
         exchange = self._exchange()

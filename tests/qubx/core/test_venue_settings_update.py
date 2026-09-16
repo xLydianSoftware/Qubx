@@ -10,7 +10,6 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import ccxt
 import numpy as np
-import pytest
 
 from qubx import logger
 from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
@@ -24,6 +23,8 @@ from qubx.core.basics import (
     VenueSettingsUpdate,
     create_venue_settings_event,
 )
+from qubx.core.instrument_service import NullInstrumentService
+from qubx.core.mixins.universe import UniverseManager
 from qubx.core.state_snapshot import position_entry
 from tests.qubx.core.conftest import make_pm, real_handler_map
 
@@ -116,26 +117,27 @@ class TestApply:
         assert pos.leverage == 5.0
         assert pos.max_notional == 1_000_000.0  # untouched: the leverage did not move
 
-    def test_our_own_ack_may_materialize_the_position(self):
-        """The ack can beat the first snapshot, and it is by definition about an instrument we
-        asked about — so it is the one source allowed to create state."""
+    def test_a_tracked_flat_instrument_is_applied_to(self):
+        """Tracked means "has a position entry", flat included — which is every universe
+        instrument, so our own writes always land."""
         am = _am()
         instrument = _instrument()
+        assert am.get_position(instrument).quantity == 0.0  # materialize, as the universe does
 
-        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0, source="ack"))
+        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0))
 
         assert am.get_position(instrument).leverage == 3.0
 
-    @pytest.mark.parametrize("source", ["sweep", "push", "snapshot"])
-    def test_an_observation_never_grows_a_position(self, source):
-        """A sweep reads whatever the venue reports, which on a shared account is every other
-        bot's instruments. Applying one would put a position this bot does not hold into
-        `ctx.positions` and the 5s snapshot."""
+    def test_an_untracked_instrument_never_grows_a_position(self):
+        """A sweep reads whatever the venue reports, which is the whole venue. Applying one
+        would put an instrument this bot does not trade into `ctx.positions` and the 5s
+        snapshot."""
         am = _am()
 
-        am.apply_venue_settings(VenueSettingsUpdate(_instrument(), leverage=3.0, source=source))
+        am.apply_venue_settings(VenueSettingsUpdate(_instrument(), leverage=3.0))
 
         assert am._states["binance"].get_positions() == {}
+        assert am.get_positions() == {}
 
     def test_an_unmanaged_exchange_is_a_logged_no_op(self):
         """A connector must stamp the exchange key the AM holds its state under; a mismatch is
@@ -151,15 +153,48 @@ class TestApply:
         assert any(m.record["level"].name == "WARNING" and "no account state" in m for m in messages)
         assert am.get_positions() == {}
 
-    @pytest.mark.parametrize("source", ["ack", "push", "sweep", "snapshot"])
-    def test_every_source_applies_to_a_position_we_hold(self, source):
+    def test_a_held_position_is_applied_to(self):
         am = _am()
         instrument = _instrument()
         pos = _held(am, instrument, leverage=5.0, max_notional=None)
 
-        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0, source=source))
+        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0))
 
         assert pos.leverage == 3.0
+
+
+class TestTrackedMeansUniverse:
+    """The tracking guard is only safe because the universe seeds a position for everything it
+    adds — driven through the real `UniverseManager`, not assumed."""
+
+    def test_setting_the_universe_makes_its_instruments_tracked(self, mocker):
+        am = _am()
+        instrument = _instrument()
+        market_data_manager = mocker.Mock()
+        market_data_manager.is_instrument_listed.return_value = True
+        market_data_manager.get_market_data_cache.return_value = mocker.Mock()
+        delisting_detector = mocker.Mock()
+        delisting_detector.filter_delistings.side_effect = lambda instruments: instruments
+        delisting_detector.detect_delistings.return_value = []
+        universe = UniverseManager(
+            context=mocker.Mock(),
+            strategy=mocker.Mock(),
+            market_data_manager=market_data_manager,
+            logging=mocker.Mock(),
+            subscription_manager=mocker.Mock(),
+            trading_manager=mocker.Mock(),
+            time_provider=_T(),
+            account=am,
+            position_gathering=mocker.Mock(),
+            delisting_detector=delisting_detector,
+            instrument_service=NullInstrumentService(),
+        )
+
+        universe.set_universe([instrument])
+
+        assert instrument in am._states["binance"].get_positions()
+        am.apply_venue_settings(VenueSettingsUpdate(instrument, leverage=3.0))
+        assert am.get_position(instrument).leverage == 3.0
 
 
 class TestChannelDispatch:
@@ -216,7 +251,7 @@ class TestSweepEndToEnd:
     """A real ccxt connector's sweep into a real AccountManager.
 
     The connector announces every symbol the venue reports and the AM decides what to keep — the
-    filter lives there because it is the side that knows what we hold. The connector's own memo
+    filter lives there because it is the side that knows what we track. The connector's own memo
     (`_symbol_to_instrument`) is written only by the order/deal/funding paths, so scoping the
     emit to it would skip exactly the case below.
     """
@@ -271,9 +306,9 @@ class TestSweepEndToEnd:
         assert pos.leverage == 3.0
         assert pos.max_notional is None
 
-    def test_a_symbol_we_hold_no_position_in_changes_nothing(self):
-        """The sweep announces it — another bot on the same account moved it — and the AM drops
-        it rather than growing this bot a position."""
+    def test_a_symbol_we_do_not_track_changes_nothing(self):
+        """The sweep announces every symbol the venue reports; the AM drops the ones it does not
+        track rather than growing a position for them."""
         am = _am()
         other = _instrument("DOGEUSDT")
         sent: list = []

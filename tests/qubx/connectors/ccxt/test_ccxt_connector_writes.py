@@ -844,7 +844,7 @@ async def test_the_venue_s_ack_is_announced_on_the_channel() -> None:
     await _drive(conn)
 
     (update,) = _settings_updates(sent)
-    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, source="ack")
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0)
 
 
 @pytest.mark.asyncio
@@ -876,7 +876,7 @@ async def test_the_sweep_announces_a_value_that_moved_on_the_venue() -> None:
         await conn._refresh_leverage_cache()
 
     (update,) = _settings_updates(sent)
-    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, source="sweep")
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0)
 
 
 @pytest.mark.asyncio
@@ -918,7 +918,7 @@ def test_an_accepted_margin_mode_is_announced() -> None:
     assert conn.set_margin_mode(_instrument(), "isolated") is True
 
     (update,) = _settings_updates(sent)
-    assert update == VenueSettingsUpdate(_instrument(), margin_mode="isolated", source="ack")
+    assert update == VenueSettingsUpdate(_instrument(), margin_mode="isolated")
 
 
 @pytest.mark.asyncio

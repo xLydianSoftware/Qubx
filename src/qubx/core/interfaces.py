@@ -593,7 +593,8 @@ class IAccountConfigurator:
         A connector emitting one must set ``update.instrument.exchange`` to the key it is
         registered under in the account manager (the venue alias, not the ccxt exchange name):
         the AM resolves its state from that field alone, and a mismatch is warned about and
-        dropped rather than raised.
+        dropped rather than raised. The AM applies an update only to an instrument it already
+        tracks — a connector may announce freely, including symbols outside our universe.
         """
         ...
 

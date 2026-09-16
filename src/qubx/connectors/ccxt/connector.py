@@ -966,9 +966,7 @@ class CcxtConnector(ChannelEmitter):
                     instrument = self._instrument_for_symbol(symbol)
                 except Exception:  # noqa: BLE001 — the venue does not know it either
                     continue
-                self.channel.send(
-                    create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(value), source="sweep"))
-                )
+                self.channel.send(create_venue_settings_event(VenueSettingsUpdate(instrument, leverage=float(value))))
         # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
         self._leverage_cache = {
             symbol: _LeverageInfo(
