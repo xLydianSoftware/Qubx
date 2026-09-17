@@ -33,7 +33,7 @@ import time
 import uuid
 from asyncio.exceptions import CancelledError
 from collections.abc import Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import ccxt
@@ -286,17 +286,21 @@ class CcxtConnector(ChannelEmitter):
         if rate_limiter is not None:
             await rate_limiter.acquire(endpoint)
 
-    def _report_order_limit_hit(self, error: Exception) -> None:
-        """Close the orders gate when the venue itself reports an order-budget breach.
+    def _report_order_limit_hit(self, error: Exception, pool_name: str = "orders") -> None:
+        """Close ``pool_name``'s gate when the venue itself reports a budget breach.
 
         A no-op for every other error. Without it the pool is proactive-model-only, so it never
         sees the budget another actor on the same account (manual trading, a second bot) spends.
+
+        ``pool_name`` must be the one the refused endpoint is billed against — closing ``orders``
+        for a set_leverage breach would stop trading over a budget orders never spent. An
+        undefined name is a no-op in the limiter.
         """
         rate_limiter = self._em.rate_limiter
         if rate_limiter is None or not isinstance(error, _ORDER_RATE_LIMIT_ERRORS):
             return
         # pool_name, never endpoint= — the latter closes every pool in the endpoint's cost list
-        rate_limiter.report_limit_hit(pool_name="orders", reason=f"venue order rate limit: {error}")
+        rate_limiter.report_limit_hit(pool_name=pool_name, reason=f"venue rate limit on {pool_name}: {error}")
 
     # ------------------------------------------------------------------ #
     # Write side — submit
@@ -862,24 +866,46 @@ class CcxtConnector(ChannelEmitter):
         )
         self._spawn(self._do_set_leverage(instrument, symbol, wanted))
 
+    def _report_leverage_failure(self, instrument: Instrument, leverage: int, error: Exception) -> None:
+        """The caller of set_instrument_leverage is long gone, so the verdict rides the channel."""
+        logger.error(f"[{self.exchange_name}] Failed to set leverage {leverage} for {instrument.symbol}: {error}")
+        self.channel.send(
+            create_error_event(
+                VenueOperationError(
+                    timestamp=self._time.time(),
+                    message=f"set leverage {leverage} for {instrument.symbol}",
+                    level=ErrorLevel.MEDIUM,
+                    error=error,
+                    operation="set_instrument_leverage",
+                    instrument=instrument,
+                )
+            )
+        )
+
     async def _do_set_leverage(self, instrument: Instrument, symbol: str, leverage: int) -> None:
         try:
             await self._acquire_endpoint_budget("set_leverage")
             await self._em.exchange.set_leverage(leverage, symbol)
+        except _ORDER_RATE_LIMIT_ERRORS as e:
+            # The write is fire-and-forget, so nothing re-sends a leverage that never landed.
+            # Retry once, but only where the gate paces it — a venue with no `leverage` pool would
+            # re-send instantly, and binance escalates bans for requests sent after a 429.
+            self._report_order_limit_hit(e, pool_name="leverage")
+            limiter = self._em.rate_limiter
+            if limiter is None or not limiter.is_gate_closed("leverage"):
+                self._report_leverage_failure(instrument, leverage, e)
+                return
+            logger.warning(f"[{self.exchange_name}] leverage {leverage} for {instrument.symbol} rate limited; retrying")
+            try:
+                await self._acquire_endpoint_budget("set_leverage")
+                await self._em.exchange.set_leverage(leverage, symbol)
+            except Exception as retry_error:  # noqa: BLE001 — report the retry's verdict, not the first
+                # the gate reopened while we waited; a second refusal must re-close it
+                self._report_order_limit_hit(retry_error, pool_name="leverage")
+                self._report_leverage_failure(instrument, leverage, retry_error)
+                return
         except Exception as e:  # noqa: BLE001 — the caller is long gone; report on the channel
-            logger.error(f"[{self.exchange_name}] Failed to set leverage {leverage} for {instrument.symbol}: {e}")
-            self.channel.send(
-                create_error_event(
-                    VenueOperationError(
-                        timestamp=self._time.time(),
-                        message=f"set leverage {leverage} for {instrument.symbol}",
-                        level=ErrorLevel.MEDIUM,
-                        error=e,
-                        operation="set_instrument_leverage",
-                        instrument=instrument,
-                    )
-                )
-            )
+            self._report_leverage_failure(instrument, leverage, e)
             return
         # - adopt what we just set, so the next call for the same value is skipped without
         #   waiting for the poller; the poller corrects it if the venue disagrees
@@ -950,6 +976,7 @@ class CcxtConnector(ChannelEmitter):
         configured: dict[str, float] = {}
         notionals: dict[str, float] = {}
         maxima: dict[str, float] = {}
+        configured_read = True
         # - annotated locals: ccxt's BASE Exchange declares both methods as an unconditional
         #   `raise NotSupported`, so their inferred return type is NoReturn. Only the venue
         #   subclasses return dicts, and `ex` is typed as the base. A venue without the
@@ -963,6 +990,7 @@ class CcxtConnector(ChannelEmitter):
                 if max_notional is not None:
                     notionals[symbol] = max_notional
         except Exception as e:  # noqa: BLE001
+            configured_read = False
             logger.debug(f"[{self.exchange_name}] configured-leverage read failed: {type(e).__name__}: {e}")
         try:
             tiers_by_symbol: dict[str, Any] = await ex.fetch_leverage_tiers()
@@ -995,8 +1023,7 @@ class CcxtConnector(ChannelEmitter):
                         VenueSettingsUpdate(instrument, leverage=float(value), max_notional=notionals.get(symbol))
                     )
                 )
-        # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
-        self._leverage_cache = {
+        rebuilt = {
             symbol: _LeverageInfo(
                 configured=configured.get(symbol),
                 maximum=maxima.get(symbol),
@@ -1004,6 +1031,21 @@ class CcxtConnector(ChannelEmitter):
             )
             for symbol in configured.keys() | maxima.keys() | notionals.keys()
         }
+        if configured_read:
+            # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
+            self._leverage_cache = rebuilt
+        else:
+            # The `configured` read failed (bybit has no fetch_leverages), so this sweep cannot
+            # speak for it: a wholesale rebuild would erase what the write path adopted and evict
+            # every symbol the tier read left out — on bybit, everything past its pagination cap.
+            # max_notional rides the same failed read, so it is preserved too.
+            for symbol, info in rebuilt.items():
+                held = self._leverage_cache.get(symbol)
+                self._leverage_cache[symbol] = (
+                    replace(info, configured=held.configured, max_notional=held.max_notional)
+                    if held is not None
+                    else info
+                )
         logger.info(
             f"[{self.exchange_name}] leverage cache refreshed: {len(configured)} configured, "
             f"{len(maxima)} maxima, {len(notionals)} notional caps"

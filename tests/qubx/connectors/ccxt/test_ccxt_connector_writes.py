@@ -7,13 +7,14 @@ deterministically without crossing a real thread/loop boundary.
 """
 
 import asyncio
+import time
 from unittest.mock import AsyncMock, Mock, patch
 
 import ccxt
 import pytest
 
 from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
-from qubx.connectors.ccxt.rate_limits import _default_endpoint_costs
+from qubx.connectors.ccxt.rate_limits import _default_endpoint_costs, create_ccxt_rate_limit_config
 from qubx.core.basics import (
     OPTION_REPRICE_IF_CROSSING,
     VENUE_SETTINGS_EVENT,
@@ -1466,3 +1467,149 @@ class TestCancelErrorClassification:
     def test_binance_wording_still_classifies(self) -> None:
         conn, _, _ = _make_connector()
         assert conn._classify_cancel_error(ccxt.ExchangeError("Unknown order sent."), acked=True) == "gone"
+
+
+_LEVERAGE_COOLDOWN = 0.05
+
+
+class TestLeverageRateLimiting:
+    """set_leverage is billed against its own pool on venues that meter per endpoint."""
+
+    @pytest.fixture
+    def leverage_limiter(self):
+        config = ExchangeRateLimitConfig(
+            pools={
+                "orders": PoolConfig("orders", "account", 5, 1.0, cooldown=_LEVERAGE_COOLDOWN),
+                "leverage": PoolConfig("leverage", "account", 5, 5.0, cooldown=_LEVERAGE_COOLDOWN),
+            },
+            endpoint_map={
+                "create_order": EndpointCosts([("orders", 1)]),
+                "set_leverage": EndpointCosts([("leverage", 1)]),
+            },
+            default_costs=EndpointCosts([]),
+        )
+        return ExchangeRateLimiter("bybit", config)
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limited_set_leverage_does_not_close_the_orders_gate(self, leverage_limiter) -> None:
+        """The soak saw 18 of these; closing the order gate for each would stop the strategy
+        opening positions over a budget orders never spent."""
+        exchange = _write_exchange()
+        exchange.set_leverage = AsyncMock(side_effect=ccxt.RateLimitExceeded("bybit 10006 Too many visits"))
+        conn, _sent, _ = _make_connector(exchange=exchange, rate_limiter=leverage_limiter)
+
+        await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+        # both the refusal and the retry's re-refusal were recorded against the leverage pool...
+        assert (await leverage_limiter.get_pool_state("leverage"))["hits"] == 2
+        # ...and never against orders, which is what would have stopped the strategy trading.
+        # (the gate itself has reopened by now — the retry waited out its cooldown)
+        assert (await leverage_limiter.get_pool_state("orders"))["hits"] == 0
+        assert leverage_limiter.is_gate_closed("orders") is False
+
+    @pytest.mark.asyncio
+    async def test_a_rate_limited_set_leverage_is_retried_once(self, leverage_limiter) -> None:
+        """Nothing else re-sends a leverage that never landed."""
+        exchange = _write_exchange()
+        exchange.set_leverage = AsyncMock(side_effect=[ccxt.RateLimitExceeded("10006"), {}])
+        conn, _sent, _ = _make_connector(exchange=exchange, rate_limiter=leverage_limiter)
+
+        await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+        assert exchange.set_leverage.await_count == 2
+        assert conn._leverage_cache["BTC/USDT:USDT"].configured == 3  # adopted after the retry
+
+    @pytest.mark.asyncio
+    async def test_a_leverage_failure_that_is_not_rate_limiting_is_not_retried(self, leverage_limiter) -> None:
+        exchange = _write_exchange()
+        exchange.set_leverage = AsyncMock(side_effect=ccxt.BadRequest("bad leverage"))
+        conn, sent, _ = _make_connector(exchange=exchange, rate_limiter=leverage_limiter)
+
+        await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+        assert exchange.set_leverage.await_count == 1
+        assert (await leverage_limiter.get_pool_state("leverage"))["hits"] == 0
+
+    @pytest.mark.asyncio
+    async def test_no_retry_when_nothing_would_pace_it(self) -> None:
+        """No `leverage` pool means nothing spaces the retry."""
+        no_leverage_pool = ExchangeRateLimiter(
+            "binance.um",
+            ExchangeRateLimitConfig(
+                pools={"orders": PoolConfig("orders", "account", 5, 1.0, cooldown=0.2)},
+                endpoint_map={"set_leverage": EndpointCosts([])},
+                default_costs=EndpointCosts([]),
+            ),
+        )
+        exchange = _write_exchange()
+        exchange.set_leverage = AsyncMock(side_effect=ccxt.RateLimitExceeded("binance -1003"))
+        conn, _sent, _ = _make_connector(exchange=exchange, rate_limiter=no_leverage_pool)
+
+        await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+        assert exchange.set_leverage.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_no_retry_without_a_rate_limiter(self) -> None:
+        exchange = _write_exchange()
+        exchange.set_leverage = AsyncMock(side_effect=ccxt.RateLimitExceeded("10006"))
+        conn, _sent, _ = _make_connector(exchange=exchange, rate_limiter=None)
+
+        await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+        assert exchange.set_leverage.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_the_retry_waits_for_the_gate_it_just_closed(self, leverage_limiter) -> None:
+        """The retry is only safe because the gate paces it."""
+        exchange = _write_exchange()
+        calls: list[tuple[float, bool]] = []
+
+        async def _venue(leverage, symbol):
+            calls.append((time.monotonic(), leverage_limiter.is_gate_closed("leverage")))
+            if len(calls) == 1:
+                raise ccxt.RateLimitExceeded("bybit 10006 Too many visits")
+            return {}
+
+        exchange.set_leverage = AsyncMock(side_effect=_venue)
+        conn, _sent, _ = _make_connector(exchange=exchange, rate_limiter=leverage_limiter)
+
+        await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+        (first, _), (second, gate_open_on_retry) = calls
+        assert second - first >= _LEVERAGE_COOLDOWN, "the retry did not wait for the gate"
+        assert gate_open_on_retry is False, "the retry went out while the gate was still closed"
+        assert conn._leverage_cache["BTC/USDT:USDT"].configured == 3
+
+    @pytest.mark.asyncio
+    async def test_a_retry_that_is_also_refused_reports_the_retrys_error_and_adopts_nothing(
+        self, leverage_limiter
+    ) -> None:
+        exchange = _write_exchange()
+        exchange.set_leverage = AsyncMock(side_effect=[ccxt.RateLimitExceeded("first"), ccxt.BadRequest("second")])
+        conn, sent, _ = _make_connector(exchange=exchange, rate_limiter=leverage_limiter)
+
+        await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+        assert exchange.set_leverage.await_count == 2
+        errors = [e for _, dtype, e, _ in sent if dtype == "error"]
+        assert len(errors) == 1
+        assert isinstance(errors[0], VenueOperationError)
+        assert "second" in str(errors[0].error)  # the retry's verdict, not the first attempt's
+        assert "BTC/USDT:USDT" not in conn._leverage_cache
+
+    @pytest.mark.asyncio
+    async def test_binance_keeps_every_gate_open_on_a_refused_set_leverage(self) -> None:
+        """No-`leverage`-pool path through the real binance config: a -1003 must not touch the
+        order gate, nor be retried into an escalating ban."""
+        limiter = ExchangeRateLimiter("BINANCE.UM", create_ccxt_rate_limit_config("binance.um"))
+        exchange = _write_exchange()
+        exchange.set_leverage = AsyncMock(side_effect=ccxt.RateLimitExceeded("binance -1003"))
+        conn, _sent, _ = _make_connector(exchange=exchange, rate_limiter=limiter)
+
+        await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+        assert exchange.set_leverage.await_count == 1  # nothing would have paced a retry
+        assert not limiter.is_gate_closed("orders")
+        assert not limiter.is_gate_closed("ccxt_rest")
+        assert (await limiter.get_pool_state("orders"))["hits"] == 0
