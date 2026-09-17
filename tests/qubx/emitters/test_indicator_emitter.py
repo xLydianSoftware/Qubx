@@ -49,7 +49,6 @@ class TestIndicatorEmitter:
         # Create test instrument
         self.instrument = Instrument(
             symbol="BTCUSDT",
-
             market_type=MarketType.SPOT,
             exchange="binance",
             base="BTC",
@@ -86,6 +85,30 @@ class TestIndicatorEmitter:
         assert emitter._metric_name == "test_sma"
         assert emitter._instrument == self.instrument
         assert emitter._tags == {"test": "tag"}
+
+    def test_no_emission_while_attaching_to_history(self):
+        """Attaching to an indicator with history replays it through calculate(); none of it is emitted."""
+        sma_indicator = sma(self.series, 3)  # self.series already holds 5 bars
+        assert len(sma_indicator) == 5
+
+        emitter = IndicatorEmitter(
+            name="test_emitter",
+            wrapped_indicator=sma_indicator,
+            metric_emitter=self.mock_emitter,
+            metric_name="test_sma",
+            instrument=self.instrument,
+        )
+
+        assert len(emitter) == 5  # the history did reach the wrapper
+        self.mock_emitter.emit.assert_not_called()
+
+        # The next bar is a real update: exactly one emission, stamped with that bar's time.
+        new_time = 5 * 60_000_000_000
+        self.series.update(new_time, 105.0)
+        assert self.mock_emitter.emit.call_count == 1
+        kwargs = self.mock_emitter.emit.call_args.kwargs
+        assert kwargs["name"] == "test_sma"
+        assert pd.Timestamp(kwargs["timestamp"]).value == new_time
 
     def test_indicator_emitter_emits_on_new_item_only(self):
         """Test that emitter only emits when new_item_started=True by default."""

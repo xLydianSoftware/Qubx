@@ -24,6 +24,9 @@ class IndicatorEmitter(Indicator):
     of when certain calculation methods are called. For example, you might want to
     emit ATR values on every update, not just when calculate_risks() is called.
 
+    Only updates are emitted: the history an indicator already holds when the wrapper
+    attaches is replayed into the wrapper but never sent to the metric emitter.
+
     Example:
         # Create ATR indicator
         volatility = atr(ohlc_series, period=14, smoother="sma")
@@ -91,6 +94,13 @@ class IndicatorEmitter(Indicator):
         if not np.isfinite(current_value):
             current_value = np.nan
 
+        # Attaching to an indicator that already carries history replays that history through
+        # calculate() with the original bar times. Those values are not updates: emitted, they
+        # land in the store back-dated by the depth of the buffer (a whole warmup window after
+        # every restart) and force it to rewrite closed partitions.
+        if self.is_initial_recalculate:
+            return current_value
+
         # Decide whether to emit based on our configuration
         should_emit = False
 
@@ -102,7 +112,7 @@ class IndicatorEmitter(Indicator):
             if new_item_started and len(self._wrapped_indicator) >= 2:
                 should_emit = True
                 # Use the previous (completed) value, not the current one
-                current_value = self._wrapped_indicator[1] if not self.is_initial_recalculate else value
+                current_value = self._wrapped_indicator[1]
 
         # Emit if we should and the value is valid
         if should_emit and not np.isnan(current_value):
