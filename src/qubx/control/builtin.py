@@ -5,9 +5,10 @@ from typing import Callable
 
 import pandas as pd
 
-from qubx.core.basics import DataType, Instrument, MarketType, Signal
-from qubx.core.interfaces import IStrategyContext
+from qubx.core.basics import DataType, Instrument, MarketType, Position, Signal
+from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.core.lookups import lookup
+from qubx.core.state_snapshot import position_entry
 from qubx.utils.time import to_timedelta, to_timestamp
 
 from .decorator import collect_state, collect_state_schema
@@ -48,6 +49,31 @@ def _rl(v: float) -> float:
 def _rms(v: float) -> float:
     """Round latency (ms) to 1 decimal."""
     return round(v, 1)
+
+
+def _opt(value: float | None, rounder: Callable[[float], float]) -> float | None:
+    """Round unless the value is None — ``position_entry`` reports an unknown as None."""
+    return rounder(value) if value is not None else None
+
+
+def _rounded_position_entry(account: IAccountViewer, instrument: Instrument, position: Position) -> dict:
+    """``position_entry`` in this action's display contract: ``market_price`` rather than
+    ``current_price``, the original key order, and the figures rounded."""
+    e = position_entry(account, instrument, position)
+    return {
+        "quantity": e["quantity"],
+        "avg_price": e["avg_price"],
+        "market_price": e["current_price"],
+        "unrealized_pnl": _opt(e["unrealized_pnl"], _rm),
+        "market_value": _opt(e["market_value"], _rm),
+        "leverage": _opt(e["leverage"], _rl),
+        "notional": _opt(e["notional"], _rm),
+        "instrument_leverage": _opt(e["instrument_leverage"], _rl),
+        "max_instrument_leverage": _opt(e["max_instrument_leverage"], _rl),
+        "max_notional": _opt(e["max_notional"], _rm),
+        "initial_margin": _opt(e["initial_margin"], _rm),
+        "maint_margin": _opt(e["maint_margin"], _rm),
+    }
 
 
 # --- Universe actions ---
@@ -477,14 +503,7 @@ def _get_state(ctx: IStrategyContext, **kwargs) -> ActionResult:
         for instr, pos in positions.items():
             if pos.is_open():
                 open_positions += 1
-            positions_snapshot[instr.symbol] = {
-                "quantity": pos.quantity,
-                "avg_price": pos.position_avg_price,
-                "market_price": pos.last_update_price,
-                "unrealized_pnl": _rm(pos.unrealized_pnl()),
-                "market_value": _rm(pos.market_value_funds),
-                "leverage": _rl(account.get_leverage(instr)),
-            }
+            positions_snapshot[instr.symbol] = _rounded_position_entry(account, instr, pos)
 
         # Build balances snapshot
         balances_snapshot: dict[str, dict] = {}
@@ -670,6 +689,44 @@ def _set_target_leverage(
         return ActionResult(status="ok", data={"instrument": str(instr), "leverage": leverage})
     except Exception as e:
         return ActionResult(status="error", error=str(e))
+
+
+def _set_instrument_leverage(
+    ctx: IStrategyContext, symbol: str, exchange: str, leverage: float, **kwargs
+) -> ActionResult:
+    """Change the venue-configured leverage for one instrument.
+
+    Not a trade: this moves the per-symbol cap the exchange enforces, which also drives the
+    initial-margin requirement and the max position notional.
+    """
+    instrument = _resolve(ctx, symbol, exchange)
+    if instrument is None:
+        return ActionResult(status="error", error=f"instrument {symbol} not found on {exchange}")
+    if instrument not in ctx.instruments:
+        return ActionResult(status="error", error=f"{symbol} is not in the universe")
+    if leverage < 1:
+        return ActionResult(status="error", error=f"leverage must be >= 1, got {leverage}")
+    maximum = ctx.get_max_instrument_leverage(instrument)
+    if maximum is not None and leverage > maximum:
+        # refuse, never clamp: silently trading a leverage nobody asked for is worse than a no-op
+        return ActionResult(status="error", error=f"{leverage}x exceeds the venue maximum {maximum}x for {symbol}")
+
+    previous = ctx.get_instrument_leverage(instrument)
+    ctx.set_instrument_leverage(instrument, leverage)
+    return ActionResult(
+        status="ok",
+        message=(
+            f"requested {leverage:g}x for {symbol} on {exchange}; the venue confirms "
+            f"asynchronously and the state snapshot reflects it within ~10s"
+        ),
+        data={
+            "exchange": exchange,
+            "symbol": symbol,
+            "requested": leverage,
+            "previous": previous,
+            "max": maximum,
+        },
+    )
 
 
 def _close_position(ctx: IStrategyContext, symbol: str, exchange: str | None = None, **kwargs) -> ActionResult:
@@ -1122,6 +1179,23 @@ BUILTIN_ACTIONS: dict[str, tuple[ActionDef, Callable]] = {
             ],
         ),
         _set_target_leverage,
+    ),
+    "set_instrument_leverage": (
+        ActionDef(
+            name="set_instrument_leverage",
+            description=(
+                "Set the venue-configured leverage for one instrument — the per-symbol cap the "
+                "exchange enforces. Not a trade: set_target_leverage trades to a leverage."
+            ),
+            category="trading",
+            dangerous=True,
+            params=[
+                ActionParam(name="symbol", type="string", description="Trading instrument symbol"),
+                ActionParam(name="exchange", type="string", description="Exchange the instrument trades on"),
+                ActionParam(name="leverage", type="number", description=">= 1 and <= the venue maximum"),
+            ],
+        ),
+        _set_instrument_leverage,
     ),
     "close_position": (
         ActionDef(

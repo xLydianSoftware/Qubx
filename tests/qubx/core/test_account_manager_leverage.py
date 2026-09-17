@@ -218,13 +218,36 @@ def test_venue_settings_neutral_when_not_reported():
     # An instrument the venue never reported reads as None / inf (get_position materializes flat).
     am = _am()
     inst = _instrument("BTCUSDT")
-    # - leverage and margin mode both fall back to the connector, which knows nothing either
+    # - both fallbacks ask the connector, which knows nothing about it either
     am._connectors["binance"].get_instrument_leverage.return_value = None
+    am._connectors["binance"].get_max_instrument_notional.return_value = float("inf")
     am._connectors["binance"].get_margin_mode.return_value = None
     assert am.get_instrument_leverage(inst) is None
     assert am.get_max_instrument_notional(inst) == float("inf")
     assert am.get_margin_mode(inst) is None
     assert am.get_adl_level(inst) is None
+
+
+def test_max_notional_falls_back_to_the_connector_when_flat():
+    """The venue reports no position row for an instrument you are flat in, so the snapshot
+    carries no cap for it — while the connector knows the whole universe's."""
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am._connectors["binance"].get_max_instrument_notional.return_value = 2_000_000.0
+
+    assert am.get_max_instrument_notional(inst) == 2_000_000.0
+    am._connectors["binance"].get_max_instrument_notional.assert_called_once_with(inst)
+
+
+def test_max_notional_prefers_the_snapshot_over_the_connector():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    pos = Position(instrument=inst)
+    pos.max_notional = 1_000_000.0
+    am._states["binance"].set_position(inst, pos)
+
+    assert am.get_max_instrument_notional(inst) == 1_000_000.0
+    am._connectors["binance"].get_max_instrument_notional.assert_not_called()
 
 
 # ---- per-instrument venue settings: write side ------------------------------ #
@@ -278,33 +301,45 @@ def test_instrument_leverage_prefers_the_snapshot_over_the_connector():
     am._connectors["binance"].get_instrument_leverage.assert_not_called()
 
 
-def test_margin_mode_falls_back_to_the_connector_when_the_snapshot_has_none():
-    """Same shape as the leverage fallback: a snapshot only carries the mode for instruments
-    the account holds a position in — and a Bybit UTA nulls it even then."""
+# ---- explicit sets pin against the default apply ---------------------------- #
+
+
+def test_an_explicit_set_pins_the_instrument():
     am = _am()
     inst = _instrument("BTCUSDT")
-    am._connectors["binance"].get_margin_mode.return_value = "cross"
-
-    assert am.get_margin_mode(inst) == "cross"
-    am._connectors["binance"].get_margin_mode.assert_called_once_with(inst)
+    am.set_instrument_leverage(inst, 7.0)
+    assert am._pinned_leverage == {inst: 7.0}
 
 
-def test_margin_mode_prefers_the_snapshot_over_the_connector():
+def test_the_default_apply_skips_pinned_instruments_and_still_sends_the_rest():
+    """LiveConfig re-applies the default to the WHOLE universe on every set_universe, so
+    without the pin an operator's per-instrument edit is reverted at the next rotation."""
+    am = _am()
+    pinned = _instrument("BTCUSDT")
+    other = _instrument("ETHUSDT")
+    am.set_instrument_leverage(pinned, 7.0)
+    connector = am._connectors["binance"]
+    connector.set_instrument_leverage.reset_mock()
+
+    am.set_default_instrument_leverage(3.0)
+    am.apply_default_instrument_leverage([pinned, other])
+
+    connector.set_instrument_leverage.assert_called_once_with(other, 3.0)
+
+
+def test_the_default_apply_does_not_pin_what_it_touches():
     am = _am()
     inst = _instrument("BTCUSDT")
-    pos = Position(instrument=inst)
-    pos.margin_mode = "isolated"
-    am._states["binance"].set_position(inst, pos)
-    am._connectors["binance"].get_margin_mode.return_value = "cross"
+    am.set_default_instrument_leverage(3.0)
+    am.apply_default_instrument_leverage([inst])
 
-    assert am.get_margin_mode(inst) == "isolated"
-    am._connectors["binance"].get_margin_mode.assert_not_called()
+    am._connectors["binance"].set_instrument_leverage.assert_called_once_with(inst, 3.0)
+    assert am._pinned_leverage == {}
 
 
-def test_margin_mode_is_none_when_the_exchange_has_no_connector():
-    # the fallback is guarded, like the leverage one: a state with no connector reads None
-    am = _am(exchanges=("binance", "bybit"))
-    inst = _instrument("BTCUSDT", exchange="bybit")
-    am._connectors.pop("bybit")
-
-    assert am.get_margin_mode(inst) is None
+def test_a_second_explicit_set_replaces_the_pin():
+    am = _am()
+    inst = _instrument("BTCUSDT")
+    am.set_instrument_leverage(inst, 7.0)
+    am.set_instrument_leverage(inst, 12.0)
+    assert am._pinned_leverage == {inst: 12.0}

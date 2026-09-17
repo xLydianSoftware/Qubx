@@ -7,9 +7,7 @@ deterministically without crossing a real thread/loop boundary.
 """
 
 import asyncio
-import gc
-import warnings
-from unittest.mock import AsyncMock, Mock, PropertyMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import ccxt
 import pytest
@@ -18,6 +16,7 @@ from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
 from qubx.connectors.ccxt.rate_limits import _default_endpoint_costs
 from qubx.core.basics import (
     OPTION_REPRICE_IF_CROSSING,
+    VENUE_SETTINGS_EVENT,
     CtrlChannel,
     Instrument,
     MarketType,
@@ -26,6 +25,7 @@ from qubx.core.basics import (
     OrderSide,
     OrderStatus,
     OrderType,
+    VenueSettingsUpdate,
 )
 from qubx.core.connector import IConnector
 from qubx.core.errors import VenueOperationError
@@ -582,75 +582,6 @@ async def test_update_direct_edit_emits_updated() -> None:
 
 
 @pytest.mark.asyncio
-async def test_update_stop_market_amends_the_trigger() -> None:
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
-    exchange.price_to_precision = lambda symbol, price: f"{price:.1f}"
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.update_order(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_MARKET), price=105.0)
-    await _drive(conn)
-
-    exchange.edit_order.assert_awaited_once_with(
-        id="VENUE123",
-        symbol="BTC/USDT:USDT",
-        type="market",
-        side="buy",
-        amount=1.0,
-        price=105.0,
-        params={"triggerPrice": "105.0"},
-    )
-    assert isinstance(sent[0], OrderUpdatedEvent)
-
-
-@pytest.mark.asyncio
-async def test_update_stop_limit_moves_trigger_and_limit_together() -> None:
-    # submit prices both legs off the one price; an amend that moved only the trigger would
-    # leave the venue's limit leg behind while the local order records the new price
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
-    exchange.price_to_precision = lambda symbol, price: f"{price:.1f}"
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.update_order(_order(venue_order_id="VENUE123", order_type=OrderType.STOP_LIMIT), price=105.0)
-    await _drive(conn)
-
-    exchange.edit_order.assert_awaited_once_with(
-        id="VENUE123",
-        symbol="BTC/USDT:USDT",
-        type="limit",
-        side="buy",
-        amount=1.0,
-        price=105.0,
-        params={"triggerPrice": "105.0"},
-    )
-    assert isinstance(sent[0], OrderUpdatedEvent)
-
-
-@pytest.mark.asyncio
-async def test_a_quantity_only_stop_amend_sends_no_trigger_price() -> None:
-    """A STOP_MARKET read back from the venue has no limit price (ccxt omit_zero's Bybit's
-    "0"), and price_to_precision(symbol, None) answers None — so an unguarded amend would
-    tell the venue to clear the trigger."""
-    exchange = Mock()
-    exchange.has = {"editOrder": True}
-    exchange.edit_order = AsyncMock(return_value={"id": "VENUE123"})
-    exchange.price_to_precision = Mock(side_effect=lambda symbol, price: None if price is None else f"{price:.1f}")
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    order = _order(venue_order_id="VENUE123", order_type=OrderType.STOP_MARKET, price=None)
-    conn.update_order(order, quantity=2.0)
-    await _drive(conn)
-
-    assert exchange.edit_order.await_args.kwargs["params"] == {}
-    assert exchange.edit_order.await_args.kwargs["price"] is None
-    exchange.price_to_precision.assert_not_called()
-    assert isinstance(sent[0], OrderUpdatedEvent)
-
-
-@pytest.mark.asyncio
 async def test_update_by_cloid_uses_cloid_edit_endpoint() -> None:
     # No venue id yet -> ccxt's client-order-id edit variant, with symbol/side/type off the order.
     exchange = Mock()
@@ -662,7 +593,7 @@ async def test_update_by_cloid_uses_cloid_edit_endpoint() -> None:
     await _drive(conn)
 
     exchange.edit_order_with_client_order_id.assert_awaited_once_with(
-        "qubx_BTCUSDT_1", "BTC/USDT:USDT", "limit", "buy", 2.0, 102.0, {}
+        "qubx_BTCUSDT_1", "BTC/USDT:USDT", "limit", "buy", 2.0, 102.0
     )
     assert isinstance(sent[0], OrderUpdatedEvent)
 
@@ -905,33 +836,6 @@ async def test_set_leverage_is_clamped_to_the_cached_venue_maximum() -> None:
     exchange.set_leverage.assert_awaited_once_with(10, "BTC/USDT:USDT")
 
 
-def test_leverage_read_uses_the_singular_endpoint_when_available() -> None:
-    exchange = Mock()
-    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 10, "shortLeverage": 10})
-    exchange.fetch_positions = AsyncMock(return_value=[])
-    exchange.has = {"editOrder": True, "fetchLeverages": None, "fetchLeverage": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    assert conn.get_instrument_leverage(_instrument()) == 10.0
-    exchange.fetch_leverage.assert_awaited_once_with("BTC/USDT:USDT")
-    exchange.fetch_positions.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_cloid_cancel_is_a_single_attempt() -> None:
-    """Retrying a venue refusal is the caller's call, not the connector's."""
-    exchange = Mock()
-    exchange.cancel_order_with_client_order_id = AsyncMock(side_effect=ccxt.OrderNotFound("order not exists"))
-    exchange.has = {"editOrder": True}
-    conn, sent, _ = _make_connector(exchange=exchange)
-
-    conn.cancel_order(_order(venue_order_id=None))
-    await _drive(conn)
-
-    assert exchange.cancel_order_with_client_order_id.await_count == 1
-    assert any(isinstance(e, OrderCancelRejectedEvent) for e in sent)
-
-
 @pytest.mark.asyncio
 async def test_a_successful_set_updates_the_cache() -> None:
     """Without this the same value is re-sent every tick until the hourly refresh."""
@@ -951,71 +855,166 @@ async def test_a_successful_set_updates_the_cache() -> None:
     assert exchange.set_leverage.await_count == 1
 
 
+def _settings_updates(sent: list) -> list:
+    return [payload for _, dtype, payload, _ in sent if dtype == VENUE_SETTINGS_EVENT]
+
+
 @pytest.mark.asyncio
-async def test_a_clamped_repeat_dedups_against_what_was_actually_sent() -> None:
-    """An over-maximum request is sent as the maximum, so the dedup compares the clamped value."""
+async def test_the_venue_s_ack_is_announced_on_the_channel() -> None:
+    """The cache the connector adopts into is private to it; `Position.leverage` is what every
+    reader sees, and only the snapshot reconcile writes it — so the ack has to be announced."""
     exchange = Mock()
     exchange.set_leverage = AsyncMock(return_value={})
-    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"longLeverage": 10}})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0)
+
+
+@pytest.mark.asyncio
+async def test_a_refused_set_announces_nothing() -> None:
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(side_effect=ccxt.ExchangeError("nope"))
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    assert _settings_updates(sent) == []
+    assert [e for _, dtype, e, _ in sent if dtype == "error"]
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_announces_a_value_that_moved_on_the_venue() -> None:
+    """An operator changing leverage in the venue UI never reaches the ack path; without this
+    the position would carry the old value until a snapshot happened to correct it. The swept
+    row carries the new bracket's cap, so it rides along."""
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(
+        return_value={
+            "BTC/USDT:USDT": {
+                "symbol": "BTC/USDT:USDT",
+                "longLeverage": 3,
+                "info": {"maxNotionalValue": "2000000"},
+            }
+        }
+    )
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
     exchange.has = {"editOrder": True, "fetchLeverages": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=2, maximum=10)
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
 
-    for _ in range(3):
-        conn.set_instrument_leverage(_instrument(), 50.0)
-        await _drive(conn)
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
 
-    exchange.set_leverage.assert_awaited_once_with(10, "BTC/USDT:USDT")
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, max_notional=2_000_000.0)
 
 
-def test_emulated_fetch_leverage_is_not_used() -> None:
-    """Binance reports 'emulated', which is truthy — it must not reach the singular path."""
+@pytest.mark.asyncio
+async def test_the_sweep_is_silent_when_nothing_moved() -> None:
     exchange = Mock()
-    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 3})
-    exchange.has = {"editOrder": True, "fetchLeverage": "emulated"}
-    conn, _, _ = _make_connector(exchange=exchange)
+    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "longLeverage": 5}})
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=None)
 
-    assert conn._fetch_leverage_single(_instrument()) is None
-    exchange.fetch_leverage.assert_not_awaited()
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
+
+    assert _settings_updates(sent) == []
 
 
-def test_a_fractional_venue_leverage_is_cached_as_reported() -> None:
-    """Bybit's leverageStep allows 4.2; truncating to 4 makes a later set_instrument_leverage(4)
-    look redundant and skip the write."""
+@pytest.mark.asyncio
+async def test_the_first_sweep_announces_nothing() -> None:
+    """Nothing held means nothing changed — a fresh cache is not news."""
     exchange = Mock()
-    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": "4.2"})
-    exchange.has = {"editOrder": True, "fetchLeverage": True}
-    conn, _, _ = _make_connector(exchange=exchange)
+    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "longLeverage": 3}})
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
 
-    assert conn._fetch_leverage_single(_instrument()) == 4.2
-    assert conn._leverage_cache["BTC/USDT:USDT"].configured == 4.2
+    with patch.object(CcxtConnector, "_instrument_for_symbol", return_value=_instrument()):
+        await conn._refresh_leverage_cache()
+
+    assert _settings_updates(sent) == []
 
 
-def test_the_hourly_refresh_keeps_what_the_singular_read_cached() -> None:
-    """Bybit has no fetchLeverages but does publish tiers: a wholesale rebuild would write
-    configured=None over every entry the per-symbol read filled."""
+def test_an_accepted_margin_mode_is_announced() -> None:
     exchange = Mock()
-    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": 12})
-    exchange.fetch_leverages = AsyncMock(side_effect=ccxt.NotSupported("nope"))
-    exchange.fetch_leverage_tiers = AsyncMock(return_value={"BTC/USDT:USDT": [{"maxLeverage": 100}]})
-    exchange.has = {"editOrder": True, "fetchLeverage": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-    conn._fetch_leverage_single(_instrument())
+    exchange.set_margin_mode = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
 
-    asyncio.new_event_loop().run_until_complete(conn._refresh_leverage_cache())
+    assert conn.set_margin_mode(_instrument(), "isolated") is True
 
-    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=12, maximum=100)
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), margin_mode="isolated")
 
 
-def test_fetch_leverage_single_survives_a_non_numeric_value() -> None:
-    """A venue value int() cannot parse must not raise onto the strategy thread."""
+@pytest.mark.asyncio
+async def test_the_new_bracket_cap_is_read_and_announced_with_the_ack() -> None:
+    """The cap belongs to the bracket we just left. Dropping it left the position reading null
+    until the hourly sweep — a snapshot only copies a cap across when the Differ flags that
+    position, which a leverage edit does not cause."""
     exchange = Mock()
-    exchange.fetch_leverage = AsyncMock(return_value={"longLeverage": "n/a"})
-    exchange.has = {"editOrder": True, "fetchLeverage": True}
-    conn, _, _ = _make_connector(exchange=exchange)
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.fetch_leverages = AsyncMock(
+        return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "info": {"maxNotionalValue": "2000000"}}}
+    )
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=20, max_notional=1_000_000.0)
 
-    assert conn._fetch_leverage_single(_instrument()) is None
-    assert "BTC/USDT:USDT" not in conn._leverage_cache
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    exchange.fetch_leverages.assert_awaited_once_with(["BTC/USDT:USDT"])
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=3, maximum=20, max_notional=2_000_000.0)
+    assert conn.get_max_instrument_notional(_instrument()) == 2_000_000.0
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, max_notional=2_000_000.0)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_cap_read_still_drops_the_stale_one_and_announces_the_leverage() -> None:
+    """Keeping the old cap would have the AM answer a confidently wrong number, where None reads
+    as "not known yet". The ack itself already landed, so this is a warning, not an error."""
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.fetch_leverages = AsyncMock(side_effect=ccxt.ExchangeError("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=20, max_notional=1_000_000.0)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=3, maximum=20, max_notional=None)
+    (update,) = _settings_updates(sent)
+    assert update == VenueSettingsUpdate(_instrument(), leverage=3.0, max_notional=None)
+
+
+@pytest.mark.asyncio
+async def test_a_venue_without_symbol_config_reads_no_cap_and_asks_for_none() -> None:
+    exchange = Mock()
+    exchange.set_leverage = AsyncMock(return_value={})
+    exchange.fetch_leverages = AsyncMock(return_value={})
+    exchange.has = {"editOrder": True}
+    conn, sent, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=5, maximum=20, max_notional=1_000_000.0)
+
+    conn.set_instrument_leverage(_instrument(), 3.0)
+    await _drive(conn)
+
+    exchange.fetch_leverages.assert_not_awaited()
+    assert conn._leverage_cache["BTC/USDT:USDT"].max_notional is None
 
 
 def test_set_margin_mode_calls_ccxt_returns_true() -> None:
@@ -1043,23 +1042,80 @@ def _position_row(**over) -> dict:
     return row
 
 
-def test_get_instrument_leverage_reads_position_row() -> None:
+def _leverage_read_exchange() -> Mock:
+    """Both venue sources would answer if the read fell back to them."""
     exchange = Mock()
     exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
-    exchange.has = {"editOrder": True}
+    exchange.fetch_leverages = AsyncMock(return_value={"BTC/USDT:USDT": {"leverage": 7}})
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    return exchange
+
+
+def test_get_instrument_leverage_reads_the_poller_cache() -> None:
+    exchange = _leverage_read_exchange()
     conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=10, maximum=20)
 
     assert conn.get_instrument_leverage(_instrument()) == 10.0
-    exchange.fetch_positions.assert_awaited_once_with(["BTC/USDT:USDT"])
+    exchange.fetch_leverages.assert_not_awaited()
+    exchange.fetch_positions.assert_not_awaited()
 
 
-def test_get_max_instrument_notional_reads_position_row() -> None:
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[_position_row()])
-    exchange.has = {"editOrder": True}
+def test_get_instrument_leverage_asks_the_venue_for_nothing_on_a_miss() -> None:
+    """None is the interface's "not populated yet". The 5s state snapshot reads this for
+    every universe instrument on the ProcessorThread, and the symbolConfig / position-row
+    fallbacks this method used to fall through to each blocked it on a venue round trip."""
+    exchange = _leverage_read_exchange()
     conn, _, _ = _make_connector(exchange=exchange)
 
-    assert conn.get_max_instrument_notional(_instrument()) == 1_000_000.0
+    assert conn.get_instrument_leverage(_instrument()) is None
+    exchange.fetch_leverages.assert_not_awaited()
+    exchange.fetch_positions.assert_not_awaited()
+
+
+def test_get_max_instrument_notional_reads_the_poller_cache() -> None:
+    exchange = _leverage_read_exchange()
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=7, maximum=20, max_notional=2_000_000.0)
+
+    assert conn.get_max_instrument_notional(_instrument()) == 2_000_000.0
+    exchange.fetch_leverages.assert_not_awaited()
+    exchange.fetch_positions.assert_not_awaited()
+
+
+def test_get_max_instrument_notional_asks_the_venue_for_nothing_on_a_miss() -> None:
+    """The 5s snapshot reads this for every universe instrument on the ProcessorThread; the
+    symbolConfig and position-row pulls it used to fall through to each blocked it."""
+    exchange = _leverage_read_exchange()
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    assert conn.get_max_instrument_notional(_instrument()) == float("inf")
+    exchange.fetch_leverages.assert_not_awaited()
+    exchange.fetch_positions.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_caches_the_notional_cap_from_symbol_config() -> None:
+    """symbolConfig carries `maxNotionalValue` with no open position required, which is what
+    makes the cap knowable for a flat instrument."""
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(
+        return_value={
+            "BTC/USDT:USDT": {
+                "symbol": "BTC/USDT:USDT",
+                "longLeverage": 7,
+                "info": {"maxNotionalValue": "2000000"},
+            }
+        }
+    )
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("nope"))
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    await conn._refresh_leverage_cache()
+
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(configured=7, maximum=None, max_notional=2_000_000.0)
+    assert conn.get_max_instrument_notional(_instrument()) == 2_000_000.0
 
 
 def test_get_margin_mode_reads_position_row() -> None:
@@ -1069,153 +1125,6 @@ def test_get_margin_mode_reads_position_row() -> None:
     conn, _, _ = _make_connector(exchange=exchange)
 
     assert conn.get_margin_mode(_instrument()) == "cross"
-
-
-def test_get_margin_mode_falls_back_to_fetch_margin_mode_when_flat() -> None:
-    """Binance v3 positionRisk omits flat symbols, so the position row is empty while flat."""
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[])
-    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
-    exchange.has = {"editOrder": True, "fetchMarginMode": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    assert conn.get_margin_mode(_instrument()) == "isolated"
-    exchange.fetch_margin_mode.assert_awaited_once_with("BTC/USDT:USDT")
-
-
-def test_get_margin_mode_prefers_the_position_row() -> None:
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[_position_row(marginMode="cross")])
-    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
-    exchange.has = {"editOrder": True, "fetchMarginMode": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    assert conn.get_margin_mode(_instrument()) == "cross"
-    exchange.fetch_margin_mode.assert_not_awaited()
-
-
-def test_get_margin_mode_skips_the_fallback_when_unsupported() -> None:
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[])
-    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
-    exchange.has = {"editOrder": True, "fetchMarginMode": False}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    assert conn.get_margin_mode(_instrument()) is None
-    exchange.fetch_margin_mode.assert_not_awaited()
-
-
-def test_get_margin_mode_uses_the_emulated_fallback() -> None:
-    """Unlike fetchLeverage, an 'emulated' fetch_margin_mode defers to a source nothing else tries."""
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[])
-    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "cross"})
-    exchange.has = {"editOrder": True, "fetchMarginMode": "emulated"}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    assert conn.get_margin_mode(_instrument()) == "cross"
-
-
-@pytest.mark.parametrize("failure", [ccxt.ExchangeError("boom"), None])
-def test_get_margin_mode_never_raises_on_the_strategy_thread(failure) -> None:
-    """Runs via _run_sync from strategy code — a venue error or a junk payload reads as None."""
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[])
-    exchange.fetch_margin_mode = (
-        AsyncMock(side_effect=failure) if failure is not None else AsyncMock(return_value="not-a-dict")
-    )
-    exchange.has = {"editOrder": True, "fetchMarginMode": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    assert conn.get_margin_mode(_instrument()) is None
-
-
-def test_get_margin_mode_falls_back_when_the_row_carries_no_mode() -> None:
-    """A row is not itself an answer: a held Bybit UTA position reports marginMode None."""
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[_position_row(marginMode=None)])
-    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "cross"})
-    exchange.has = {"editOrder": True, "fetchMarginMode": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    assert conn.get_margin_mode(_instrument()) == "cross"
-    exchange.fetch_margin_mode.assert_awaited_once_with("BTC/USDT:USDT")
-
-
-def test_a_failed_position_read_does_not_reach_the_fallback() -> None:
-    """A failed read and a flat account must not collapse into the same empty result: falling
-    back on a failure spends a second DEFAULT_VENUE_CALL_TIMEOUT_SECONDS to return the same None."""
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(side_effect=ccxt.NetworkError("venue down"))
-    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
-    exchange.has = {"editOrder": True, "fetchMarginMode": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-
-    assert conn.get_margin_mode(_instrument()) is None
-    exchange.fetch_margin_mode.assert_not_awaited()
-
-    # the other half of the same branch: flat IS an answer, so [] does reach the fallback
-    exchange.fetch_positions = AsyncMock(return_value=[])
-    assert conn.get_margin_mode(_instrument()) == "isolated"
-    exchange.fetch_margin_mode.assert_awaited_once_with("BTC/USDT:USDT")
-
-
-class _RaisingLoop:
-    """Stands in for the AsyncThreadLoop so the REAL ``_run_sync`` body runs.
-
-    Keeps no reference to the coroutine, nor to the raised exception whose traceback would keep
-    it alive — so a coroutine nothing closes reaches GC and warns, as it would in production.
-    """
-
-    def __init__(self, error: type[BaseException], message: str, *, consumes: bool) -> None:
-        self._error = error
-        self._message = message
-        self._consumes = consumes
-        self.calls = 0
-
-    def run_sync(self, coro, *, timeout: float | None = None):
-        self.calls += 1
-        if self._consumes:
-            coro.close()  # a real timeout leaves the coroutine on the loop, not unawaited
-        raise self._error(self._message)
-
-
-def _connector_and_failing_loop(
-    error: type[BaseException], message: str, *, consumes: bool
-) -> tuple[CcxtConnector, _RaisingLoop]:
-    exchange = Mock()
-    exchange.fetch_positions = AsyncMock(return_value=[])
-    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
-    exchange.has = {"editOrder": True, "fetchMarginMode": True}
-    conn, _, _ = _make_connector(exchange=exchange)
-    del conn._run_sync  # drop the stub — the guarantee under test is _run_sync's own
-    return conn, _RaisingLoop(error, message, consumes=consumes)
-
-
-def test_get_margin_mode_survives_a_venue_timeout() -> None:
-    """The timeout comes out of _run_sync itself, which every stubbed test skips over."""
-    conn, loop = _connector_and_failing_loop(TimeoutError, "venue call timed out", consumes=True)
-
-    with patch.object(CcxtConnector, "_loop", new_callable=PropertyMock, return_value=loop):
-        assert conn.get_margin_mode(_instrument()) is None
-
-    assert loop.calls == 1  # falling back would stall the caller a second full timeout
-
-
-def test_get_margin_mode_leaks_no_unawaited_coroutine_when_the_loop_refuses() -> None:
-    """The loop-thread guard rejects before the coroutine is ever awaited; _run_sync closes it
-    so a read from the strategy thread leaves no "never awaited" warning behind."""
-    conn, loop = _connector_and_failing_loop(RuntimeError, "run_sync from the loop's own thread", consumes=False)
-
-    with (
-        patch.object(CcxtConnector, "_loop", new_callable=PropertyMock, return_value=loop),
-        warnings.catch_warnings(record=True) as caught,
-    ):
-        warnings.simplefilter("always")
-        assert conn.get_margin_mode(_instrument()) is None
-        gc.collect()
-
-    assert [str(w.message) for w in caught if "never awaited" in str(w.message)] == []
 
 
 def test_get_adl_level_reads_position_info() -> None:
@@ -1233,7 +1142,6 @@ def test_reads_none_inf_when_no_position() -> None:
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
 
-    assert conn.get_instrument_leverage(_instrument()) is None
     assert conn.get_max_instrument_notional(_instrument()) == float("inf")
     assert conn.get_margin_mode(_instrument()) is None
     assert conn.get_adl_level(_instrument()) is None

@@ -25,6 +25,7 @@ from qubx.core.basics import (
     TargetPosition,
     Timestamped,
     TriggerEvent,
+    VenueSettingsUpdate,
     dt_64,
     td_64,
 )
@@ -41,7 +42,11 @@ from qubx.core.events import (
     OrderEvent,
     OrderUpdateRejectedEvent,
 )
-from qubx.core.exceptions import InvalidOrderTransition, StrategyExceededMaxNumberOfRuntimeFailuresError
+from qubx.core.exceptions import (
+    InvalidOrderTransition,
+    QubxDegradedState,
+    StrategyExceededMaxNumberOfRuntimeFailuresError,
+)
 from qubx.core.fit_context import FitContext
 from qubx.core.fit_executor import FIT_COMMIT_EVENT, FitCommitData, FitCycleState, FitExecutorMode, SingleThreadWorker
 from qubx.core.helpers import BasicScheduler, process_schedule_spec
@@ -61,6 +66,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.series import Bar, OrderBook, Quote, Trade
+from qubx.core.state_snapshot import position_entry
 from qubx.restarts.state_resolvers import StateResolver
 from qubx.state.dummy import DummyStatePersistence
 from qubx.state.runtime_info import RUNTIME_INFO_KEY, build_runtime_info
@@ -656,6 +662,12 @@ class ProcessingManager(IProcessingManager):
                 self._fails_counter = 0
 
             self._subscription_manager.commit()  # apply pending operations
+
+        except QubxDegradedState as degraded:
+            # - a refusal the framework generated for an expected condition (venue in
+            #   maintenance, stale local view), not a strategy bug. Counting it would let a
+            #   venue outage stop the run after 10 events.
+            logger.warning(f"Strategy {self._strategy_name} order refused: {degraded}")
 
         except Exception as strat_error:
             # - probably we need some cooldown interval after exception to prevent flooding
@@ -1593,14 +1605,7 @@ class ProcessingManager(IProcessingManager):
             for instr, pos in positions.items():
                 if pos.is_open():
                     open_positions += 1
-                positions_snapshot[instr.symbol] = {
-                    "quantity": pos.quantity,
-                    "avg_price": pos.position_avg_price,
-                    "market_value": pos.market_value_funds,
-                    "unrealized_pnl": pos.unrealized_pnl(),
-                    "current_price": pos.last_update_price,
-                    "leverage": account.get_leverage(instr),
-                }
+                positions_snapshot[instr.symbol] = position_entry(account, instr, pos)
 
             # Add order-only instruments (no position yet) to orders snapshot
             for symbol in orders_by_symbol:
@@ -1653,6 +1658,16 @@ class ProcessingManager(IProcessingManager):
     def _handle_error(self, instrument: Instrument | None, event_type: str, error: BaseErrorEvent) -> None:
         self._strategy.on_error(self._context, error)
         self._position_gathering.on_error(self._context, error)
+
+    def _handle_venue_settings(
+        self, instrument: Instrument | None, event_type: str, update: VenueSettingsUpdate
+    ) -> None:
+        """A connector learned a venue setting — apply it to the Position, on this thread.
+
+        Never reaches the strategy: this is the mirror of VenueOperationError, and an accepted
+        write is not something ``on_error`` should hear about.
+        """
+        self._account_manager.apply_venue_settings(update)
 
     # ----------------------------------------------------------------------
     # - Typed-event dispatch (order/account lifecycle)

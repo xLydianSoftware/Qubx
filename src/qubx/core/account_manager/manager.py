@@ -37,6 +37,7 @@ from qubx.core.basics import (
     OrderStatus,
     Position,
     TransactionCostsCalculator,
+    VenueSettingsUpdate,
 )
 from qubx.core.connector import IConnector
 from qubx.core.events import (
@@ -86,6 +87,8 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
     _reconcilers: dict[str, Reconciler]
     # - None leaves every venue's own leverage alone; seeded from the config via the context
     _default_instrument_leverage: float | None
+    # - instruments an explicit set_instrument_leverage claimed, which the default apply skips
+    _pinned_leverage: dict[Instrument, float]
 
     def __init__(
         self,
@@ -100,6 +103,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         default_instrument_leverage: float | None = None,
     ):
         self._pm = pm
+        self._pinned_leverage = {}
         self._init_state(
             connectors=connectors,
             base_currencies=base_currencies,
@@ -580,8 +584,22 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return connector.get_max_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
+        """Snapshot first, connector second.
+
+        The snapshot only carries a cap for instruments the account holds a position in — the
+        venue reports no row for the rest — so asking about an instrument you are flat in used
+        to read ``inf`` while the connector had the answer for the whole universe.
+
+        Every connector answers this without touching the venue, which it must: the 5s state
+        snapshot asks once per universe instrument on the ProcessorThread. ccxt reads its
+        poller cache, OKX its tier cache and last quote, Lighter its market metadata, and
+        Hyperliquid and the backtester return ``inf`` outright.
+        """
         notional = self.get_position(instrument).max_notional
-        return notional if notional is not None else float("inf")
+        if notional is not None:
+            return notional
+        connector = self._connectors.get(instrument.exchange)
+        return connector.get_max_instrument_notional(instrument) if connector is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
         # snapshot first, connector second — as for leverage: a snapshot only carries the mode
@@ -595,12 +613,68 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
     def get_adl_level(self, instrument: Instrument) -> int | None:
         return self.get_position(instrument).adl_level
 
+    def apply_venue_settings(self, update: VenueSettingsUpdate) -> None:
+        """Apply what a connector just learned about one instrument's venue settings.
+
+        The write path is fire-and-forget, and ``Position.leverage`` is otherwise written only
+        by the snapshot reconcile — so without this an operator's 5x->3x showed 5x to every
+        reader of the position (the 5s state snapshot, ``get_state``) until a snapshot happened
+        to carry it. Idempotent: applying the value the position already holds changes nothing.
+
+        A leverage change invalidates ``max_notional``: on tiered venues the cap moves with the
+        leverage. The update carries the new bracket's cap when the connector could read it, and
+        otherwise the old one is cleared — a stale cap is worse than none, and the next sweep or
+        snapshot refills it. ``inf`` is stored as None, the same "not known here" the read path
+        falls through to the connector on.
+
+        ``update.instrument.exchange`` must be the key the connector is registered under — the
+        venue alias the AM holds its state by — or the update is warned about and dropped.
+
+        Applied only to an instrument this manager already tracks, and it never materializes
+        one. A sweep reads whatever the venue reports, which is the whole venue; growing a
+        position out of an observation would put an instrument this bot does not trade into
+        ``ctx.positions`` and the 5s snapshot. Tracked means "has a position entry", flat
+        included — the universe seeds one for every instrument it adds
+        (``UniverseManager._create_and_update_positions``), so our own writes always land.
+        """
+        state = self._states.get(update.instrument.exchange)
+        if state is None:
+            logger.warning(f"[{update.instrument.exchange}] no account state; dropping {update}")
+            return
+        position = state.get_position(update.instrument)
+        if position is None:
+            logger.debug(f"[{update.instrument.exchange}] {update.instrument.symbol} not tracked; dropping {update}")
+            return
+        if update.leverage is not None and update.leverage != position.leverage:
+            logger.info(
+                f"[{update.instrument.exchange}] {update.instrument.symbol}: leverage "
+                f"{position.leverage} -> {update.leverage}"
+            )
+            position.leverage = update.leverage
+            position.max_notional = None
+        if update.max_notional is not None:
+            position.max_notional = update.max_notional if np.isfinite(update.max_notional) else None
+        if update.margin_mode is not None:
+            position.margin_mode = update.margin_mode
+
     # Per-instrument venue-setting writes
     def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
         """Request the CONFIGURED leverage for one instrument. Returns nothing: the
         connector sends the venue call off-thread and reports a refusal as a
         VenueOperationError to the strategy's on_error, so there is no outcome to hand back here.
+
+        An explicit set PINS the instrument for the life of the process: the default-leverage
+        apply that runs on every universe rotation leaves pinned instruments alone, so an
+        operator's edit survives one. A later explicit set replaces the pin. The pin set is
+        bounded by the universe over the process life, and there is no unpin — a restart
+        clears them.
         """
+        # Recorded before the send: the send is fire-and-forget, so a venue refusal arrives on
+        # the channel rather than here and cannot be waited on to decide whether to pin.
+        self._pinned_leverage[instrument] = leverage
+        self._send_instrument_leverage(instrument, leverage)
+
+    def _send_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
         connector = self._connectors.get(instrument.exchange)
         if connector is None:
             logger.warning(f"[{instrument.exchange}] no connector; cannot set instrument leverage")
@@ -615,7 +689,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         self.apply_default_instrument_leverage(self.positions)
 
     def apply_default_instrument_leverage(self, instruments: Iterable[Instrument]) -> None:
-        """Set the current default leverage on these instruments.
+        """Set the current default leverage on the instruments no explicit set has pinned.
 
         Setting it again on an instrument that already has it costs nothing: connectors
         either skip it from cache (ccxt, lighter) or send it because reading the current value
@@ -630,12 +704,18 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         leveraged = [i for i in instruments if i.market_type in _LEVERAGED_MARKET_TYPES]
         if not leveraged:
             return
-        for instrument in leveraged:
+        unpinned = [i for i in leveraged if i not in self._pinned_leverage]
+        for instrument in unpinned:
             try:
-                self.set_instrument_leverage(instrument, leverage)
+                # never the public setter: the default must not pin what it touches
+                self._send_instrument_leverage(instrument, leverage)
             except Exception as exc:  # noqa: BLE001 — one refusal must not block the rest
                 logger.error(f"leverage {leverage}x for {instrument.symbol} failed: {exc}")
-        logger.info(f"set {leverage}x leverage on {len(leveraged)} instrument(s)")
+        pinned = len(leveraged) - len(unpinned)
+        logger.info(
+            f"set {leverage}x leverage on {len(unpinned)} instrument(s)"
+            + (f", {pinned} pinned by explicit sets left alone" if pinned else "")
+        )
 
     def get_default_instrument_leverage(self) -> float | None:
         return self._default_instrument_leverage

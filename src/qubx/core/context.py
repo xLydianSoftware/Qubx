@@ -271,6 +271,7 @@ class StrategyContext(IStrategyContext):
             channel=self._channel,
             health_monitor=self._health_monitor,
             strategy_state=self._strategy_state,
+            status=self._status,
             default_base_subscription=DataType.ORDERBOOK[0, 1]
             if not self._data_providers[0].is_simulation
             else DataType.NONE,
@@ -604,6 +605,14 @@ class StrategyContext(IStrategyContext):
             self._health_monitor.stop()
         except Exception as e:
             logger.error(f"[StrategyContext] :: Failed to stop health monitor: {e}")
+            logger.opt(colors=False).error(traceback.format_exc())
+
+        # - stop the subscription watchdog thread (None in simulation): a context recreated
+        #   in-process must not leave a ticking thread bound to this (now-abandoned) status
+        try:
+            self._subscription_manager.stop()
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to stop subscription watchdog: {e}")
             logger.opt(colors=False).error(traceback.format_exc())
 
         # PRIORITY 5: Stop metric emitter and data exporter

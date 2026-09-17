@@ -16,7 +16,7 @@ import datetime
 import traceback
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Protocol, runtime_checkable
+from typing import TYPE_CHECKING, Any, Callable, Literal, Protocol, runtime_checkable
 
 import numpy as np
 import pandas as pd
@@ -52,6 +52,9 @@ from qubx.core.helpers import set_parameters_to_object
 from qubx.core.series import OHLCV, Bar, GenericSeries, Quote
 from qubx.core.status import NORMAL_STATUS, ContextStatus, QubxStatusInfo
 from qubx.data.storage import IReader, IStorage
+
+if TYPE_CHECKING:
+    from qubx.health.status import ExchangeDataStatus
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
 
@@ -580,6 +583,18 @@ class IAccountConfigurator:
         on the channel, not as a return value: a wide universe called this once per
         instrument on the ProcessorThread, and waiting for each round trip stalled event
         processing for tens of seconds.
+
+        The outcome arrives on the channel either way: the venue's acceptance as a
+        ``VenueSettingsUpdate``, which the AccountManager applies to the Position so every
+        reader of ``Position.leverage`` sees the new value within a tick; a refusal as a
+        ``VenueOperationError`` on the strategy's ``on_error``. The update never reaches
+        ``on_error`` — an accepted write is not an error.
+
+        A connector emitting one must set ``update.instrument.exchange`` to the key it is
+        registered under in the account manager (the venue alias, not the ccxt exchange name):
+        the AM resolves its state from that field alone, and a mismatch is warned about and
+        dropped rather than raised. The AM applies an update only to an instrument it already
+        tracks — a connector may announce freely, including symbols outside our universe.
         """
         ...
 
@@ -1267,6 +1282,10 @@ class ISubscriptionManager:
         ``is_warming_up`` is True while such a deferred commit is in flight. Simulation
         commits synchronously.
         """
+        ...
+
+    def stop(self) -> None:
+        """Stop the subscription watchdog thread, if one is running (no-op in simulation)."""
         ...
 
     @property
@@ -2119,6 +2138,8 @@ class IHealthReader(Protocol):
 class IHealthMonitor(IHealthWriter, IHealthReader):
     """Interface for health metrics monitoring that combines writing and reading capabilities."""
 
+    time_provider: ITimeProvider
+
     def start(self) -> None:
         """Start the health metrics monitor."""
         ...
@@ -2153,6 +2174,10 @@ class IHealthMonitor(IHealthWriter, IHealthReader):
             instrument: The instrument being unsubscribed from
             event_type: The data type being unsubscribed from
         """
+        ...
+
+    def get_exchange_data_status(self, exchange: str, subscribed: dict[str, set[Instrument]]) -> "ExchangeDataStatus":
+        """Per-exchange data-flow facts. `subscribed` maps data type to instruments."""
         ...
 
 
