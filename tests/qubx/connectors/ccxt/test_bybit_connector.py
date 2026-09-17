@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock, patch
 import ccxt
 import pytest
 
-from qubx.connectors.ccxt.connector import CcxtConnector
+from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
 from qubx.connectors.ccxt.exchanges.bybit.connector import BybitCcxtConnector
 from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position, RejectCause
 from tests.qubx.core.utils_test import DummyTimeProvider
@@ -364,3 +364,57 @@ def test_an_externally_placed_order_still_has_no_client_id():
 
     assert len(sent) == 1
     assert sent[0].client_order_id is None
+
+
+# - bybit has no fetch_leverages, so the sweep's `configured` half always fails and must not then
+#   speak for it: the write path adopts on every successful send, and the tier read's pagination
+#   cap leaves most of the venue out of the sweep.
+def _sweeping_exchange(tier_symbols: list[str]) -> Mock:
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(side_effect=ccxt.NotSupported("bybit fetchLeverages"))
+    exchange.fetch_leverage_tiers = AsyncMock(return_value={s: [{"maxLeverage": 50}] for s in tier_symbols})
+    return exchange
+
+
+@pytest.mark.asyncio
+async def test_adopted_leverage_survives_the_hourly_rebuild():
+    """A wholesale rebuild would reset every symbol to None each hour, so a leverage we set
+    successfully would be re-sent on the next universe change, forever."""
+    conn, _, exchange = _make_connector(_sweeping_exchange([BTC]))
+    # maximum differs from the sweep's value, so this also proves the merge takes fresh tier data
+    conn._leverage_cache[BTC] = _LeverageInfo(configured=3.0, maximum=25, max_notional=1.0)
+
+    await conn._refresh_leverage_cache()
+
+    # maximum from the tier read (succeeded) is refreshed; configured/max_notional ride
+    # fetch_leverages (failed) and are preserved
+    assert conn._leverage_cache[BTC] == _LeverageInfo(configured=3.0, maximum=50, max_notional=1.0)
+
+
+@pytest.mark.asyncio
+async def test_a_symbol_outside_the_tier_sweep_is_not_evicted():
+    """ccxt's risk-limit read stops at 750 symbols (alphabetically, at TQQQUSDT), so TRUMP/XRP/ZEC
+    are never swept — a wholesale rebuild drops them."""
+    conn, _, exchange = _make_connector(_sweeping_exchange([BTC]))
+    conn._leverage_cache[ETH] = _LeverageInfo(configured=3.0, maximum=None, max_notional=None)
+
+    await conn._refresh_leverage_cache()
+
+    assert ETH in conn._leverage_cache
+    assert conn._leverage_cache[ETH].configured == 3.0
+
+
+@pytest.mark.asyncio
+async def test_a_venue_that_reports_configured_still_rebuilds_wholesale():
+    """The merge is only for venues whose configured read failed — binance must keep dropping a
+    symbol the venue stopped reporting."""
+    exchange = Mock()
+    exchange.fetch_leverages = AsyncMock(return_value={BTC: {"symbol": BTC, "longLeverage": 5, "shortLeverage": 5}})
+    exchange.fetch_leverage_tiers = AsyncMock(return_value={})
+    conn, _, _ = _make_connector(exchange)
+    conn._leverage_cache[ETH] = _LeverageInfo(configured=3.0, maximum=None, max_notional=None)
+
+    await conn._refresh_leverage_cache()
+
+    assert ETH not in conn._leverage_cache  # evicted, as before
+    assert conn._leverage_cache[BTC].configured == 5
