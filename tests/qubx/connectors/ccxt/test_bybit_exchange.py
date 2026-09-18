@@ -90,6 +90,18 @@ def test_uta_fetch_order_is_acknowledged(bybit):
     assert bybit.describe()["options"]["fetchOrder"]["acknowledged"] is True
 
 
+def test_recv_window_covers_the_http_timeout(bybit):
+    """ccxt signs before aiohttp connects, so a window under the timeout refuses slow connects
+    the client is still waiting on. A raised timeout must force a decision here."""
+    assert bybit.options["recvWindow"] >= bybit.timeout
+
+
+def test_the_recv_window_reaches_the_signed_request(bybit):
+    bybit.apiKey, bybit.secret = "k", "s"
+    request = bybit.sign("v5/account/wallet-balance", api="private", method="GET", params={"accountType": "UNIFIED"})
+    assert request["headers"]["X-BAPI-RECV-WINDOW"] == "10000"
+
+
 def test_cancel_by_client_id_sends_order_link_id(bybit):
     request = bybit.cancel_order_request("", "BTC/USDT:USDT", {"clientOrderId": "qubx_x_1"})
     assert request["orderLinkId"] == "qubx_x_1"

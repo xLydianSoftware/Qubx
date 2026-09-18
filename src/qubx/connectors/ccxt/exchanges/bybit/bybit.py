@@ -65,6 +65,8 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
                 },
                 "options": {
                     "fetchOrder": {"acknowledged": True},
+                    # matches ccxt's 10s HTTP timeout: requests are signed before the socket opens
+                    "recvWindow": 10 * 1000,
                     # caps the cursor walk armed by params={"paginate": True}; read by the
                     # pagination driver only, so it cannot re-arm on the recursive call
                     "fetchOpenOrders": {"paginationCalls": 20},
