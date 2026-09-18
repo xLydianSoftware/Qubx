@@ -477,7 +477,13 @@ class AccountState:
             )
             return True
 
-        changed = existing.quantity != snapshot.quantity or existing.position_avg_price != snapshot.position_avg_price
+        # half-lot / half-tick like the Differ: n * lot_size is not always the double the
+        # venue's decimal parses to
+        inst = snapshot.instrument
+        changed = (
+            abs(existing.quantity - snapshot.quantity) > inst.lot_size * 0.5
+            or abs(existing.position_avg_price - snapshot.position_avg_price) > inst.tick_size * 0.5
+        )
         if changed:
             logger.info(
                 f"[{self.exchange}] reconcile: position <y>{snapshot.instrument}</y> from snapshot -> "
@@ -490,16 +496,6 @@ class AccountState:
             existing.set_external_maint_margin(snapshot.maint_margin)
         if snapshot._initial_margin_external:
             existing.set_external_initial_margin(snapshot.initial_margin)
-        # Venue-reported per-instrument settings: refresh only when the snapshot carries them,
-        # so a snapshot that omits a field keeps the last-known value (never clobbered to None).
-        if snapshot.leverage is not None:
-            existing.leverage = snapshot.leverage
-        if snapshot.margin_mode is not None:
-            existing.margin_mode = snapshot.margin_mode
-        if snapshot.max_notional is not None:
-            existing.max_notional = snapshot.max_notional
-        if snapshot.adl_level is not None:
-            existing.adl_level = snapshot.adl_level
         if not np.isnan(snapshot.last_update_price):
             existing.update_market_price(
                 snapshot.last_update_time, snapshot.last_update_price, snapshot.last_update_conversion_rate
@@ -510,6 +506,24 @@ class AccountState:
                 existing.last_update_time, existing.last_update_price, existing.last_update_conversion_rate
             )
         return changed
+
+    def apply_position_settings(self, snapshot: Position) -> None:
+        """Copy the venue-reported per-instrument settings off a snapshot position.
+
+        Only fields the snapshot carries are refreshed, so one that omits a field keeps the
+        last-known value. No-op for an instrument not held.
+        """
+        existing = self._positions.get(snapshot.instrument)
+        if existing is None:
+            return
+        if snapshot.leverage is not None:
+            existing.leverage = snapshot.leverage
+        if snapshot.margin_mode is not None:
+            existing.margin_mode = snapshot.margin_mode
+        if snapshot.max_notional is not None:
+            existing.max_notional = snapshot.max_notional
+        if snapshot.adl_level is not None:
+            existing.adl_level = snapshot.adl_level
 
     def mark_position_reconcile(self, instrument: Instrument, as_of: np.datetime64) -> None:
         """Set the position reconcile watermark (venue time). Dumb setter — the skip-re-book

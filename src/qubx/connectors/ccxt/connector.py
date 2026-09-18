@@ -33,7 +33,7 @@ import time
 import uuid
 from asyncio.exceptions import CancelledError
 from collections.abc import Coroutine
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any, Literal
 
 import ccxt
@@ -44,6 +44,7 @@ from ccxt import AuthenticationError, ExchangeClosedByUser, ExchangeError, Excha
 from qubx import connector_logger, logger
 from qubx.core.basics import (
     FRAMEWORK_CID_PREFIX,
+    OPTION_REPRICE_IF_CROSSING,
     Balance,
     CtrlChannel,
     CurrencyConversion,
@@ -89,12 +90,14 @@ from qubx.utils.time import to_timedelta
 from .exceptions import CcxtSymbolNotRecognized
 from .exchange_manager import ExchangeManager
 from .utils import (
+    FRAMEWORK_ONLY_OPTIONS,
     ccxt_convert_balance,
     ccxt_convert_deal_info,
     ccxt_convert_order_info,
     ccxt_convert_positions,
     ccxt_extract_deals_from_exec,
     ccxt_extract_leverage_settings,
+    ccxt_extract_margin_modes,
     ccxt_find_instrument,
     info_float,
     instrument_to_ccxt_symbol,
@@ -129,6 +132,7 @@ class _LeverageInfo:
     configured: float | None
     maximum: int | None
     max_notional: float | None = None
+    margin_mode: str | None = None
 
 
 _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
@@ -284,17 +288,21 @@ class CcxtConnector(ChannelEmitter):
         if rate_limiter is not None:
             await rate_limiter.acquire(endpoint)
 
-    def _report_order_limit_hit(self, error: Exception) -> None:
-        """Close the orders gate when the venue itself reports an order-budget breach.
+    def _report_order_limit_hit(self, error: Exception, pool_name: str = "orders") -> None:
+        """Close ``pool_name``'s gate when the venue itself reports a budget breach.
 
         A no-op for every other error. Without it the pool is proactive-model-only, so it never
         sees the budget another actor on the same account (manual trading, a second bot) spends.
+
+        ``pool_name`` must be the one the refused endpoint is billed against — closing ``orders``
+        for a set_leverage breach would stop trading over a budget orders never spent. An
+        undefined name is a no-op in the limiter.
         """
         rate_limiter = self._em.rate_limiter
         if rate_limiter is None or not isinstance(error, _ORDER_RATE_LIMIT_ERRORS):
             return
         # pool_name, never endpoint= — the latter closes every pool in the endpoint's cost list
-        rate_limiter.report_limit_hit(pool_name="orders", reason=f"venue order rate limit: {error}")
+        rate_limiter.report_limit_hit(pool_name=pool_name, reason=f"venue rate limit on {pool_name}: {error}")
 
     # ------------------------------------------------------------------ #
     # Write side — submit
@@ -315,6 +323,8 @@ class CcxtConnector(ChannelEmitter):
 
         options = request.options or {}
         reduce_only = bool(resolve_reduce_only(options))
+        post_only = bool(options.get("post_only", False))
+        reprice_if_crossing = bool(options.get(OPTION_REPRICE_IF_CROSSING, False))
 
         # Quote lookup is the connector's only READ dependency; payload build raises
         # framework-side rejections (no quote, below min-notional, missing price).
@@ -329,11 +339,13 @@ class CcxtConnector(ChannelEmitter):
             time_in_force=request.time_in_force,
             quote=quote,
             reduce_only=reduce_only,
+            post_only=post_only,
+            reprice_if_crossing=reprice_if_crossing,
         )
         # Forward any remaining venue-specific options ccxt understands (e.g.
         # lighter_* indices) without clobbering what the payload builder set.
         for k, v in options.items():
-            if k in ("reduceOnly", "reduce_only"):
+            if k in FRAMEWORK_ONLY_OPTIONS:
                 continue
             payload["params"].setdefault(k, v)
 
@@ -856,37 +868,61 @@ class CcxtConnector(ChannelEmitter):
         )
         self._spawn(self._do_set_leverage(instrument, symbol, wanted))
 
+    def _report_leverage_failure(self, instrument: Instrument, leverage: int, error: Exception) -> None:
+        """The caller of set_instrument_leverage is long gone, so the verdict rides the channel."""
+        logger.error(f"[{self.exchange_name}] Failed to set leverage {leverage} for {instrument.symbol}: {error}")
+        self.channel.send(
+            create_error_event(
+                VenueOperationError(
+                    timestamp=self._time.time(),
+                    message=f"set leverage {leverage} for {instrument.symbol}",
+                    level=ErrorLevel.MEDIUM,
+                    error=error,
+                    operation="set_instrument_leverage",
+                    instrument=instrument,
+                )
+            )
+        )
+
     async def _do_set_leverage(self, instrument: Instrument, symbol: str, leverage: int) -> None:
         try:
             await self._acquire_endpoint_budget("set_leverage")
             await self._em.exchange.set_leverage(leverage, symbol)
+        except _ORDER_RATE_LIMIT_ERRORS as e:
+            # The write is fire-and-forget, so nothing re-sends a leverage that never landed.
+            # Retry once, but only where the gate paces it — a venue with no `leverage` pool would
+            # re-send instantly, and binance escalates bans for requests sent after a 429.
+            self._report_order_limit_hit(e, pool_name="leverage")
+            limiter = self._em.rate_limiter
+            if limiter is None or not limiter.is_gate_closed("leverage"):
+                self._report_leverage_failure(instrument, leverage, e)
+                return
+            logger.warning(f"[{self.exchange_name}] leverage {leverage} for {instrument.symbol} rate limited; retrying")
+            try:
+                await self._acquire_endpoint_budget("set_leverage")
+                await self._em.exchange.set_leverage(leverage, symbol)
+            except Exception as retry_error:  # noqa: BLE001 — report the retry's verdict, not the first
+                # the gate reopened while we waited; a second refusal must re-close it
+                self._report_order_limit_hit(retry_error, pool_name="leverage")
+                self._report_leverage_failure(instrument, leverage, retry_error)
+                return
         except Exception as e:  # noqa: BLE001 — the caller is long gone; report on the channel
-            logger.error(f"[{self.exchange_name}] Failed to set leverage {leverage} for {instrument.symbol}: {e}")
-            self.channel.send(
-                create_error_event(
-                    VenueOperationError(
-                        timestamp=self._time.time(),
-                        message=f"set leverage {leverage} for {instrument.symbol}",
-                        level=ErrorLevel.MEDIUM,
-                        error=e,
-                        operation="set_instrument_leverage",
-                        instrument=instrument,
-                    )
-                )
-            )
+            self._report_leverage_failure(instrument, leverage, e)
             return
         # - adopt what we just set, so the next call for the same value is skipped without
         #   waiting for the poller; the poller corrects it if the venue disagrees
-        cached = self._leverage_cache.get(symbol)
         # The cap belongs to the bracket we just left, so the new one is read here rather than
         # carried or dropped: dropping left the position reading null for up to an hour, until
         # the sweep — a snapshot only copies a cap across when the Differ flags that position
         # for a size or margin change, which a leverage edit does not cause.
-        max_notional = await self._read_max_notional(symbol)
+        max_notional, margin_mode = await self._read_leverage_row(symbol)
+        # read after the await: an hourly sweep landing inside it must not be rolled back here
+        cached = self._leverage_cache.get(symbol)
         self._leverage_cache[symbol] = _LeverageInfo(
             configured=leverage,
             maximum=cached.maximum if cached is not None else None,
             max_notional=max_notional,
+            margin_mode=margin_mode or (cached.margin_mode if cached is not None else None),
         )
         # the cache is private to the connector; the Position is what every reader sees, and
         # only the snapshot writes it — so announce the ack rather than wait for one
@@ -896,21 +932,22 @@ class CcxtConnector(ChannelEmitter):
             )
         )
 
-    async def _read_max_notional(self, symbol: str) -> float | None:
-        """One symbol's notional cap at its current leverage, from symbolConfig.
+    async def _read_leverage_row(self, symbol: str) -> tuple[float | None, str | None]:
+        """One symbol's notional cap at its current leverage, and its margin mode, from symbolConfig.
 
-        None on any failure — and on a venue without the endpoint — which the AM reads as "not
-        known", clearing the stale value rather than keeping a cap from the wrong bracket.
+        The cap is None on any failure — and on a venue without the endpoint — which the AM reads
+        as "not known", clearing the stale value rather than keeping a cap from the wrong bracket.
         """
         if not self._em.exchange.has.get("fetchLeverages"):
-            return None
+            return None, None
         try:
             rows = await self._em.exchange.fetch_leverages([symbol])
         except Exception as e:  # noqa: BLE001 — the ack itself already landed
             logger.warning(f"[{self.exchange_name}] cap read for {symbol} after the leverage ack: {e}")
-            return None
-        settings = ccxt_extract_leverage_settings(list(rows.values()) if isinstance(rows, dict) else rows)
-        return settings.get(symbol, (None, None))[1]
+            return None, None
+        leverage_rows = list(rows.values()) if isinstance(rows, dict) else rows
+        settings = ccxt_extract_leverage_settings(leverage_rows)
+        return settings.get(symbol, (None, None))[1], ccxt_extract_margin_modes(leverage_rows).get(symbol)
 
     def _start_leverage_poller(self) -> None:
         if self._leverage_future is None or self._leverage_future.done():
@@ -944,19 +981,24 @@ class CcxtConnector(ChannelEmitter):
         configured: dict[str, float] = {}
         notionals: dict[str, float] = {}
         maxima: dict[str, float] = {}
+        modes: dict[str, str] = {}
+        configured_read = True
         # - annotated locals: ccxt's BASE Exchange declares both methods as an unconditional
         #   `raise NotSupported`, so their inferred return type is NoReturn. Only the venue
         #   subclasses return dicts, and `ex` is typed as the base. A venue without the
         #   override does raise, and the except below is what handles it.
         try:
             rows: dict[str, Any] = await ex.fetch_leverages()
-            settings = ccxt_extract_leverage_settings(list(rows.values()) if isinstance(rows, dict) else rows)
+            leverage_rows = list(rows.values()) if isinstance(rows, dict) else rows
+            settings = ccxt_extract_leverage_settings(leverage_rows)
             for symbol, (leverage, max_notional) in settings.items():
                 if leverage is not None:
                     configured[symbol] = int(leverage)
                 if max_notional is not None:
                     notionals[symbol] = max_notional
+            modes = ccxt_extract_margin_modes(leverage_rows)
         except Exception as e:  # noqa: BLE001
+            configured_read = False
             logger.debug(f"[{self.exchange_name}] configured-leverage read failed: {type(e).__name__}: {e}")
         try:
             tiers_by_symbol: dict[str, Any] = await ex.fetch_leverage_tiers()
@@ -989,15 +1031,35 @@ class CcxtConnector(ChannelEmitter):
                         VenueSettingsUpdate(instrument, leverage=float(value), max_notional=notionals.get(symbol))
                     )
                 )
-        # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
-        self._leverage_cache = {
+        rebuilt = {
             symbol: _LeverageInfo(
                 configured=configured.get(symbol),
                 maximum=maxima.get(symbol),
                 max_notional=notionals.get(symbol),
+                margin_mode=modes.get(symbol),
             )
-            for symbol in configured.keys() | maxima.keys() | notionals.keys()
+            for symbol in configured.keys() | maxima.keys() | notionals.keys() | modes.keys()
         }
+        if configured_read:
+            # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
+            self._leverage_cache = rebuilt
+        else:
+            # The `configured` read failed (bybit has no fetch_leverages), so this sweep cannot
+            # speak for it: a wholesale rebuild would erase what the write path adopted and evict
+            # every symbol the tier read left out — on bybit, everything past its pagination cap.
+            # max_notional and margin_mode ride the same failed read, so they are preserved too.
+            for symbol, info in rebuilt.items():
+                held = self._leverage_cache.get(symbol)
+                self._leverage_cache[symbol] = (
+                    replace(
+                        info,
+                        configured=held.configured,
+                        max_notional=held.max_notional,
+                        margin_mode=held.margin_mode,
+                    )
+                    if held is not None
+                    else info
+                )
         logger.info(
             f"[{self.exchange_name}] leverage cache refreshed: {len(configured)} configured, "
             f"{len(maxima)} maxima, {len(notionals)} notional caps"
@@ -1208,8 +1270,10 @@ class CcxtConnector(ChannelEmitter):
         return cached.max_notional if cached is not None and cached.max_notional is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> str | None:
-        row = self._fetch_position_row(instrument)
-        return normalize_margin_mode(row.get("marginMode")) if row is not None else None
+        """Cache-only, like the leverage getters; the sweep fills it from symbolConfig, which
+        covers flat symbols."""
+        cached = self._leverage_cache.get(instrument_to_ccxt_symbol(instrument))
+        return cached.margin_mode if cached is not None else None
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
         row = self._fetch_position_row(instrument)
@@ -1899,10 +1963,10 @@ class CcxtConnector(ChannelEmitter):
 
         include_orders=True  -> open orders + algo/trigger orders + positions + balances (startup
         discovery + periodic sweep). include_orders=False -> positions + balances ONLY (steady
-        state): the open-orders / algo legs carry high REST weight and, sharing ccxt's throttle
-        with order placement, delay order sends by seconds — so steady snapshots skip them
-        (open_orders=None -> reconcile leaves order state untouched; orders are tracked via the WS
-        stream + the periodic full sweep).
+        state): the open-orders / algo legs carry the highest REST weight, and with Qubx rate
+        limiting off they share ccxt's serialised throttler with order placement — so steady
+        snapshots skip them (open_orders=None -> reconcile leaves order state untouched; orders
+        are tracked via the WS stream + the periodic full sweep).
 
         Reconcile applies a snapshot as authoritative, so a leg that failed to fetch skips the
         emit entirely and the AM asks again on its next tick. A single row that will not convert

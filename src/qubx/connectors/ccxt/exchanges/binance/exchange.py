@@ -840,6 +840,9 @@ class BinancePortfolioMargin(BinanceQVUSDM):
                 raise BadRequest(f"{self.id} algo {algo_order_type} requires a price")
             request["price"] = self.price_to_precision(symbol, price)
             request["timeInForce"] = self.safe_string_upper(params, "timeInForce", "GTC")
+            # The algo endpoint has no postOnly flag — it must be expressed as GTX TIF.
+            if self.safe_bool(params, "postOnly", False):
+                request["timeInForce"] = "GTX"
         cid = self.safe_string_2(params, "clientOrderId", "newClientOrderId")
         if cid is not None:
             request["clientAlgoId"] = cid

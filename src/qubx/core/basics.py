@@ -13,7 +13,14 @@ import pandas as pd
 from qubx import logger
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.core.utils import add_in_lots, is_lot_multiple, prec_ceil, prec_floor, time_delta_to_str, time_to_str
+from qubx.core.utils import (
+    add_in_lots,
+    grid_ceil,
+    grid_floor,
+    is_lot_multiple,
+    time_delta_to_str,
+    time_to_str,
+)
 from qubx.utils.clock import start_clock_discipline, time_now
 from qubx.utils.misc import Stopwatch
 from qubx.utils.time import to_timedelta
@@ -39,6 +46,8 @@ def _as_dt64_or_nat(value: Any) -> "dt_64":
 OPTION_FILL_AT_SIGNAL_PRICE = "fill_at_signal_price"
 OPTION_SIGNAL_PRICE = "signal_price"
 OPTION_SKIP_PRICE_CROSS_CONTROL = "skip_price_cross_control"
+# Reprices a crossing post-only order one tick passive instead of letting the venue reject it.
+OPTION_REPRICE_IF_CROSSING = "reprice_if_crossing"
 OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION = "avoid_stop_order_price_validation"
 
 # The only currencies the framework may value at par (1.0) until marks-based conversion lands.
@@ -389,39 +398,37 @@ class Instrument:
 
     def round_size_down(self, size: float) -> float:
         """
-        Round down size to specified precision
+        Round size down onto the lot grid.
 
-        i.size_precision == 3
-        i.round_size_up(0.1234) -> 0.123
+        i.lot_size == 0.001 -> i.round_size_down(0.1234) -> 0.123
+        i.lot_size == 10    -> i.round_size_down(157)    -> 150.0
         """
-        return prec_floor(size, self.size_precision)
+        return grid_floor(size, self.lot_size)
 
     def round_size_up(self, size: float) -> float:
         """
-        Round up size to specified precision
+        Round size up onto the lot grid.
 
-        i.size_precision == 3
-        i.round_size_up(0.1234) -> 0.124
+        i.lot_size == 0.001 -> i.round_size_up(0.1234) -> 0.124
+        i.lot_size == 10    -> i.round_size_up(157)    -> 160.0
         """
-        return prec_ceil(size, self.size_precision)
+        return grid_ceil(size, self.lot_size)
 
     def round_price_down(self, price: float) -> float:
         """
-        Round down price to specified precision
+        Round price down onto the tick grid.
 
-        i.price_precision == 3
-        i.round_price_down(1.234999, 3) -> 1.234
+        i.tick_size == 0.001 -> i.round_price_down(1.234999) -> 1.234
         """
-        return prec_floor(price, self.price_precision)
+        return grid_floor(price, self.tick_size)
 
     def round_price_up(self, price: float) -> float:
         """
-        Round up price to specified precision
+        Round price up onto the tick grid.
 
-        i.price_precision == 3
-        i.round_price_up(1.234999) -> 1.235
+        i.tick_size == 0.001 -> i.round_price_up(1.234999) -> 1.235
         """
-        return prec_ceil(price, self.price_precision)
+        return grid_ceil(price, self.tick_size)
 
     def service_signal(
         self,

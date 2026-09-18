@@ -161,8 +161,11 @@ def _okx_config() -> ExchangeRateLimitConfig:
         pools={
             "ccxt_rest": PoolConfig("ccxt_rest", "ip", 4, 8.0, cooldown=15.0),
             "orders": PoolConfig("orders", "account", 60, 30.0, cooldown=10.0),
+            # set-leverage is 20 req/2s per user id, its own budget. ccxt_rest already paced it;
+            # this pool exists so a refusal closes its own gate, not the order gate.
+            "leverage": PoolConfig("leverage", "account", 10, 5.0, cooldown=10.0),
         },
-        endpoint_map=_default_endpoint_costs(),
+        endpoint_map={**_default_endpoint_costs(), "set_leverage": EndpointCosts([("leverage", 1)])},
         default_costs=EndpointCosts([("ccxt_rest", 1)]),
     )
 
@@ -193,8 +196,12 @@ def _bybit_config() -> ExchangeRateLimitConfig:
         pools={
             "ccxt_rest": PoolConfig("ccxt_rest", "ip", 100, 100.0, cooldown=15.0),
             "orders": PoolConfig("orders", "account", 10, 10.0, cooldown=10.0),
+            # set-leverage is its own 10 req/s per-UID bucket, not part of the order group —
+            # pooling it with orders would let a boot-time leverage burst delay real orders.
+            # capacity + 1*refill <= 10 bounds the worst rolling second.
+            "leverage": PoolConfig("leverage", "account", 5, 5.0, cooldown=10.0),
         },
-        endpoint_map=_default_endpoint_costs(),
+        endpoint_map={**_default_endpoint_costs(), "set_leverage": EndpointCosts([("leverage", 1)])},
         default_costs=EndpointCosts([("ccxt_rest", 1)]),
     )
 

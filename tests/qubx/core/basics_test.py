@@ -4,7 +4,15 @@ from typing import List, Union
 import pandas as pd
 from pytest import approx
 
-from qubx.core.basics import OrderOrigin, Position, TransactionCostsCalculator, classify_origin, resolve_reduce_only
+from qubx.core.basics import (
+    Instrument,
+    MarketType,
+    OrderOrigin,
+    Position,
+    TransactionCostsCalculator,
+    classify_origin,
+    resolve_reduce_only,
+)
 from qubx.core.lookups import FileInstrumentsLookupWithCCXT, lookup
 from qubx.core.series import Quote, Trade, time_as_nsec
 from qubx.utils.time import convert_seconds_to_str
@@ -371,3 +379,55 @@ def test_resolve_reduce_only_unset_is_none():
     # None distinguishes 'unset' from an explicit False (callers auto-resolve on None).
     assert resolve_reduce_only({}) is None
     assert resolve_reduce_only({"post_only": True}) is None
+
+
+def _grid_instrument(lot_size: float, tick_size: float = 0.01) -> Instrument:
+    return Instrument(
+        symbol="TESTUSDT",
+        market_type=MarketType.SWAP,
+        exchange="TEST",
+        base="TEST",
+        quote="USDT",
+        settle="USDT",
+        exchange_symbol="TESTUSDT",
+        tick_size=tick_size,
+        lot_size=lot_size,
+        min_size=lot_size,
+    )
+
+
+def test_round_size_uses_the_lot_grid_not_a_decimal_precision():
+    """223 BYBIT.F and 37 KRAKEN.F markets have lot_size > 1; a precision cannot express one."""
+    assert _grid_instrument(100).round_size_down(150) == 100.0
+    assert _grid_instrument(100).round_size_up(150) == 200.0
+    assert _grid_instrument(10).round_size_down(37) == 30.0
+    assert _grid_instrument(10).round_size_up(37) == 40.0
+    assert _grid_instrument(5).round_size_down(13) == 10.0
+    assert _grid_instrument(5).round_size_up(13) == 15.0
+
+
+def test_round_size_on_a_sub_unit_lot_is_unchanged():
+    i = _grid_instrument(0.001)
+    assert i.round_size_down(0.1234) == 0.123
+    assert i.round_size_up(0.1234) == 0.124
+    # the noise snap prepare_ccxt_order_payload leans on
+    assert _grid_instrument(0.01).round_size_down(0.009999999999999998) == 0.01
+
+
+def test_round_price_uses_the_tick_grid():
+    i = _grid_instrument(1.0, tick_size=0.5)
+    assert i.round_price_down(101.7) == 101.5
+    assert i.round_price_up(101.7) == 102.0
+    j = _grid_instrument(1.0, tick_size=5e-05)
+    assert j.round_price_down(0.123456) == 0.12345
+    k = _grid_instrument(1.0, tick_size=0.001)
+    assert k.round_price_down(1.234999) == 1.234
+    assert k.round_price_up(1.234999) == 1.235
+
+
+def test_grid_rounding_leaves_the_precisions_alone():
+    """size_precision/price_precision stay display/encoding helpers — negative values must not leak
+    into f-string formats or Lighter's round(qty * 10**size_precision) wire encoding."""
+    i = _grid_instrument(100, tick_size=0.5)
+    assert i.size_precision == 2
+    assert i.price_precision == 0

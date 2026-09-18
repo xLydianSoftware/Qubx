@@ -502,6 +502,11 @@ class Reconciler:
             except Exception:
                 _log.exception(f"[{state.exchange}] reconcile: diff atom failed, skipping -> {difference.describe()}")
 
+        # - venue settings are size-independent and the differ emits no atom for them, so they
+        #   refresh off every snapshot; never a `changed`
+        for snap_pos in snap.positions or ():
+            state.apply_position_settings(snap_pos)
+
         # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
         #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.
         if any(
@@ -582,6 +587,8 @@ class Reconciler:
                 side=snap_order.side,
                 status=snap_order.status,
                 time_in_force=snap_order.time_in_force,
+                reduce_only=snap_order.reduce_only,
+                post_only=snap_order.post_only,
                 filled_quantity=snap_order.filled_quantity,
                 avg_fill_price=snap_order.avg_fill_price,
                 last_update_time=snap_order.last_update_time if snap_order.last_update_time is not None else as_of,
