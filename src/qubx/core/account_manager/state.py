@@ -477,7 +477,13 @@ class AccountState:
             )
             return True
 
-        changed = existing.quantity != snapshot.quantity or existing.position_avg_price != snapshot.position_avg_price
+        # half-lot / half-tick like the Differ: n * lot_size is not always the double the
+        # venue's decimal parses to
+        inst = snapshot.instrument
+        changed = (
+            abs(existing.quantity - snapshot.quantity) > inst.lot_size * 0.5
+            or abs(existing.position_avg_price - snapshot.position_avg_price) > inst.tick_size * 0.5
+        )
         if changed:
             logger.info(
                 f"[{self.exchange}] reconcile: position <y>{snapshot.instrument}</y> from snapshot -> "

@@ -186,11 +186,13 @@ cpdef double grid_ceil(double a, double step):
     return copysign(ceil(_snap_tick_noise(fabs(a) / step)) * step, a)
 
 
-cpdef double add_in_lots(double quantity, double amount, double lot_size) noexcept:
+cpdef double add_in_lots(double quantity, double amount, double lot_size):
     """
     Sum two lot multiples in whole lots, so a subtraction cannot land a few ulp off the grid.
+
+    Snapped onto the grid: n * lot_size is not always the double the venue's decimal parses to.
     """
-    return (round(quantity / lot_size) + round(amount / lot_size)) * lot_size
+    return grid_floor((round(quantity / lot_size) + round(amount / lot_size)) * lot_size, lot_size)
 
 
 cpdef bint is_lot_multiple(double quantity, double lot_size) noexcept:

@@ -121,6 +121,27 @@ def test_add_in_lots_survives_a_cancelling_subtraction():
     assert add_in_lots(0.1, -0.1, 0.1) == 0.0
 
 
+def test_add_in_lots_lands_on_the_double_the_venue_reports():
+    """23 * 0.1 rounds one ulp above 2.3; the venue's decimal "2.3" parses to the one below."""
+    assert add_in_lots(2.2, 0.1, 0.1) == 2.3
+    assert add_in_lots(-3.0, 0.3, 0.3) == -2.7
+    assert all(add_in_lots(0.0, n * 0.1, 0.1) == n / 10 for n in range(1, 1000))
+
+
+def test_add_in_lots_keeps_the_sign_when_snapping():
+    """The snap floors the magnitude and restores the sign; a short must not floor away from zero.
+    Every case here is inexact under a plain n * lot_size."""
+    assert add_in_lots(-2.2, -0.1, 0.1) == -2.3
+    assert add_in_lots(-1.1, -1.2, 0.1) == -2.3
+    assert add_in_lots(-0.7, -0.7, 0.1) == -1.4
+    assert add_in_lots(-2.9, -0.4, 0.1) == -3.3
+
+
+def test_add_in_lots_refuses_a_lot_size_of_zero():
+    with pytest.raises(ValueError):
+        add_in_lots(1.0, 1.0, 0.0)
+
+
 def test_is_lot_multiple_admits_the_grid_and_refuses_a_half_lot():
     assert is_lot_multiple(28.2, 0.1)
     assert is_lot_multiple(-28.2, 0.1)
