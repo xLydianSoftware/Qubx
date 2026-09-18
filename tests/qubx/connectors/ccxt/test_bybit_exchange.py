@@ -3,7 +3,6 @@
 The ``upstream_*`` tests are canaries — they fail once ccxt fixes a defect an override works around.
 """
 
-import asyncio
 import inspect
 from unittest.mock import AsyncMock, Mock, patch
 
@@ -346,32 +345,6 @@ def test_the_venue_maintenance_margin_reaches_the_position(bybit):
     without = ccxt_convert_position({**parsed, "maintenanceMargin": None}, "BYBIT.F", {"BTC/USDT:USDT": market})
     assert without is not None
     assert without.maint_margin == pytest.approx(1.243725)
-
-
-@pytest.mark.parametrize(
-    "venue_value,expected",
-    [("isolated", "isolated"), ("cross", "cross"), ("portfolio", None), (None, None)],
-)
-def test_get_margin_mode_reads_account_info(venue_value, expected):
-    conn = object.__new__(BybitCcxtConnector)
-    conn.exchange_name = "BYBIT.F"
-    conn._em = Mock()
-    conn._em.exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": venue_value})
-    conn._run_sync = lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(coro)
-
-    instrument = _instrument("ETHUSDT")
-    assert conn.get_margin_mode(instrument) == expected
-    conn._em.exchange.fetch_margin_mode.assert_awaited_once_with("ETH/USDT:USDT")
-
-
-def test_get_margin_mode_survives_a_venue_error():
-    conn = object.__new__(BybitCcxtConnector)
-    conn.exchange_name = "BYBIT.F"
-    conn._em = Mock()
-    conn._em.exchange.fetch_margin_mode = AsyncMock(side_effect=RuntimeError("boom"))
-    conn._run_sync = lambda coro, timeout=None: asyncio.new_event_loop().run_until_complete(coro)
-
-    assert conn.get_margin_mode(_instrument("ETHUSDT")) is None
 
 
 class _StubWsClient:

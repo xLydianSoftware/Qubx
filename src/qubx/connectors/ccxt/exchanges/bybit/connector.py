@@ -56,45 +56,46 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
         ccxt's ``bybit.parse_position`` hardcodes ``marginMode: None``; the symbol only feeds
         ``safe_symbol``, so any held instrument answers for all of them.
 
-        Served from the cache once it is warm — the read shares ccxt's throttle with order
-        placement, and ``set_margin_mode`` drops the cache when the value can have changed.
+        Served from the cache once warm; the hourly sweep re-reads it.
         """
         if not positions:
             return
-        mode = self._margin_mode or await self._read_margin_mode(instrument_to_ccxt_symbol(positions[0].instrument))
-        if mode is None:
+        if self._margin_mode is None:
+            try:
+                self._margin_mode = await self._read_margin_mode(instrument_to_ccxt_symbol(positions[0].instrument))
+            except Exception as e:  # noqa: BLE001
+                logger.debug(f"[{self.exchange_name}] fetch_margin_mode: {e}")
+                return
+        if self._margin_mode is None:
             return
-        self._margin_mode = mode
         for pos in positions:
-            pos.margin_mode = mode
+            pos.margin_mode = self._margin_mode
 
     async def _read_margin_mode(self, symbol: str) -> Literal["cross", "isolated"] | None:
-        """PORTFOLIO_MARGIN has no framework equivalent and normalizes to None."""
-        try:
-            row = await self._em.exchange.fetch_margin_mode(symbol)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[{self.exchange_name}] fetch_margin_mode for {symbol}: {e}")
-            return None
+        """PORTFOLIO_MARGIN has no framework equivalent and normalizes to None. Raises on a
+        venue error, which a caller must not confuse with that None."""
+        row = await self._em.exchange.fetch_margin_mode(symbol)
         return normalize_margin_mode(row.get("marginMode"))
 
+    async def _refresh_leverage_cache(self) -> None:
+        await super()._refresh_leverage_cache()
+        # changeable from the venue UI; nothing else invalidates it
+        symbol = next(iter(self._leverage_cache), None) or next(iter(self._symbol_to_instrument), None)
+        if symbol is None:
+            return
+        try:
+            self._margin_mode = await self._read_margin_mode(symbol)
+        except Exception as e:  # noqa: BLE001 — keep the cached mode rather than blanking it
+            logger.debug(f"[{self.exchange_name}] margin mode re-read: {e}")
+
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
-        """Drop the cached mode on a successful write so the next read goes back to the venue."""
+        """Adopt the written value; the getter is cache-only."""
         ok = super().set_margin_mode(instrument, mode)
         if ok:
-            self._margin_mode = None
+            self._margin_mode = normalize_margin_mode(mode)
         return ok
 
     def get_margin_mode(self, instrument: Instrument) -> str | None:
-        """Serve what the snapshot cached; a cold cache costs one REST hop on the strategy
-        thread, every later call a field read. Never raises at the caller: a venue read that
-        fails or times out reports None, as the base connector's does."""
-        if self._margin_mode is not None:
-            return self._margin_mode
-        try:
-            self._margin_mode = self._run_sync(self._read_margin_mode(instrument_to_ccxt_symbol(instrument)))
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"[{self.exchange_name}] margin mode read for {instrument.symbol}: {e}")
-            return None
         return self._margin_mode
 
     def _extract_venue_figures(

@@ -392,6 +392,20 @@ def ccxt_extract_leverage_settings(rows: list[dict] | None) -> dict[str, tuple[f
     return out
 
 
+def ccxt_extract_margin_modes(rows: list[dict] | None) -> dict[str, str]:
+    """Map ccxt symbol -> margin mode from ``fetch_leverages`` rows.
+
+    symbolConfig reports it for every symbol; positionRisk omits flat ones.
+    """
+    out: dict[str, str] = {}
+    for row in rows or []:
+        symbol = row.get("symbol")
+        mode = normalize_margin_mode(row.get("marginMode"))
+        if symbol and mode is not None:
+            out[symbol] = mode
+    return out
+
+
 def ccxt_convert_orderbook(
     ob: dict,
     instr: Instrument,

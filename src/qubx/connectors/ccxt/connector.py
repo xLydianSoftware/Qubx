@@ -97,6 +97,7 @@ from .utils import (
     ccxt_convert_positions,
     ccxt_extract_deals_from_exec,
     ccxt_extract_leverage_settings,
+    ccxt_extract_margin_modes,
     ccxt_find_instrument,
     info_float,
     instrument_to_ccxt_symbol,
@@ -131,6 +132,7 @@ class _LeverageInfo:
     configured: float | None
     maximum: int | None
     max_notional: float | None = None
+    margin_mode: str | None = None
 
 
 _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
@@ -909,16 +911,18 @@ class CcxtConnector(ChannelEmitter):
             return
         # - adopt what we just set, so the next call for the same value is skipped without
         #   waiting for the poller; the poller corrects it if the venue disagrees
-        cached = self._leverage_cache.get(symbol)
         # The cap belongs to the bracket we just left, so the new one is read here rather than
         # carried or dropped: dropping left the position reading null for up to an hour, until
         # the sweep — a snapshot only copies a cap across when the Differ flags that position
         # for a size or margin change, which a leverage edit does not cause.
-        max_notional = await self._read_max_notional(symbol)
+        max_notional, margin_mode = await self._read_leverage_row(symbol)
+        # read after the await: an hourly sweep landing inside it must not be rolled back here
+        cached = self._leverage_cache.get(symbol)
         self._leverage_cache[symbol] = _LeverageInfo(
             configured=leverage,
             maximum=cached.maximum if cached is not None else None,
             max_notional=max_notional,
+            margin_mode=margin_mode or (cached.margin_mode if cached is not None else None),
         )
         # the cache is private to the connector; the Position is what every reader sees, and
         # only the snapshot writes it — so announce the ack rather than wait for one
@@ -928,21 +932,22 @@ class CcxtConnector(ChannelEmitter):
             )
         )
 
-    async def _read_max_notional(self, symbol: str) -> float | None:
-        """One symbol's notional cap at its current leverage, from symbolConfig.
+    async def _read_leverage_row(self, symbol: str) -> tuple[float | None, str | None]:
+        """One symbol's notional cap at its current leverage, and its margin mode, from symbolConfig.
 
-        None on any failure — and on a venue without the endpoint — which the AM reads as "not
-        known", clearing the stale value rather than keeping a cap from the wrong bracket.
+        The cap is None on any failure — and on a venue without the endpoint — which the AM reads
+        as "not known", clearing the stale value rather than keeping a cap from the wrong bracket.
         """
         if not self._em.exchange.has.get("fetchLeverages"):
-            return None
+            return None, None
         try:
             rows = await self._em.exchange.fetch_leverages([symbol])
         except Exception as e:  # noqa: BLE001 — the ack itself already landed
             logger.warning(f"[{self.exchange_name}] cap read for {symbol} after the leverage ack: {e}")
-            return None
-        settings = ccxt_extract_leverage_settings(list(rows.values()) if isinstance(rows, dict) else rows)
-        return settings.get(symbol, (None, None))[1]
+            return None, None
+        leverage_rows = list(rows.values()) if isinstance(rows, dict) else rows
+        settings = ccxt_extract_leverage_settings(leverage_rows)
+        return settings.get(symbol, (None, None))[1], ccxt_extract_margin_modes(leverage_rows).get(symbol)
 
     def _start_leverage_poller(self) -> None:
         if self._leverage_future is None or self._leverage_future.done():
@@ -976,6 +981,7 @@ class CcxtConnector(ChannelEmitter):
         configured: dict[str, float] = {}
         notionals: dict[str, float] = {}
         maxima: dict[str, float] = {}
+        modes: dict[str, str] = {}
         configured_read = True
         # - annotated locals: ccxt's BASE Exchange declares both methods as an unconditional
         #   `raise NotSupported`, so their inferred return type is NoReturn. Only the venue
@@ -983,12 +989,14 @@ class CcxtConnector(ChannelEmitter):
         #   override does raise, and the except below is what handles it.
         try:
             rows: dict[str, Any] = await ex.fetch_leverages()
-            settings = ccxt_extract_leverage_settings(list(rows.values()) if isinstance(rows, dict) else rows)
+            leverage_rows = list(rows.values()) if isinstance(rows, dict) else rows
+            settings = ccxt_extract_leverage_settings(leverage_rows)
             for symbol, (leverage, max_notional) in settings.items():
                 if leverage is not None:
                     configured[symbol] = int(leverage)
                 if max_notional is not None:
                     notionals[symbol] = max_notional
+            modes = ccxt_extract_margin_modes(leverage_rows)
         except Exception as e:  # noqa: BLE001
             configured_read = False
             logger.debug(f"[{self.exchange_name}] configured-leverage read failed: {type(e).__name__}: {e}")
@@ -1028,8 +1036,9 @@ class CcxtConnector(ChannelEmitter):
                 configured=configured.get(symbol),
                 maximum=maxima.get(symbol),
                 max_notional=notionals.get(symbol),
+                margin_mode=modes.get(symbol),
             )
-            for symbol in configured.keys() | maxima.keys() | notionals.keys()
+            for symbol in configured.keys() | maxima.keys() | notionals.keys() | modes.keys()
         }
         if configured_read:
             # rebuilt wholesale, so a symbol the venue stopped reporting leaves the cache with it
@@ -1038,11 +1047,16 @@ class CcxtConnector(ChannelEmitter):
             # The `configured` read failed (bybit has no fetch_leverages), so this sweep cannot
             # speak for it: a wholesale rebuild would erase what the write path adopted and evict
             # every symbol the tier read left out — on bybit, everything past its pagination cap.
-            # max_notional rides the same failed read, so it is preserved too.
+            # max_notional and margin_mode ride the same failed read, so they are preserved too.
             for symbol, info in rebuilt.items():
                 held = self._leverage_cache.get(symbol)
                 self._leverage_cache[symbol] = (
-                    replace(info, configured=held.configured, max_notional=held.max_notional)
+                    replace(
+                        info,
+                        configured=held.configured,
+                        max_notional=held.max_notional,
+                        margin_mode=held.margin_mode,
+                    )
                     if held is not None
                     else info
                 )
@@ -1256,8 +1270,10 @@ class CcxtConnector(ChannelEmitter):
         return cached.max_notional if cached is not None and cached.max_notional is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> str | None:
-        row = self._fetch_position_row(instrument)
-        return normalize_margin_mode(row.get("marginMode")) if row is not None else None
+        """Cache-only, like the leverage getters; the sweep fills it from symbolConfig, which
+        covers flat symbols."""
+        cached = self._leverage_cache.get(instrument_to_ccxt_symbol(instrument))
+        return cached.margin_mode if cached is not None else None
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
         row = self._fetch_position_row(instrument)
@@ -1947,10 +1963,10 @@ class CcxtConnector(ChannelEmitter):
 
         include_orders=True  -> open orders + algo/trigger orders + positions + balances (startup
         discovery + periodic sweep). include_orders=False -> positions + balances ONLY (steady
-        state): the open-orders / algo legs carry high REST weight and, sharing ccxt's throttle
-        with order placement, delay order sends by seconds — so steady snapshots skip them
-        (open_orders=None -> reconcile leaves order state untouched; orders are tracked via the WS
-        stream + the periodic full sweep).
+        state): the open-orders / algo legs carry the highest REST weight, and with Qubx rate
+        limiting off they share ccxt's serialised throttler with order placement — so steady
+        snapshots skip them (open_orders=None -> reconcile leaves order state untouched; orders
+        are tracked via the WS stream + the periodic full sweep).
 
         Reconcile applies a snapshot as authoritative, so a leg that failed to fetch skips the
         emit entirely and the AM asks again on its next tick. A single row that will not convert

@@ -178,42 +178,30 @@ async def test_get_margin_mode_is_a_field_read_once_the_snapshot_has_run():
 @pytest.mark.parametrize(
     "venue_value,expected", [("cross", "cross"), ("isolated", "isolated"), ("portfolio", None), (None, None)]
 )
-def test_a_cold_get_margin_mode_still_reads_the_venue(venue_value, expected):
-    """Nothing has filled the cache yet; PORTFOLIO_MARGIN has no framework equivalent -> None."""
+@pytest.mark.asyncio
+async def test_the_venue_mode_is_normalized(venue_value, expected):
+    """PORTFOLIO_MARGIN has no framework equivalent -> None."""
     exchange = Mock()
     exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": venue_value})
     conn, _, _ = _make_connector(exchange)
 
-    assert conn.get_margin_mode(_instrument()) == expected
-    exchange.fetch_margin_mode.assert_awaited_once_with(BTC)
+    assert await conn._read_margin_mode(BTC) == expected
 
 
-def test_get_margin_mode_survives_a_venue_error():
+def test_a_cold_get_margin_mode_does_not_touch_the_venue():
+    """A cold read answers None rather than blocking the strategy thread."""
     exchange = Mock()
-    exchange.fetch_margin_mode = AsyncMock(side_effect=ccxt.ExchangeError("boom"))
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "cross"})
     conn, _, _ = _make_connector(exchange)
 
     assert conn.get_margin_mode(_instrument()) is None
-
-
-def test_get_margin_mode_survives_a_blocking_call_that_never_returns():
-    """A venue timeout is raised by _run_sync itself, past _read_margin_mode's own guard —
-    it must not reach the strategy thread."""
-
-    def _times_out(coro, timeout=None):
-        coro.close()
-        raise TimeoutError("venue read timed out")
-
-    conn, _, _ = _make_connector()
-    conn._run_sync = Mock(side_effect=_times_out)
-
-    assert conn.get_margin_mode(_instrument()) is None
-    assert conn._margin_mode is None
+    # asserted on the call, not by raising from it: the old getter swallowed every exception
+    conn._run_sync.assert_not_called()
 
 
 @pytest.mark.asyncio
 async def test_a_warm_margin_mode_cache_costs_the_snapshot_no_venue_read():
-    """The read shares ccxt's throttle with order placement; the mode is account-wide."""
+    """Account-wide on a UTA, so one read serves every position in the snapshot."""
     exchange = Mock()
     exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "cross"})
     conn, _, _ = _make_connector(exchange)
@@ -228,17 +216,20 @@ async def test_a_warm_margin_mode_cache_costs_the_snapshot_no_venue_read():
 
 
 @pytest.mark.asyncio
-async def test_the_snapshot_goes_back_to_the_venue_after_a_margin_mode_write():
+async def test_a_margin_mode_write_is_adopted_without_a_venue_read():
+    """The getter is cache-only, so the write adopts the value itself."""
     exchange = Mock()
-    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "cross"})
     conn, _, _ = _make_connector(exchange)
     conn._margin_mode = "cross"
     with patch.object(CcxtConnector, "set_margin_mode", return_value=True):
         conn.set_margin_mode(_instrument(), "isolated")
 
+    assert conn.get_margin_mode(_instrument()) == "isolated"
+
     await conn._fill_margin_mode([_position()])
 
-    exchange.fetch_margin_mode.assert_awaited_once_with(BTC)
+    exchange.fetch_margin_mode.assert_not_awaited()
     assert conn._margin_mode == "isolated"
 
 
@@ -269,14 +260,13 @@ async def test_the_snapshot_hook_fills_the_margin_mode():
     assert position.margin_mode == "isolated"
 
 
-def test_set_margin_mode_invalidates_the_cached_read():
-    """A cached mode that outlives the write makes get_margin_mode echo the pre-set value."""
+def test_set_margin_mode_adopts_the_written_value():
     conn = object.__new__(BybitCcxtConnector)
     conn.exchange_name = "BYBIT.F"
     conn._margin_mode = "isolated"
     with patch.object(CcxtConnector, "set_margin_mode", return_value=True):
         assert conn.set_margin_mode(_instrument(), "cross") is True
-    assert conn._margin_mode is None
+    assert conn._margin_mode == "cross"
 
 
 def test_a_refused_set_margin_mode_keeps_the_cache():
@@ -382,13 +372,65 @@ async def test_adopted_leverage_survives_the_hourly_rebuild():
     successfully would be re-sent on the next universe change, forever."""
     conn, _, exchange = _make_connector(_sweeping_exchange([BTC]))
     # maximum differs from the sweep's value, so this also proves the merge takes fresh tier data
-    conn._leverage_cache[BTC] = _LeverageInfo(configured=3.0, maximum=25, max_notional=1.0)
+    conn._leverage_cache[BTC] = _LeverageInfo(configured=3.0, maximum=25, max_notional=1.0, margin_mode="cross")
 
     await conn._refresh_leverage_cache()
 
-    # maximum from the tier read (succeeded) is refreshed; configured/max_notional ride
-    # fetch_leverages (failed) and are preserved
-    assert conn._leverage_cache[BTC] == _LeverageInfo(configured=3.0, maximum=50, max_notional=1.0)
+    # maximum from the tier read (succeeded) is refreshed; configured/max_notional/margin_mode
+    # ride fetch_leverages (failed) and are preserved
+    assert conn._leverage_cache[BTC] == _LeverageInfo(configured=3.0, maximum=50, max_notional=1.0, margin_mode="cross")
+
+
+@pytest.mark.asyncio
+async def test_the_hourly_sweep_re_reads_the_margin_mode():
+    """Changeable from the venue UI, and nothing else invalidates it."""
+    exchange = _sweeping_exchange([BTC])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    conn, _, _ = _make_connector(exchange)
+    conn._margin_mode = "cross"
+
+    await conn._refresh_leverage_cache()
+
+    assert conn._margin_mode == "isolated"
+
+
+@pytest.mark.asyncio
+async def test_a_failed_margin_mode_re_read_keeps_the_cached_value():
+    exchange = _sweeping_exchange([BTC])
+    exchange.fetch_margin_mode = AsyncMock(side_effect=ccxt.ExchangeError("boom"))
+    conn, _, _ = _make_connector(exchange)
+    conn._margin_mode = "cross"
+
+    await conn._refresh_leverage_cache()
+
+    assert conn._margin_mode == "cross"
+
+
+@pytest.mark.asyncio
+async def test_a_switch_to_portfolio_margin_clears_the_cache():
+    """A successful read that normalizes to None is not a failed read: keeping the old value
+    would report `cross` for the life of the process after the UI switched."""
+    exchange = _sweeping_exchange([BTC])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "portfolio"})
+    conn, _, _ = _make_connector(exchange)
+    conn._margin_mode = "cross"
+
+    await conn._refresh_leverage_cache()
+
+    assert conn._margin_mode is None
+
+
+@pytest.mark.asyncio
+async def test_the_sweep_re_reads_off_the_universe_when_the_tier_read_gave_nothing():
+    exchange = _sweeping_exchange([])
+    exchange.fetch_margin_mode = AsyncMock(return_value={"marginMode": "isolated"})
+    conn, _, _ = _make_connector(exchange)
+    conn._symbol_to_instrument[ETH] = _instrument("ETHUSDT")
+
+    await conn._refresh_leverage_cache()
+
+    assert conn._margin_mode == "isolated"
+    exchange.fetch_margin_mode.assert_awaited_once_with(ETH)
 
 
 @pytest.mark.asyncio

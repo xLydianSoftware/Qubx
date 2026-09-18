@@ -1119,13 +1119,96 @@ async def test_the_sweep_caches_the_notional_cap_from_symbol_config() -> None:
     assert conn.get_max_instrument_notional(_instrument()) == 2_000_000.0
 
 
-def test_get_margin_mode_reads_position_row() -> None:
+@pytest.mark.asyncio
+async def test_the_sweep_caches_the_margin_mode_from_symbol_config() -> None:
+    """symbolConfig reports it for every symbol, flat included; positionRisk does not."""
+    exchange = Mock()
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    exchange.fetch_leverages = AsyncMock(
+        return_value={"BTC/USDT:USDT": {"symbol": "BTC/USDT:USDT", "marginMode": "cross", "longLeverage": 7}}
+    )
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("no tiers"))
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    await conn._refresh_leverage_cache()
+
+    assert conn._leverage_cache["BTC/USDT:USDT"].margin_mode == "cross"
+    assert conn.get_margin_mode(_instrument()) == "cross"
+
+
+@pytest.mark.asyncio
+async def test_a_leverage_write_does_not_wipe_the_margin_mode() -> None:
+    """The write rebuilds the cache entry; the mode must ride across."""
+    exchange = Mock()
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    exchange.set_leverage = AsyncMock(return_value=None)
+    exchange.fetch_leverages = AsyncMock(return_value=[{"symbol": "BTC/USDT:USDT", "info": {"maxNotionalValue": "5"}}])
+    conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(
+        configured=5, maximum=20, max_notional=1.0, margin_mode="isolated"
+    )
+
+    await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+    assert conn._leverage_cache["BTC/USDT:USDT"] == _LeverageInfo(
+        configured=3, maximum=20, max_notional=5.0, margin_mode="isolated"
+    )
+
+
+@pytest.mark.asyncio
+async def test_the_write_takes_the_margin_mode_off_the_row_it_just_read() -> None:
+    """symbolConfig answers the cap and the mode in one row, so the write adopts a mode the
+    cache never held."""
+    exchange = Mock()
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    exchange.set_leverage = AsyncMock(return_value=None)
+    exchange.fetch_leverages = AsyncMock(
+        return_value=[{"symbol": "BTC/USDT:USDT", "marginMode": "cross", "info": {"maxNotionalValue": "5"}}]
+    )
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+    assert conn._leverage_cache["BTC/USDT:USDT"].margin_mode == "cross"
+
+
+@pytest.mark.asyncio
+async def test_a_sweep_landing_inside_the_write_is_not_rolled_back() -> None:
+    """The cap read is an await; the hourly sweep can complete inside it. Reading the cache
+    entry before that await and rebuilding from it discards whatever the sweep just wrote."""
+    exchange = Mock()
+    exchange.has = {"editOrder": True, "fetchLeverages": True}
+    exchange.set_leverage = AsyncMock(return_value=None)
+    exchange.fetch_leverage_tiers = AsyncMock(side_effect=ccxt.NotSupported("no tiers"))
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    async def _cap_read_with_a_sweep_inside(symbols=None, params={}):
+        if symbols is not None:
+            conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(
+                configured=5, maximum=40, max_notional=9.0, margin_mode="cross"
+            )
+            return [{"symbol": "BTC/USDT:USDT", "info": {"maxNotionalValue": "5"}}]
+        return []
+
+    exchange.fetch_leverages = AsyncMock(side_effect=_cap_read_with_a_sweep_inside)
+
+    await conn._do_set_leverage(_instrument(), "BTC/USDT:USDT", 3)
+
+    cached = conn._leverage_cache["BTC/USDT:USDT"]
+    assert cached.margin_mode == "cross"
+    assert cached.maximum == 40
+
+
+def test_get_margin_mode_is_cache_only() -> None:
+    """Never a venue round trip on the caller's thread."""
     exchange = Mock()
     exchange.fetch_positions = AsyncMock(return_value=[_position_row(marginMode="cross")])
     exchange.has = {"editOrder": True}
     conn, _, _ = _make_connector(exchange=exchange)
+    conn._leverage_cache["BTC/USDT:USDT"] = _LeverageInfo(configured=7, maximum=20, margin_mode="isolated")
 
-    assert conn.get_margin_mode(_instrument()) == "cross"
+    assert conn.get_margin_mode(_instrument()) == "isolated"
+    exchange.fetch_positions.assert_not_awaited()
 
 
 def test_get_adl_level_reads_position_info() -> None:
