@@ -193,6 +193,7 @@ class YahooFetchReader(IReader):
         return self._read_one(data_id, dtype, start, stop)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
+        # - only what this process has asked for; the cache knows the persistent answer
         return sorted(self._seen)
 
     def get_data_types(self, data_id: str) -> list[DataType]:
@@ -217,8 +218,9 @@ class YahooReader(IReader):
     adjusted on their side.
     """
 
-    def __init__(self, inner: IReader) -> None:
+    def __init__(self, inner: IReader, cache: ParquetCache | None = None) -> None:
         self._inner = inner
+        self._cache = cache
 
     def read(
         self,
@@ -234,7 +236,20 @@ class YahooReader(IReader):
         return _adjust(result, adjusted)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
-        return self._inner.get_data_id(dtype)
+        """
+        What the local cache holds, not what Yahoo carries.
+
+        Yahoo has no endpoint that enumerates symbols, so the only answer that can be given is the
+        set of symbols already downloaded into this cache directory. It survives restarts, because
+        it is read from the on-disk index rather than from memory.
+        """
+        if self._cache is None:
+            return self._inner.get_data_id(dtype)
+        keys = [f"ohlc({tf})" for tf in _INTERVALS] if str(dtype) == str(DataType.ALL) else [str(dtype)]
+        found: set[str] = set()
+        for k in keys:
+            found.update(self._cache.get_stored_ids(k))
+        return sorted(found)
 
     def get_data_types(self, data_id: str) -> list[DataType]:
         return self._inner.get_data_types(data_id)
@@ -298,8 +313,8 @@ class YahooStorage(IStorage):
             raise ValueError(f"Yahoo storage has one exchange, '{EXCHANGE}', not '{exchange}'")
         if self._reader is None:
             fetch = YahooFetchReader(YahooFetcher(**self._fetcher_kwargs))
-            cached = CachedReader(fetch, ParquetCache(self._path), self._prefetch_period)
-            self._reader = YahooReader(cached)
+            cache = ParquetCache(self._path)
+            self._reader = YahooReader(CachedReader(fetch, cache, self._prefetch_period), cache)
         return self._reader
 
     def close(self) -> None:

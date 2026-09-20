@@ -214,3 +214,23 @@ class TestLive:
 
         raw = reader.read("SPY", "ohlc(1d)", "2024-01-02", "2024-03-01", adjusted=False).to_pd()
         assert (raw["close"] >= df["close"]).all()  # - dividends make the adjusted close the lower one
+
+
+class TestNonEquitySymbols:
+    @pytest.mark.parametrize("symbol", ["^GSPC", "^TNX", "EURUSD=X", "ES=F", "ZN=F", "BTC-USD"])
+    def test_symbol_survives_the_partition_path(self, tmp_path, frame, symbol):
+        """
+        Index, futures and FX symbols carry ^ and =. If the partition value does not equal the
+        symbol, a DuckDB query filtering on data_id finds nothing.
+        """
+        duckdb = pytest.importorskip("duckdb")
+        cache = ParquetCache(tmp_path)
+        cache.put("ohlc(1d)", RawData.from_pandas(symbol, DataType.OHLC["1d"], frame), "2024-01-01", "2024-01-10")
+        cache.close()
+
+        assert cache.get("ohlc(1d)", symbol) is not None
+        rows = duckdb.sql(
+            f"SELECT count(*) FROM read_parquet('{tmp_path}/**/*.parquet', hive_partitioning = 1) "
+            f"WHERE data_id = '{symbol}'"
+        ).fetchone()
+        assert rows is not None and rows[0] == 10

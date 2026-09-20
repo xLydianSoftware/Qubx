@@ -25,11 +25,11 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import shutil
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
 from pathlib import Path
+from urllib.parse import quote
 
 import numpy as np
 import pandas as pd
@@ -457,8 +457,15 @@ class ParquetCache(ICache):
 
     @staticmethod
     def _safe(value: str) -> str:
-        # - Hive partition values have to survive a path and a glob
-        return re.sub(r"[^A-Za-z0-9._-]+", "_", value)
+        """
+        Percent-encode a Hive partition value.
+
+        Index, futures and FX symbols carry characters a partition value cannot hold raw: a second
+        `=` in `data_id=ES=F` makes the key unparseable. Percent-encoding keeps the value reversible
+        and DuckDB decodes it, so `WHERE data_id = 'ES=F'` still selects. `^` is left alone because
+        it parses as-is.
+        """
+        return quote(value, safe="._^-")
 
     def _dir(self, cache_key: str) -> Path:
         return self._root / f"cache_key={self._safe(cache_key)}"
