@@ -60,8 +60,65 @@ _INTERVALS: dict[str, str] = {"1d": "1d", "1w": "1wk", "1M": "1mo"}
 COLUMNS = ("open", "high", "low", "close", "adjclose", "volume")
 
 EXCHANGE = "YAHOO"
-# - labels only: the class is in the symbol, and one reader serves all of them
-MARKET_TYPES = ("STOCK", "ETF", "FUND", "INDEX", "FUTURE", "FX", "CRYPTO")
+
+# - Yahoo marks the instrument class on the symbol itself. The market type carries that, so callers
+# - pass a plain name: ("FX", "EURUSD") rather than "EURUSD=X", ("INDEX", "GSPC") rather than "^GSPC".
+# - Each entry is (prefix, suffix); a symbol that already carries them is left alone.
+MARKET_AFFIXES: dict[str, tuple[str, str]] = {
+    "STOCK": ("", ""),
+    "ETF": ("", ""),
+    "FUND": ("", ""),
+    "INDEX": ("^", ""),
+    "FUTURE": ("", "=F"),
+    "FX": ("", "=X"),
+    "CRYPTO": ("", "-USD"),
+}
+MARKET_TYPES = tuple(MARKET_AFFIXES)
+
+
+def to_yahoo(symbol: str, market: str) -> str:
+    """
+    Plain name → Yahoo's spelling. Idempotent: an already-marked symbol passes through.
+    """
+    prefix, suffix = MARKET_AFFIXES[market.upper()]
+    s = symbol.upper()
+    if market.upper() == "CRYPTO":
+        return s if "-" in s else s + suffix
+    if prefix and not s.startswith(prefix):
+        s = prefix + s
+    if suffix and not s.endswith(suffix):
+        s = s + suffix
+    return s
+
+
+def from_yahoo(symbol: str, market: str) -> str:
+    """
+    Yahoo's spelling → the plain name the caller used.
+    """
+    prefix, suffix = MARKET_AFFIXES[market.upper()]
+    s = symbol
+    if prefix and s.startswith(prefix):
+        s = s[len(prefix) :]
+    if suffix and s.endswith(suffix):
+        s = s[: -len(suffix)]
+    return s
+
+
+def belongs_to(symbol: str, market: str) -> bool:
+    """
+    Whether a Yahoo symbol belongs to this market type, used to filter the cache listing.
+    """
+    m = market.upper()
+    if m == "CRYPTO":
+        return "-" in symbol
+    if m == "INDEX":
+        return symbol.startswith("^")
+    if m == "FUTURE":
+        return symbol.endswith("=F")
+    if m == "FX":
+        return symbol.endswith("=X")
+    # - STOCK / ETF / FUND carry no mark of their own
+    return not (symbol.startswith("^") or symbol.endswith(("=F", "=X")) or "-" in symbol)
 
 
 def _yfinance():
@@ -225,9 +282,10 @@ class YahooReader(IReader):
     adjusted on their side.
     """
 
-    def __init__(self, inner: IReader, cache: ParquetCache | None = None) -> None:
+    def __init__(self, inner: IReader, cache: ParquetCache | None = None, market: str = "STOCK") -> None:
         self._inner = inner
         self._cache = cache
+        self._market = market.upper()
 
     def read(
         self,
@@ -239,8 +297,14 @@ class YahooReader(IReader):
         adjusted: bool = True,
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
-        result = self._inner.read(data_id, dtype, start, stop, chunksize, **kwargs)
-        return _adjust(result, adjusted)
+        if isinstance(data_id, (list, tuple, set)):
+            requested = {to_yahoo(d, self._market): d for d in data_id}
+            ids: str | list[str] = list(requested)
+        else:
+            requested = {to_yahoo(data_id, self._market): data_id}
+            ids = next(iter(requested))
+        result = self._inner.read(ids, dtype, start, stop, chunksize, **kwargs)
+        return _adjust(result, adjusted, requested)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """
@@ -256,21 +320,25 @@ class YahooReader(IReader):
         found: set[str] = set()
         for k in keys:
             found.update(self._cache.get_stored_ids(k))
-        return sorted(found)
+        return sorted(from_yahoo(f, self._market) for f in found if belongs_to(f, self._market))
 
     def get_data_types(self, data_id: str) -> list[DataType]:
         return self._inner.get_data_types(data_id)
 
     def get_time_range(self, data_id: str, dtype: DataType | str) -> tuple[Any, Any]:
-        return self._inner.get_time_range(data_id, dtype)
+        return self._inner.get_time_range(to_yahoo(data_id, self._market), dtype)
 
     def close(self) -> None:
         self._inner.close()
 
 
-def _adjust_one(raw: RawData, adjusted: bool) -> RawData:
+def _adjust_one(raw: RawData, adjusted: bool, names: dict[str, str]) -> RawData:
+    """
+    Apply the price adjustment and put the caller's own symbol back on the result.
+    """
+    display = names.get(raw.data_id, raw.data_id)
     if "adjclose" not in raw.names:
-        return raw
+        return raw if display == raw.data_id else RawData.from_pandas(display, raw.dtype, raw.data.to_pandas())
     frame = raw.data.to_pandas()
     if adjusted and len(frame):
         ratio = (frame["adjclose"] / frame["close"]).replace([np.inf, -np.inf], np.nan).fillna(1.0)
@@ -278,16 +346,17 @@ def _adjust_one(raw: RawData, adjusted: bool) -> RawData:
             if col in frame:
                 frame[col] = frame[col] * ratio
         frame["close"] = frame["adjclose"]
-    return RawData.from_pandas(raw.data_id, raw.dtype, frame.drop(columns=["adjclose"]))
+    return RawData.from_pandas(display, raw.dtype, frame.drop(columns=["adjclose"]))
 
 
-def _adjust(result: Any, adjusted: bool) -> Any:
+def _adjust(result: Any, adjusted: bool, names: dict[str, str] | None = None) -> Any:
+    names = names or {}
     if isinstance(result, RawData):
-        return _adjust_one(result, adjusted)
+        return _adjust_one(result, adjusted, names)
     if isinstance(result, RawMultiData):
-        return RawMultiData([_adjust_one(r, adjusted) for r in result.data])
+        return RawMultiData([_adjust_one(r, adjusted, names) for r in result.data])
     if isinstance(result, Iterator):
-        return (_adjust(chunk, adjusted) for chunk in result)
+        return (_adjust(chunk, adjusted, names) for chunk in result)
     return result
 
 
@@ -307,7 +376,9 @@ class YahooStorage(IStorage):
         self._path.mkdir(parents=True, exist_ok=True)
         self._prefetch_period = prefetch_period
         self._fetcher_kwargs = kwargs
-        self._reader: YahooReader | None = None
+        self._cached: CachedReader | None = None
+        self._cache: ParquetCache | None = None
+        self._readers: dict[str, YahooReader] = {}
 
     def get_exchanges(self) -> list[str]:
         return [EXCHANGE]
@@ -318,19 +389,26 @@ class YahooStorage(IStorage):
     def get_reader(self, exchange: str, market: str) -> IReader:
         if exchange.upper() != EXCHANGE:
             raise ValueError(f"Yahoo storage has one exchange, '{EXCHANGE}', not '{exchange}'")
-        if market.upper() not in MARKET_TYPES:
+        m = market.upper()
+        if m not in MARKET_TYPES:
             raise ValueError(f"Unknown market type '{market}' for Yahoo; one of {MARKET_TYPES}")
-        # - the same reader and the same cache serve every market type
-        if self._reader is None:
-            fetch = YahooFetchReader(YahooFetcher(**self._fetcher_kwargs))
-            cache = ParquetCache(self._path)
-            self._reader = YahooReader(CachedReader(fetch, cache, self._prefetch_period), cache)
-        return self._reader
+        # - one cache for the whole storage: Yahoo symbols are unique across classes, so EURUSD=X
+        # - and ZN=F cannot collide. Each market type gets a reader that translates to and from them.
+        if self._cached is None:
+            self._cache = ParquetCache(self._path)
+            self._cached = CachedReader(
+                YahooFetchReader(YahooFetcher(**self._fetcher_kwargs)), self._cache, self._prefetch_period
+            )
+        if m not in self._readers:
+            self._readers[m] = YahooReader(self._cached, self._cache, m)
+        return self._readers[m]
 
     def close(self) -> None:
-        if self._reader is not None:
-            self._reader.close()
-            self._reader = None
+        if self._cached is not None:
+            self._cached.close()
+        self._cached = None
+        self._cache = None
+        self._readers.clear()
 
     def __repr__(self) -> str:
         return f"YahooStorage({self._path})"

@@ -9,7 +9,7 @@ from qubx.core.basics import DataType
 from qubx.data.cache import ParquetCache
 from qubx.data.containers import RawData
 from qubx.data.registry import StorageRegistry
-from qubx.data.storages.yahoo import YahooStorage, _timeframe_of, normalize
+from qubx.data.storages.yahoo import YahooStorage, _timeframe_of, from_yahoo, normalize, to_yahoo
 
 
 def _yf_frame(stamps, close, adjclose, ticker="SPY"):
@@ -237,15 +237,63 @@ class TestNonEquitySymbols:
 
 
 class TestMarketTypes:
-    def test_every_label_shares_one_reader_and_cache(self, tmp_path, frame):
+    """
+    The market type carries Yahoo's instrument mark, so callers pass a plain name.
+    """
+
+    @pytest.mark.parametrize(
+        "market,plain,yahoo",
+        [
+            ("FX", "EURUSD", "EURUSD=X"),
+            ("FUTURE", "ZN", "ZN=F"),
+            ("INDEX", "GSPC", "^GSPC"),
+            ("CRYPTO", "BTC", "BTC-USD"),
+            ("STOCK", "SPY", "SPY"),
+        ],
+    )
+    def test_translation_round_trips(self, market, plain, yahoo):
+        assert to_yahoo(plain, market) == yahoo
+        assert from_yahoo(yahoo, market) == plain
+        # - a symbol that already carries the mark must not be marked twice
+        assert to_yahoo(yahoo, market) == yahoo
+
+    def test_read_asks_yahoo_for_the_marked_symbol(self, tmp_path, frame):
         st = YahooStorage(str(tmp_path))
         stub = StubFetcher(frame)
         st.get_reader("YAHOO", "STOCK")._inner._reader._fetcher = stub  # type: ignore[attr-defined]
 
-        st["YAHOO", "FX"].read("EURUSD=X", "ohlc(1d)", "2024-01-01", "2024-01-10")
-        # - a second label must not open a second reader, or the cache would be bypassed
-        st["YAHOO", "FUTURE"].read("EURUSD=X", "ohlc(1d)", "2024-01-01", "2024-01-10")
-        assert len(stub.calls) == 1
+        st["YAHOO", "FX"].read("EURUSD", "ohlc(1d)", "2024-01-01", "2024-01-10")
+        assert stub.calls[0][0] == "EURUSD=X"
+
+    def test_caller_gets_its_own_symbol_back(self, tmp_path, frame):
+        st = YahooStorage(str(tmp_path))
+        stub = StubFetcher(frame)
+        st.get_reader("YAHOO", "STOCK")._inner._reader._fetcher = stub  # type: ignore[attr-defined]
+
+        raw = st["YAHOO", "FUTURE"].read("ZN", "ohlc(1d)", "2024-01-01", "2024-01-10")
+        assert raw.data_id == "ZN"
+
+    def test_same_name_under_two_markets_is_two_instruments(self, tmp_path, frame):
+        st = YahooStorage(str(tmp_path))
+        stub = StubFetcher(frame)
+        st.get_reader("YAHOO", "STOCK")._inner._reader._fetcher = stub  # type: ignore[attr-defined]
+
+        st["YAHOO", "FX"].read("GC", "ohlc(1d)", "2024-01-01", "2024-01-10")
+        st["YAHOO", "FUTURE"].read("GC", "ohlc(1d)", "2024-01-01", "2024-01-10")
+        assert [c[0] for c in stub.calls] == ["GC=X", "GC=F"]
+
+    def test_listing_is_filtered_and_unmarked_per_market(self, tmp_path, frame):
+        st = YahooStorage(str(tmp_path))
+        stub = StubFetcher(frame)
+        st.get_reader("YAHOO", "STOCK")._inner._reader._fetcher = stub  # type: ignore[attr-defined]
+
+        st["YAHOO", "FX"].read("EURUSD", "ohlc(1d)", "2024-01-01", "2024-01-10")
+        st["YAHOO", "FUTURE"].read("ZN", "ohlc(1d)", "2024-01-01", "2024-01-10")
+        st["YAHOO", "STOCK"].read("SPY", "ohlc(1d)", "2024-01-01", "2024-01-10")
+
+        assert st["YAHOO", "FX"].get_data_id("ohlc(1d)") == ["EURUSD"]
+        assert st["YAHOO", "FUTURE"].get_data_id("ohlc(1d)") == ["ZN"]
+        assert st["YAHOO", "STOCK"].get_data_id("ohlc(1d)") == ["SPY"]
 
     def test_unknown_market_type_raises(self, tmp_path):
         with pytest.raises(ValueError):
