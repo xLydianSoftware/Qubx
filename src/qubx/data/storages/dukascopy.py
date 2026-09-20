@@ -29,8 +29,9 @@ Prices are integers scaled by the instrument's point.
 Bars use the candle files because a year of 1-minute bars is 365 requests there against 8,760 from
 ticks; one day of EURUSD ticks measured 117 seconds. Ticks are fetched only for a `quote` read.
 
-The feed returns 429 under fast querying. Requests are spaced by `min_interval` and back off on
-429. A wide first fetch takes hours.
+The feed returns 429 under load. Requests go through `TokenBucketRateLimiter`, shared by every
+reader of one storage, so several threads pace as one. A 429 drains the bucket, which makes all of
+them wait out the block. A wide first fetch takes hours.
 
 The point is 1e-5 for FX, 1e-3 for JPY crosses and metals. Other instruments raise unless passed
 `point=` or added to POINTS. A wrong point scales every price by 100.
@@ -59,6 +60,7 @@ from qubx.data.cache import CachedReader, ParquetCache
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
+from qubx.utils.rate_limiter import TokenBucketRateLimiter
 
 BASE_URL = "http://www.dukascopy.com/datafeed"
 
@@ -193,44 +195,23 @@ def point_of(symbol: str, market: str, override: float | None = None, catalogue:
     )
 
 
-class RateLimiter:
-    """
-    Spaces requests and backs off on 429.
-
-    `min_interval` is the floor between requests. Each 429 doubles a penalty; success halves it.
-    """
-
-    def __init__(self, min_interval: float = 0.2, max_backoff: float = 60.0) -> None:
-        self._min_interval = min_interval
-        self._max_backoff = max_backoff
-        self._penalty = 0.0
-        self._last = 0.0
-
-    def wait(self) -> None:
-        gap = time.monotonic() - self._last
-        delay = self._min_interval + self._penalty - gap
-        if delay > 0:
-            time.sleep(delay)
-        self._last = time.monotonic()
-
-    def on_429(self) -> float:
-        self._penalty = min(max(self._penalty * 2, self._min_interval * 4), self._max_backoff)
-        logger.warning(f"[Dukascopy] 429 — spacing requests by {self._penalty:.1f}s")
-        return self._penalty
-
-    def on_success(self) -> None:
-        self._penalty = max(0.0, self._penalty * 0.5) if self._penalty > self._min_interval else 0.0
-
-
 class DukascopyFetcher:
     """
     Downloads and decompresses one `.bi5` file per call.
     """
 
-    def __init__(self, timeout: float = 30.0, retries: int = 4, min_interval: float = 0.2) -> None:
+    def __init__(
+        self,
+        timeout: float = 30.0,
+        retries: int = 4,
+        requests_per_second: float = 2.0,
+        burst: float = 20.0,
+        cooldown: float = 150.0,
+    ) -> None:
         self._timeout = timeout
         self._retries = retries
-        self._limiter = RateLimiter(min_interval)
+        self._cooldown = cooldown
+        self._limiter = TokenBucketRateLimiter(capacity=burst, refill_rate=requests_per_second, name="dukascopy")
 
     def get(self, path: str) -> bytes | None:
         """
@@ -238,17 +219,18 @@ class DukascopyFetcher:
         """
         url = f"{BASE_URL}/{path}"
         for attempt in range(self._retries):
-            self._limiter.wait()
+            self._limiter.acquire_blocking()
             try:
                 with urllib.request.urlopen(url, timeout=self._timeout) as response:
                     raw = response.read()
-                self._limiter.on_success()
                 return lzma.decompress(raw) if raw else None
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     return None
                 if e.code == 429:
-                    time.sleep(self._limiter.on_429())
+                    # - drain the bucket so every thread waits out the block, not just this one
+                    self._limiter.set_tokens(-self._cooldown * self._limiter.refill_rate)
+                    logger.warning(f"[Dukascopy] 429 — pausing about {self._cooldown:.0f}s")
                     continue
                 raise
             except (urllib.error.URLError, TimeoutError, ConnectionResetError, lzma.LZMAError) as e:
@@ -572,14 +554,14 @@ class DukascopyStorage(IStorage):
         self,
         path: str = "~/.qubx/dukascopy",
         prefetch_period: str | None = None,
-        min_interval: float = 0.2,
+        requests_per_second: float = 2.0,
         catalogue: Instruments | None = None,
         **kwargs,
     ) -> None:
         self._path = Path(os.path.expanduser(path))
         self._path.mkdir(parents=True, exist_ok=True)
         self._prefetch_period = prefetch_period
-        self._min_interval = min_interval
+        self._requests_per_second = requests_per_second
         self._fetcher_kwargs = kwargs
         self._cache: ParquetCache | None = None
         self._catalogue: Instruments | None = catalogue
@@ -604,7 +586,9 @@ class DukascopyStorage(IStorage):
                 self._catalogue = Instruments(self._path)
         if m not in self._readers:
             fetch = DukascopyFetchReader(
-                DukascopyFetcher(min_interval=self._min_interval, **self._fetcher_kwargs), m, self._catalogue
+                DukascopyFetcher(requests_per_second=self._requests_per_second, **self._fetcher_kwargs),
+                m,
+                self._catalogue,
             )
             self._readers[m] = DukascopyReader(
                 CachedReader(fetch, self._cache, self._prefetch_period), self._cache, self._catalogue

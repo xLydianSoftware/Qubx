@@ -5,15 +5,16 @@ serves synthesised `.bi5` bodies.
 
 import json
 import struct
+import time
 from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
 
 from qubx.data.storages.dukascopy import (
+    DukascopyFetcher,
     DukascopyStorage,
     Instruments,
-    RateLimiter,
     _candle_paths,
     _resample,
     _tick_paths,
@@ -106,15 +107,20 @@ class TestPaths:
         assert "ASK_candles_min_1" in _candle_paths("EURUSD", "1Min", t0, t1, "ask")[0][0]
 
 
-class TestRateLimiter:
-    def test_penalty_grows_on_429_and_decays_on_success(self):
-        limiter = RateLimiter(min_interval=0.01)
-        first = limiter.on_429()
-        second = limiter.on_429()
-        assert second > first
-        limiter.on_success()
-        limiter.on_success()
-        assert limiter._penalty < second
+class TestRateLimiterUse:
+    def test_fetcher_paces_through_the_shared_token_bucket(self):
+        """
+        The bucket is shared by every reader of one storage, so several threads pace as one.
+        """
+        fetcher = DukascopyFetcher(requests_per_second=100.0, burst=2.0)
+        assert fetcher._limiter.refill_rate == 100.0
+        assert fetcher._limiter.capacity == 2.0
+
+        # - burst of 2 is free, the third waits for a refill
+        t0 = time.monotonic()
+        for _ in range(3):
+            fetcher._limiter.acquire_blocking()
+        assert time.monotonic() - t0 >= 0.009
 
 
 class StubFetcher:
