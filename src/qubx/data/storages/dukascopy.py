@@ -5,9 +5,15 @@ Bars come from the candle files, quotes from the tick files. Both are cached to 
 
     storage = StorageRegistry.get("dukascopy::~/data/dukas/")
     reader = storage["DUKASCOPY", "FX"]
-    reader.read("EURUSD", "ohlc(1h)", "2024-01-01", "2024-02-01").to_pd()
-    reader.read("EURUSD", "ohlc(1h)", "2024-01-01", "2024-02-01", side="ask")
-    reader.read("EURUSD", "quote", "2024-03-05", "2024-03-06").to_pd()   # - ticks
+    reader.read("EURUSD", "ohlc(1h)", "2024-01-01", "2024-02-01").to_pd()             # - mid
+    reader.read("EURUSD", "ohlc(1h)", "2024-01-01", "2024-02-01", side="bid")
+    reader.read("EURUSD", "quote", "2024-03-05", "2024-03-06").to_pd()                # - ticks
+
+`side` is "mid" by default, or "bid" / "ask". Mid is the average of the bid and ask candles, which
+costs two requests per file and two cached copies; bid and ask are each cached once and the mid is
+computed from them. The average is an approximation: a true mid high needs the ticks, because the
+bid high and the ask high can fall on different ticks within the bar. Volume is the sum of the two
+sides.
 
 Feed layout. All times UTC. The month in the path is 0-indexed.
 
@@ -32,6 +38,7 @@ The point is 1e-5 for FX, 1e-3 for JPY crosses and metals. Other instruments rai
 
 from __future__ import annotations
 
+import json
 import lzma
 import os
 import struct
@@ -87,15 +94,96 @@ NATIVE: dict[str, tuple[str, str]] = {
 NATIVE_STEP = {"1Min": timedelta(minutes=1), "1h": timedelta(hours=1), "1d": timedelta(days=1)}
 
 
-def point_of(symbol: str, market: str, override: float | None = None) -> float:
+CATALOGUE_URL = "https://freeserv.dukascopy.com/2.0/index.php?path=common/instruments"
+CATALOGUE_HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.dukascopy.com/"}
+
+
+class Instruments:
     """
-    Price multiplier for a symbol. Raises outside FX and metals.
+    Dukascopy's instrument catalogue: 1,604 entries keyed by the datafeed symbol.
+
+    Fetched once and kept as JSON next to the parquet cache. Each entry carries `description`,
+    `pipValue` and `history_start_tick` (epoch ms).
+
+    `point` is `pipValue / 10`. That holds for EURUSD, USDJPY and XAUUSD, checked against prices
+    decoded from the tick files; it is not checked on an index or a stock. POINTS still wins.
+    """
+
+    def __init__(self, path: Path, ttl_days: int = 30) -> None:
+        self._file = path / "instruments.json"
+        self._ttl = ttl_days * 86400
+        self._by_symbol: dict[str, dict] | None = None
+
+    def load(self) -> dict[str, dict]:
+        if self._by_symbol is not None:
+            return self._by_symbol
+        raw = self._from_disk() or self._from_feed()
+        self._by_symbol = {}
+        for entry in (raw or {}).get("instruments", {}).values():
+            name = entry.get("historical_filename")
+            if name:
+                self._by_symbol[name.upper()] = entry
+        return self._by_symbol
+
+    def _from_disk(self) -> dict | None:
+        try:
+            if time.time() - self._file.stat().st_mtime < self._ttl:
+                return json.loads(self._file.read_text())
+        except (OSError, json.JSONDecodeError):
+            pass
+        return None
+
+    def _from_feed(self) -> dict | None:
+        try:
+            request = urllib.request.Request(CATALOGUE_URL, headers=CATALOGUE_HEADERS)
+            with urllib.request.urlopen(request, timeout=30) as response:
+                text = response.read().decode()
+            body = json.loads(text[text.index("(") + 1 : text.rindex(")")])
+        except Exception as e:
+            logger.warning(f"[Dukascopy] instrument catalogue unavailable: {e}")
+            return None
+        try:
+            self._file.parent.mkdir(parents=True, exist_ok=True)
+            self._file.write_text(json.dumps(body))
+        except OSError:
+            pass
+        return body
+
+    def symbols(self) -> list[str]:
+        return sorted(self.load())
+
+    def point(self, symbol: str) -> float | None:
+        # - pipValue arrives as a string for some instruments
+        entry = self.load().get(symbol.upper())
+        try:
+            pip = float(entry["pipValue"]) if entry and entry.get("pipValue") else 0.0
+        except (TypeError, ValueError):
+            return None
+        return pip / 10.0 if pip else None
+
+    def history_start(self, symbol: str) -> datetime | None:
+        entry = self.load().get(symbol.upper())
+        try:
+            ms = int(entry["history_start_tick"]) if entry and entry.get("history_start_tick") else 0
+        except (TypeError, ValueError):
+            return None
+        return datetime.fromtimestamp(ms / 1000, timezone.utc) if ms else None
+
+
+def point_of(symbol: str, market: str, override: float | None = None, catalogue: Instruments | None = None) -> float:
+    """
+    Price multiplier for a symbol. POINTS first, then the catalogue's pipValue / 10, then the
+    market default. Raises when none of them answers.
     """
     if override is not None:
         return override
     s = symbol.upper()
     if s in POINTS:
         return POINTS[s]
+    if catalogue is not None:
+        from_catalogue = catalogue.point(s)
+        if from_catalogue:
+            return from_catalogue
     default = MARKET_POINTS.get(market.upper())
     if default is not None:
         return default
@@ -265,17 +353,27 @@ class DukascopyFetchReader(IReader):
     Downloads and decodes. Bars from the candle files, ticks only for a `quote` read.
     """
 
-    def __init__(self, fetcher: DukascopyFetcher | None = None, market: str = "FX") -> None:
+    def __init__(
+        self, fetcher: DukascopyFetcher | None = None, market: str = "FX", catalogue: Instruments | None = None
+    ) -> None:
         self._fetcher = fetcher or DukascopyFetcher()
         self._market = market.upper()
+        self._catalogue = catalogue
         self._seen: set[str] = set()
 
     def _read_one(self, data_id: str, dtype: DataType | str, start: str | None, stop: str | None, **kwargs) -> RawData:
         symbol = data_id.upper()
-        point = point_of(symbol, self._market, kwargs.get("point"))
+        point = point_of(symbol, self._market, kwargs.get("point"), self._catalogue)
         side = str(kwargs.get("side", "bid")).lower()
+        if side not in ("bid", "ask"):
+            raise ValueError(f"the fetch reader serves 'bid' or 'ask', not '{side}'")
         t0 = _as_utc(start, datetime(2003, 1, 1, tzinfo=timezone.utc))
         t1 = _as_utc(stop, datetime.now(timezone.utc))
+        if self._catalogue is not None:
+            # - clamp to the first tick Dukascopy has, else the walk requests years of 404s
+            first = self._catalogue.history_start(symbol)
+            if first is not None and first > t0:
+                t0 = first
 
         tf = _timeframe_of(dtype)
         if tf is None:
@@ -377,14 +475,41 @@ def _resample(frame: pd.DataFrame, tf: str) -> pd.DataFrame:
     return out.dropna(subset=["open"])
 
 
+def _mid_one(bid: RawData, ask: RawData) -> RawData:
+    """
+    Average two candle frames into a mid one. Volume is summed.
+    """
+    b, a = bid.data.to_pandas(), ask.data.to_pandas()
+    if not len(b):
+        return ask
+    if not len(a):
+        return bid
+    b, a = b.set_index("timestamp"), a.set_index("timestamp")
+    common = b.index.intersection(a.index)
+    b, a = b.loc[common], a.loc[common]
+    out = (b[["open", "high", "low", "close"]] + a[["open", "high", "low", "close"]]) / 2.0
+    out["volume"] = b["volume"] + a["volume"]
+    return RawData.from_pandas(bid.data_id, bid.dtype, out)
+
+
+def _mid(bid: Any, ask: Any) -> Any:
+    if isinstance(bid, RawData) and isinstance(ask, RawData):
+        return _mid_one(bid, ask)
+    if isinstance(bid, RawMultiData) and isinstance(ask, RawMultiData):
+        by_id = {r.data_id: r for r in ask.data}
+        return RawMultiData([_mid_one(r, by_id[r.data_id]) for r in bid.data if r.data_id in by_id])
+    return bid
+
+
 class DukascopyReader(IReader):
     """
     Reads through the parquet cache and answers `get_data_id` from it.
     """
 
-    def __init__(self, inner: IReader, cache: ParquetCache | None = None) -> None:
+    def __init__(self, inner: IReader, cache: ParquetCache | None = None, catalogue: Instruments | None = None) -> None:
         self._inner = inner
         self._cache = cache
+        self._catalogue = catalogue
 
     def read(
         self,
@@ -393,14 +518,25 @@ class DukascopyReader(IReader):
         start: str | None = None,
         stop: str | None = None,
         chunksize: int = 0,
+        side: str = "mid",
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
-        return self._inner.read(data_id, dtype, start, stop, chunksize, **kwargs)
+        if str(side).lower() != "mid" or not str(dtype).lower().startswith("ohlc"):
+            s = "bid" if str(side).lower() == "mid" else str(side).lower()
+            return self._inner.read(data_id, dtype, start, stop, chunksize, side=s, **kwargs)
+        bid = self._inner.read(data_id, dtype, start, stop, chunksize, side="bid", **kwargs)
+        ask = self._inner.read(data_id, dtype, start, stop, chunksize, side="ask", **kwargs)
+        return _mid(bid, ask)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """
-        Symbols held in the local cache. Dukascopy publishes no symbol index.
+        Every symbol in Dukascopy's instrument catalogue. Falls back to what the local cache holds
+        when the catalogue cannot be fetched.
         """
+        if self._catalogue is not None:
+            symbols = self._catalogue.symbols()
+            if symbols:
+                return symbols
         if self._cache is None:
             return self._inner.get_data_id(dtype)
         keys = [f"ohlc({tf})" for tf in NATIVE] + ["quote"] if str(dtype) == str(DataType.ALL) else [str(dtype)]
@@ -434,6 +570,7 @@ class DukascopyStorage(IStorage):
         path: str = "~/.qubx/dukascopy",
         prefetch_period: str | None = None,
         min_interval: float = 0.2,
+        catalogue: Instruments | None = None,
         **kwargs,
     ) -> None:
         self._path = Path(os.path.expanduser(path))
@@ -442,6 +579,8 @@ class DukascopyStorage(IStorage):
         self._min_interval = min_interval
         self._fetcher_kwargs = kwargs
         self._cache: ParquetCache | None = None
+        self._catalogue: Instruments | None = catalogue
+        self._own_catalogue = catalogue is None
         self._readers: dict[str, DukascopyReader] = {}
 
     def get_exchanges(self) -> list[str]:
@@ -458,9 +597,15 @@ class DukascopyStorage(IStorage):
             raise ValueError(f"Unknown market type '{market}' for Dukascopy; one of {MARKET_TYPES}")
         if self._cache is None:
             self._cache = ParquetCache(self._path)
+            if self._own_catalogue:
+                self._catalogue = Instruments(self._path)
         if m not in self._readers:
-            fetch = DukascopyFetchReader(DukascopyFetcher(min_interval=self._min_interval, **self._fetcher_kwargs), m)
-            self._readers[m] = DukascopyReader(CachedReader(fetch, self._cache, self._prefetch_period), self._cache)
+            fetch = DukascopyFetchReader(
+                DukascopyFetcher(min_interval=self._min_interval, **self._fetcher_kwargs), m, self._catalogue
+            )
+            self._readers[m] = DukascopyReader(
+                CachedReader(fetch, self._cache, self._prefetch_period), self._cache, self._catalogue
+            )
         return self._readers[m]
 
     def close(self) -> None:
@@ -468,6 +613,8 @@ class DukascopyStorage(IStorage):
             reader.close()
         self._readers.clear()
         self._cache = None
+        if self._own_catalogue:
+            self._catalogue = None
 
     def __repr__(self) -> str:
         return f"DukascopyStorage({self._path})"

@@ -3,6 +3,7 @@ Dukascopy decoding, path building and caching. No network: the fetcher is replac
 serves synthesised `.bi5` bodies.
 """
 
+import json
 import struct
 from datetime import datetime, timezone
 
@@ -11,6 +12,7 @@ import pytest
 
 from qubx.data.storages.dukascopy import (
     DukascopyStorage,
+    Instruments,
     RateLimiter,
     _candle_paths,
     _tick_paths,
@@ -126,13 +128,31 @@ class StubFetcher:
         self.paths.append(path)
         if "ticks" in path:
             return tick_body([(i * 1000, 108513 + i, 108512 + i, 0.5, 1.5) for i in range(10)])
-        # - a day of minutes; only the first few are filled
-        return candle_body([(i * 60, 108540 + i, 108535 + i, 108530 + i, 108560 + i, 1.0) for i in range(60)])
+        # - the ask file sits 4 points above the bid one, so a mid bar is distinguishable from both
+        up = 4 if path.startswith("ASK") or "/ASK_" in path else 0
+        return candle_body(
+            [(i * 60, 108540 + i + up, 108535 + i + up, 108530 + i + up, 108560 + i + up, 1.0) for i in range(60)]
+        )
+
+
+class NoCatalogue:
+    """
+    Stands in for the instrument catalogue so the tests never reach the network.
+    """
+
+    def symbols(self):
+        return []
+
+    def point(self, symbol):
+        return None
+
+    def history_start(self, symbol):
+        return None
 
 
 class TestStorage:
     def _storage(self, tmp_path):
-        st = DukascopyStorage(str(tmp_path))
+        st = DukascopyStorage(str(tmp_path), catalogue=NoCatalogue())
         stub = StubFetcher()
         st.get_reader("DUKASCOPY", "FX")._inner._reader._fetcher = stub  # type: ignore[attr-defined]
         return st, stub
@@ -158,7 +178,7 @@ class TestStorage:
 
     def test_non_native_timeframe_is_built_from_one_minute(self, tmp_path):
         st, stub = self._storage(tmp_path)
-        df = st["DUKASCOPY", "FX"].read("EURUSD", "ohlc(15Min)", "2024-03-05", "2024-03-06").to_pd()
+        df = st["DUKASCOPY", "FX"].read("EURUSD", "ohlc(15Min)", "2024-03-05", "2024-03-06", side="bid").to_pd()
         assert all("candles_min_1" in p for p in stub.paths)
         # - 60 synthetic minutes give four 15-minute bars; the first keeps the minute's open
         assert len(df) == 4
@@ -172,3 +192,86 @@ class TestStorage:
         n = len(stub.paths)
         reader.read("EURUSD", "ohlc(1Min)", "2024-03-05", "2024-03-06", side="ask")
         assert len(stub.paths) > n, "the ask side must not be served from the bid cache"
+
+
+class TestSides:
+    def _storage(self, tmp_path):
+        st = DukascopyStorage(str(tmp_path), catalogue=NoCatalogue())
+        stub = StubFetcher()
+        st.get_reader("DUKASCOPY", "FX")._inner._reader._fetcher = stub  # type: ignore[attr-defined]
+        return st, stub
+
+    def test_mid_is_the_default_and_averages_the_two_sides(self, tmp_path):
+        st, _ = self._storage(tmp_path)
+        reader = st["DUKASCOPY", "FX"]
+        mid = reader.read("EURUSD", "ohlc(1Min)", "2024-03-05", "2024-03-06").to_pd()
+        bid = reader.read("EURUSD", "ohlc(1Min)", "2024-03-05", "2024-03-06", side="bid").to_pd()
+        ask = reader.read("EURUSD", "ohlc(1Min)", "2024-03-05", "2024-03-06", side="ask").to_pd()
+
+        for col in ("open", "high", "low", "close"):
+            assert mid[col].iloc[0] == pytest.approx((bid[col].iloc[0] + ask[col].iloc[0]) / 2)
+        assert bid["close"].iloc[0] != ask["close"].iloc[0]
+        assert mid["volume"].iloc[0] == pytest.approx(bid["volume"].iloc[0] + ask["volume"].iloc[0])
+
+    def test_mid_reads_both_files_and_one_side_reads_one(self, tmp_path):
+        st, stub = self._storage(tmp_path)
+        reader = st["DUKASCOPY", "FX"]
+        reader.read("EURUSD", "ohlc(1Min)", "2024-03-05", "2024-03-06", side="bid")
+        one_side = len(stub.paths)
+        assert all(p.count("BID") for p in stub.paths)
+
+        st2, stub2 = self._storage(tmp_path / "other")
+        st2["DUKASCOPY", "FX"].read("EURUSD", "ohlc(1Min)", "2024-03-05", "2024-03-06")
+        assert len(stub2.paths) == 2 * one_side
+        assert any("ASK" in p for p in stub2.paths) and any("BID" in p for p in stub2.paths)
+
+    def test_quotes_ignore_side(self, tmp_path):
+        st, stub = self._storage(tmp_path)
+        st["DUKASCOPY", "FX"].read("EURUSD", "quote", "2024-03-05T00:00", "2024-03-05T01:00")
+        assert all("ticks" in p for p in stub.paths)
+
+
+class TestCatalogue:
+    def _catalogue(self, tmp_path, payload):
+        (tmp_path / "instruments.json").write_text(json.dumps(payload))
+        return Instruments(tmp_path)
+
+    def test_point_is_pipvalue_over_ten_and_survives_string_values(self, tmp_path):
+        cat = self._catalogue(
+            tmp_path,
+            {
+                "instruments": {
+                    "EUR/USD": {"historical_filename": "EURUSD", "pipValue": 0.0001},
+                    "USD/JPY": {"historical_filename": "USDJPY", "pipValue": "0.01"},
+                }
+            },
+        )
+        assert cat.point("EURUSD") == pytest.approx(1e-5)
+        assert cat.point("USDJPY") == pytest.approx(1e-3)
+
+    def test_history_start_is_epoch_milliseconds(self, tmp_path):
+        cat = self._catalogue(
+            tmp_path,
+            {"instruments": {"EUR/USD": {"historical_filename": "EURUSD", "history_start_tick": 1167609605163}}},
+        )
+        assert cat.history_start("EURUSD").year == 2007
+        assert cat.history_start("NOPE") is None
+
+    def test_symbols_come_from_the_catalogue_not_the_cache(self, tmp_path):
+        cat = self._catalogue(
+            tmp_path,
+            {
+                "instruments": {
+                    "EUR/USD": {"historical_filename": "EURUSD", "pipValue": 0.0001},
+                    "0005.HK/HKD": {"historical_filename": "0005HKHKD", "pipValue": 0.01},
+                }
+            },
+        )
+        st = DukascopyStorage(str(tmp_path), catalogue=cat)
+        assert st["DUKASCOPY", "FX"].get_data_id("ohlc(1Min)") == ["0005HKHKD", "EURUSD"]
+
+    def test_point_prefers_the_explicit_table(self, tmp_path):
+        cat = self._catalogue(
+            tmp_path, {"instruments": {"USD/JPY": {"historical_filename": "USDJPY", "pipValue": 99.0}}}
+        )
+        assert point_of("USDJPY", "FX", catalogue=cat) == 1e-3
