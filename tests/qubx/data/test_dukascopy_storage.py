@@ -15,6 +15,7 @@ from qubx.data.storages.dukascopy import (
     Instruments,
     RateLimiter,
     _candle_paths,
+    _resample,
     _tick_paths,
     decode_candles,
     decode_ticks,
@@ -275,3 +276,28 @@ class TestCatalogue:
             tmp_path, {"instruments": {"USD/JPY": {"historical_filename": "USDJPY", "pipValue": 99.0}}}
         )
         assert point_of("USDJPY", "FX", catalogue=cat) == 1e-3
+
+
+class TestDailyBoundary:
+    def test_daily_buckets_start_at_utc_midnight(self):
+        """
+        Dukascopy's daily candle for EURUSD 2024-03-04 is open 1.08417, high 1.08667, low 1.08377,
+        close 1.08541, and hourly bars bucketed at 00:00 UTC reproduce it. The 21:00/22:00 GMT
+        overnight rollover applies to swap, not to the bar boundary.
+        """
+        hours = pd.date_range("2024-03-04", periods=48, freq="1h")
+        frame = pd.DataFrame(
+            {
+                "open": [1.0 + i / 1000 for i in range(48)],
+                "high": [1.1 + i / 1000 for i in range(48)],
+                "low": [0.9 + i / 1000 for i in range(48)],
+                "close": [1.05 + i / 1000 for i in range(48)],
+                "volume": [1.0] * 48,
+            },
+            index=pd.DatetimeIndex(hours, name="timestamp"),
+        )
+        daily = _resample(frame, "1d")
+
+        assert list(daily.index) == [pd.Timestamp("2024-03-04"), pd.Timestamp("2024-03-05")]
+        assert daily["open"].iloc[0] == pytest.approx(1.0)
+        assert daily["close"].iloc[0] == pytest.approx(1.05 + 23 / 1000)

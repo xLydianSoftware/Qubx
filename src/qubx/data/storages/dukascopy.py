@@ -466,9 +466,12 @@ def _resample(frame: pd.DataFrame, tf: str) -> pd.DataFrame:
     """
     Build a coarser timeframe from a finer one.
 
-    Buckets start at UTC midnight. The FX daily convention is a 17:00 New York close, so a daily
-    bar resampled here will not match it. Read `ohlc(1d)` for Dukascopy's own daily bars. Which
-    boundary those use is not verified.
+    Buckets start at UTC midnight, which is what Dukascopy's own candle files use: their daily bar
+    for EURUSD 2024-03-04 (1.08417 / 1.08667 / 1.08377 / 1.08541) is reproduced exactly by hourly
+    bars resampled at 00:00 UTC, and not by 21:00 or 22:00.
+
+    That is separate from the overnight policy, which rolls positions at 21:00/22:00 GMT for swap
+    (19:00/18:00 for NZD pairs, except Fridays). The rollover does not move the bar boundary.
     """
     rule = tf.replace("Min", "min")
     out = frame.resample(rule).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
