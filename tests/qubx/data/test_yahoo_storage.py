@@ -2,6 +2,7 @@
 Yahoo storage and the parquet cache. No network: the fetcher is replaced by a stub.
 """
 
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -146,8 +147,27 @@ class TestYahooStorage:
         # - the split is removed: every close is the adjusted one
         assert df["close"].nunique() == 1
         assert df["close"].iloc[0] == pytest.approx(50.0)
-        # - open is scaled by the same ratio, so it tracks close
-        assert df["open"].iloc[0] == pytest.approx(50.0)
+
+    def test_open_high_low_are_adjusted_too_not_just_close(self, tmp_path, frame):
+        """
+        A close-only adjustment would leave open, high and low on the pre-split scale, so a bar
+        would show a 2x range and every stop or gap measure computed from it would be wrong.
+        """
+        st, _ = self._storage(tmp_path, frame)
+        reader = st["YAHOO", "STOCK"]
+        adj = reader.read("SPY", "ohlc(1d)", "2024-01-01", "2024-01-10").to_pd()
+        raw = reader.read("SPY", "ohlc(1d)", "2024-01-01", "2024-01-10", adjusted=False).to_pd()
+
+        ratio = adj["close"] / raw["close"]
+        assert (ratio != 1.0).any(), "fixture has nothing to adjust; the test would pass vacuously"
+
+        for col in ("open", "high", "low"):
+            assert np.allclose(adj[col], raw[col] * ratio), f"{col} was not scaled with close"
+
+        # - the bar keeps its shape: the ratio is one number per row, so ranges scale, not distort
+        assert np.allclose((adj["high"] - adj["low"]) / (raw["high"] - raw["low"]), ratio)
+        # - volume is Yahoo's, already split adjusted on their side
+        assert np.array_equal(adj["volume"], raw["volume"])
 
     def test_unadjusted_returns_traded_prices(self, tmp_path, frame):
         st, _ = self._storage(tmp_path, frame)
