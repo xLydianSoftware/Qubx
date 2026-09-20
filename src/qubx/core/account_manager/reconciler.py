@@ -43,8 +43,10 @@ from qubx.core.basics import (
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
+    OrderCancelRejectedEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
+    OrderUpdateRejectedEvent,
 )
 from qubx.utils.time import to_timedelta
 
@@ -57,6 +59,13 @@ _log = area_logger("reconciler")
 # it. Kept small (seconds) so it only catches this episode's boundary trade, not old history —
 # re-fetched deals are deduped by trade_id and realize-only-guarded anyway.
 HIST_DEALS_LOOKBACK = np.timedelta64(2, "s")
+
+# A venue refusing our cancel/update says nothing about whether the order is still live — it
+# often means the opposite (HL answers a cancel for a filled order with "Order was never
+# placed, already canceled, or filled"). So these two carry NO venue state: they neither
+# resolve a task waiting on the order nor stand in for the accept AwaitOrderConfirm wants,
+# and one of them arriving is itself a reason to go ask what the order's real status is.
+REQUEST_REJECTIONS = (OrderCancelRejectedEvent, OrderUpdateRejectedEvent)
 
 
 @dataclass(frozen=True)
@@ -162,7 +171,7 @@ class ResolveMissingOrder(Task):
         if isinstance(inp, (Tick, SnapshotIn)):
             return True
         if isinstance(inp, OrderIn):
-            return self._matches(inp.event)
+            return not isinstance(inp.event, REQUEST_REJECTIONS) and self._matches(inp.event)
         return False
 
     def step(self, inp: Any, state: AccountState, now: np.datetime64) -> list[Action]:
@@ -243,7 +252,7 @@ class AwaitOrderConfirm(Task):
             return True
 
         if isinstance(inp, OrderIn):
-            return self._matches(inp.event)
+            return not isinstance(inp.event, REQUEST_REJECTIONS) and self._matches(inp.event)
 
         return False
 
@@ -735,7 +744,29 @@ class Reconciler:
 
     def on_event(self, state: AccountState, event: object, now: np.datetime64) -> list[Action]:
         inp = DealIn(event) if isinstance(event, DealEvent) else OrderIn(event)
-        return self._dispatch(inp, state, now, only=self._keys_of(event))
+        actions = self._dispatch(inp, state, now, only=self._keys_of(event))
+        if isinstance(event, REQUEST_REJECTIONS):
+            self._spawn_rejection_probe(state, event, now)
+        return actions
+
+    def _spawn_rejection_probe(
+        self, state: AccountState, event: OrderCancelRejectedEvent | OrderUpdateRejectedEvent, now: np.datetime64
+    ) -> None:
+        """A refused cancel/update is a reason to ask the venue what the order really is.
+
+        Left unasked it wedges: the strategy re-issues the cancel every tick, the venue keeps
+        refusing, and the order sits ACCEPTED forever (prod 2026-09-19, HYPERLIQUID.F 0GUSDC —
+        a filled order whose terminal event was lost, cancelled once every 5s for 20 hours).
+        ResolveMissingOrder is exactly the right shape: it waits, fetches the status on a
+        budget, and routes LOST if the venue never answers. Spawning dedups by cid, so the
+        repeat rejections that follow cost nothing.
+        """
+        order = state.get_active_order(event.client_order_id)
+        if order is None and event.venue_order_id is not None:
+            order = state.get_order_by_venue_id(event.venue_order_id)
+        if order is None or order.status.is_terminal:
+            return
+        self._spawn(ResolveMissingOrder(order, now, wait=self._missing_wait, max_retries=self._missing_max_retries))
 
     def _spawn(self, task: Task) -> None:
         if task.key in self._tasks:  # one task per key — duplicate ignored

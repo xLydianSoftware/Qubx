@@ -1764,17 +1764,18 @@ class ProcessingManager(IProcessingManager):
         # snapshot correction, firing nothing strategy-side). BalanceUpdateEvent
         # deliberately fires NO callback: balances are read via ctx.
         if isinstance(event, OrderEvent):
-            # Cancel/update rejections are dangerous-but-recoverable (order still alive at the
-            # venue): surface loudly here so they aren't lost if the strategy ignores them.
+            # Cancel/update rejections are dangerous-but-recoverable: the local order keeps its
+            # prior state, which is NOT the same as the venue still holding it — the reconciler
+            # probes for the truth. Surface loudly so they aren't lost if the strategy ignores them.
             if result.order_change is OrderChange.CANCEL_REJECTED and isinstance(event, OrderCancelRejectedEvent):
                 logger.warning(
                     f"[{event.client_order_id}] cancel rejected by venue: {event.reason}; "
-                    f"order is STILL ALIVE at the venue"
+                    f"keeping its prior status while the venue is asked for its real one"
                 )
             elif result.order_change is OrderChange.UPDATE_REJECTED and isinstance(event, OrderUpdateRejectedEvent):
                 logger.warning(
                     f"[{event.client_order_id}] update rejected by venue: {event.reason}; "
-                    f"order is STILL ALIVE with prior parameters"
+                    f"keeping its prior parameters while the venue is asked for its real status"
                 )
             if result.order is not None and result.order_change is not None:
                 self._safe_call(self._strategy.on_order, result.order, result.order_change)

@@ -239,6 +239,20 @@ RouteEvent(event)                          # AM → pm.process_event (synthesize
 The Reconciler injects events (`RouteEvent`) only where there is no venue event to rely on
 (give-up LOST, fill-progress notify). Terminalize → LOST is an in-mem mutation, not an action.
 
+### Event → action mapping (in `on_event`)
+
+| event | handling |
+|---|---|
+| `OrderCancelRejectedEvent` / `OrderUpdateRejectedEvent` | spawn `ResolveMissingOrder` |
+
+A venue refusing a cancel or an update says nothing about whether the order is live, and
+frequently means the opposite — Hyperliquid answers a cancel for an already-filled order with
+`Order was never placed, already canceled, or filled`. So a rejection is treated as a question,
+not an answer: it spawns the same probe a missing-from-snapshot order gets, and it does **not**
+resolve a task waiting on that order (see `REQUEST_REJECTIONS`). Without both halves the pair
+deadlocks — the strategy re-issues the cancel every tick, each rejection retires the probe
+before it fetches anything, and the order stays ACCEPTED forever.
+
 ### Diff → action mapping (in `on_snapshot`)
 
 | diff atom | handling |
@@ -255,17 +269,18 @@ The Reconciler injects events (`RouteEvent`) only where there is no venue event 
 
 ## The tasks / situations
 
-### I. ResolveMissingOrder — local order absent from snapshot
+### I. ResolveMissingOrder — local order the venue does not confirm
 
-A cached live order is missing from the snapshot. It may have filled/cancelled/rejected
-(event not received yet, or missed) — don't blind-cancel.
+A cached live order is missing from the snapshot, or the venue just refused a cancel/update
+for it. It may have filled/cancelled/rejected (event not received yet, or missed) — don't
+blind-cancel.
 
 ```mermaid
 stateDiagram-v2
-    [*] --> WAIT: spawned (missing past grace)
+    [*] --> WAIT: spawned (missing past grace, or cancel/update refused)
     WAIT --> REQUEST_STATUS: waited > missing_order_wait
     REQUEST_STATUS --> REQUEST_STATUS: retry (< missing_order_retries)
-    WAIT --> RESOLVED: real order event arrives
+    WAIT --> RESOLVED: real order event arrives (a rejection is not one)
     REQUEST_STATUS --> RESOLVED: status/event arrives, or reappears in a later snapshot
     REQUEST_STATUS --> LOST: exhausted (no venue answer)
     RESOLVED --> [*]: drop

@@ -30,8 +30,10 @@ from qubx.core.events import (
     DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
+    OrderCancelRejectedEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
+    OrderUpdateRejectedEvent,
 )
 from qubx.core.lookups import lookup
 
@@ -961,3 +963,135 @@ def test_settings_refresh_survives_the_stale_snapshot_guard():
     assert pos.quantity == before_qty  # type: ignore # rewind guard intact
     assert (pos.adl_level, pos.leverage) == (2, 10.0)  # type: ignore
     assert changed == []
+
+
+# --------------------------------------------------------------------------- #
+# Ia. A cancel/update rejection is not proof the order is alive
+# --------------------------------------------------------------------------- #
+# Prod wedge 2026-09-19 (HYPERLIQUID.F 0GUSDC): a maker order filled at the venue, its
+# terminal event was lost, and the executor then repriced it. HL answered the modifies with
+# "Cannot modify canceled or filled order" and every later cancel with "Order was never
+# placed, already canceled, or filled" — for 20h, once every 5s, while the AM held the order
+# ACCEPTED and logged "order is STILL ALIVE at the venue". Both statements are the venue
+# saying the order is GONE; neither is evidence that it is live.
+
+
+def _prime_snapshot_timer(rec: Reconciler, st: AccountState) -> None:
+    # A reconciler's very first tick is always snapshot-due; consume that so the scenario
+    # ticks below carry only what the task under test asked for.
+    rec.on_tick(st, _passed_seconds(T0, -1))
+
+
+def _cancel_rejected(cid: str, *, venue_id=_GEN) -> OrderCancelRejectedEvent:
+    vid = f"v_{cid}" if venue_id is _GEN else venue_id
+    return OrderCancelRejectedEvent(
+        instrument=_inst(),
+        client_order_id=cid,
+        venue_order_id=vid,
+        reason="Order was never placed, already canceled, or filled. asset=210",
+    )
+
+
+def _update_rejected(cid: str, *, venue_id=_GEN) -> OrderUpdateRejectedEvent:
+    vid = f"v_{cid}" if venue_id is _GEN else venue_id
+    return OrderUpdateRejectedEvent(
+        instrument=_inst(),
+        client_order_id=cid,
+        venue_order_id=vid,
+        reason="Cannot modify canceled or filled order",
+    )
+
+
+def test_cancel_rejection_spawns_a_resolve_task():
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    actions = rec.on_event(st, _cancel_rejected("X1"), T0)
+    assert rec.active_keys() == {"X1"}  # the rejection is a reason to ASK the venue
+    assert actions == []  # ...after the wait window, not synchronously
+    assert st.get_order("X1").status == OrderStatus.ACCEPTED  # never blind-terminalized
+
+
+def test_update_rejection_spawns_a_resolve_task():
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_event(st, _update_rejected("X1"), T0)
+    assert rec.active_keys() == {"X1"}
+
+
+def test_rejection_for_a_terminal_order_spawns_nothing():
+    rec = _reconciler()
+    st = _local(_order("X1", status=OrderStatus.FILLED))
+    rec.on_event(st, _cancel_rejected("X1"), T0)
+    assert rec.active_keys() == set()
+
+
+def test_rejection_for_an_unknown_order_spawns_nothing():
+    rec = _reconciler()
+    st = _local()
+    rec.on_event(st, _cancel_rejected("X1"), T0)
+    assert rec.active_keys() == set()
+
+
+def test_cancel_rejection_does_not_resolve_the_resolve_task():
+    # The wedge: the executor re-issues the cancel every tick, so a rejection lands well
+    # inside the task's wait window. Treating it as "an event for our id arrived" retired the
+    # task before it ever fetched a status — forever.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_snapshot(st, _origin(open_orders=[]), T0)
+    assert rec.active_keys() == {"X1"}
+
+    rec.on_event(st, _cancel_rejected("X1"), _passed_seconds(T0, 1))
+    assert rec.active_keys() == {"X1"}  # still ours — a rejection resolves nothing
+
+    actions = rec.on_tick(st, _passed_seconds(T0, 3))
+    assert actions == [RequestStatus(cid="X1", venue_id="v_X1", instrument=_inst())]
+
+
+def test_repeated_cancel_rejections_end_in_lost():
+    # End to end on the prod shape: nothing but rejections ever arrives. The budget must
+    # still run down and route LOST, so the strategy's slot can clear.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    _prime_snapshot_timer(rec, st)
+
+    rec.on_event(st, _cancel_rejected("X1"), T0)  # spawns the task
+    for offset in (1, 2, 4, 6):  # the 5s cancel loop, interleaved with the ticks below
+        rec.on_event(st, _cancel_rejected("X1"), _passed_seconds(T0, offset))
+    rec.on_tick(st, _passed_seconds(T0, 3))  # retry 1 -> RequestStatus
+    rec.on_tick(st, _passed_seconds(T0, 5))  # retry 2 -> RequestStatus
+    out = rec.on_tick(st, _passed_seconds(T0, 7))  # exhausted -> LOST
+
+    assert [type(a) for a in out] == [RouteEvent]
+    assert isinstance(out[0].event, OrderLostEvent) and out[0].event.client_order_id == "X1"
+    assert rec.active_keys() == set()
+
+
+def test_the_venue_answer_to_a_rejection_driven_status_fetch_resolves_it():
+    # The happy path the fix buys: HL's orderStatus reply says `filled`, the normal event
+    # path terminalizes the order, and the task drops without a LOST.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    _prime_snapshot_timer(rec, st)
+    rec.on_event(st, _cancel_rejected("X1"), T0)
+    assert rec.on_tick(st, _passed_seconds(T0, 3)) == [RequestStatus(cid="X1", venue_id="v_X1", instrument=_inst())]
+
+    rec.on_event(
+        st,
+        OrderCanceledEvent(instrument=_inst(), client_order_id="X1", venue_order_id="v_X1"),
+        _passed_seconds(T0, 4),
+    )
+    assert rec.active_keys() == set()
+
+
+def test_cancel_rejection_does_not_confirm_a_sent_order():
+    # Same rule for AwaitOrderConfirm: a rejection carries no venue state, so it cannot
+    # stand in for the accept we are waiting on.
+    rec = _reconciler()
+    order = _order("X1", status=OrderStatus.SUBMITTED)
+    st = _local(order)
+    rec.on_order_sent(st, order, T0)
+    assert rec.active_keys() == {"X1"}
+
+    rec.on_event(st, _cancel_rejected("X1"), _passed_seconds(T0, 1))
+    assert rec.active_keys() == {"X1"}
