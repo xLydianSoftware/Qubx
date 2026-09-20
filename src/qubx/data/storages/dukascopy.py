@@ -29,11 +29,12 @@ Prices are integers scaled by the instrument's point.
 Bars use the candle files because a year of 1-minute bars is 365 requests there against 8,760 from
 ticks; one day of EURUSD ticks measured 117 seconds. Ticks are fetched only for a `quote` read.
 
-Requests carry a browser User-Agent and a Referer. Without them the feed answers 429 after about
-50 requests at 0.2 req/s; with them 600 requests at the same pace drew none, so the ceiling above
-that is unmeasured. Requests still go through `TokenBucketRateLimiter`, shared by every reader of
-one storage so several threads pace as one, and a 429 drains the bucket to make all of them wait
-the block out. A wide first fetch takes hours.
+Requests carry a browser User-Agent. The feed throttles on that string, not on a rate: with
+urllib's default agent it answers 429 after 45 to 60 requests at 0.2 req/s, and sending a Referer
+or an Accept instead makes no difference, while the User-Agent alone ran 200 requests clean and all
+three ran 600. The ceiling with an agent set is unmeasured and above 600. Requests still go through
+`TokenBucketRateLimiter`, shared by every reader of one storage so several threads pace as one, and
+a 429 drains the bucket to make all of them wait the block out. A wide first fetch takes hours.
 
 The point is 1e-5 for FX, 1e-3 for JPY crosses and metals. Other instruments raise unless passed
 `point=` or added to POINTS. A wrong point scales every price by 100.
@@ -66,8 +67,10 @@ from qubx.utils.rate_limiter import TokenBucketRateLimiter
 
 BASE_URL = "http://www.dukascopy.com/datafeed"
 
-# - Measured 2026-09-20: with urllib's default agent the feed answers 429 after about 50 requests at
-# - 0.2 req/s. With these headers the same script ran 600 requests at the same pace and saw none.
+# - Measured 2026-09-20, one header at a time, 0.5s spacing after a quiet period: no headers 429 at
+# - request 45, Referer only 429 at 74, Accept only 429 at 60, User-Agent only 200 requests clean.
+# - The throttle keys on the User-Agent, not on a rate. Referer is kept because the catalogue
+# - endpoint 403s without it.
 DATAFEED_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124 Safari/537.36",
     "Accept": "*/*",

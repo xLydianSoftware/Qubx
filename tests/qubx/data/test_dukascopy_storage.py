@@ -314,8 +314,8 @@ class TestDailyBoundary:
 class TestHeaders:
     def test_datafeed_requests_carry_a_browser_agent(self):
         """
-        With urllib's default agent the feed answered 429 after about 50 requests at 0.2 req/s;
-        with these headers 600 requests at the same pace drew none.
+        Measured one header at a time: none 429 at request 45, Referer only at 74, Accept only at
+        60, User-Agent only 200 requests clean. The throttle keys on the User-Agent.
         """
         assert "Mozilla" in DATAFEED_HEADERS["User-Agent"]
         assert DATAFEED_HEADERS["Referer"].startswith("https://www.dukascopy.com")
