@@ -374,13 +374,13 @@ class ParquetCache(ICache):
         _index/<key>.json    — covered time ranges, globally and per symbol, and each symbol's
                                data type
 
-    The Hive layout means DuckDB reads the cache directly, with the partition keys as columns:
+    DuckDB reads the layout directly, with the partition keys as columns:
 
         SELECT * FROM read_parquet('<root>/**/*.parquet', hive_partitioning = 1)
         WHERE data_id = 'SPY'
 
-    Survives the process, so a window fetched once is not fetched again. Range bookkeeping matches
-    MemoryCache: a symbol counts as covered only when one merged range spans the whole request.
+    Persists across processes. Range bookkeeping matches MemoryCache: a symbol counts as covered
+    only when one merged range spans the whole request.
     """
 
     _root: Path
@@ -398,7 +398,10 @@ class ParquetCache(ICache):
         if not path.exists():
             return None
         dtype = self._load_index(cache_key)["symbols"].get(data_id, {}).get("dtype", str(DataType.ALL))
-        return RawData.from_table(data_id, dtype, pq.read_table(path))  # type: ignore[arg-type]
+        # - ParquetFile reads the file itself. pq.read_table() runs dataset discovery on the parent
+        # - directories and, as they are Hive-partitioned, returns cache_key and data_id as extra
+        # - columns that were never in the data.
+        return RawData.from_table(data_id, dtype, pq.ParquetFile(path).read())  # type: ignore[arg-type]
 
     def put(self, cache_key: str, data: RawData, start: str, stop: str) -> None:
         index = self._load_index(cache_key)
@@ -460,10 +463,8 @@ class ParquetCache(ICache):
         """
         Percent-encode a Hive partition value.
 
-        Index, futures and FX symbols carry characters a partition value cannot hold raw: a second
-        `=` in `data_id=ES=F` makes the key unparseable. Percent-encoding keeps the value reversible
-        and DuckDB decodes it, so `WHERE data_id = 'ES=F'` still selects. `^` is left alone because
-        it parses as-is.
+        A second `=` in `data_id=ES=F` makes the key unparseable. Percent-encoding is reversible
+        and DuckDB decodes it, so `WHERE data_id = 'ES=F'` still selects. `^` parses as-is.
         """
         return quote(value, safe="._^-")
 

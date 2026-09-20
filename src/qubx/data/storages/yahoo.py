@@ -9,9 +9,8 @@ is not requested again.
     reader.read("SPY", "ohlc(1d)", "2010-01-01", "now").to_pd()            # - adjusted (default)
     reader.read("SPY", "ohlc(1d)", "2010-01-01", "now", adjusted=False)    # - as traded
 
-Yahoo's symbol carries the instrument class, so every market type is served by the same reader and
-the label is only there to make the call read correctly. Measured 2026-09-20, all with daily history
-back to 2002 apart from the newer ones:
+The market type supplies Yahoo's instrument mark, so callers pass a plain name. Checked
+2026-09-20, all with daily history back to 2002 apart from the newer ones:
 
     STOCK    SPY AAPL VFIAX        FX       EURUSD=X USDJPY=X
     INDEX    ^GSPC ^NDX ^VIX ^TNX  FUTURE   ES=F ZN=F CL=F GC=F
@@ -21,19 +20,17 @@ One copy per symbol is cached: the unadjusted `open/high/low/close/volume` plus 
 `adjusted=True` is applied by this reader after the cache, by scaling OHLC with `adjclose / close`,
 so the two views never occupy two copies on disk.
 
-Requires the `yahoo` extra: `pip install qubx[yahoo]`. Yahoo rejects plain HTTP clients — a request
-from `httpx` with browser headers and a session cookie returns 429, and so does the crumb endpoint,
-because the TLS fingerprint is checked as well. `yfinance` carries the machinery that gets past
-this; that is the only reason it is a dependency here.
+Requires the `yahoo` extra: `pip install qubx[yahoo]`. Yahoo returns 429 to httpx even with
+browser headers and a session cookie, and to the crumb endpoint as well: the TLS fingerprint is
+checked. yfinance handles that, which is why it is the dependency.
 
-Limits worth knowing before relying on this:
+Yahoo serves about one month of 1-minute bars and two years of hourly. Only `1d`, `1wk` and `1mo`
+have long history, so those are the timeframes offered here.
 
-- Yahoo serves about one month of 1-minute bars and about two years of hourly bars. Only `1d`, `1wk`
-  and `1mo` have long history, so those are the only timeframes offered here.
-- The endpoint returns **currently listed** symbols. Companies that were delisted or renamed are
-  gone, so an index study built from a present-day constituent list is biased upward. A
-  point-in-time constituent list has to come from somewhere else.
-- Yahoo's terms do not permit redistribution. This is a local research cache.
+The endpoint returns currently listed symbols only. Delisted and renamed companies are absent, so
+an index study built from a present-day constituent list is biased upward.
+
+Yahoo's terms do not permit redistribution. This is a local research cache.
 """
 
 from __future__ import annotations
@@ -61,9 +58,9 @@ COLUMNS = ("open", "high", "low", "close", "adjclose", "volume")
 
 EXCHANGE = "YAHOO"
 
-# - Yahoo marks the instrument class on the symbol itself. The market type carries that, so callers
-# - pass a plain name: ("FX", "EURUSD") rather than "EURUSD=X", ("INDEX", "GSPC") rather than "^GSPC".
-# - Each entry is (prefix, suffix); a symbol that already carries them is left alone.
+# - Yahoo marks the class on the symbol. The market type supplies the mark, so callers pass a plain
+# - name: ("FX", "EURUSD") not "EURUSD=X", ("INDEX", "GSPC") not "^GSPC".
+# - Each entry is (prefix, suffix). An already-marked symbol is left alone.
 MARKET_AFFIXES: dict[str, tuple[str, str]] = {
     "STOCK": ("", ""),
     "ETF": ("", ""),
@@ -78,7 +75,7 @@ MARKET_TYPES = tuple(MARKET_AFFIXES)
 
 def to_yahoo(symbol: str, market: str) -> str:
     """
-    Plain name → Yahoo's spelling. Idempotent: an already-marked symbol passes through.
+    Plain name to Yahoo's spelling. An already-marked symbol passes through unchanged.
     """
     prefix, suffix = MARKET_AFFIXES[market.upper()]
     s = symbol.upper()
@@ -93,7 +90,7 @@ def to_yahoo(symbol: str, market: str) -> str:
 
 def from_yahoo(symbol: str, market: str) -> str:
     """
-    Yahoo's spelling → the plain name the caller used.
+    Yahoo's spelling to the plain name the caller used.
     """
     prefix, suffix = MARKET_AFFIXES[market.upper()]
     s = symbol
@@ -158,11 +155,11 @@ def empty_frame() -> pd.DataFrame:
 
 def normalize(frame: pd.DataFrame) -> pd.DataFrame:
     """
-    yfinance's frame → the column names and index this storage caches.
+    yfinance's frame to the column names and index this storage caches.
 
     Columns arrive capitalised and, for a single ticker, under a MultiIndex level naming it. The
-    ticker level is dropped, names are lowercased, `adj close` becomes `adjclose`, and the index is
-    made tz-naive so parquet round-trips it unchanged.
+    ticker level is dropped, names lowercased, `adj close` renamed to `adjclose`, and the index made
+    tz-naive so parquet round-trips it.
     """
     if frame is None or not len(frame):
         return empty_frame()
@@ -184,10 +181,8 @@ def normalize(frame: pd.DataFrame) -> pd.DataFrame:
 
 class YahooFetcher:
     """
-    One `yfinance` download per symbol.
-
-    Kept separate from the reader so a different transport (a proxy, a recorded fixture, another
-    vendor) can be substituted without touching the caching or the adjustment.
+    One `yfinance` download per symbol. Separate from the reader so the transport can be replaced
+    without touching the caching or the adjustment.
     """
 
     def __init__(self, timeout: float = 30.0, retries: int = 3, pause: float = 1.0) -> None:
@@ -225,8 +220,7 @@ class YahooFetcher:
 
 class YahooFetchReader(IReader):
     """
-    The uncached half: calls Yahoo on every read and returns bars as traded, with `adjclose` kept as
-    its own column. Nothing here adjusts prices.
+    Calls Yahoo on every read. Returns bars as traded with `adjclose` as its own column.
     """
 
     def __init__(self, fetcher: YahooFetcher | None = None) -> None:
@@ -274,12 +268,11 @@ class YahooFetchReader(IReader):
 
 class YahooReader(IReader):
     """
-    The reader handed to callers. Reads through the parquet cache and applies the price adjustment.
+    Reads through the parquet cache and applies the price adjustment.
 
-    `read(..., adjusted=True)` — the default — scales open, high and low by `adjclose / close`, puts
-    `adjclose` into `close` and drops the extra column, so a split reads as a continuous series.
-    `adjusted=False` returns the bars as traded. Volume is left as Yahoo reports it, already split
-    adjusted on their side.
+    `read(..., adjusted=True)`, the default, scales open, high and low by `adjclose / close`, puts
+    `adjclose` into `close` and drops the extra column. `adjusted=False` returns bars as traded.
+    Volume is left as Yahoo reports it, already split adjusted.
     """
 
     def __init__(self, inner: IReader, cache: ParquetCache | None = None, market: str = "STOCK") -> None:
@@ -308,11 +301,9 @@ class YahooReader(IReader):
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """
-        What the local cache holds, not what Yahoo carries.
+        Symbols held in the local cache. Yahoo has no endpoint that enumerates symbols.
 
-        Yahoo has no endpoint that enumerates symbols, so the only answer that can be given is the
-        set of symbols already downloaded into this cache directory. It survives restarts, because
-        it is read from the on-disk index rather than from memory.
+        Read from the on-disk index, so it survives a restart.
         """
         if self._cache is None:
             return self._inner.get_data_id(dtype)
@@ -334,7 +325,7 @@ class YahooReader(IReader):
 
 def _adjust_one(raw: RawData, adjusted: bool, names: dict[str, str]) -> RawData:
     """
-    Apply the price adjustment and put the caller's own symbol back on the result.
+    Apply the price adjustment and restore the caller's symbol on the result.
     """
     display = names.get(raw.data_id, raw.data_id)
     if "adjclose" not in raw.names:
@@ -363,12 +354,10 @@ def _adjust(result: Any, adjusted: bool, names: dict[str, str] | None = None) ->
 @storage("yahoo")
 class YahooStorage(IStorage):
     """
-    Yahoo bars with a parquet cache underneath.
+    Reader chain, built here so one copy of each symbol is cached and the adjusted view derives
+    from it:
 
-    The reader chain is built here rather than by the caller, so one copy of each symbol lives on
-    disk and the adjusted view is derived from it:
-
-        YahooReader(adjust) → CachedReader(ParquetCache) → YahooFetchReader(yfinance)
+        YahooReader(adjust) -> CachedReader(ParquetCache) -> YahooFetchReader(yfinance)
     """
 
     def __init__(self, path: str = "~/.qubx/yahoo", prefetch_period: str | None = None, **kwargs) -> None:
@@ -392,8 +381,8 @@ class YahooStorage(IStorage):
         m = market.upper()
         if m not in MARKET_TYPES:
             raise ValueError(f"Unknown market type '{market}' for Yahoo; one of {MARKET_TYPES}")
-        # - one cache for the whole storage: Yahoo symbols are unique across classes, so EURUSD=X
-        # - and ZN=F cannot collide. Each market type gets a reader that translates to and from them.
+        # - one cache for the storage: Yahoo symbols are unique across classes, so EURUSD=X and
+        # - ZN=F cannot collide. Each market type gets a reader that translates to and from them.
         if self._cached is None:
             self._cache = ParquetCache(self._path)
             self._cached = CachedReader(

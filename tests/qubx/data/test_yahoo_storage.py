@@ -121,6 +121,17 @@ class TestParquetCache:
         assert got is not None and len(got) == 10
         assert cache.covers("ohlc(1d)", "2024-01-01", "2024-01-10")
 
+    def test_read_does_not_return_the_partition_keys_as_columns(self, tmp_path, frame):
+        """
+        pq.read_table() on a file inside a Hive tree appends cache_key and data_id as columns.
+        """
+        cache = ParquetCache(tmp_path)
+        cache.put("ohlc(1d)", RawData.from_pandas("SPY", DataType.OHLC["1d"], frame), "2024-01-01", "2024-01-10")
+
+        got = cache.get("ohlc(1d)", "SPY")
+        assert got is not None
+        assert "cache_key" not in got.names and "data_id" not in got.names
+
     def test_clear_removes_data_and_the_index(self, tmp_path, frame):
         cache = ParquetCache(tmp_path)
         cache.put("ohlc(1d)", RawData.from_pandas("SPY", DataType.OHLC["1d"], frame), "2024-01-01", "2024-01-10")
@@ -150,8 +161,8 @@ class TestYahooStorage:
 
     def test_open_high_low_are_adjusted_too_not_just_close(self, tmp_path, frame):
         """
-        A close-only adjustment would leave open, high and low on the pre-split scale, so a bar
-        would show a 2x range and every stop or gap measure computed from it would be wrong.
+        A close-only adjustment leaves open, high and low on the pre-split scale, so the bar shows
+        a 2x range and anything measured from it is wrong.
         """
         st, _ = self._storage(tmp_path, frame)
         reader = st["YAHOO", "STOCK"]
@@ -258,7 +269,7 @@ class TestNonEquitySymbols:
 
 class TestMarketTypes:
     """
-    The market type carries Yahoo's instrument mark, so callers pass a plain name.
+    The market type supplies Yahoo's instrument mark, so callers pass a plain name.
     """
 
     @pytest.mark.parametrize(
@@ -274,7 +285,7 @@ class TestMarketTypes:
     def test_translation_round_trips(self, market, plain, yahoo):
         assert to_yahoo(plain, market) == yahoo
         assert from_yahoo(yahoo, market) == plain
-        # - a symbol that already carries the mark must not be marked twice
+        # - an already-marked symbol must not be marked twice
         assert to_yahoo(yahoo, market) == yahoo
 
     def test_read_asks_yahoo_for_the_marked_symbol(self, tmp_path, frame):
