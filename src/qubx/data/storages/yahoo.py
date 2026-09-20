@@ -1,5 +1,5 @@
 """
-Yahoo Finance storage — daily and coarser bars for stocks, ETFs and indices.
+Yahoo Finance storage — daily and coarser bars.
 
 Bars are cached on disk as parquet through the existing caching layer, so a window already on disk
 is not requested again.
@@ -8,6 +8,14 @@ is not requested again.
     reader = storage["YAHOO", "STOCK"]
     reader.read("SPY", "ohlc(1d)", "2010-01-01", "now").to_pd()            # - adjusted (default)
     reader.read("SPY", "ohlc(1d)", "2010-01-01", "now", adjusted=False)    # - as traded
+
+Yahoo's symbol carries the instrument class, so every market type is served by the same reader and
+the label is only there to make the call read correctly. Measured 2026-09-20, all with daily history
+back to 2002 apart from the newer ones:
+
+    STOCK    SPY AAPL VFIAX        FX       EURUSD=X USDJPY=X
+    INDEX    ^GSPC ^NDX ^VIX ^TNX  FUTURE   ES=F ZN=F CL=F GC=F
+    ETF      TLT IEF AGG           CRYPTO   BTC-USD ETH-USD
 
 One copy per symbol is cached: the unadjusted `open/high/low/close/volume` plus Yahoo's `adjclose`.
 `adjusted=True` is applied by this reader after the cache, by scaling OHLC with `adjclose / close`,
@@ -52,7 +60,8 @@ _INTERVALS: dict[str, str] = {"1d": "1d", "1w": "1wk", "1M": "1mo"}
 COLUMNS = ("open", "high", "low", "close", "adjclose", "volume")
 
 EXCHANGE = "YAHOO"
-MARKET_TYPE = "STOCK"
+# - labels only: the class is in the symbol, and one reader serves all of them
+MARKET_TYPES = ("STOCK", "ETF", "FUND", "INDEX", "FUTURE", "FX", "CRYPTO")
 
 
 def _yfinance():
@@ -87,9 +96,7 @@ def _epoch(t: str | pd.Timestamp | None, default: int) -> int:
 
 
 def empty_frame() -> pd.DataFrame:
-    return pd.DataFrame(
-        {c: pd.Series(dtype="float64") for c in COLUMNS}, index=pd.DatetimeIndex([], name="timestamp")
-    )
+    return pd.DataFrame({c: pd.Series(dtype="float64") for c in COLUMNS}, index=pd.DatetimeIndex([], name="timestamp"))
 
 
 def normalize(frame: pd.DataFrame) -> pd.DataFrame:
@@ -306,11 +313,14 @@ class YahooStorage(IStorage):
         return [EXCHANGE]
 
     def get_market_types(self, exchange: str) -> list[str]:
-        return [MARKET_TYPE] if exchange.upper() == EXCHANGE else []
+        return list(MARKET_TYPES) if exchange.upper() == EXCHANGE else []
 
     def get_reader(self, exchange: str, market: str) -> IReader:
         if exchange.upper() != EXCHANGE:
             raise ValueError(f"Yahoo storage has one exchange, '{EXCHANGE}', not '{exchange}'")
+        if market.upper() not in MARKET_TYPES:
+            raise ValueError(f"Unknown market type '{market}' for Yahoo; one of {MARKET_TYPES}")
+        # - the same reader and the same cache serve every market type
         if self._reader is None:
             fetch = YahooFetchReader(YahooFetcher(**self._fetcher_kwargs))
             cache = ParquetCache(self._path)

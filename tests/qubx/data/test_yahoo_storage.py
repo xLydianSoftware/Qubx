@@ -234,3 +234,19 @@ class TestNonEquitySymbols:
             f"WHERE data_id = '{symbol}'"
         ).fetchone()
         assert rows is not None and rows[0] == 10
+
+
+class TestMarketTypes:
+    def test_every_label_shares_one_reader_and_cache(self, tmp_path, frame):
+        st = YahooStorage(str(tmp_path))
+        stub = StubFetcher(frame)
+        st.get_reader("YAHOO", "STOCK")._inner._reader._fetcher = stub  # type: ignore[attr-defined]
+
+        st["YAHOO", "FX"].read("EURUSD=X", "ohlc(1d)", "2024-01-01", "2024-01-10")
+        # - a second label must not open a second reader, or the cache would be bypassed
+        st["YAHOO", "FUTURE"].read("EURUSD=X", "ohlc(1d)", "2024-01-01", "2024-01-10")
+        assert len(stub.calls) == 1
+
+    def test_unknown_market_type_raises(self, tmp_path):
+        with pytest.raises(ValueError):
+            YahooStorage(str(tmp_path)).get_reader("YAHOO", "OPTIONS")
