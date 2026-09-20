@@ -50,6 +50,7 @@ from qubx.data.cache import CachedReader, ParquetCache
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
+from qubx.utils.misc import get_local_data_cache_folder
 
 # - Yahoo's own interval spellings for the timeframes with usable history
 _INTERVALS: dict[str, str] = {"1d": "1d", "1w": "1wk", "1M": "1mo"}
@@ -360,8 +361,8 @@ class YahooStorage(IStorage):
         YahooReader(adjust) -> CachedReader(ParquetCache) -> YahooFetchReader(yfinance)
     """
 
-    def __init__(self, path: str = "~/.qubx/yahoo", prefetch_period: str | None = None, **kwargs) -> None:
-        self._path = Path(os.path.expanduser(path))
+    def __init__(self, path: str | None = None, prefetch_period: str | None = None, **kwargs) -> None:
+        self._path = Path(os.path.expanduser(path)) if path else Path(get_local_data_cache_folder("yahoo"))
         self._path.mkdir(parents=True, exist_ok=True)
         self._prefetch_period = prefetch_period
         self._fetcher_kwargs = kwargs

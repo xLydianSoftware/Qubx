@@ -10,6 +10,7 @@ from qubx.core.basics import DataType
 from qubx.data.cache import ParquetCache
 from qubx.data.containers import RawData
 from qubx.data.registry import StorageRegistry
+from qubx.data.storages import yahoo as yahoo_module
 from qubx.data.storages.yahoo import YahooStorage, _timeframe_of, from_yahoo, normalize, to_yahoo
 
 
@@ -329,3 +330,26 @@ class TestMarketTypes:
     def test_unknown_market_type_raises(self, tmp_path):
         with pytest.raises(ValueError):
             YahooStorage(str(tmp_path)).get_reader("YAHOO", "OPTIONS")
+
+
+class TestDefaultPath:
+    def test_no_path_means_the_shared_cache_folder(self, tmp_path, monkeypatch):
+        """
+        StorageRegistry.get("yahoo") with no URI must land in ~/.qubx/data/cached/yahoo, and each
+        storage needs its own subfolder: the cache is keyed by data type and symbol only, so
+        Yahoo's SPY and Dukascopy's SPY would otherwise share a file.
+        """
+        called = {}
+
+        def fake_folder(name=""):
+            called["name"] = name
+            return str(tmp_path / name)
+
+        monkeypatch.setattr(yahoo_module, "get_local_data_cache_folder", fake_folder)
+        st = StorageRegistry.get("yahoo")
+
+        assert called["name"] == "yahoo"
+        assert st._path == tmp_path / "yahoo"
+
+    def test_an_explicit_path_still_wins(self, tmp_path):
+        assert StorageRegistry.get(f"yahoo::{tmp_path}")._path == tmp_path

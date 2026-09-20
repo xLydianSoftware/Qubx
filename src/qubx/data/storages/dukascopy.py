@@ -63,6 +63,7 @@ from qubx.data.cache import CachedReader, ParquetCache
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.registry import storage
 from qubx.data.storage import IReader, IStorage, Transformable
+from qubx.utils.misc import get_local_data_cache_folder
 from qubx.utils.rate_limiter import TokenBucketRateLimiter
 
 BASE_URL = "http://www.dukascopy.com/datafeed"
@@ -565,13 +566,13 @@ class DukascopyStorage(IStorage):
 
     def __init__(
         self,
-        path: str = "~/.qubx/dukascopy",
+        path: str | None = None,
         prefetch_period: str | None = None,
         requests_per_second: float = 5.0,
         catalogue: Instruments | None = None,
         **kwargs,
     ) -> None:
-        self._path = Path(os.path.expanduser(path))
+        self._path = Path(os.path.expanduser(path)) if path else Path(get_local_data_cache_folder("dukascopy"))
         self._path.mkdir(parents=True, exist_ok=True)
         self._prefetch_period = prefetch_period
         self._requests_per_second = requests_per_second

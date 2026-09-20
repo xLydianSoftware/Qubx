@@ -12,6 +12,8 @@ from datetime import datetime, timezone
 import pandas as pd
 import pytest
 
+from qubx.data.registry import StorageRegistry
+from qubx.data.storages import dukascopy as dukascopy_module
 from qubx.data.storages.dukascopy import (
     DATAFEED_HEADERS,
     DukascopyFetcher,
@@ -345,3 +347,32 @@ class TestHeaders:
         assert "Mozilla" in lowered["User-agent".lower()]
         assert lowered["referer"].startswith("https://www.dukascopy.com")
         assert seen["url"].endswith("EURUSD/2024/02/05/10h_ticks.bi5")
+
+
+class TestDefaultPath:
+    def test_no_path_means_the_shared_cache_folder(self, tmp_path, monkeypatch):
+        called = {}
+
+        def fake_folder(name=""):
+            called["name"] = name
+            return str(tmp_path / name)
+
+        monkeypatch.setattr(dukascopy_module, "get_local_data_cache_folder", fake_folder)
+        st = StorageRegistry.get("dukascopy")
+
+        assert called["name"] == "dukascopy"
+        assert st._path == tmp_path / "dukascopy"
+
+    def test_an_explicit_path_still_wins(self, tmp_path):
+        assert StorageRegistry.get(f"dukascopy::{tmp_path}")._path == tmp_path
+
+
+def test_registered_without_importing_the_module():
+    """
+    The @storage decorator only runs when the module is imported, so qubx.data must import it.
+    Without that, StorageRegistry.get("dukascopy") raises for anyone who has not touched the module.
+    """
+    import qubx.data  # noqa: F401
+
+    assert StorageRegistry.is_registered("dukascopy")
+    assert StorageRegistry.is_registered("yahoo")

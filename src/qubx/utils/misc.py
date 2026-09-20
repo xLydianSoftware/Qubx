@@ -61,6 +61,18 @@ def get_local_qubx_folder() -> str:
     return _QUBX_FLDR
 
 
+def get_local_data_cache_folder(name: str = "") -> str:
+    """
+    Where a storage keeps its local cache: ``~/.qubx/data/cached`` or, with a name,
+    ``~/.qubx/data/cached/<name>``. Created if missing.
+
+    Each storage takes its own subfolder because the cache is keyed by data type and symbol only:
+    Yahoo's SPY and Dukascopy's SPY would otherwise land in the same file.
+    """
+    base = os.path.join(get_local_qubx_folder(), "data", "cached")
+    return makedirs(os.path.join(base, name) if name else base)
+
+
 def get_current_user() -> str:
     """
     Get current user's username.
