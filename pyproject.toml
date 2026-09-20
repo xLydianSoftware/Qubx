@@ -104,6 +104,10 @@ connectors = ["ccxt>=4.5.46,<5"]
 binance = ["python-binance>=1.0.19,<2"]
 # - - - Bitfinex-specific (custom API client) - - - 
 bitfinex = ["qubx-bitfinex-api>=3.0.7,<4"]
+# - - - Yahoo Finance data (qubx.data.storages.yahoo) - - - 
+# - Yahoo rejects plain HTTP clients (429 even with browser headers and a session cookie);
+# - yfinance carries the browser-impersonation machinery that gets past it.
+yahoo = ["yfinance>=0.2.54"]
 # - - - Visualization & charting - - - 
 viz = [
     "matplotlib>=3.8.4,<4",
