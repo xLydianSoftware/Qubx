@@ -6,12 +6,14 @@ serves synthesised `.bi5` bodies.
 import json
 import struct
 import time
+import urllib.request
 from datetime import datetime, timezone
 
 import pandas as pd
 import pytest
 
 from qubx.data.storages.dukascopy import (
+    DATAFEED_HEADERS,
     DukascopyFetcher,
     DukascopyStorage,
     Instruments,
@@ -307,3 +309,39 @@ class TestDailyBoundary:
         assert list(daily.index) == [pd.Timestamp("2024-03-04"), pd.Timestamp("2024-03-05")]
         assert daily["open"].iloc[0] == pytest.approx(1.0)
         assert daily["close"].iloc[0] == pytest.approx(1.05 + 23 / 1000)
+
+
+class TestHeaders:
+    def test_datafeed_requests_carry_a_browser_agent(self):
+        """
+        With urllib's default agent the feed answered 429 after about 50 requests at 0.2 req/s;
+        with these headers 600 requests at the same pace drew none.
+        """
+        assert "Mozilla" in DATAFEED_HEADERS["User-Agent"]
+        assert DATAFEED_HEADERS["Referer"].startswith("https://www.dukascopy.com")
+
+    def test_the_request_is_built_with_them(self, monkeypatch):
+        seen = {}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return b""
+
+        def fake_urlopen(request, timeout=None):
+            seen["headers"] = dict(request.header_items())
+            seen["url"] = request.full_url
+            return Response()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        DukascopyFetcher(requests_per_second=1000.0).get("EURUSD/2024/02/05/10h_ticks.bi5")
+
+        lowered = {k.lower(): v for k, v in seen["headers"].items()}
+        assert "Mozilla" in lowered["User-agent".lower()]
+        assert lowered["referer"].startswith("https://www.dukascopy.com")
+        assert seen["url"].endswith("EURUSD/2024/02/05/10h_ticks.bi5")
