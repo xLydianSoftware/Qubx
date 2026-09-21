@@ -37,9 +37,9 @@ import pytest
 
 from qubx.connectors.ccxt import factory
 from qubx.connectors.ccxt.exchange_manager import ExchangeManager
-from qubx.connectors.ccxt.rate_limits import install_rate_limiter_hooks
+from qubx.connectors.ccxt.rate_limits import install_rate_limiter_hooks, retryable_fetch
 from qubx.core.basics import LiveTimeProvider
-from qubx.data.storages.ccxt import CcxtFetchExhausted, CcxtStorage, _retryable_fetch
+from qubx.data.storages.ccxt import CcxtFetchExhausted, CcxtStorage
 from qubx.health.dummy import DummyHealthMonitor
 from qubx.rate_limiting import (
     EndpointCosts,
@@ -108,9 +108,7 @@ class FakeCcxtExchange:
     async def _default_throttle(self, cost: float | None = None) -> None:
         return None
 
-    def _default_on_rest_response(
-        self, code, reason, url, method, headers, body, req_headers, req_body
-    ) -> None:
+    def _default_on_rest_response(self, code, reason, url, method, headers, body, req_headers, req_body) -> None:
         return None
 
     async def fetch_ohlcv(
@@ -157,27 +155,28 @@ class FakeCcxtExchange:
         #    Once the hooks are installed this invokes the header parser, which calls
         #    ``rate_limiter.sync_from_exchange(...)``.
         self.on_rest_response(
-            200, "OK", f"https://fake/{symbol}", "GET",
-            response_headers, "{}", {}, None,
+            200,
+            "OK",
+            f"https://fake/{symbol}",
+            "GET",
+            response_headers,
+            "{}",
+            {},
+            None,
         )
 
         # Simulate OKX-style behavior: cap each page at ``bars_per_page`` regardless of
         # caller's ``limit`` — forces pagination to iterate.
         n = min(limit or self.bars_per_page, self.bars_per_page)
         start = since or 0
-        return [
-            [start + i * TF_MS, 50_000.0, 50_100.0, 49_900.0, 50_050.0, 100.0]
-            for i in range(n)
-        ]
+        return [[start + i * TF_MS, 50_000.0, 50_100.0, 49_900.0, 50_050.0, 100.0] for i in range(n)]
 
 
 def _build_rate_limiter(*, capacity: int, refill_rate: float, cooldown: float = 0.2) -> ExchangeRateLimiter:
     """Single-pool IP-scoped rate limiter on the ``ccxt_rest`` endpoint."""
     config = ExchangeRateLimitConfig(
         pools={
-            "ccxt_rest": PoolConfig(
-                "ccxt_rest", "ip", capacity, refill_rate, cooldown=cooldown
-            ),
+            "ccxt_rest": PoolConfig("ccxt_rest", "ip", capacity, refill_rate, cooldown=cooldown),
         },
         endpoint_map={"rest": EndpointCosts([("ccxt_rest", 1)])},
         default_costs=EndpointCosts([("ccxt_rest", 1)]),
@@ -282,15 +281,11 @@ class TestCcxtStorageRateLimitBudget:
 
     async def test_rate_limiter_prevents_429_under_concurrent_load(self):
         fake = self._fake_exchange()
-        limiter = _build_rate_limiter(
-            capacity=self.LIMITER_CAPACITY, refill_rate=self.LIMITER_REFILL_RPS
-        )
+        limiter = _build_rate_limiter(capacity=self.LIMITER_CAPACITY, refill_rate=self.LIMITER_REFILL_RPS)
         storage = _build_storage(exchange=fake, limiter=limiter)
 
         since, until = self._spans()
-        result = await storage._async_fetch_ohlcv_multi(
-            fake, _instruments(*self.SYMBOLS), "1h", since, until
-        )
+        result = await storage._async_fetch_ohlcv_multi(fake, _instruments(*self.SYMBOLS), "1h", since, until)
 
         assert set(result.keys()) == set(self.SYMBOLS)
         for sym in self.SYMBOLS:
@@ -300,8 +295,7 @@ class TestCcxtStorageRateLimitBudget:
                 "rate-limiter may have forced a premature exit"
             )
         assert fake.rate_limit_hits == 0, (
-            f"rate limiter failed to prevent 429s: "
-            f"{fake.rate_limit_hits} hits out of {fake.call_count} calls"
+            f"rate limiter failed to prevent 429s: {fake.rate_limit_hits} hits out of {fake.call_count} calls"
         )
 
     async def test_without_rate_limiter_triggers_429s(self):
@@ -313,9 +307,7 @@ class TestCcxtStorageRateLimitBudget:
         # ``gather(return_exceptions=True)`` inside the storage swallows 429s into [],
         # which is exactly the silent-degradation bug from #264. We only care here
         # that the mock *observed* the 429 pressure.
-        await storage._async_fetch_ohlcv_multi(
-            fake, _instruments(*self.SYMBOLS), "1h", since, until
-        )
+        await storage._async_fetch_ohlcv_multi(fake, _instruments(*self.SYMBOLS), "1h", since, until)
 
         assert fake.rate_limit_hits > 0, (
             "test harness is broken: without rate limiter the mock should observe "
@@ -324,9 +316,7 @@ class TestCcxtStorageRateLimitBudget:
 
     async def test_limiter_acquire_called_for_every_page_fetch(self, monkeypatch):
         fake = self._fake_exchange()
-        limiter = _build_rate_limiter(
-            capacity=self.LIMITER_CAPACITY, refill_rate=self.LIMITER_REFILL_RPS
-        )
+        limiter = _build_rate_limiter(capacity=self.LIMITER_CAPACITY, refill_rate=self.LIMITER_REFILL_RPS)
         storage = _build_storage(exchange=fake, limiter=limiter)
 
         acquire_calls: list[str] = []
@@ -339,14 +329,10 @@ class TestCcxtStorageRateLimitBudget:
         monkeypatch.setattr(limiter, "acquire", _spy)
 
         since, until = self._spans()
-        await storage._async_fetch_ohlcv_multi(
-            fake, _instruments(*self.SYMBOLS), "1h", since, until
-        )
+        await storage._async_fetch_ohlcv_multi(fake, _instruments(*self.SYMBOLS), "1h", since, until)
 
         expected_min = len(self.SYMBOLS) * self.PAGES_PER_SYMBOL
-        assert len(acquire_calls) >= expected_min, (
-            f"expected ≥{expected_min} acquire calls, got {len(acquire_calls)}"
-        )
+        assert len(acquire_calls) >= expected_min, f"expected ≥{expected_min} acquire calls, got {len(acquire_calls)}"
         assert all(e == "rest" for e in acquire_calls), f"unexpected endpoints: {set(acquire_calls) - {'rest'}}"
 
 
@@ -363,9 +349,7 @@ class TestStorageChargesRealCcxtCost:
 
     @pytest.mark.parametrize("cost", [5.0, 1.0])
     async def test_consumed_is_pages_times_the_ccxt_cost(self, cost: float):
-        fake = FakeCcxtExchange(
-            max_rps=1000, bars_per_page=self.BARS_PER_PAGE, latency_ms=0.0, throttle_cost=cost
-        )
+        fake = FakeCcxtExchange(max_rps=1000, bars_per_page=self.BARS_PER_PAGE, latency_ms=0.0, throttle_cost=cost)
         limiter = _build_rate_limiter(capacity=100, refill_rate=1000.0)
         storage = _build_storage(exchange=fake, limiter=limiter)
 
@@ -379,9 +363,7 @@ class TestStorageChargesRealCcxtCost:
 
     async def test_nothing_is_consumed_without_a_limiter(self):
         """Negative control: the charge originates in the hook, so no limiter means no hook."""
-        fake = FakeCcxtExchange(
-            max_rps=1000, bars_per_page=self.BARS_PER_PAGE, latency_ms=0.0, throttle_cost=5.0
-        )
+        fake = FakeCcxtExchange(max_rps=1000, bars_per_page=self.BARS_PER_PAGE, latency_ms=0.0, throttle_cost=5.0)
         limiter = _build_rate_limiter(capacity=100, refill_rate=1000.0)
         storage = _build_storage(exchange=fake, limiter=None)
 
@@ -456,7 +438,7 @@ class _ThrottlingFailingExchange(FakeCcxtExchange):
 @pytest.mark.asyncio
 class TestRetryableFetch:
     """
-    Exercises the ``_retryable_fetch`` helper directly, using an injected
+    Exercises the ``retryable_fetch`` helper directly, using an injected
     ``sleep`` to keep the tests deterministic (no wall-clock waits).
     """
 
@@ -471,7 +453,7 @@ class TestRetryableFetch:
             calls += 1
             return "ok"
 
-        result = await _retryable_fetch(call, sleep=self._no_sleep)
+        result = await retryable_fetch(call, sleep=self._no_sleep)
         assert result == "ok"
         assert calls == 1
 
@@ -485,9 +467,7 @@ class TestRetryableFetch:
                 raise ccxt.RateLimitExceeded(f"attempt {attempts}: too many")
             return "eventually"
 
-        result = await _retryable_fetch(
-            call, max_attempts=5, base_delay=0.0, jitter=0.0, sleep=self._no_sleep
-        )
+        result = await retryable_fetch(call, max_attempts=5, base_delay=0.0, jitter=0.0, sleep=self._no_sleep)
         assert result == "eventually"
         assert attempts == 3
 
@@ -501,9 +481,7 @@ class TestRetryableFetch:
                 raise ccxt.NetworkError("transient DNS blip")
             return 42
 
-        result = await _retryable_fetch(
-            call, max_attempts=3, base_delay=0.0, jitter=0.0, sleep=self._no_sleep
-        )
+        result = await retryable_fetch(call, max_attempts=3, base_delay=0.0, jitter=0.0, sleep=self._no_sleep)
         assert result == 42
         assert attempts == 2
 
@@ -517,9 +495,7 @@ class TestRetryableFetch:
                 raise asyncio.TimeoutError()
             return "done"
 
-        result = await _retryable_fetch(
-            call, max_attempts=3, base_delay=0.0, jitter=0.0, sleep=self._no_sleep
-        )
+        result = await retryable_fetch(call, max_attempts=3, base_delay=0.0, jitter=0.0, sleep=self._no_sleep)
         assert result == "done"
         assert attempts == 2
 
@@ -532,9 +508,7 @@ class TestRetryableFetch:
             raise ccxt.RateLimitExceeded(f"attempt {attempts}")
 
         with pytest.raises(ccxt.RateLimitExceeded, match="attempt 4"):
-            await _retryable_fetch(
-                call, max_attempts=4, base_delay=0.0, jitter=0.0, sleep=self._no_sleep
-            )
+            await retryable_fetch(call, max_attempts=4, base_delay=0.0, jitter=0.0, sleep=self._no_sleep)
         assert attempts == 4
 
     async def test_permanent_error_is_not_retried(self):
@@ -546,9 +520,7 @@ class TestRetryableFetch:
             raise ccxt.BadSymbol("unknown symbol XYZ")
 
         with pytest.raises(ccxt.BadSymbol):
-            await _retryable_fetch(
-                call, max_attempts=5, base_delay=0.0, jitter=0.0, sleep=self._no_sleep
-            )
+            await retryable_fetch(call, max_attempts=5, base_delay=0.0, jitter=0.0, sleep=self._no_sleep)
         assert attempts == 1  # no retries on permanent error
 
     async def test_non_ccxt_exception_is_not_retried(self):
@@ -560,9 +532,7 @@ class TestRetryableFetch:
             raise ValueError("programmer error")
 
         with pytest.raises(ValueError):
-            await _retryable_fetch(
-                call, max_attempts=5, base_delay=0.0, jitter=0.0, sleep=self._no_sleep
-            )
+            await retryable_fetch(call, max_attempts=5, base_delay=0.0, jitter=0.0, sleep=self._no_sleep)
         assert attempts == 1
 
     async def test_does_not_acquire_the_limiter_directly(self):
@@ -572,7 +542,7 @@ class TestRetryableFetch:
 
         class _ExplodingLimiter:
             async def acquire(self, *a: Any, **kw: Any) -> None:
-                raise AssertionError("_retryable_fetch must not acquire — the throttle hook does")
+                raise AssertionError("retryable_fetch must not acquire — the throttle hook does")
 
             def report_limit_hit(self, **kw: Any) -> None:
                 pass
@@ -584,7 +554,7 @@ class TestRetryableFetch:
                 raise ccxt.NetworkError("boom")
             return "ok"
 
-        result = await _retryable_fetch(
+        result = await retryable_fetch(
             call,
             rate_limiter=_ExplodingLimiter(),
             max_attempts=5,
@@ -601,7 +571,7 @@ class TestRetryableFetch:
         limiter = _build_rate_limiter(capacity=100, refill_rate=1000.0)
         install_rate_limiter_hooks(fake, limiter, label="FAKE.X")
 
-        result = await _retryable_fetch(
+        result = await retryable_fetch(
             lambda: fake.fetch_ohlcv("BTC/USDT", "1h"),
             rate_limiter=limiter,
             max_attempts=5,
@@ -617,11 +587,11 @@ class TestRetryableFetch:
 
     async def test_nothing_is_charged_without_the_throttle_hook(self):
         """Negative control for the test above: the charge comes from the installed hook, not
-        from ``_retryable_fetch``."""
+        from ``retryable_fetch``."""
         fake = _ThrottlingFailingExchange(fail_times=2, max_rps=1000, latency_ms=0.0, throttle_cost=2.0)
         limiter = _build_rate_limiter(capacity=100, refill_rate=1000.0)
 
-        await _retryable_fetch(
+        await retryable_fetch(
             lambda: fake.fetch_ohlcv("BTC/USDT", "1h"),
             rate_limiter=limiter,
             max_attempts=5,
@@ -653,7 +623,7 @@ class TestRetryableFetch:
                 raise ccxt.RateLimitExceeded("50011: Too Many Requests")
             return "ok"
 
-        await _retryable_fetch(
+        await retryable_fetch(
             call,
             rate_limiter=_Limiter(),
             rate_limit_pool="ccxt_rest",
@@ -690,8 +660,12 @@ class TestRetryableFetch:
                 raise ccxt.NetworkError("DNS glitch")
             return "ok"
 
-        await _retryable_fetch(
-            call, rate_limiter=_Limiter(), max_attempts=3, base_delay=0.0, jitter=0.0,
+        await retryable_fetch(
+            call,
+            rate_limiter=_Limiter(),
+            max_attempts=3,
+            base_delay=0.0,
+            jitter=0.0,
             sleep=self._no_sleep,
         )
         assert hits == []
@@ -711,7 +685,7 @@ class TestRetryableFetch:
             raise ccxt.NetworkError(f"attempt {attempts}")
 
         with pytest.raises(ccxt.NetworkError):
-            await _retryable_fetch(
+            await retryable_fetch(
                 call,
                 max_attempts=6,
                 base_delay=1.0,
@@ -749,11 +723,9 @@ class FlakyFakeExchange(FakeCcxtExchange):
     async def fetch_ohlcv(self, *args: Any, **kwargs: Any) -> list[list[float]]:
         # Budget-check and normal fetch first — if the real budget trips, let it propagate.
         if self._rng.random() < self._failure_rate:
-            self.call_count += 1       # this is a real request attempt from the exchange's POV
+            self.call_count += 1  # this is a real request attempt from the exchange's POV
             self.injected_failures += 1
-            raise ccxt.RateLimitExceeded(
-                f"flaky: injected 50011 at call #{self.call_count}"
-            )
+            raise ccxt.RateLimitExceeded(f"flaky: injected 50011 at call #{self.call_count}")
         return await super().fetch_ohlcv(*args, **kwargs)
 
 
@@ -785,13 +757,9 @@ class TestCcxtStorageFlakyExchangeRetries:
         storage = _build_storage(exchange=flaky, limiter=limiter)
 
         since, until = self._spans()
-        result = await storage._async_fetch_ohlcv_multi(
-            flaky, _instruments(*self.SYMBOLS), "1h", since, until
-        )
+        result = await storage._async_fetch_ohlcv_multi(flaky, _instruments(*self.SYMBOLS), "1h", since, until)
 
-        assert flaky.injected_failures > 0, (
-            "test harness: failure injection is expected to fire at least once"
-        )
+        assert flaky.injected_failures > 0, "test harness: failure injection is expected to fire at least once"
         for sym in self.SYMBOLS:
             assert len(result[sym]) >= self.BARS_PER_PAGE * self.PAGES_PER_SYMBOL, (
                 f"{sym}: got {len(result[sym])} bars despite retry — injected={flaky.injected_failures} "
@@ -815,9 +783,7 @@ class TestCcxtStorageFlakyExchangeRetries:
 
         since, until = self._spans()
         with pytest.raises(CcxtFetchExhausted) as excinfo:
-            await storage._async_fetch_ohlcv_multi(
-                flaky, _instruments(*self.SYMBOLS), "1h", since, until
-            )
+            await storage._async_fetch_ohlcv_multi(flaky, _instruments(*self.SYMBOLS), "1h", since, until)
 
         assert set(excinfo.value.failures) == set(self.SYMBOLS)
         assert excinfo.value.total_requested == len(self.SYMBOLS)
@@ -842,12 +808,11 @@ class TestCcxtStorageFlakyExchangeRetries:
         storage = _build_storage(exchange=flaky, limiter=limiter, strict_fetch=False)
 
         since, until = self._spans()
-        result = await storage._async_fetch_ohlcv_multi(
-            flaky, [("BTC/USDT", "BTCUSDT")], "1h", since, until
-        )
+        result = await storage._async_fetch_ohlcv_multi(flaky, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
 
         assert result == {"BTCUSDT": []}
         from qubx.data.storages.ccxt import _RETRY_MAX_ATTEMPTS
+
         assert flaky.call_count == _RETRY_MAX_ATTEMPTS, (
             f"expected exactly {_RETRY_MAX_ATTEMPTS} attempts, got {flaky.call_count}"
         )
@@ -883,7 +848,9 @@ class TestCcxtStorageFlakyExchangeRetries:
             await storage._async_fetch_ohlcv_multi(
                 flaky,
                 [("BTC/USDT", "BTCUSDT"), ("LINK/USDT", "LINKUSDT"), ("ETH/USDT", "ETHUSDT")],
-                "1h", since, until,
+                "1h",
+                since,
+                until,
             )
 
         # only LINKUSDT failed; others completed normally (proof failures dict is precise)
@@ -946,9 +913,7 @@ class TestResponseHeaderSync:
         sync_calls = self._spy_sync(limiter)
 
         since, until = self._spans()
-        await storage._async_fetch_ohlcv_multi(
-            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
-        )
+        await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
 
         # Sync happens once per successful page. Pagination issues at least
         # ``PAGES_PER_SYMBOL`` pages for the requested window (and sometimes one
@@ -975,9 +940,7 @@ class TestResponseHeaderSync:
         sync_calls = self._spy_sync(limiter)
 
         since, until = _span_for_pages(3, self.BARS_PER_PAGE)
-        await storage._async_fetch_ohlcv_multi(
-            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
-        )
+        await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
 
         # neither the canonical constant nor lowercase — the parser's lookup is case-insensitive
         assert "X-Mbx-Used-Weight-1m" in fake.last_response_headers
@@ -1009,9 +972,7 @@ class TestResponseHeaderSync:
         sync_calls = self._spy_sync(limiter)
 
         since, until = _span_for_pages(3, self.BARS_PER_PAGE)
-        await storage._async_fetch_ohlcv_multi(
-            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
-        )
+        await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
 
         assert fake.last_response_headers["X-Mbx-Used-Weight-1m"] == "999"  # the decoy is in place
         assert [c["used"] for c in sync_calls] == [1, 2, 3]
@@ -1081,9 +1042,7 @@ class TestResponseHeaderSync:
         limiter.sync_from_exchange = lambda *a, **kw: sync_calls.append((a, kw))  # type: ignore[method-assign]
 
         since, until = self._spans()
-        result = await storage._async_fetch_ohlcv_multi(
-            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
-        )
+        result = await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
         # fetch still succeeded; sync just didn't happen
         assert len(result["BTCUSDT"]) >= self.BARS_PER_PAGE * self.PAGES_PER_SYMBOL
         assert sync_calls == []
@@ -1104,9 +1063,7 @@ class TestResponseHeaderSync:
         limiter.sync_from_exchange = lambda *a, **kw: sync_calls.append((a, kw))  # type: ignore[method-assign]
 
         since, until = self._spans()
-        await storage._async_fetch_ohlcv_multi(
-            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
-        )
+        await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
         assert sync_calls == []
 
     async def test_parser_exception_is_swallowed(self, monkeypatch):
@@ -1130,9 +1087,7 @@ class TestResponseHeaderSync:
 
         since, until = self._spans()
         # Should complete normally despite the broken parser.
-        result = await storage._async_fetch_ohlcv_multi(
-            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
-        )
+        result = await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
         assert len(result["BTCUSDT"]) >= self.BARS_PER_PAGE * self.PAGES_PER_SYMBOL
 
     async def test_no_rate_limiter_skips_sync(self):
@@ -1148,9 +1103,7 @@ class TestResponseHeaderSync:
 
         since, until = self._spans()
         # Exercise the code path — should simply not error.
-        result = await storage._async_fetch_ohlcv_multi(
-            fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until
-        )
+        result = await storage._async_fetch_ohlcv_multi(fake, [("BTC/USDT", "BTCUSDT")], "1h", since, until)
         assert len(result["BTCUSDT"]) >= self.BARS_PER_PAGE * self.PAGES_PER_SYMBOL
 
 
@@ -1228,23 +1181,22 @@ class TestRateLimiterE2ECrossSubsystem:
         until = since + 29 * TF_MS  # ~3 pages per symbol
 
         async def storage_worker() -> dict[str, list]:
-            return await storage._async_fetch_ohlcv_multi(
-                fake, storage_symbols, "1h", since, until
-            )
+            return await storage._async_fetch_ohlcv_multi(fake, storage_symbols, "1h", since, until)
 
         async def manager_worker() -> int:
             """Burst 10 direct REST calls through the ExchangeManager-wrapped exchange."""
             hits = 0
             for i in range(10):
                 bars = await manager.exchange.fetch_ohlcv(
-                    "BTC/USDT", "1h", since=since + i * TF_MS, limit=1,
+                    "BTC/USDT",
+                    "1h",
+                    since=since + i * TF_MS,
+                    limit=1,
                 )
                 hits += len(bars)
             return hits
 
-        storage_result, manager_bars = await asyncio.gather(
-            storage_worker(), manager_worker()
-        )
+        storage_result, manager_bars = await asyncio.gather(storage_worker(), manager_worker())
 
         # --- Assertions -------------------------------------------------------
         # Exchange was never rate-limited — the token bucket stayed below budget.
@@ -1303,9 +1255,7 @@ class TestRateLimiterE2ECrossSubsystem:
 
     async def test_parserless_exchange_drives_no_sync(self):
         """Negative control for the test above: no parser for the id, no sync at all."""
-        fake = FakeCcxtExchange(
-            id="exchange-without-a-parser", max_rps=1000, latency_ms=0.0, server_budget=1_000
-        )
+        fake = FakeCcxtExchange(id="exchange-without-a-parser", max_rps=1000, latency_ms=0.0, server_budget=1_000)
         limiter = _build_rate_limiter(capacity=1000, refill_rate=1000.0)
         storage = _build_storage(exchange=fake, limiter=limiter)
 
@@ -1350,10 +1300,7 @@ class TestRateLimiterE2ECrossSubsystem:
         # Fire 20 concurrent requests — well above the mock's 10 req/s.
         N = 20
         results = await asyncio.gather(
-            *[
-                manager.exchange.fetch_ohlcv("BTC/USDT", "1h", since=1, limit=1)
-                for _ in range(N)
-            ],
+            *[manager.exchange.fetch_ohlcv("BTC/USDT", "1h", since=1, limit=1) for _ in range(N)],
             return_exceptions=True,
         )
 
@@ -1362,7 +1309,6 @@ class TestRateLimiterE2ECrossSubsystem:
             f"some fetches raised: {[r for r in results if isinstance(r, BaseException)]}"
         )
         assert fake.rate_limit_hits == 0, (
-            f"ExchangeManager path leaked {fake.rate_limit_hits} 429s — throttle "
-            "override did not prevent budget breach"
+            f"ExchangeManager path leaked {fake.rate_limit_hits} 429s — throttle override did not prevent budget breach"
         )
         assert fake.call_count == N

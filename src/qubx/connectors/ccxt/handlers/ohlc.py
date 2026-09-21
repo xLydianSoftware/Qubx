@@ -14,6 +14,7 @@ from qubx.core.exceptions import NotSupported
 from qubx.core.series import Bar, Quote
 from qubx.utils.time import to_timedelta
 
+from ..rate_limits import retryable_fetch
 from ..subscription_config import SubscriptionConfiguration
 from ..utils import ccxt_find_instrument, create_market_type_batched_subscriber, instrument_to_ccxt_symbol
 from .base import BaseDataTypeHandler
@@ -30,6 +31,23 @@ class OhlcDataHandler(BaseDataTypeHandler):
     @property
     def data_type(self) -> str:
         return "ohlc"
+
+    async def _fetch_ohlcv_page(self, symbol: str, timeframe: str, since: int, limit: int) -> list:
+        """One kline page, retried once on a venue refusal.
+
+        The retry is paced by the gate the reported hit closes, so it is only armed when a
+        limiter is attached — an unpaced re-send is worse than none on a venue already
+        refusing. One attempt, not the helper's default five: ``get_ohlc`` blocks the caller
+        on a 60s future, which five gate waits would blow.
+        """
+        limiter = self._exchange_manager.rate_limiter
+        return await retryable_fetch(
+            # read the exchange late: a one-shot REST path must follow a recreation
+            lambda: self._exchange_manager.exchange.fetch_ohlcv(symbol, timeframe, since=since, limit=limit),
+            rate_limiter=limiter,
+            max_attempts=2 if limiter is not None else 1,
+            context=f"{self._exchange_id} {symbol} {timeframe}",
+        )
 
     def prepare_subscription(
         self,
@@ -107,11 +125,11 @@ class OhlcDataHandler(BaseDataTypeHandler):
                 # Paginate: exchanges may return fewer bars than requested per call
                 ohlcv_map: dict[int, list] = {}
                 while len(ohlcv_map) < nbarsback:
-                    batch = await self._exchange_manager.exchange.fetch_ohlcv(
+                    batch = await self._fetch_ohlcv_page(
                         ccxt_symbol,
                         exch_timeframe,
-                        since=start_since,
-                        limit=min(nbarsback - len(ohlcv_map), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER) + 1,
+                        start_since,
+                        min(nbarsback - len(ohlcv_map), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER) + 1,
                     )
                     if not batch:
                         break
@@ -176,8 +194,8 @@ class OhlcDataHandler(BaseDataTypeHandler):
         while len(loaded_bars) < nbarsback:
             bars_to_request = min((nbarsback - len(loaded_bars)), self.MAX_BARS_PER_REQUEST_FOR_PROVIDER)
             if not (
-                ohlcv_data := await self._exchange_manager.exchange.fetch_ohlcv(
-                    ccxt_symbol, exch_timeframe, since=start_since, limit=bars_to_request + 1
+                ohlcv_data := await self._fetch_ohlcv_page(
+                    ccxt_symbol, exch_timeframe, start_since, bars_to_request + 1
                 )
             ):
                 break

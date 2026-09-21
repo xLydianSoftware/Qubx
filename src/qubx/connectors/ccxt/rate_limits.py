@@ -16,7 +16,13 @@ References:
 - Bybit: https://bybit-exchange.github.io/docs/v5/rate-limit
 """
 
+import asyncio
+import random
+from collections.abc import Awaitable, Callable
+from typing import Any
 from weakref import WeakKeyDictionary
+
+import ccxt
 
 from qubx import logger
 from qubx.rate_limiting import EndpointCosts, ExchangeRateLimitConfig, PoolConfig
@@ -429,3 +435,80 @@ def install_rate_limiter_hooks(exchange, rate_limiter, label: str = "") -> None:
         return original_on_rest(code, reason, url, method, headers, body, req_headers, req_body)
 
     exchange.on_rest_response = _header_sync_hook
+
+
+_T = Any  # explicit alias keeps the retry helper signature readable
+
+# retry defaults — conservative. tuned for warmup OHLCV bursts where transient
+# RateLimitExceeded / NetworkError are the dominant failure modes (see #264).
+_RETRY_MAX_ATTEMPTS = 5
+_RETRY_BASE_DELAY_S = 1.0
+_RETRY_MAX_DELAY_S = 30.0
+_RETRY_JITTER_S = 1.0
+
+
+async def retryable_fetch(
+    call: Callable[[], Awaitable[_T]],
+    *,
+    rate_limiter: Any = None,
+    rate_limit_pool: str = "ccxt_rest",
+    max_attempts: int = _RETRY_MAX_ATTEMPTS,
+    base_delay: float = _RETRY_BASE_DELAY_S,
+    max_delay: float = _RETRY_MAX_DELAY_S,
+    jitter: float = _RETRY_JITTER_S,
+    context: str = "",
+    sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+) -> _T:
+    """
+    Invoke ``call()`` with exponential backoff + jitter on transient CCXT errors.
+
+    Retryable errors:
+        * ``ccxt.RateLimitExceeded`` — exchange-level 429 / OKX 50011.
+        * ``ccxt.NetworkError`` (parent; also covers ``ExchangeNotAvailable``
+          and ``OnMaintenance``).
+        * ``asyncio.TimeoutError``.
+
+    Everything else (``ccxt.ExchangeError`` and subclasses like ``BadSymbol``,
+    ``AuthenticationError``, plus any non-CCXT exception) is re-raised
+    immediately — permanent errors should not consume retry budget.
+
+    Budget is acquired inside CCXT's own pipeline by the throttle hook, not here; this function only
+    reports ``RateLimitExceeded`` back so the pool's gate closes for ``cooldown`` seconds.
+
+    Args:
+        call: Zero-arg callable returning the coroutine to invoke.
+        rate_limiter: Optional ``ExchangeRateLimiter``; if provided, rate-limit
+            hits are reported back to it.
+        rate_limit_pool: Pool whose gate is closed on ``RateLimitExceeded``.
+        max_attempts: Total attempts including the initial one.
+        base_delay: First retry delay in seconds; doubles each attempt.
+        max_delay: Cap on the exponential delay.
+        jitter: Uniform jitter (0..jitter) added to each delay.
+        context: Short human label included in log lines (e.g. ``"OKX BTCUSDT"``).
+        sleep: Async sleep function (injectable for tests).
+
+    Raises:
+        The last retryable exception once ``max_attempts`` is exhausted.
+    """
+    last_exc: BaseException | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return await call()
+        except (ccxt.NetworkError, asyncio.TimeoutError) as e:
+            last_exc = e
+            if isinstance(e, ccxt.RateLimitExceeded) and rate_limiter is not None:
+                rate_limiter.report_limit_hit(
+                    pool_name=rate_limit_pool,
+                    reason=(f"{context}: " if context else "") + str(e)[:120],
+                )
+            if attempt >= max_attempts:
+                break
+            delay = min(base_delay * (2 ** (attempt - 1)), max_delay) + random.uniform(0, jitter)
+            logger.warning(
+                f"[CCXT] transient error on {context or 'fetch'} "
+                f"(attempt {attempt}/{max_attempts}): {type(e).__name__}: {e}; "
+                f"retrying in {delay:.2f}s"
+            )
+            await sleep(delay)
+    assert last_exc is not None  # unreachable: the loop always raises or returns
+    raise last_exc
