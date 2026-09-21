@@ -1486,25 +1486,33 @@ class ProcessingManager(IProcessingManager):
         _fit_is_running. Returning None hands control to
         _run_strategy_pipeline, which processes the drained signals immediately.
         """
+        # A raised op leaves the mutation it was replaying half-applied — set_universe adds the
+        # subscriptions before on_universe_change, so a failure there subscribes the instruments
+        # but never updates ctx.instruments. Latching success on that trades a stale universe
+        # until the next fit, so a replay failure fails the fit.
+        replay_error: BaseException | None = None
         try:
             for op in commit.ops:
                 try:
                     op()
                 except Exception as op_error:
+                    replay_error = replay_error or op_error
                     logger.error(f"[{self.__class__.__name__}] :: deferred fit operation failed: {op_error}")
                     logger.opt(colors=False).error(traceback.format_exc())
             try:
                 self._subscription_manager.commit()  # apply pending operations (mirrors __invoke_on_fit)
             except Exception as commit_error:
+                replay_error = replay_error or commit_error
                 logger.error(f"[{self.__class__.__name__}] :: post-fit subscription commit failed: {commit_error}")
                 logger.opt(colors=False).error(traceback.format_exc())
         finally:
             if commit.signals:
                 self._emitted_signals.extend(commit.signals)
-            if commit.error is None:
+            failed = commit.error is not None or replay_error is not None
+            if not failed:
                 self._context._strategy_state.is_on_fit_called = True
             self._fit_is_running = False
-            self._report_boot_fit(commit.error is None)
+            self._report_boot_fit(not failed)
 
     def _handle_subscription_swap(self, instrument: Instrument | None, event_type: str, apply_swap: Callable) -> None:
         """Apply a deferred subscription commit's swap on the ProcessorThread. Posted by
