@@ -66,7 +66,9 @@ from qubx.data.storage import IReader, IStorage, Transformable
 from qubx.utils.misc import get_local_data_cache_folder
 from qubx.utils.rate_limiter import TokenBucketRateLimiter
 
-BASE_URL = "http://www.dukascopy.com/datafeed"
+# - the direct host. www.dukascopy.com/datafeed answers with a 302 to this one, so going through it
+# - costs an extra request per file and has been seen to time out; https on this host does not serve.
+BASE_URL = "http://datafeed.dukascopy.com/datafeed"
 
 # - Measured 2026-09-20, one header at a time, 0.5s spacing after a quiet period: no headers 429 at
 # - request 45, Referer only 429 at 74, Accept only 429 at 60, User-Agent only 200 requests clean.
@@ -217,10 +219,10 @@ class DukascopyFetcher:
     def __init__(
         self,
         timeout: float = 30.0,
-        retries: int = 4,
+        retries: int = 6,
         requests_per_second: float = 5.0,
         burst: float = 20.0,
-        cooldown: float = 150.0,
+        cooldown: float = 30.0,
     ) -> None:
         self._timeout = timeout
         self._retries = retries
@@ -229,7 +231,12 @@ class DukascopyFetcher:
 
     def get(self, path: str) -> bytes | None:
         """
-        Decompressed bytes, or None on 404. A weekend, a holiday or a pre-listing date all 404.
+        Decompressed bytes, or None when the file is not there or the feed kept refusing.
+
+        404 means no file: a weekend, a holiday, or a date before the instrument was listed.
+        429 and 5xx mean the feed is pushing back; both drain the token bucket so every thread
+        sharing this fetcher waits, then the request is retried. Running out of retries returns
+        None and logs, because one missing hour must not abort a fetch spanning thousands.
         """
         request = urllib.request.Request(f"{BASE_URL}/{path}", headers=DATAFEED_HEADERS)
         for attempt in range(self._retries):
@@ -241,10 +248,8 @@ class DukascopyFetcher:
             except urllib.error.HTTPError as e:
                 if e.code == 404:
                     return None
-                if e.code == 429:
-                    # - drain the bucket so every thread waits out the block, not just this one
-                    self._limiter.set_tokens(-self._cooldown * self._limiter.refill_rate)
-                    logger.warning(f"[Dukascopy] 429 — pausing about {self._cooldown:.0f}s")
+                if e.code == 429 or e.code >= 500:
+                    self._back_off(e.code, attempt)
                     continue
                 raise
             except (urllib.error.URLError, TimeoutError, ConnectionResetError, lzma.LZMAError) as e:
@@ -252,7 +257,16 @@ class DukascopyFetcher:
                     logger.error(f"[Dukascopy] {path} failed after {self._retries} attempts: {e}")
                     return None
                 time.sleep(2**attempt)
+        logger.error(f"[Dukascopy] {path} still refused after {self._retries} attempts")
         return None
+
+    def _back_off(self, code: int, attempt: int) -> None:
+        """
+        Drain the bucket so every thread waits, not only the one that was refused.
+        """
+        pause = self._cooldown * (attempt + 1)
+        self._limiter.set_tokens(-pause * self._limiter.refill_rate)
+        logger.warning(f"[Dukascopy] HTTP {code} — pausing about {pause:.0f}s")
 
 
 def decode_candles(body: bytes, base: datetime, point: float) -> pd.DataFrame:

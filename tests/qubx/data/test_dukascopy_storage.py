@@ -4,8 +4,10 @@ serves synthesised `.bi5` bodies.
 """
 
 import json
+import lzma
 import struct
 import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -15,6 +17,7 @@ import pytest
 from qubx.data.registry import StorageRegistry
 from qubx.data.storages import dukascopy as dukascopy_module
 from qubx.data.storages.dukascopy import (
+    BASE_URL,
     DATAFEED_HEADERS,
     DukascopyFetcher,
     DukascopyStorage,
@@ -376,3 +379,57 @@ def test_registered_without_importing_the_module():
 
     assert StorageRegistry.is_registered("dukascopy")
     assert StorageRegistry.is_registered("yahoo")
+
+
+class TestFetcherErrors:
+    def _fetcher_with(self, monkeypatch, codes):
+        """
+        A fetcher whose urlopen raises the given HTTP codes in turn, then succeeds.
+        """
+        calls = {"n": 0}
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+            def read(self):
+                return lzma.compress(b"payload")
+
+        def fake_urlopen(request, timeout=None):
+            i = calls["n"]
+            calls["n"] += 1
+            if i < len(codes):
+                raise urllib.error.HTTPError(request.full_url, codes[i], "nope", {}, None)  # type: ignore[arg-type]
+            return Response()
+
+        monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
+        return DukascopyFetcher(requests_per_second=1e6, cooldown=0.0), calls
+
+    def test_503_is_retried_not_raised(self, monkeypatch):
+        """
+        A 503 used to escape and abort a fetch spanning thousands of files.
+        """
+        fetcher, calls = self._fetcher_with(monkeypatch, [503, 503])
+        assert fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5") == b"payload"
+        assert calls["n"] == 3
+
+    def test_404_is_a_missing_file_not_an_error(self, monkeypatch):
+        fetcher, calls = self._fetcher_with(monkeypatch, [404])
+        assert fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5") is None
+        assert calls["n"] == 1
+
+    def test_giving_up_returns_none_instead_of_aborting_the_walk(self, monkeypatch):
+        fetcher, _ = self._fetcher_with(monkeypatch, [503] * 20)
+        assert fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5") is None
+
+    def test_other_codes_still_raise(self, monkeypatch):
+        fetcher, _ = self._fetcher_with(monkeypatch, [403])
+        with pytest.raises(urllib.error.HTTPError):
+            fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5")
+
+    def test_base_url_is_the_direct_host(self):
+        # - www.dukascopy.com/datafeed 302s here; each hop is another request
+        assert "datafeed.dukascopy.com" in BASE_URL
