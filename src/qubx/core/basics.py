@@ -328,6 +328,25 @@ class MarketType(StrEnum):
     INDEX = "INDEX"
 
 
+# fixed multiplier set, not any digit run (1INCH, 10Y, KODEX200 survive); the lookahead rejects
+# a bare "1000", which would otherwise strip to ""
+_MULTIPLIER_PREFIX = re.compile(r"^1(0{3,7})(?=[A-Z])")
+_MULTIPLIER_SUFFIX = re.compile(r"^(.+[A-Z])1000$")
+
+
+def multiplier_coin(base: str) -> str:
+    """The coin under a multiplier contract: 1000PEPE, 10000SATS, SHIB1000 -> PEPE, SATS, SHIB.
+
+    The multiplier itself is not recoverable from the result, so this names the coin, never a
+    tradeable unit: 1000PEPE and 10000PEPE both answer PEPE.
+    """
+    if m := _MULTIPLIER_PREFIX.match(base):
+        return base[m.end() :]
+    if m := _MULTIPLIER_SUFFIX.match(base):
+        return m.group(1)
+    return base
+
+
 @dataclass(order=True)
 class Instrument:
     """
@@ -382,12 +401,7 @@ class Instrument:
 
     @property
     def asset(self) -> str:
-        if self.base.startswith("1000"):
-            return self.base.replace("1000", "")
-        elif self.base.startswith("1000000"):
-            return self.base.replace("1000000", "")
-        else:
-            return self.base
+        return multiplier_coin(self.base)
 
     def is_futures(self) -> bool:
         return self.market_type in [MarketType.FUTURE, MarketType.SWAP]
@@ -1984,13 +1998,11 @@ class InstrumentsLookup:
         - as_of is a string in format YYYY-MM-DD or pd.Timestamp or None
         """
         _limit_time = pd.Timestamp(as_of) if as_of else None
-        return [
+        matched = [
             i
             for i in self.get_lookup().values()
             if i.exchange == exchange
-            and (
-                base is None or (i.base == base or i.base == f"1000{base}")
-            )  # this is a hack to support 1000DOGEUSDT and others
+            and (base is None or i.base == base or multiplier_coin(i.base) == base)
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
             and (
@@ -2002,6 +2014,15 @@ class InstrumentsLookup:
                 or (i.delist_date is None or pd.Timestamp(i.delist_date).tz_localize(None) >= _limit_time)
             )
         ]
+        if base is not None:
+            aliases = sorted({i.base for i in matched} - {base})
+            if aliases and any(i.base == base for i in matched):
+                logger.warning(
+                    f"[lookup] {exchange} base <y>{base}</y> also matches {aliases} through a contract "
+                    f"multiplier; the exact base is listed first — pass the venue base to disambiguate"
+                )
+                matched.sort(key=lambda i: i.base != base)
+        return matched
 
     def find_aux_instrument_for(
         self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None

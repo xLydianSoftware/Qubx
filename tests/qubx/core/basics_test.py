@@ -2,15 +2,19 @@ from dataclasses import dataclass
 from typing import List, Union
 
 import pandas as pd
+import pytest
 from pytest import approx
 
+from qubx import logger
 from qubx.core.basics import (
     Instrument,
+    InstrumentsLookup,
     MarketType,
     OrderOrigin,
     Position,
     TransactionCostsCalculator,
     classify_origin,
+    multiplier_coin,
     resolve_reduce_only,
 )
 from qubx.core.lookups import FileInstrumentsLookupWithCCXT, lookup
@@ -431,3 +435,143 @@ def test_grid_rounding_leaves_the_precisions_alone():
     i = _grid_instrument(100, tick_size=0.5)
     assert i.size_precision == 2
     assert i.price_precision == 0
+
+
+def _named_instrument(symbol: str, base: str, exchange: str = "BYBIT.F", quote: str = "USDT") -> Instrument:
+    return Instrument(
+        symbol=symbol,
+        market_type=MarketType.SWAP,
+        exchange=exchange,
+        base=base,
+        quote=quote,
+        settle=quote,
+        exchange_symbol=symbol,
+        tick_size=0.0001,
+        lot_size=10,
+        min_size=10,
+    )
+
+
+class TestMultiplierCoin:
+    @pytest.mark.parametrize(
+        "base,expected",
+        [
+            ("1000PEPE", "PEPE"),
+            ("10000SATS", "SATS"),
+            ("1000000MOG", "MOG"),
+            ("10000000AIDOGE", "AIDOGE"),
+            ("SHIB1000", "SHIB"),
+            ("1000X", "X"),
+            ("1000IQ50", "IQ50"),  # strip the prefix and stop; IQ50 is a real token
+        ],
+    )
+    def test_a_multiplier_is_stripped(self, base, expected):
+        assert multiplier_coin(base) == expected
+
+    @pytest.mark.parametrize(
+        "base",
+        [
+            "1INCH",
+            "1CAT",
+            "1DOLLAR",
+            "0G",
+            "1",
+            "4",
+            "42",  # names that start with digits
+            "10Y",
+            "2Y",
+            "30Y",
+            "US10Y",  # yield perps
+            "KODEX200",
+            "US2000",
+            "SMALL2000",
+            "NAS100",
+            "H100",
+            "JP225",
+            "MAG7",
+            "TOTAL2",  # index products
+            "API3",
+            "C98",
+            "LUNA2",
+            "PEPE2",
+            "USD1",
+            "RSS3",  # trailing digits in the name
+            "AI16Z",
+            "KP3R",
+            "A2Z",
+            "HPOS10I",  # digits mid-name
+            "BTC",
+            "PEPE",
+            "SHIB",
+        ],
+    )
+    def test_a_genuine_name_is_untouched(self, base):
+        assert multiplier_coin(base) == base
+
+    @pytest.mark.parametrize("base", ["kPEPE", "kNEIRO", "kBONK"])
+    def test_a_k_prefix_is_left_alone(self, base):
+        """hyperliquid's kNEIRO is 1000 NEIRO where binance's NEIRO is 1; frab hedges by contract
+        count, so folding them to one asset reports a 1000x imbalance as hedged."""
+        assert multiplier_coin(base) == base
+
+    def test_instrument_asset_uses_it(self):
+        assert _named_instrument("10000SATSUSDT", "10000SATS").asset == "SATS"
+        assert _named_instrument("1000000MOGUSDT", "1000000MOG").asset == "MOG"
+        assert _named_instrument("SHIB1000USDT", "SHIB1000").asset == "SHIB"
+        assert _named_instrument("1INCHUSDT", "1INCH").asset == "1INCH"
+
+
+class TestFindInstrumentsByCoinName:
+    @staticmethod
+    def _lookup(*instruments: Instrument) -> InstrumentsLookup:
+        lk = InstrumentsLookup.__new__(InstrumentsLookup)
+        data = {f"{i.exchange}:{i.market_type}:{i.symbol}": i for i in instruments}
+        lk.get_lookup = lambda: data  # type: ignore[method-assign]
+        return lk
+
+    def test_a_trailing_multiplier_resolves(self):
+        """bybit spells it SHIB1000, every other venue puts the multiplier in front."""
+        lk = self._lookup(_named_instrument("SHIB1000USDT", "SHIB1000"))
+        assert [i.symbol for i in lk.find_instruments("BYBIT.F", base="SHIB")] == ["SHIB1000USDT"]
+
+    def test_multiplier_sizes_beyond_1000_resolve(self):
+        lk = self._lookup(
+            _named_instrument("10000SATSUSDT", "10000SATS"),
+            _named_instrument("1000000MOGUSDT", "1000000MOG"),
+        )
+        assert [i.symbol for i in lk.find_instruments("BYBIT.F", base="SATS")] == ["10000SATSUSDT"]
+        assert [i.symbol for i in lk.find_instruments("BYBIT.F", base="MOG")] == ["1000000MOGUSDT"]
+
+    def test_a_digit_bearing_name_is_not_confused_for_a_multiplier(self):
+        lk = self._lookup(_named_instrument("1INCHUSDT", "1INCH"))
+        assert [i.symbol for i in lk.find_instruments("BYBIT.F", base="1INCH")] == ["1INCHUSDT"]
+        assert lk.find_instruments("BYBIT.F", base="INCH") == []
+
+    def test_an_ambiguous_name_leads_with_the_exact_base(self):
+        """BINANCE.UM lists CAT (a Caterpillar equity perp) alongside 1000CAT (the meme). Both
+        answer to "CAT" and a name cannot say which was meant."""
+        lk = self._lookup(
+            _named_instrument("1000CATUSDT", "1000CAT", exchange="BINANCE.UM"),
+            _named_instrument("CATUSDT", "CAT", exchange="BINANCE.UM"),
+        )
+        found = lk.find_instruments("BINANCE.UM", base="CAT")
+        assert [i.symbol for i in found] == ["CATUSDT", "1000CATUSDT"]
+
+    def test_only_an_ambiguous_match_warns(self):
+        """qubx logs through loguru, which pytest's caplog does not capture."""
+        ambiguous = self._lookup(
+            _named_instrument("1000CATUSDT", "1000CAT", exchange="BINANCE.UM"),
+            _named_instrument("CATUSDT", "CAT", exchange="BINANCE.UM"),
+        )
+        plain = self._lookup(_named_instrument("SHIB1000USDT", "SHIB1000"))
+
+        sink: list[str] = []
+        handler = logger.add(sink.append, level="WARNING")
+        try:
+            ambiguous.find_instruments("BINANCE.UM", base="CAT")
+            assert any("1000CAT" in line for line in sink)
+            sink.clear()
+            plain.find_instruments("BYBIT.F", base="SHIB")
+            assert sink == []
+        finally:
+            logger.remove(handler)
