@@ -1,0 +1,21 @@
+.rst-versions {
+    font-size: .7rem;
+    color: white;
+}
+
+.rst-versions.rst-badge .rst-current-version {
+    font-size: .7rem;
+    color: white;
+}
+
+.rst-versions .rst-other-versions {
+    color: white;
+}
+
+.md-version__list {
+    font-weight: 500 !important;
+}
+
+#available-endpoints~.md-typeset__scrollwrap .md-typeset__table th:first-of-type {
+    width: 35% !important;
+}
