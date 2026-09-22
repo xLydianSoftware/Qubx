@@ -573,3 +573,68 @@ def test_snapshot_balance_no_push_uses_as_of_without_ratchet():
     # identical balance at a later poll -> NOT ratcheted forward
     state.apply_balance_snapshot(Balance(exchange="binance", currency="USDT", total=50.0, free=50.0), T2)
     assert state.get_balance("USDT").last_update_time == T1
+
+
+# --------------------------------------------------------------------------- #
+# last_update_time is the VENUE clock; a pending marker keeps its own
+# --------------------------------------------------------------------------- #
+# Prod 2026-09-19: a cancel loop (PENDING_CANCEL, refused, reverted, every 5s) stamped the
+# local clock into last_update_time twice a cycle, so the Differ's grace gate never saw the
+# order as stale and a filled order sat "live" for 20h. Local intent is not venue news.
+
+
+def test_entering_pending_leaves_last_update_time_alone():
+    state = AccountState("binance", "USDT")
+    state.add_order(_order())
+    state.transition_order("qubx-1", OrderStatus.ACCEPTED, T1)
+    order = state.transition_order("qubx-1", OrderStatus.PENDING_CANCEL, T2, venue_state=False)
+    assert order.status is OrderStatus.PENDING_CANCEL
+    assert order.last_update_time == T1
+
+
+def test_leaving_pending_on_venue_state_advances_last_update_time():
+    state = AccountState("binance", "USDT")
+    state.add_order(_order())
+    state.transition_order("qubx-1", OrderStatus.ACCEPTED, T0)
+    state.transition_order("qubx-1", OrderStatus.PENDING_CANCEL, T1, venue_state=False)
+    order = state.transition_order("qubx-1", OrderStatus.CANCELED, T2)  # the venue answered
+    assert order.last_update_time == T2
+
+
+def test_an_explicit_venue_timestamp_lands_regardless_of_the_flag():
+    state = AccountState("binance", "USDT")
+    state.add_order(_order())
+    order = state.transition_order("qubx-1", OrderStatus.ACCEPTED, T2, update_time=T1, venue_state=False)
+    assert order.last_update_time == T1
+
+
+def test_pending_since_is_stamped_on_entry_and_cleared_on_exit():
+    state = AccountState("binance", "USDT")
+    state.add_order(_order())
+    state.transition_order("qubx-1", OrderStatus.ACCEPTED, T0)
+    assert state.get_pending_since("qubx-1") is None
+    state.transition_order("qubx-1", OrderStatus.PENDING_CANCEL, T1, venue_state=False)
+    assert state.get_pending_since("qubx-1") == T1
+    state.transition_order("qubx-1", OrderStatus.ACCEPTED, T2, venue_state=False)  # refused -> revert
+    assert state.get_pending_since("qubx-1") is None
+
+
+def test_pending_since_restamps_on_a_pending_to_pending_hop():
+    # PENDING_UPDATE -> PENDING_CANCEL: the newest request is the one the confirm window
+    # waits on. The pre-pending STATUS keeps the original on that hop; the clock does not.
+    state = AccountState("binance", "USDT")
+    state.add_order(_order())
+    state.transition_order("qubx-1", OrderStatus.ACCEPTED, T0)
+    state.transition_order("qubx-1", OrderStatus.PENDING_UPDATE, T1, venue_state=False)
+    state.transition_order("qubx-1", OrderStatus.PENDING_CANCEL, T2, venue_state=False)
+    assert state.get_pending_since("qubx-1") == T2
+    assert state.get_pre_pending("qubx-1") is OrderStatus.ACCEPTED
+
+
+def test_pending_since_is_dropped_with_the_order():
+    state = AccountState("binance", "USDT")
+    state.add_order(_order())
+    state.transition_order("qubx-1", OrderStatus.ACCEPTED, T0)
+    state.transition_order("qubx-1", OrderStatus.PENDING_CANCEL, T1, venue_state=False)
+    state.remove_order("qubx-1")
+    assert state.get_pending_since("qubx-1") is None

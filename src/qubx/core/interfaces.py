@@ -1720,8 +1720,9 @@ class IPositionGathering:
         """Order-lifecycle change for an order, fired to every gatherer right after the
         strategy's ``on_order`` (same ``ApplyResult``, error-isolated). ``order`` is in its
         post-change state; ``change`` is ACCEPTED / PARTIALLY_FILLED / FILLED / CANCELED /
-        EXPIRED / REJECTED / UPDATED / CANCEL_REJECTED / UPDATE_REJECTED. On CANCEL_REJECTED /
-        UPDATE_REJECTED the order is STILL ALIVE at the venue. Default no-op.
+        EXPIRED / REJECTED / UPDATED / CANCEL_REJECTED / UPDATE_REJECTED. A CANCEL_REJECTED /
+        UPDATE_REJECTED only says the venue refused the request — it is NOT proof the order
+        is still live (the reconciler probes the venue for its real status). Default no-op.
         """
         ...
 
@@ -2734,9 +2735,11 @@ class IStrategy(metaclass=Mixable):
         UPDATED (price/quantity amended, status unchanged) / CANCEL_REJECTED /
         UPDATE_REJECTED. Suppressed events (late, duplicate, already-terminal) never reach
         here. For REJECTED inspect ``order.rejected_reason`` / ``order.error_code``. On
-        CANCEL_REJECTED / UPDATE_REJECTED the order is STILL ALIVE at the venue with its
-        prior status and parameters reverted; the venue's reject reason is warning-logged
-        by the framework, not stored on the order.
+        CANCEL_REJECTED / UPDATE_REJECTED the order keeps its prior status and parameters,
+        but that is bookkeeping, NOT proof it is still live at the venue: a venue may refuse
+        a cancel precisely because the order is already gone, so the reconciler fetches the
+        order's true status and terminalizes it (or routes LOST) on its own budget. The
+        venue's reject reason is warning-logged by the framework, not stored on the order.
 
         Fill details are not delivered here — implement :meth:`on_execution` for deals.
         """

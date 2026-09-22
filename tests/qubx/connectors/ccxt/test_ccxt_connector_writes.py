@@ -26,6 +26,7 @@ from qubx.core.basics import (
     OrderSide,
     OrderStatus,
     OrderType,
+    RejectCause,
     VenueSettingsUpdate,
 )
 from qubx.core.connector import IConnector
@@ -1377,6 +1378,9 @@ class TestOrderRateLimiting:
         assert "orders" in sent[0].reason
         # coded like submit/update, so a reject filter keyed on code catches rate-limited cancels
         assert sent[0].code == "RateLimitGateTimeout"
+        # and caused: our own gate refused to send, the venue saw nothing — the reconciler
+        # keys on this to skip a status probe that could only add load
+        assert sent[0].cause is RejectCause.RATE_LIMITED
 
     @pytest.mark.asyncio
     async def test_update_gate_timeout_rejects_without_calling_the_venue(self, order_limiter) -> None:
@@ -1390,6 +1394,7 @@ class TestOrderRateLimiting:
         assert len(sent) == 1
         assert isinstance(sent[0], OrderUpdateRejectedEvent)
         assert sent[0].code == "RateLimitGateTimeout"
+        assert sent[0].cause is RejectCause.RATE_LIMITED
 
     @pytest.mark.asyncio
     async def test_closed_rest_gate_does_not_block_an_order(self, order_limiter, monkeypatch) -> None:

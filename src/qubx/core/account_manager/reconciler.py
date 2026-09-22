@@ -38,13 +38,16 @@ from qubx.core.basics import (
     OrderOrigin,
     OrderStatus,
     Position,
+    RejectCause,
     external_client_id,
 )
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
+    OrderCancelRejectedEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
+    OrderUpdateRejectedEvent,
 )
 from qubx.utils.time import to_timedelta
 
@@ -57,6 +60,13 @@ _log = area_logger("reconciler")
 # it. Kept small (seconds) so it only catches this episode's boundary trade, not old history —
 # re-fetched deals are deduped by trade_id and realize-only-guarded anyway.
 HIST_DEALS_LOOKBACK = np.timedelta64(2, "s")
+
+# A venue refusing our cancel/update says nothing about whether the order is still live — it
+# often means the opposite (HL answers a cancel for a filled order with "Order was never
+# placed, already canceled, or filled"). So these two carry NO venue state: they neither
+# resolve a task waiting on the order nor stand in for the accept AwaitOrderConfirm wants,
+# and one of them arriving is itself a reason to go ask what the order's real status is.
+REQUEST_REJECTIONS = (OrderCancelRejectedEvent, OrderUpdateRejectedEvent)
 
 
 @dataclass(frozen=True)
@@ -162,7 +172,7 @@ class ResolveMissingOrder(Task):
         if isinstance(inp, (Tick, SnapshotIn)):
             return True
         if isinstance(inp, OrderIn):
-            return self._matches(inp.event)
+            return not isinstance(inp.event, REQUEST_REJECTIONS) and self._matches(inp.event)
         return False
 
     def step(self, inp: Any, state: AccountState, now: np.datetime64) -> list[Action]:
@@ -243,7 +253,7 @@ class AwaitOrderConfirm(Task):
             return True
 
         if isinstance(inp, OrderIn):
-            return self._matches(inp.event)
+            return not isinstance(inp.event, REQUEST_REJECTIONS) and self._matches(inp.event)
 
         return False
 
@@ -670,24 +680,29 @@ class Reconciler:
         if local.status.is_pending:
             # - a pending marker carries the local clock while the snapshot carries the venue's, so
             #   _venue_newer cannot judge it: the confirm window decides instead
-            if not snap_order.status.is_terminal and not self._pending_expired(local, now):
+            if not snap_order.status.is_terminal and not self._pending_expired(state, local, now):
                 return None
         elif not self._venue_newer(snap_order, local):
             return None
         self._apply_order_snapshot(state, local, snap_order)
         return self._fill_event(local)
 
-    def _pending_expired(self, local: Order, now: np.datetime64) -> bool:
+    def _pending_expired(self, state: AccountState, local: Order, now: np.datetime64) -> bool:
         """
         True once a pending marker has outlived the confirm window with the venue still holding the
         order live — the cancel or update never reached it, so the snapshot has to win.
 
         Inside the window the marker is defended: a snapshot fetched before the cancel landed shows
         the order alive, and reverting then would undo a correct PENDING_CANCEL. Measured cancel
-        confirm on LIGHTER is 568 ms median, so the window is ~9x headroom. Both stamps are the
-        local clock — transition_order stamps a locally-driven transition with `now`.
+        confirm on LIGHTER is 568 ms median, so the window is ~9x headroom. The marker's age is its
+        own local-clock stamp (``pending_since``) against local ``now`` — never the order's venue
+        clock, which a locally driven transition leaves alone. An order added already pending
+        (restored state) carries no stamp and reads its age off ``last_update_time`` as before.
         """
-        return local.last_update_time is not None and (now - local.last_update_time) >= self._order_confirm_wait  # type: ignore
+        since = state.get_pending_since(local.client_order_id)
+        if since is None:
+            since = local.last_update_time
+        return since is not None and (now - since) >= self._order_confirm_wait  # type: ignore
 
     @staticmethod
     def _venue_newer(snap: Order, local: Order) -> bool:
@@ -735,7 +750,35 @@ class Reconciler:
 
     def on_event(self, state: AccountState, event: object, now: np.datetime64) -> list[Action]:
         inp = DealIn(event) if isinstance(event, DealEvent) else OrderIn(event)
-        return self._dispatch(inp, state, now, only=self._keys_of(event))
+        actions = self._dispatch(inp, state, now, only=self._keys_of(event))
+        if isinstance(event, REQUEST_REJECTIONS):
+            self._spawn_rejection_probe(state, event, now)
+        return actions
+
+    def _spawn_rejection_probe(
+        self, state: AccountState, event: OrderCancelRejectedEvent | OrderUpdateRejectedEvent, now: np.datetime64
+    ) -> None:
+        """A refused cancel/update is a reason to ask the venue what the order really is.
+
+        Left unasked it wedges: the strategy re-issues the cancel every tick, the venue keeps
+        refusing, and the order sits ACCEPTED forever (prod 2026-09-19, HYPERLIQUID.F 0GUSDC —
+        a filled order whose terminal event was lost, cancelled once every 5s for 20 hours).
+        ResolveMissingOrder is exactly the right shape: it waits, fetches the status on a
+        budget, and routes LOST if the venue never answers. Spawning dedups by cid, so the
+        repeat rejections that follow cost nothing.
+
+        RATE_LIMITED is the one refusal that is not a question: our own gate declined to
+        send, the venue never saw the request, and the order is by definition unchanged. A
+        probe there would only add a read at the moment we are shedding load.
+        """
+        if event.cause is RejectCause.RATE_LIMITED:
+            return
+        order = state.get_active_order(event.client_order_id)
+        if order is None and event.venue_order_id is not None:
+            order = state.get_order_by_venue_id(event.venue_order_id)
+        if order is None or order.status.is_terminal:
+            return
+        self._spawn(ResolveMissingOrder(order, now, wait=self._missing_wait, max_retries=self._missing_max_retries))
 
     def _spawn(self, task: Task) -> None:
         if task.key in self._tasks:  # one task per key — duplicate ignored

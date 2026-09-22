@@ -441,7 +441,11 @@ class CcxtConnector(ChannelEmitter):
             ok, response = await self._cancel_with_retry(client_order_id, venue_order_id, symbol, is_trigger)
         except RateLimitGateTimeout as e:
             self._emit_cancel_rejected(
-                client_order_id, venue_order_id, reason=f"rate limited: {e}", code="RateLimitGateTimeout"
+                client_order_id,
+                venue_order_id,
+                reason=f"rate limited: {e}",
+                code="RateLimitGateTimeout",
+                cause=reject_cause_of(e),
             )
             return
         except ccxt.NetworkError as e:

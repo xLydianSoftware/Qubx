@@ -24,14 +24,27 @@ from qubx.core.account_manager.reconciler import (
     RouteEvent,
 )
 from qubx.core.account_manager.state import AccountState
-from qubx.core.basics import Balance, Deal, Instrument, Order, OrderOrigin, OrderSide, OrderStatus, OrderType, Position
+from qubx.core.basics import (
+    Balance,
+    Deal,
+    Instrument,
+    Order,
+    OrderOrigin,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+    RejectCause,
+)
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
     OrderAcceptedEvent,
     OrderCanceledEvent,
+    OrderCancelRejectedEvent,
     OrderLostEvent,
     OrderPartiallyFilledEvent,
+    OrderUpdateRejectedEvent,
 )
 from qubx.core.lookups import lookup
 
@@ -155,6 +168,12 @@ def _reconciler() -> Reconciler:
 
 def _passed_seconds(base, s: int):
     return base + np.timedelta64(s, "s")
+
+
+def _arm_pending(st: AccountState, cid: str, status: OrderStatus, at: np.datetime64) -> None:
+    # The trading mixin's path: a locally-driven PENDING_* marker, stamped on the local clock
+    # (pending_since) and leaving the order's venue clock (last_update_time) untouched.
+    reducer.transition(st, cid, status, at, venue_state=False)
 
 
 def _mark_in_session(st: AccountState) -> None:
@@ -379,7 +398,8 @@ def test_snapshot_does_not_wipe_a_fresh_pending_cancel_marker():
     # our cancel is in flight (PENDING_CANCEL) and was armed a moment ago. A snapshot poll still
     # showing the order live was fetched before the cancel landed, so it must NOT wipe the marker.
     rec = _reconciler()  # order_confirm_wait = 2s
-    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL, last_update_time=_passed_seconds(T0, 4)))
+    st = _local(_order("order1"))
+    _arm_pending(st, "order1", OrderStatus.PENDING_CANCEL, _passed_seconds(T0, 4))
     a = rec.on_snapshot(
         st,
         _origin(
@@ -400,7 +420,8 @@ def test_a_pending_cancel_past_the_confirm_window_yields_to_the_venue():
     # every snapshot logging the mismatch and doing nothing. Past the window the venue wins, which
     # is what a delivered cancel-reject would have done — and OrderManager.sync then re-cancels.
     rec = _reconciler()  # order_confirm_wait = 2s
-    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL))  # marker stamped at SETTLED
+    st = _local(_order("order1"))
+    _arm_pending(st, "order1", OrderStatus.PENDING_CANCEL, SETTLED)  # marker stamped at SETTLED
     rec.on_snapshot(
         st,
         _origin(
@@ -419,7 +440,8 @@ def test_a_pending_marker_stamped_after_the_venue_still_yields_past_the_window()
     # venue updated_at was still the 14:25:10 amend. Comparing the two made the snapshot look older
     # than the marker, so the order never left PENDING_CANCEL and LOE stalled on it for minutes.
     rec = _reconciler()  # order_confirm_wait = 2s
-    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL, last_update_time=_passed_seconds(T0, 4)))
+    st = _local(_order("order1"))
+    _arm_pending(st, "order1", OrderStatus.PENDING_CANCEL, _passed_seconds(T0, 4))
     rec.on_snapshot(
         st,
         _origin(
@@ -435,7 +457,8 @@ def test_a_pending_marker_stamped_after_the_venue_still_yields_past_the_window()
 def test_a_pending_update_past_the_window_yields_the_same_way():
     D_ON()
     rec = _reconciler()
-    st = _local(_order("order1", status=OrderStatus.PENDING_UPDATE))  # stamped at SETTLED
+    st = _local(_order("order1"))
+    _arm_pending(st, "order1", OrderStatus.PENDING_UPDATE, SETTLED)
     rec.on_snapshot(
         st,
         _origin(
@@ -446,6 +469,36 @@ def test_a_pending_update_past_the_window_yields_the_same_way():
     )
     assert st.get_order("order1").status == OrderStatus.ACCEPTED  # type: ignore
     D_OFF()
+
+
+def test_a_pending_marker_with_no_since_falls_back_to_last_update_time():
+    # An order added already pending (restored state) never went through transition_order,
+    # so it has no pending_since; the marker's age then reads off last_update_time as before.
+    rec = _reconciler()  # order_confirm_wait = 2s
+    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL, last_update_time=_passed_seconds(T0, 4)))
+    venue = [_order("order1", status=OrderStatus.ACCEPTED, last_update_time=_passed_seconds(T0, 5))]
+    rec.on_snapshot(st, _origin(as_of=_passed_seconds(T0, 5), open_orders=venue), _passed_seconds(T0, 5))
+    assert st.get_order("order1").status == OrderStatus.PENDING_CANCEL  # type: ignore  # 1s old: defended
+    rec.on_snapshot(st, _origin(as_of=_passed_seconds(T0, 40), open_orders=venue), _passed_seconds(T0, 40))
+    assert st.get_order("order1").status == OrderStatus.ACCEPTED  # type: ignore  # 36s old: yields
+
+
+def test_the_cancel_loop_no_longer_hides_a_missing_order_from_the_snapshot():
+    # The prod wedge, snapshot path only (the rejection is applied to state, not routed to the
+    # reconciler, so the probe #434 spawns on it is out of the picture). X1's last venue state
+    # is at SETTLED; from T0 our cancel is armed and refused every 5s. Each hop used to stamp
+    # the local clock into last_update_time, so at the snapshot the order looked 4s fresh and
+    # the grace gate (5s) swallowed the diff — every 5 minutes, for 20 hours.
+    rec = _reconciler()  # differ grace 5s
+    st = _local(_order("X1"))
+    for offset in range(0, 30, 5):
+        _arm_pending(st, "X1", OrderStatus.PENDING_CANCEL, _passed_seconds(T0, offset))
+        reducer.apply(st, _cancel_rejected("X1"), _passed_seconds(T0, offset + 1))
+    assert st.get_order("X1").status == OrderStatus.ACCEPTED  # type: ignore
+    assert st.get_order("X1").last_update_time == SETTLED  # type: ignore  # the venue said nothing new
+
+    rec.on_snapshot(st, _origin(as_of=_passed_seconds(T0, 30), open_orders=[]), _passed_seconds(T0, 30))
+    assert rec.active_keys() == {"X1"}  # missing past grace -> ResolveMissingOrder owns it
 
 
 def test_a_locally_terminal_order_is_never_reopened_by_a_snapshot():
@@ -961,3 +1014,156 @@ def test_settings_refresh_survives_the_stale_snapshot_guard():
     assert pos.quantity == before_qty  # type: ignore # rewind guard intact
     assert (pos.adl_level, pos.leverage) == (2, 10.0)  # type: ignore
     assert changed == []
+
+
+# --------------------------------------------------------------------------- #
+# Ia. A cancel/update rejection is not proof the order is alive
+# --------------------------------------------------------------------------- #
+# Prod wedge 2026-09-19 (HYPERLIQUID.F 0GUSDC): a maker order filled at the venue, its
+# terminal event was lost, and the executor then repriced it. HL answered the modifies with
+# "Cannot modify canceled or filled order" and every later cancel with "Order was never
+# placed, already canceled, or filled" — for 20h, once every 5s, while the AM held the order
+# ACCEPTED and logged "order is STILL ALIVE at the venue". Both statements are the venue
+# saying the order is GONE; neither is evidence that it is live.
+
+
+def _prime_snapshot_timer(rec: Reconciler, st: AccountState) -> None:
+    # A reconciler's very first tick is always snapshot-due; consume that so the scenario
+    # ticks below carry only what the task under test asked for.
+    rec.on_tick(st, _passed_seconds(T0, -1))
+
+
+def _cancel_rejected(cid: str, *, venue_id=_GEN, cause: RejectCause = RejectCause.UNKNOWN) -> OrderCancelRejectedEvent:
+    vid = f"v_{cid}" if venue_id is _GEN else venue_id
+    return OrderCancelRejectedEvent(
+        instrument=_inst(),
+        client_order_id=cid,
+        venue_order_id=vid,
+        reason="Order was never placed, already canceled, or filled. asset=210",
+        cause=cause,
+    )
+
+
+def _update_rejected(cid: str, *, venue_id=_GEN) -> OrderUpdateRejectedEvent:
+    vid = f"v_{cid}" if venue_id is _GEN else venue_id
+    return OrderUpdateRejectedEvent(
+        instrument=_inst(),
+        client_order_id=cid,
+        venue_order_id=vid,
+        reason="Cannot modify canceled or filled order",
+    )
+
+
+def test_cancel_rejection_spawns_a_resolve_task():
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    actions = rec.on_event(st, _cancel_rejected("X1"), T0)
+    assert rec.active_keys() == {"X1"}  # the rejection is a reason to ASK the venue
+    assert actions == []  # ...after the wait window, not synchronously
+    assert st.get_order("X1").status == OrderStatus.ACCEPTED  # never blind-terminalized
+
+
+def test_update_rejection_spawns_a_resolve_task():
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_event(st, _update_rejected("X1"), T0)
+    assert rec.active_keys() == {"X1"}
+
+
+def test_rejection_for_a_terminal_order_spawns_nothing():
+    rec = _reconciler()
+    st = _local(_order("X1", status=OrderStatus.FILLED))
+    rec.on_event(st, _cancel_rejected("X1"), T0)
+    assert rec.active_keys() == set()
+
+
+def test_rejection_for_an_unknown_order_spawns_nothing():
+    rec = _reconciler()
+    st = _local()
+    rec.on_event(st, _cancel_rejected("X1"), T0)
+    assert rec.active_keys() == set()
+
+
+def test_cancel_rejection_does_not_resolve_the_resolve_task():
+    # The wedge: the executor re-issues the cancel every tick, so a rejection lands well
+    # inside the task's wait window. Treating it as "an event for our id arrived" retired the
+    # task before it ever fetched a status — forever.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_snapshot(st, _origin(open_orders=[]), T0)
+    assert rec.active_keys() == {"X1"}
+
+    rec.on_event(st, _cancel_rejected("X1"), _passed_seconds(T0, 1))
+    assert rec.active_keys() == {"X1"}  # still ours — a rejection resolves nothing
+
+    actions = rec.on_tick(st, _passed_seconds(T0, 3))
+    assert actions == [RequestStatus(cid="X1", venue_id="v_X1", instrument=_inst())]
+
+
+def test_repeated_cancel_rejections_end_in_lost():
+    # End to end on the prod shape: nothing but rejections ever arrives. The budget must
+    # still run down and route LOST, so the strategy's slot can clear.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    _prime_snapshot_timer(rec, st)
+
+    rec.on_event(st, _cancel_rejected("X1"), T0)  # spawns the task
+    for offset in (1, 2, 4, 6):  # the 5s cancel loop, interleaved with the ticks below
+        rec.on_event(st, _cancel_rejected("X1"), _passed_seconds(T0, offset))
+    rec.on_tick(st, _passed_seconds(T0, 3))  # retry 1 -> RequestStatus
+    rec.on_tick(st, _passed_seconds(T0, 5))  # retry 2 -> RequestStatus
+    out = rec.on_tick(st, _passed_seconds(T0, 7))  # exhausted -> LOST
+
+    assert [type(a) for a in out] == [RouteEvent]
+    assert isinstance(out[0].event, OrderLostEvent) and out[0].event.client_order_id == "X1"
+    assert rec.active_keys() == set()
+
+
+def test_the_venue_answer_to_a_rejection_driven_status_fetch_resolves_it():
+    # The happy path the fix buys: HL's orderStatus reply says `filled`, the normal event
+    # path terminalizes the order, and the task drops without a LOST.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    _prime_snapshot_timer(rec, st)
+    rec.on_event(st, _cancel_rejected("X1"), T0)
+    assert rec.on_tick(st, _passed_seconds(T0, 3)) == [RequestStatus(cid="X1", venue_id="v_X1", instrument=_inst())]
+
+    rec.on_event(
+        st,
+        OrderCanceledEvent(instrument=_inst(), client_order_id="X1", venue_order_id="v_X1"),
+        _passed_seconds(T0, 4),
+    )
+    assert rec.active_keys() == set()
+
+
+def test_a_rate_limited_rejection_does_not_spawn_a_probe():
+    # RATE_LIMITED means our own gate refused to send the request: the venue never saw it,
+    # so the order's state is by definition unchanged. Probing it would only add a read at
+    # the one moment we are trying to shed load.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_event(st, _cancel_rejected("X1", cause=RejectCause.RATE_LIMITED), T0)
+    assert rec.active_keys() == set()
+
+
+def test_a_rate_limited_rejection_still_does_not_resolve_a_task():
+    # Not starting a probe is not the same as answering one: a throttled request carries no
+    # venue state either, so an existing task keeps waiting for a real answer.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_snapshot(st, _origin(open_orders=[]), T0)
+    rec.on_event(st, _cancel_rejected("X1", cause=RejectCause.RATE_LIMITED), _passed_seconds(T0, 1))
+    assert rec.active_keys() == {"X1"}
+
+
+def test_cancel_rejection_does_not_confirm_a_sent_order():
+    # Same rule for AwaitOrderConfirm: a rejection carries no venue state, so it cannot
+    # stand in for the accept we are waiting on.
+    rec = _reconciler()
+    order = _order("X1", status=OrderStatus.SUBMITTED)
+    st = _local(order)
+    rec.on_order_sent(st, order, T0)
+    assert rec.active_keys() == {"X1"}
+
+    rec.on_event(st, _cancel_rejected("X1"), _passed_seconds(T0, 1))
+    assert rec.active_keys() == {"X1"}

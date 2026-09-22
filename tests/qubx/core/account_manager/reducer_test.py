@@ -683,6 +683,28 @@ def test_cancel_rejected_reverts_to_pre_pending():
     assert r.order_change is OrderChange.CANCEL_REJECTED
 
 
+def test_cancel_rejected_does_not_advance_last_update_time():
+    # The venue refusing our cancel says nothing new about the order; stamping `now` here is
+    # what starved the Differ's grace gate for 20h in prod (2026-09-19).
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    _present(state.get_order("c1")).last_update_time = T0
+    state.transition_order("c1", OrderStatus.PENDING_CANCEL, T0, venue_state=False)
+    r = apply(state, OrderCancelRejectedEvent(instrument=None, client_order_id="c1", reason="gone"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.ACCEPTED
+    assert r.order.last_update_time == T0
+
+
+def test_update_rejected_does_not_advance_last_update_time():
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED)
+    _present(state.get_order("c1")).last_update_time = T0
+    state.transition_order("c1", OrderStatus.PENDING_UPDATE, T0, venue_state=False)
+    r = apply(state, OrderUpdateRejectedEvent(instrument=None, client_order_id="c1", reason="gone"), T1)
+    assert r.order is not None and r.order.status is OrderStatus.ACCEPTED
+    assert r.order.last_update_time == T0
+
+
 def test_cancel_rejected_wrong_state_is_noop():
     state = _state()
     _order(state, status=OrderStatus.ACCEPTED)  # not PENDING_CANCEL

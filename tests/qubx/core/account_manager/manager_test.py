@@ -262,3 +262,17 @@ def test_execute_request_status_for_unknown_order_is_noop():
     am = _am()
     am._execute(am.get_state(EX), [RequestStatus(cid="nope", venue_id=None, instrument=BTC)])
     am._connectors[EX].request_order_status.assert_not_called()
+
+
+def test_local_pending_transition_leaves_the_venue_clock_alone():
+    # AccountManager.transition_order is the trading mixin's PENDING_* arming — our own intent,
+    # not venue news. It must not advance the order's venue clock (Differ grace gate) and must
+    # stamp the marker's own clock (reconciler confirm window) instead.
+    am = _am()
+    am.get_state(EX).add_order(_order("c1", OrderStatus.ACCEPTED))
+    order = _present(am.get_state(EX).get_order("c1"))
+    order.last_update_time = T0
+    am.transition_order(EX, "c1", OrderStatus.PENDING_CANCEL)  # _Time() says T1
+    assert order.status is OrderStatus.PENDING_CANCEL
+    assert order.last_update_time == T0
+    assert am.get_state(EX).get_pending_since("c1") == T1

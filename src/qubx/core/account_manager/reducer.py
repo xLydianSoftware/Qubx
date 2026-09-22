@@ -72,17 +72,19 @@ def transition(
     now: np.datetime64,
     *,
     update_time: np.datetime64 | None = None,
+    venue_state: bool = True,
 ) -> Order:
     """
     Validate-then-apply for an active order's status — the single legality chokepoint
     (the reducer and the manager delegate here; see the import rule above).
+    ``venue_state=False`` marks a locally driven transition — see AccountState.transition_order.
     """
 
     if (order := state.get_active_order(cid)) is None:
         raise KeyError(f"order {cid} not found in {state.exchange}")
 
     validate_transition(cid, order.status, new_status)
-    return state.transition_order(cid, new_status, now, update_time=update_time)
+    return state.transition_order(cid, new_status, now, update_time=update_time, venue_state=venue_state)
 
 
 @dataclass
@@ -509,9 +511,11 @@ def _revert_from_pending(
     # Revert to the status captured on entry to PENDING_* — never inferred from
     # filled_quantity/venue_id (brittle when venues roll back partial fills). ACCEPTED
     # is the safe default for the rare order with no captured status. The transition
-    # itself clears the capture (the target is non-pending).
+    # itself clears the capture (the target is non-pending). The venue refused OUR request;
+    # that is not news about the order, so its venue clock stays put (venue_state=False) —
+    # a venue-stamped update_time on the event still lands.
     target = state.get_pre_pending(order.client_order_id) or OrderStatus.ACCEPTED
-    order = transition(state, order.client_order_id, target, now, update_time=update_time)
+    order = transition(state, order.client_order_id, target, now, update_time=update_time, venue_state=False)
     return ApplyResult(order=order, order_change=change)
 
 
