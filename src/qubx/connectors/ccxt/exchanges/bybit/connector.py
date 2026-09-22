@@ -107,11 +107,16 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
         ``accountMMRate`` is maintenance margin OVER equity — the reciprocal of the framework's
         ratio — and ``""``/``"0"`` map to None, as does withdrawable (per coin only), so that AM
         derives those metrics.
+
+        Equity is ``totalEquity``, not ``totalMarginBalance``: the latter is
+        ``totalWalletBalance + totalPerpUPL`` where the wallet total already has the collateral
+        discount on non-USDT holdings folded in, which understates NAV. available_margin and
+        margin_ratio come from the venue separately, so they keep the discount the venue applies.
         """
         acct = _account_block(raw_balance)
         mm_rate = info_float(acct, "accountMMRate")
         return (
-            info_float(acct, "totalMarginBalance"),
+            info_float(acct, "totalEquity"),
             info_float(acct, "totalAvailableBalance"),
             1.0 / mm_rate if mm_rate is not None and mm_rate > 0 else None,
             None,
