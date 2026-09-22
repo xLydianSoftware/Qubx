@@ -521,6 +521,24 @@ class TestTradingManagerAutoReduceOnly:
         # Propagates into the request options so the connector's min_notional check exempts it too.
         assert request.options.get("reduceOnly") is True
 
+    def test_gtx_order_is_recorded_as_post_only(self, trading_manager, mock_connector, mock_account):
+        """GTX rides ccxt's unified postOnly flag on the wire (prepare_ccxt_order_payload), so the
+        record must agree — otherwise a genuinely post-only order reports post_only=False."""
+        instr = self._instr()
+        self._set_long(mock_account, 0.0)
+
+        trading_manager.trade(instr, 0.1, price=50_000.0, time_in_force="gtx")
+
+        assert mock_account.add_order.call_args.args[0].post_only is True
+
+    def test_plain_limit_order_is_not_post_only(self, trading_manager, mock_connector, mock_account):
+        instr = self._instr()
+        self._set_long(mock_account, 0.0)
+
+        trading_manager.trade(instr, 0.1, price=50_000.0)
+
+        assert mock_account.add_order.call_args.args[0].post_only is False
+
     def test_increasing_order_not_reduce_only(self, trading_manager, mock_connector, mock_account):
         instr = self._instr()
         self._set_long(mock_account, 1.5)

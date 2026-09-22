@@ -9,10 +9,12 @@ MAX_BARS_PER_REQUEST_FOR_PROVIDER limit (e.g., OKX returns ~100 bars).
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+import ccxt
 import pytest
 
 from qubx.connectors.ccxt.handlers.ohlc import OhlcDataHandler
 from qubx.core.basics import Instrument, MarketType
+from qubx.rate_limiting import EndpointCosts, ExchangeRateLimitConfig, ExchangeRateLimiter, PoolConfig
 
 
 def run(coro):
@@ -42,10 +44,7 @@ def _make_instrument() -> Instrument:
 
 def _make_ohlcv_page(start_ts_ms: int, count: int, tf_ms: int) -> list[list]:
     """Generate a page of OHLCV data starting at start_ts_ms."""
-    return [
-        [start_ts_ms + i * tf_ms, 50000.0, 50100.0, 49900.0, 50050.0, 100.0]
-        for i in range(count)
-    ]
+    return [[start_ts_ms + i * tf_ms, 50000.0, 50100.0, 49900.0, 50050.0, 100.0] for i in range(count)]
 
 
 def _build_handler() -> tuple[OhlcDataHandler, MagicMock]:
@@ -177,3 +176,72 @@ class TestOhlcPagination:
 
         # With 10 bars per page and 1 overlap, need ~4 pages for 30 unique bars
         assert len(bars) >= 30
+
+
+class TestHistoricalFetchRetry:
+    """A venue refusal during a fit's history download must not lose the fit cycle.
+
+    Reproduces bybit.nimble 09-20 02:00: publicGetV5MarketKline answered
+    retCode 10006 mid-`set_universe`, the bare fetch_ohlcv raised, and the whole
+    universe change was dropped.
+    """
+
+    @staticmethod
+    def _limiter(cooldown: float = 0.01):
+        return ExchangeRateLimiter(
+            "bybit",
+            ExchangeRateLimitConfig(
+                pools={"ccxt_rest": PoolConfig("ccxt_rest", "ip", 100, 100.0, cooldown=cooldown)},
+                default_costs=EndpointCosts([("ccxt_rest", 1)]),
+                gate_max_wait=0.05,
+            ),
+        )
+
+    def test_a_rate_limited_page_is_retried_once(self):
+        handler, exchange_manager = _build_handler()
+        exchange_manager.rate_limiter = self._limiter()
+        page = _make_ohlcv_page(1_000_000_000, 10, 3_600_000)
+        exchange_manager.exchange.fetch_ohlcv = AsyncMock(
+            side_effect=[ccxt.RateLimitExceeded('bybit {"retCode":10006}'), page]
+        )
+
+        bars = run(handler.get_historical_ohlc(_make_instrument(), "1h", 10))
+
+        assert len(bars) == 10
+        assert exchange_manager.exchange.fetch_ohlcv.await_count == 2
+
+    def test_the_refusal_closes_the_shared_gate(self):
+        """The data provider shares its limiter with the order connector: without the report
+        every other caller keeps firing at a venue that is refusing."""
+        handler, exchange_manager = _build_handler()
+        limiter = self._limiter(cooldown=30.0)
+        exchange_manager.rate_limiter = limiter
+        page = _make_ohlcv_page(1_000_000_000, 10, 3_600_000)
+        exchange_manager.exchange.fetch_ohlcv = AsyncMock(
+            side_effect=[ccxt.RateLimitExceeded('bybit {"retCode":10006}'), page]
+        )
+
+        run(handler.get_historical_ohlc(_make_instrument(), "1h", 10))
+
+        assert limiter.is_gate_closed("ccxt_rest")
+
+    def test_no_retry_without_a_limiter(self):
+        """An unpaced re-send is worse than none on a venue that escalates bans."""
+        handler, exchange_manager = _build_handler()
+        exchange_manager.rate_limiter = None
+        exchange_manager.exchange.fetch_ohlcv = AsyncMock(side_effect=ccxt.RateLimitExceeded('bybit {"retCode":10006}'))
+
+        with pytest.raises(ccxt.RateLimitExceeded):
+            run(handler.get_historical_ohlc(_make_instrument(), "1h", 10))
+
+        assert exchange_manager.exchange.fetch_ohlcv.await_count == 1
+
+    def test_a_permanent_error_is_not_retried(self):
+        handler, exchange_manager = _build_handler()
+        exchange_manager.rate_limiter = self._limiter()
+        exchange_manager.exchange.fetch_ohlcv = AsyncMock(side_effect=ccxt.BadSymbol("nope"))
+
+        with pytest.raises(ccxt.BadSymbol):
+            run(handler.get_historical_ohlc(_make_instrument(), "1h", 10))
+
+        assert exchange_manager.exchange.fetch_ohlcv.await_count == 1

@@ -10,6 +10,8 @@ from ..connector import CcxtConnector
 from .binance.connector import BinancePmCcxtConnector
 from .binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQV, BinanceQVUSDM
 from .bitfinex.connector import BitfinexCcxtConnector
+from .bybit.bybit import BybitF
+from .bybit.connector import BybitCcxtConnector
 from .gateio.gateio import GateioFutures
 from .hyperliquid.hyperliquid import Hyperliquid, HyperliquidF
 from .kraken.kraken import CustomKrakenFutures
@@ -45,14 +47,15 @@ EXCHANGE_ALIASES = {
     "bitfinex.f": "bitfinex_f",
     "hyperliquid": "hyperliquid",
     "hyperliquid.f": "hyperliquid_f",
-    "bybit.f": "bybit",
+    "bybit.f": "bybit_f",
     "gateio.f": "gateio_futures",
     "okx.f": "okx_futures",
 }
 
 # CcxtConnector subclasses per exchange. Unlisted exchanges (Binance,
 # Hyperliquid, ...) use the base CcxtConnector via the factory fallback. OKX/Bitfinex
-# need the split orders/fills streams; OKX additionally overrides balance/clOrdId.
+# need the split orders/fills streams; OKX additionally overrides balance/clOrdId. Bybit needs
+# them too: ccxt's parse_order hardcodes ``trades: None``, so fills arrive only on executions.
 # Keyed by the normalized framework exchange names, plus
 # the bare ``okx``/``bitfinex`` aliases the factory may receive. Bitfinex's connector
 # subclass has NO dependency on the optional qubx-bitfinex-api package (it only needs
@@ -65,6 +68,8 @@ CUSTOM_CONNECTORS: dict[str, type[CcxtConnector]] = {
     "bitfinex": BitfinexCcxtConnector,
     "bitfinex.f": BitfinexCcxtConnector,
     "binance.pm": BinancePmCcxtConnector,
+    "bybit": BybitCcxtConnector,
+    "bybit.f": BybitCcxtConnector,
 }
 
 READER_CAPABILITIES = {
@@ -93,6 +98,7 @@ cxp.hyperliquid = Hyperliquid  # type: ignore
 cxp.hyperliquid_f = HyperliquidF  # type: ignore
 cxp.gateio_futures = GateioFutures  # type: ignore
 cxp.okx_futures = OkxFutures  # type: ignore
+cxp.bybit_f = BybitF  # type: ignore
 
 cxp.exchanges.append("binanceqv")
 cxp.exchanges.append("binanceqv_usdm")
@@ -105,3 +111,4 @@ cxp.exchanges.append("hyperliquid")
 cxp.exchanges.append("hyperliquid_f")
 cxp.exchanges.append("gateio_futures")
 cxp.exchanges.append("okx_futures")
+cxp.exchanges.append("bybit_f")

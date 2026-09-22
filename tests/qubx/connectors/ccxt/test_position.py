@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 from pytest import approx
 
@@ -162,6 +163,24 @@ class TestStrats:
         assert ccxt_convert_deal_info(dict(raw)).trade_id == deal.trade_id
         # a real venue id is used verbatim when present
         assert ccxt_convert_deal_info({**raw, "id": "T9"}).trade_id == "T9"
+
+    def test_deal_time_is_a_true_dt64(self):
+        # Deal.time is annotated dt_64 and consumers .astype it — a pd.Timestamp raises there.
+        raw = {
+            "id": "T1",
+            "order": "ORD-1",
+            "timestamp": 1712497717270,
+            "side": "buy",
+            "takerOrMaker": "taker",
+            "price": 2.1129,
+            "amount": 2.4,
+        }
+        deal = ccxt_convert_deal_info(raw)
+        assert isinstance(deal.time, np.datetime64)
+        assert not isinstance(deal.time, pd.Timestamp)
+        assert deal.time.dtype == np.dtype("datetime64[ns]")
+        assert int(deal.time.astype("datetime64[ms]").astype("int64")) == 1712497717270
+        assert deal.time == pd.Timestamp("2024-04-07 13:48:37.270000")
 
 
 def _raw_order(**overrides):

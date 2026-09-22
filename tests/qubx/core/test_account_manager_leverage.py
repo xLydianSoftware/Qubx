@@ -221,6 +221,7 @@ def test_venue_settings_neutral_when_not_reported():
     # - both fallbacks ask the connector, which knows nothing about it either
     am._connectors["binance"].get_instrument_leverage.return_value = None
     am._connectors["binance"].get_max_instrument_notional.return_value = float("inf")
+    am._connectors["binance"].get_margin_mode.return_value = None
     assert am.get_instrument_leverage(inst) is None
     assert am.get_max_instrument_notional(inst) == float("inf")
     assert am.get_margin_mode(inst) is None

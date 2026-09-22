@@ -1,6 +1,7 @@
 """Tests for ``qubx.connectors.ccxt.rate_limits``: venue configs, header parsers, hook installation."""
 
 import inspect
+import time
 from unittest.mock import Mock, patch
 
 import ccxt.pro as cxp
@@ -101,10 +102,27 @@ class TestEndpointMap:
         # unmapped would fall back to default_costs and charge ccxt_rest on top of the throttle
         assert "set_leverage" in create_ccxt_rate_limit_config(venue).endpoint_map
 
-    @pytest.mark.parametrize("venue", [v for v in _VENUES if v != "kraken.f"])
+    @pytest.mark.parametrize("venue", [v for v in _VENUES if v not in ("kraken.f", "bybit", "okx")])
     def test_set_leverage_adds_nothing_beyond_ip_weight(self, venue: str):
         # Binance & co. bill leverage as plain IP weight, already taken by the throttle
         assert create_ccxt_rate_limit_config(venue).endpoint_map["set_leverage"].costs == []
+
+    @pytest.mark.parametrize("venue", ["bybit", "okx"])
+    def test_set_leverage_has_its_own_pool_not_the_order_pool(self, venue: str):
+        """set-leverage has its own per-UID budget on these venues."""
+        cfg = create_ccxt_rate_limit_config(venue)
+        assert cfg.endpoint_map["set_leverage"].costs == [("leverage", 1)]
+        assert "leverage" in cfg.pools
+
+    def test_bybit_leverage_pool_stays_within_the_venues_rolling_second(self):
+        # bybit set-leverage is 10 req/s per UID; capacity + 1*refill must not outrun it
+        pool = create_ccxt_rate_limit_config("bybit").pools["leverage"]
+        assert pool.capacity + pool.refill_rate <= 10
+
+    def test_okx_leverage_pool_stays_within_the_venues_two_second_window(self):
+        # okx set-leverage is 20 req/2s per user id
+        pool = create_ccxt_rate_limit_config("okx").pools["leverage"]
+        assert pool.capacity + 2 * pool.refill_rate <= 20
 
     def test_kraken_futures_bills_set_leverage_like_an_order(self):
         # ccxt's set_leverage hits PUT leveragepreferences, cost 10 at the venue
@@ -239,7 +257,11 @@ class TestOrderCountHeaderDerivation:
 
     @pytest.mark.parametrize(
         "capacity, refill, header",
-        [(300, 30.0, "X-MBX-ORDER-COUNT-10S"), (1200, 20.0, "X-MBX-ORDER-COUNT-1M"), (60, 60.0, "X-MBX-ORDER-COUNT-1S")],
+        [
+            (300, 30.0, "X-MBX-ORDER-COUNT-10S"),
+            (1200, 20.0, "X-MBX-ORDER-COUNT-1M"),
+            (60, 60.0, "X-MBX-ORDER-COUNT-1S"),
+        ],
     )
     def test_window_to_interval_letter(self, capacity: float, refill: float, header: str):
         assert _order_count_header(PoolConfig("orders", "account", capacity, refill)) == header
@@ -759,3 +781,25 @@ class TestDefaultConfig:
     def test_signature_takes_only_the_venue_name(self):
         # the dead ccxt_exchange auto-derivation parameter is gone
         assert list(inspect.signature(create_ccxt_rate_limit_config).parameters) == ["exchange_name"]
+
+
+class TestLeverageBurstDoesNotStarveOrders:
+    """Both venues meter set-leverage in its own per-UID budget, so billing it to `orders` would
+    turn a harmless leverage refusal into held-up order placement on every boot."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("venue", ["bybit", "okx"])
+    async def test_an_order_after_a_leverage_burst_is_not_delayed(self, venue: str):
+        cfg = create_ccxt_rate_limit_config(venue)
+        limiter = ExchangeRateLimiter(venue, cfg)
+        # one over capacity, so the burst genuinely queues rather than sailing through a full bucket
+        for _ in range(int(cfg.pools["leverage"].capacity) + 1):
+            await limiter.acquire("set_leverage")
+
+        started = time.monotonic()
+        await limiter.acquire("create_order")
+        order_wait = time.monotonic() - started
+
+        assert order_wait < 0.02, f"the order waited {order_wait:.3f}s behind the leverage burst"
+        assert (await limiter.get_pool_state("leverage"))["total_wait_s"] > 0  # really was paced
+        assert (await limiter.get_pool_state("orders"))["consumed"] == 1

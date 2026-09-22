@@ -1,3 +1,4 @@
+import dataclasses
 from unittest.mock import MagicMock
 
 import numpy as np
@@ -390,7 +391,9 @@ def test_snapshot_does_not_wipe_pending_marker_with_live_status():
     # A live venue status (ACCEPTED) must NOT clear PENDING_CANCEL — the venue resolves
     # the race itself (canceled, or cancel-rejected which reverts via pre_pending).
     # The confirm wait is widened past the hour the clock moves, so this stays inside it.
-    state = _pending_marker_case(_am(cfg=AccountManagerConfig(snapshot_grace_ms=5_000, order_confirm_wait_ms=7_200_000)))
+    state = _pending_marker_case(
+        _am(cfg=AccountManagerConfig(snapshot_grace_ms=5_000, order_confirm_wait_ms=7_200_000))
+    )
 
     order = state.get_order("cid-1")
     assert order.status is OrderStatus.PENDING_CANCEL
@@ -610,6 +613,43 @@ def test_snapshot_margin_and_mark_refresh_even_when_size_unchanged():
     assert pos.last_update_price == 51_000.0
     assert pos.pnl == 1_000.0 + 100.0  # re-marked: unrealized at the new mark + preserved r_pnl
     assert result.positions == []
+
+
+def test_float_noise_in_a_booked_size_is_not_a_reconcile_diff():
+    """23 * 0.1 is one ulp above the 2.3 the venue's decimal parses to, and the margin refresh
+    reaches the size compare on every mark move."""
+    am = _am()
+    state = am._states["binance"]
+    inst = dataclasses.replace(_instrument("AVAXUSDT"), lot_size=0.1, min_size=0.1)
+    noisy = 23 * 0.1
+    assert noisy != 2.3  # the premise
+    pos = Position(instrument=inst, quantity=noisy, pos_average_price=50_000.0)
+    state.set_position(inst, pos)
+
+    snap_pos = Position(instrument=inst, quantity=2.3, pos_average_price=50_000.0)
+    snap_pos.update_market_price(np.datetime64("2026-05-28T01:00:00"), 51_000.0, 1)
+    snap_pos.set_external_maint_margin(12.5)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    result = am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos]))
+
+    assert result.positions == []
+    assert pos.maint_margin == 12.5  # the unconditional refresh still ran
+
+
+def test_a_real_size_difference_is_still_a_reconcile_diff():
+    """The tolerance is half a lot; a genuine mismatch is at least one."""
+    am = _am()
+    state = am._states["binance"]
+    inst = dataclasses.replace(_instrument("AVAXUSDT"), lot_size=0.1, min_size=0.1)
+    pos = Position(instrument=inst, quantity=2.3, pos_average_price=50_000.0)
+    state.set_position(inst, pos)
+
+    snap_pos = Position(instrument=inst, quantity=2.4, pos_average_price=50_000.0)
+    snap_pos.update_market_price(np.datetime64("2026-05-28T01:00:00"), 51_000.0, 1)
+    am._time.t = np.datetime64("2026-05-28T01:00:00")
+    am.apply(_snap_event(as_of="2026-05-28T01:00:00", positions=[snap_pos]))
+
+    assert pos.quantity == 2.4
 
 
 def test_restored_positions_first_snapshot_corrects_present_flattens_absent():

@@ -88,11 +88,22 @@ class _TwoStreamCcxtConnector(CcxtConnector):
         self.send(
             DealEvent(
                 instrument=instrument,
-                client_order_id=None,  # AM resolves the order by the venue id
+                client_order_id=self._trade_client_id(raw),
                 venue_order_id=raw.get("order"),
                 deal=deal,
             )
         )
+
+    def _trade_client_id(self, raw: dict[str, Any]) -> str | None:
+        """The cid this trade carries, when the venue puts one on its execution frame.
+
+        Resolving by venue id alone loses the race a market order can create: the trade can
+        arrive before the submit ack has mapped that id, and AM then materializes a phantom
+        EXTERNAL order which absorbs the fill — leaving the real order at filled=0 with its
+        seen-trade-ids on the phantom. The order itself is already in state (registered before
+        submit), so a cid resolves it immediately. None keeps the venue-id-only behaviour.
+        """
+        return None
 
     # ------------------------------------------------------------------ #
     # Order-status stream — fill branches (override the base's inline-trade reads)

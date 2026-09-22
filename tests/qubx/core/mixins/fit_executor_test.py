@@ -329,6 +329,34 @@ class TestThreadedBootFitOutcome:
         assert context._strategy_state.is_on_fit_called
         assert pm._boot.is_trading
 
+    def test_a_failed_replay_op_does_not_latch_the_fit_as_successful(self):
+        """A replay op raises after set_universe already added the subscriptions but before it
+        updated ctx.instruments. Latching success there trades a stale universe until the next
+        fit — bybit.nimble 09-20, where a kline 10006 cost a whole cycle."""
+        pm, context, channel = make_thread_pm()
+        pm._strategy.on_fit.side_effect = lambda ctx: ctx.set_universe([])
+        context.set_universe.side_effect = RuntimeError("bybit 10006")
+        pm._boot.advance(BootPhase.BOOT_FIT)
+        pm._boot.record_fit_attempt()
+
+        pm._handle_fit(None, "fit", (None, T0))
+        drain_until_committed(pm, channel)
+
+        assert not context._strategy_state.is_on_fit_called
+        assert pm._boot.phase == BootPhase.BOOT_FIT  # retry pending, not latched as trading
+
+    def test_a_failed_post_fit_subscription_commit_does_not_latch(self):
+        pm, context, channel = make_thread_pm()
+        pm._strategy.on_fit.side_effect = None
+        pm._subscription_manager.commit.side_effect = RuntimeError("commit boom")
+        pm._boot.advance(BootPhase.BOOT_FIT)
+        pm._boot.record_fit_attempt()
+
+        pm._handle_fit(None, "fit", (None, T0))
+        drain_until_committed(pm, channel)
+
+        assert not context._strategy_state.is_on_fit_called
+
     def test_threaded_boot_fit_blocks_when_attempts_exhausted(self):
         pm, context, channel = make_thread_pm()
         pm._strategy.on_fit.side_effect = RuntimeError("thread boom")

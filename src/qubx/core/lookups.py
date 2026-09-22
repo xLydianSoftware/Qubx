@@ -392,7 +392,9 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]) -> list[Instrument]:
                 s["quoteCurrency"],
                 s["datasetId"],
                 tick_size=s["priceIncrement"],
-                lot_size=s["minTradeAmount"],
+                # lot_size is the quantity step everywhere it is read (rounding, add_in_lots,
+                # half-lot tolerances); minTradeAmount is a floor, not a step
+                lot_size=s["amountIncrement"],
                 min_size=s["amountIncrement"],
                 min_notional=0,  # we don't have this info from tardis
                 contract_size=s.get("contractMultiplier", 1.0),

@@ -10,7 +10,7 @@ synchronous ``_handle_ws_order`` handler.
 import asyncio
 import contextlib
 import math
-from unittest.mock import AsyncMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, call, patch
 
 import ccxt
 import ccxt.pro
@@ -889,6 +889,7 @@ def test_connect_triggers_initial_snapshot_and_subscription() -> None:
     assert len(submitted) == 3
     # Initial snapshot requested (fire-and-forget via the _spawn capture).
     assert len(conn._captured) == 1  # type: ignore[attr-defined]
+    conn._captured[0].close()  # type: ignore[attr-defined]
     # Close the coroutines we never awaited (avoid "coroutine was never awaited").
     for coro in submitted:
         coro.close()
@@ -1079,6 +1080,36 @@ async def test_snapshot_applies_to_real_account_manager() -> None:
     assert am.get_balance("USDT", exchange="BINANCE.UM").total == 1000.0
 
 
+@pytest.mark.asyncio
+async def test_snapshot_reduce_only_order_survives_recovery() -> None:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.fetch_open_orders = AsyncMock(
+        return_value=[{**_ws_order(status="open", cid="qubx_BTCUSDT_1", venue_id="V1"), "reduceOnly": True}]
+    )
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1000.0}, "used": {"USDT": 0.0}})
+    exchange.markets = {}
+    conn, sent, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert sent[0].snapshot.open_orders[0].reduce_only is True
+
+    am = SimulatedAccountManager(
+        connectors={"BINANCE.UM": object()},
+        base_currencies={"BINANCE.UM": "USDT"},
+        time=DummyTimeProvider(),
+    )
+    am.apply(sent[0])
+
+    recovered = am.find_order_by_id("V1")
+    assert recovered is not None
+    assert recovered.origin is OrderOrigin.RECOVERED
+    assert recovered.reduce_only is True
+
+
 # --------------------------------------------------------------------------- #
 # (g) F26 — WS position/balance pushes + account-stream composition
 # --------------------------------------------------------------------------- #
@@ -1242,3 +1273,48 @@ async def test_two_stream_subscribes_orders_and_trades_only() -> None:
     assert [k["stream"] for k in recorded] == ["orders", "my_trades"]
     assert [k["mark_ready"] for k in recorded] == [True, False]
     assert recorded[1]["handle"] == conn._handle_ws_trade
+
+
+def _quiet_exchange() -> Mock:
+    exchange = Mock()
+    exchange.has = {"editOrder": True}
+    exchange.markets = {}
+    exchange.fetch_open_orders = AsyncMock(return_value=[])
+    exchange.fetch_positions = AsyncMock(return_value=[])
+    exchange.fetch_balance = AsyncMock(return_value={"total": {"USDT": 1.0}, "used": {"USDT": 0.0}})
+    return exchange
+
+
+@pytest.mark.asyncio
+async def test_the_snapshot_reads_carry_no_venue_params() -> None:
+    """No venue seam on the snapshot: a venue that needs extra params (Bybit's cursor walk)
+    injects them in its own ccxt subclass, where they cannot leak onto every other venue."""
+    exchange = _quiet_exchange()
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot()
+    await _drive(conn)
+
+    assert exchange.fetch_open_orders.call_args_list == [call(), call(params={"trigger": True})]
+    assert exchange.fetch_positions.call_args_list == [call()]
+
+
+@pytest.mark.asyncio
+async def test_the_positions_only_tick_reads_positions_bare() -> None:
+    exchange = _quiet_exchange()
+    conn, _, _ = _make_connector(exchange=exchange)
+
+    conn.request_snapshot(include_orders=False)
+    await _drive(conn)
+
+    exchange.fetch_open_orders.assert_not_called()
+    assert exchange.fetch_positions.call_args_list == [call()]
+
+
+def test_update_order_on_limit_still_spawns() -> None:
+    conn, _, _ = _make_connector()
+
+    conn.update_order(_order(order_type=OrderType.LIMIT), price=102.0)
+
+    assert len(conn._captured) == 1  # type: ignore[attr-defined]
+    conn._captured[0].close()  # type: ignore[attr-defined]

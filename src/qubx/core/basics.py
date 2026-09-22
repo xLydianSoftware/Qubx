@@ -13,7 +13,14 @@ import pandas as pd
 from qubx import logger
 from qubx.core.exceptions import QueueTimeout
 from qubx.core.series import Bar, OrderBook, Quote, Trade, time_as_nsec
-from qubx.core.utils import add_in_lots, is_lot_multiple, prec_ceil, prec_floor, time_delta_to_str, time_to_str
+from qubx.core.utils import (
+    add_in_lots,
+    grid_ceil,
+    grid_floor,
+    is_lot_multiple,
+    time_delta_to_str,
+    time_to_str,
+)
 from qubx.utils.clock import start_clock_discipline, time_now
 from qubx.utils.misc import Stopwatch
 from qubx.utils.time import to_timedelta
@@ -39,6 +46,8 @@ def _as_dt64_or_nat(value: Any) -> "dt_64":
 OPTION_FILL_AT_SIGNAL_PRICE = "fill_at_signal_price"
 OPTION_SIGNAL_PRICE = "signal_price"
 OPTION_SKIP_PRICE_CROSS_CONTROL = "skip_price_cross_control"
+# Reprices a crossing post-only order one tick passive instead of letting the venue reject it.
+OPTION_REPRICE_IF_CROSSING = "reprice_if_crossing"
 OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION = "avoid_stop_order_price_validation"
 
 # The only currencies the framework may value at par (1.0) until marks-based conversion lands.
@@ -319,6 +328,25 @@ class MarketType(StrEnum):
     INDEX = "INDEX"
 
 
+# fixed multiplier set, not any digit run (1INCH, 10Y, KODEX200 survive); the lookahead rejects
+# a bare "1000", which would otherwise strip to ""
+_MULTIPLIER_PREFIX = re.compile(r"^1(0{3,7})(?=[A-Z])")
+_MULTIPLIER_SUFFIX = re.compile(r"^(.+[A-Z])1000$")
+
+
+def multiplier_coin(base: str) -> str:
+    """The coin under a multiplier contract: 1000PEPE, 10000SATS, SHIB1000 -> PEPE, SATS, SHIB.
+
+    The multiplier itself is not recoverable from the result, so this names the coin, never a
+    tradeable unit: 1000PEPE and 10000PEPE both answer PEPE.
+    """
+    if m := _MULTIPLIER_PREFIX.match(base):
+        return base[m.end() :]
+    if m := _MULTIPLIER_SUFFIX.match(base):
+        return m.group(1)
+    return base
+
+
 @dataclass(order=True)
 class Instrument:
     """
@@ -373,12 +401,7 @@ class Instrument:
 
     @property
     def asset(self) -> str:
-        if self.base.startswith("1000"):
-            return self.base.replace("1000", "")
-        elif self.base.startswith("1000000"):
-            return self.base.replace("1000000", "")
-        else:
-            return self.base
+        return multiplier_coin(self.base)
 
     def is_futures(self) -> bool:
         return self.market_type in [MarketType.FUTURE, MarketType.SWAP]
@@ -389,39 +412,37 @@ class Instrument:
 
     def round_size_down(self, size: float) -> float:
         """
-        Round down size to specified precision
+        Round size down onto the lot grid.
 
-        i.size_precision == 3
-        i.round_size_up(0.1234) -> 0.123
+        i.lot_size == 0.001 -> i.round_size_down(0.1234) -> 0.123
+        i.lot_size == 10    -> i.round_size_down(157)    -> 150.0
         """
-        return prec_floor(size, self.size_precision)
+        return grid_floor(size, self.lot_size)
 
     def round_size_up(self, size: float) -> float:
         """
-        Round up size to specified precision
+        Round size up onto the lot grid.
 
-        i.size_precision == 3
-        i.round_size_up(0.1234) -> 0.124
+        i.lot_size == 0.001 -> i.round_size_up(0.1234) -> 0.124
+        i.lot_size == 10    -> i.round_size_up(157)    -> 160.0
         """
-        return prec_ceil(size, self.size_precision)
+        return grid_ceil(size, self.lot_size)
 
     def round_price_down(self, price: float) -> float:
         """
-        Round down price to specified precision
+        Round price down onto the tick grid.
 
-        i.price_precision == 3
-        i.round_price_down(1.234999, 3) -> 1.234
+        i.tick_size == 0.001 -> i.round_price_down(1.234999) -> 1.234
         """
-        return prec_floor(price, self.price_precision)
+        return grid_floor(price, self.tick_size)
 
     def round_price_up(self, price: float) -> float:
         """
-        Round up price to specified precision
+        Round price up onto the tick grid.
 
-        i.price_precision == 3
-        i.round_price_up(1.234999) -> 1.235
+        i.tick_size == 0.001 -> i.round_price_up(1.234999) -> 1.235
         """
-        return prec_ceil(price, self.price_precision)
+        return grid_ceil(price, self.tick_size)
 
     def service_signal(
         self,
@@ -1977,13 +1998,11 @@ class InstrumentsLookup:
         - as_of is a string in format YYYY-MM-DD or pd.Timestamp or None
         """
         _limit_time = pd.Timestamp(as_of) if as_of else None
-        return [
+        matched = [
             i
             for i in self.get_lookup().values()
             if i.exchange == exchange
-            and (
-                base is None or (i.base == base or i.base == f"1000{base}")
-            )  # this is a hack to support 1000DOGEUSDT and others
+            and (base is None or i.base == base or multiplier_coin(i.base) == base)
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
             and (
@@ -1995,6 +2014,15 @@ class InstrumentsLookup:
                 or (i.delist_date is None or pd.Timestamp(i.delist_date).tz_localize(None) >= _limit_time)
             )
         ]
+        if base is not None:
+            aliases = sorted({i.base for i in matched} - {base})
+            if aliases and any(i.base == base for i in matched):
+                logger.warning(
+                    f"[lookup] {exchange} base <y>{base}</y> also matches {aliases} through a contract "
+                    f"multiplier; the exact base is listed first — pass the venue base to disambiguate"
+                )
+                matched.sort(key=lambda i: i.base != base)
+        return matched
 
     def find_aux_instrument_for(
         self, instrument: Instrument, base_currency: str, market_type: MarketType | None = None

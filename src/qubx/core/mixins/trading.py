@@ -200,7 +200,8 @@ class TradingManager(ITradingManager):
             status=OrderStatus.SUBMITTED,
             time_in_force=time_in_force,
             reduce_only=bool(resolve_reduce_only(options)),
-            post_only=bool(options.get("post_only", False)),
+            # GTX is post-only on the wire (prepare_ccxt_order_payload); keep the record in step
+            post_only=bool(options.get("post_only", False)) or str(time_in_force).upper() == "GTX",
             options=options,
         )
 
