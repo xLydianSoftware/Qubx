@@ -386,10 +386,20 @@ class IcebergLakeReader(IReader):
             raise ValueError(f"{'.'.join(table.identifier)}: no aggregation known for {missing}")
         return aggs
 
-    def _plan(self, table: LakeTable, symbols: list[str] | None, start, stop) -> tuple[Table, DataScan]:
+    def _plan(
+        self, table: LakeTable, symbols: list[str] | None, start, stop, columns: list[str] | None = None
+    ) -> tuple[Table, DataScan]:
         source = self._catalog.load_table(table.identifier)
         time_column = table.time_column
-        projection = tuple(n for n in source.schema().column_names if n not in PROVENANCE_COLUMNS)
+        names = [n for n in source.schema().column_names if n not in PROVENANCE_COLUMNS]
+        if columns is None:
+            projection = tuple(names)
+        else:
+            missing = sorted(set(columns) - set(names))
+            if missing:
+                raise ValueError(f"{'.'.join(table.identifier)} has no column(s) {missing}")
+            keep = {time_column, SYMBOL_COLUMN, *columns}
+            projection = tuple(n for n in names if n in keep)
 
         predicates = []
         if start is not None:
@@ -405,8 +415,10 @@ class IcebergLakeReader(IReader):
         )
         return source, scan
 
-    def _scan(self, table: LakeTable, symbols: list[str] | None, start, stop) -> pa.Table:
-        _, scan = self._plan(table, symbols, start, stop)
+    def _scan(
+        self, table: LakeTable, symbols: list[str] | None, start, stop, columns: list[str] | None = None
+    ) -> pa.Table:
+        _, scan = self._plan(table, symbols, start, stop, columns)
         return _shape(scan.to_arrow(), table.time_column)
 
     def _block(
@@ -418,6 +430,7 @@ class IcebergLakeReader(IReader):
         symbols: list[str] | None,
         start,
         stop,
+        columns: list[str] | None = None,
     ) -> Transformable:
         source, to_aggregate = table, None
         if resample:
@@ -427,7 +440,7 @@ class IcebergLakeReader(IReader):
             else:
                 to_aggregate = resample
 
-        data = self._scan(source, symbols, start, stop)
+        data = self._scan(source, symbols, start, stop, columns)
         if to_aggregate:
             columns = [n for n in data.column_names if n not in (TIME_COLUMN, SYMBOL_COLUMN)]
             data = aggregate(data, self._aggs_for(table, columns), to_aggregate)
@@ -442,10 +455,11 @@ class IcebergLakeReader(IReader):
         start,
         stop,
         chunksize: int,
+        columns: list[str] | None = None,
     ) -> Iterator[Transformable]:
         """A table with no native timeframe has no windows to cut, so `chunksize`
         counts rows: plan once, then read the files one at a time, oldest first."""
-        source, scan = self._plan(table, symbols, start, stop)
+        source, scan = self._plan(table, symbols, start, stop, columns)
         field_id = source.schema().find_field(table.time_column).field_id
         tasks = sorted(scan.plan_files(), key=partial(_task_order, field_id=field_id))
         batches = _task_batches(scan, tasks)
@@ -462,6 +476,8 @@ class IcebergLakeReader(IReader):
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
         table, resample = self._resolve(dtype)
+        columns = kwargs.get("columns")
+        columns = list(columns) if columns is not None else None
         if isinstance(data_id, str):
             symbols = [data_id]
         else:
@@ -469,14 +485,14 @@ class IcebergLakeReader(IReader):
 
         start_ts, stop_ts = handle_start_stop(start, stop, convert=pd.Timestamp)
         if chunksize <= 0:
-            return self._block(table, resample, dtype, data_id, symbols, start_ts, stop_ts)
+            return self._block(table, resample, dtype, data_id, symbols, start_ts, stop_ts, columns)
 
         timeframe = resample or table.timeframe or ""
         if not timeframe:
-            return self._stream(table, dtype, data_id, symbols, start_ts, stop_ts, chunksize)
+            return self._stream(table, dtype, data_id, symbols, start_ts, stop_ts, chunksize, columns)
         # An open-ended range has no windows to cut: read it as one block.
         windows = calculate_time_windows_for_chunking(start_ts, stop_ts, timeframe, chunksize) or [(start_ts, stop_ts)]
-        return (self._block(table, resample, dtype, data_id, symbols, w0, w1) for w0, w1 in windows)
+        return (self._block(table, resample, dtype, data_id, symbols, w0, w1, columns) for w0, w1 in windows)
 
     def _discovery_table(self, table: LakeTable) -> tuple[str, ...] | None:
         """The `_1d` rollup a feature family is discovered through: its symbols

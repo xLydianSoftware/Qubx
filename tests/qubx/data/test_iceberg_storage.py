@@ -506,3 +506,53 @@ def test_feature_discovery_falls_back_to_a_data_scan_without_a_daily_rollup(lake
     s, e = reader.get_time_range("BTCUSDT", "trade_flow")
     assert (str(s), str(e)) == ("2026-08-10T00:00:00.000000", "2026-08-11T01:59:00.000000")
     assert seen == [("binance_perp", "trade_flow_1m")] * 2
+
+
+def test_columns_project_a_direct_read(lake):
+    df = (
+        lake["BINANCE.UM", "SWAP"]
+        .read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11", columns=["taker_buy_volume"])
+        .to_pd()
+    )
+    assert list(df.columns) == ["taker_buy_volume"]
+    assert len(df) == 120
+
+
+def test_columns_project_a_rollup_read(catalog, lake):
+    _rollup(catalog, "binance_perp", "1d")
+    reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
+    df = reader.read("BTCUSDT", "trade_flow(1d)", "2026-08-10", "2026-08-12", columns=["flow_toxicity_score"]).to_pd()
+    assert list(df.columns) == ["flow_toxicity_score"]
+    assert len(df) == 2
+
+
+def test_columns_project_a_resample_and_aggregate_only_what_was_read(lake):
+    df = (
+        lake["BINANCE.UM", "SWAP"]
+        .read([], "trade_flow(1h)", "2026-08-10", "2026-08-12", columns=["taker_sell_volume"])
+        .to_pd(id_in_index=True)
+    )
+    assert list(df.columns) == ["taker_sell_volume"]
+    assert len(df) == 8
+
+
+def test_columns_project_a_streamed_raw_read(raw_lake):
+    chunks = list(
+        raw_lake["BINANCE.UM", "SWAP"].read(
+            "BTCUSDT", "quotes", "2026-08-10", "2026-08-12", chunksize=4000, columns=["bid_price"]
+        )
+    )
+    frames = [c.to_pd() for c in chunks]
+    assert all(list(f.columns) == ["bid_price"] for f in frames)
+    assert pd.concat(frames).index.is_monotonic_increasing
+    assert [len(f) for f in frames] == [4000, 4000, 2000]
+
+
+def test_an_unknown_column_is_named_in_the_error(lake):
+    with pytest.raises(ValueError, match=r"binance_perp.trade_flow_1m has no column\(s\) \['nope'\]"):
+        lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11", columns=["nope"])
+
+
+def test_no_columns_argument_reads_every_data_column(lake):
+    df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").to_pd()
+    assert list(df.columns) == list(FLOW_AGGS)
