@@ -99,6 +99,51 @@ class TokenBucketRateLimiter:
             with self._lock:
                 self._inflight = max(0.0, self._inflight - weight)
 
+    def acquire_blocking(self, weight: float = 1.0, timeout: float | None = None) -> bool:
+        """
+        Thread-blocking twin of `acquire`, for callers that are not on an event loop.
+
+        Same reservation rule: tokens are taken under the lock so concurrent threads get distinct
+        increasing deadlines, and the sleep happens outside it. Returns False without sleeping when
+        the wait would exceed `timeout`; the reservation is handed back in that case.
+
+        Args:
+            weight: Number of tokens to acquire.
+            timeout: Longest wait to accept, in seconds. None waits as long as needed.
+        """
+        if weight <= 0:
+            return True
+        if weight > self.capacity:
+            logger.warning(f"Rate limiter {self.name}: weight {weight} exceeds capacity {self.capacity}, clamping")
+            weight = self.capacity
+
+        with self._lock:
+            self._refill_tokens()
+            self._tokens -= weight
+            deficit = -self._tokens
+            if deficit > 0:
+                self._inflight += weight
+
+        if deficit <= 0:
+            return True
+
+        wait_time = deficit / self.refill_rate
+        if timeout is not None and wait_time > timeout:
+            with self._lock:
+                self._tokens += weight
+                self._inflight = max(0.0, self._inflight - weight)
+            return False
+        if wait_time > 1.0:
+            logger.debug(
+                f"Rate limiter {self.name}: waiting {wait_time:.2f}s (deficit {deficit:.1f}, {self.refill_rate}/s)"
+            )
+        try:
+            time.sleep(wait_time)
+        finally:
+            with self._lock:
+                self._inflight = max(0.0, self._inflight - weight)
+        return True
+
     def set_tokens(self, tokens: float) -> None:
         """Pin to an exchange-reported level, keeping outstanding reservations owed.
 

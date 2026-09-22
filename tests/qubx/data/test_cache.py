@@ -229,6 +229,18 @@ class TestMakeCacheKey:
         k2 = _make_cache_key("ohlc(1h)", start="2024-02-01", stop="2024-02-05")
         assert k1 == k2
 
+    def test_one_key_however_the_timeframe_is_spelled(self):
+        """
+        Six ways to write one minute. Without this each fetches the same bars into its own entry.
+        """
+        keys = {_make_cache_key(DataType.OHLC[tf]) for tf in ("1Min", "1min", "1m", "60s", "60Sec")}
+        assert keys == {"ohlc(1min)"}
+        assert _make_cache_key(DataType.OHLC["1H"]) == _make_cache_key(DataType.OHLC["1h"])
+
+    def test_a_parameter_that_is_not_a_timeframe_is_left_alone(self):
+        assert _make_cache_key("orderbook(0.01,10)") == "orderbook(0.01,10)"
+        assert _make_cache_key("trade") == "trade"
+
     def test_key_ignores_chunksize(self):
         k1 = _make_cache_key("ohlc(1h)", chunksize=100)
         k2 = _make_cache_key("ohlc(1h)")

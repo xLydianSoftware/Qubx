@@ -145,10 +145,6 @@ just test
 - Build package: `just build`
 - Run verbose tests: `just test-verbose`
 
-## In Production
-
-Qubx powers the [AllegedAlpha](https://app.lighter.xyz/public-pools/281474976625478) public pool on Lighter. Public pools allow users to deposit funds from their blockchain wallet into a smart contract. The pool operator manages the trading strategy, and a performance fee is taken from profits (X: [@allegedalpha](https://x.com/allegedalpha)).
-
 ## About xLydian
 
 Qubx is developed by [xLydian](https://xlydian.com/).
