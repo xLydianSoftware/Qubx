@@ -678,3 +678,75 @@ def test_a_namespace_without_lake_tables_raises(catalog):
     reader = IcebergLakeStorage.from_catalog(catalog)["OKX.F", "SWAP"]
     with pytest.raises(ValueError, match="no lake tables for exchange 'OKX.F' and market type 'SWAP'"):
         reader.get_data_id("trade_flow")
+
+
+def _load_spy(monkeypatch) -> list[tuple[str, ...]]:
+    loaded: list[tuple[str, ...]] = []
+    original = SqlCatalog.load_table
+
+    def spy(self, identifier):
+        loaded.append(tuple(identifier))
+        return original(self, identifier)
+
+    monkeypatch.setattr(SqlCatalog, "load_table", spy)
+    return loaded
+
+
+def test_a_read_loads_only_the_table_it_reads(daily_lake, monkeypatch):
+    loaded = _load_spy(monkeypatch)
+    reader = daily_lake["BINANCE.UM", "SWAP"]
+    df = reader.read("BTCUSDT", "trade_flow(1d)", "2026-08-10", "2026-08-12", columns=["taker_buy_volume"]).to_pd()
+    assert len(df) == 2
+    assert set(loaded) == {("binance_perp", "trade_flow_1d")}
+
+
+def test_a_minute_read_never_touches_rollups_or_raw_tables(daily_lake, monkeypatch):
+    loaded = _load_spy(monkeypatch)
+    daily_lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11")
+    assert set(loaded) == {("binance_perp", "trade_flow_1m")}
+
+
+def test_a_data_type_request_resolves_through_its_stem_alias(lake, monkeypatch):
+    loaded = _load_spy(monkeypatch)
+    df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "quote", "2026-08-10", "2026-08-11").to_pd()
+    assert len(df) == 10
+    assert set(loaded) == {("binance_perp", "quotes")}
+
+
+def test_fundamental_loads_one_table(coingecko_lake, monkeypatch):
+    loaded = _load_spy(monkeypatch)
+    coingecko_lake["COINGECKO", "FUNDAMENTAL"].read(
+        ["BTC"], "fundamental", "2026-07-31", "2026-08-02", columns=["value"]
+    )
+    assert set(loaded) == {("global_crypto", "fundamental")}
+
+
+def test_a_bare_and_a_suffixed_table_with_one_timeframe_still_clash(catalog):
+    props = {"dvault.kind": "feature", "dvault.kernel": "open_interest", "dvault.interval": "1m"}
+    oi_schema = pa.schema(
+        [
+            pa.field("timestamp", pa.timestamp("us"), nullable=False),
+            pa.field("symbol", pa.string(), nullable=False),
+            pa.field("open_interest", pa.float64()),
+        ]
+    )
+    _create(catalog, ("binance_perp", "open_interest"), oi_schema, props)
+    _create(catalog, ("binance_perp", "open_interest_1m"), oi_schema, props)
+    reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
+    with pytest.raises(ValueError, match=r"both answer open_interest\(1m\)"):
+        reader.read("BTCUSDT", "open_interest(1m)", "2026-08-10", "2026-08-11")
+
+
+def test_two_stems_answering_one_alias_request_clash(catalog):
+    schema = pa.schema(
+        [
+            pa.field("timestamp", pa.timestamp("us"), nullable=False),
+            pa.field("symbol", pa.string(), nullable=False),
+            pa.field("close", pa.float64()),
+        ]
+    )
+    for name in ("candles_1m", "ohlc_1m"):
+        _create(catalog, ("binance_perp", name), schema, {"dvault.kind": "feature", "dvault.interval": "1m"})
+    reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
+    with pytest.raises(ValueError, match=r"both answer"):
+        reader.read("BTCUSDT", "ohlc(1m)", "2026-08-10", "2026-08-11")
