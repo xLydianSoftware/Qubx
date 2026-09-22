@@ -115,8 +115,9 @@ DISCOVERY_PARTITIONS = 7
 # A day in the `_1d` rollup stands for the whole day of the minute table.
 DAY_END = dt.timedelta(hours=23, minutes=59)
 
-# - REST round trips per table dominate a cold reader (51 s for 66 tables serially, 2026-09-22)
-DISCOVERY_WORKERS = 8
+# - REST round trips per table dominate a cold reader (51 s for 66 tables serially, 2026-09-22);
+#   load_table is latency-bound, so 16 in flight beat 8 (9 s vs 15 s cold on R2)
+DISCOVERY_WORKERS = 16
 
 VENUE_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("binance", "perp"): ("BINANCE.UM", "SWAP"),
@@ -706,12 +707,16 @@ class IcebergLakeStorage(IStorage):
         return pd.concat(frames) if frames else pd.DataFrame(columns=["venue"])
 
     def _tables_for(self, exchange: str, market: str) -> list[LakeTable]:
+        missing = f"no lake tables for exchange {exchange!r} and market type {market!r}"
         namespace = self._lake_namespaces().get((exchange.upper(), market.upper()))
         if namespace is None:
-            raise ValueError(f"no lake tables for exchange {exchange!r} and market type {market!r}")
+            raise ValueError(missing)
         with self._lock:
             if namespace not in self._tables:
-                self._tables[namespace] = self._load_namespace(namespace)
+                tables = self._load_namespace(namespace)
+                if not tables:
+                    raise ValueError(missing)
+                self._tables[namespace] = tables
             return self._tables[namespace]
 
     def _load_namespace(self, namespace: str) -> list[LakeTable]:

@@ -671,3 +671,10 @@ def test_discovery_loads_a_namespace_concurrently(lake, monkeypatch):
     tables = lake._tables_for("BINANCE.UM", "SWAP")
     in_discovery["on"] = False
     assert {t.identifier[1] for t in tables} == {"trade_flow_1m", "quotes"}
+
+
+def test_a_namespace_without_lake_tables_raises(catalog):
+    _create(catalog, ("okx_perp", "trade_flow_1m"), FLOW_SCHEMA, {"dvault.agg.taker_buy_volume": "sum"})
+    reader = IcebergLakeStorage.from_catalog(catalog)["OKX.F", "SWAP"]
+    with pytest.raises(ValueError, match="no lake tables for exchange 'OKX.F' and market type 'SWAP'"):
+        reader.get_data_id("trade_flow")
