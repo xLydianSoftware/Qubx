@@ -1,4 +1,5 @@
 import datetime as dt
+import threading
 from functools import partial
 from types import SimpleNamespace
 
@@ -626,3 +627,47 @@ def test_two_tables_answering_one_request_are_refused(catalog):
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
     with pytest.raises(ValueError, match=r"both answer open_interest\(1m\)"):
         reader.get_data_id("open_interest")
+
+
+def test_exchanges_come_from_namespace_names_without_loading_tables(lake, monkeypatch):
+    def refuse(*args, **kwargs):
+        raise AssertionError("listing exchanges must not load tables")
+
+    monkeypatch.setattr(SqlCatalog, "load_table", refuse)
+    assert lake.get_exchanges() == ["BINANCE.UM"]
+    assert lake.get_market_types("binance.um") == ["SWAP"]
+
+
+def test_an_empty_lake_namespace_is_not_an_exchange(catalog):
+    catalog.create_namespace("okx_perp")
+    assert IcebergLakeStorage.from_catalog(catalog).get_exchanges() == []
+
+
+def test_a_reader_loads_only_its_own_namespace(two_venue_lake, monkeypatch):
+    loaded: list[tuple[str, ...]] = []
+    original = SqlCatalog.load_table
+
+    def spy(self, identifier):
+        loaded.append(tuple(identifier))
+        return original(self, identifier)
+
+    monkeypatch.setattr(SqlCatalog, "load_table", spy)
+    assert two_venue_lake["BYBIT.F", "SWAP"].get_data_id("trade_flow") == ["BTCUSDT"]
+    assert loaded and {i[0] for i in loaded} == {"bybit_perp"}
+
+
+def test_discovery_loads_a_namespace_concurrently(lake, monkeypatch):
+    """binance_perp holds two tables; a barrier of two passes only if both loads are in flight at once."""
+    barrier = threading.Barrier(2, timeout=5)
+    original = SqlCatalog.load_table
+    in_discovery = {"on": True}
+
+    def gated(self, identifier):
+        if in_discovery["on"]:
+            barrier.wait()
+        return original(self, identifier)
+
+    monkeypatch.setattr(SqlCatalog, "load_table", gated)
+    tables = lake._tables_for("BINANCE.UM", "SWAP")
+    in_discovery["on"] = False
+    assert {t.identifier[1] for t in tables} == {"trade_flow_1m", "quotes"}

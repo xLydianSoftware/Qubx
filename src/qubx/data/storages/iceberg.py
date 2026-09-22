@@ -15,7 +15,9 @@ import datetime as dt
 import json
 import os
 import re
+import threading
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import partial
 from pathlib import Path
@@ -104,15 +106,6 @@ def aggregate(data: pa.Table, aggs: dict[str, str], interval: str) -> pa.Table:
         con.close()
 
 
-def all_tables(catalog: Catalog, namespace: tuple[str, ...] = ()) -> list[tuple[str, ...]]:
-    found: list[tuple[str, ...]] = []
-    children = catalog.list_namespaces(namespace) if namespace else catalog.list_namespaces()
-    for child in children:
-        found.extend(tuple(t) for t in catalog.list_tables(child))
-        found.extend(all_tables(catalog, child))
-    return sorted(set(found))
-
-
 # Rollup intervals Task 5 materializes; a coarser request without a sibling
 # rollup table is resampled to one of these in DuckDB and nothing else.
 RESAMPLE_INTERVALS = ("1h", "1d")
@@ -121,6 +114,9 @@ DISCOVERY_ROLLUP = "1d"
 DISCOVERY_PARTITIONS = 7
 # A day in the `_1d` rollup stands for the whole day of the minute table.
 DAY_END = dt.timedelta(hours=23, minutes=59)
+
+# - REST round trips per table dominate a cold reader (51 s for 66 tables serially, 2026-09-22)
+DISCOVERY_WORKERS = 8
 
 VENUE_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("binance", "perp"): ("BINANCE.UM", "SWAP"),
@@ -653,39 +649,31 @@ class IcebergLakeStorage(IStorage):
     def _setup(self, catalog: Catalog, *, namespace_prefix: str = "") -> None:
         self._catalog = catalog
         self._namespace_prefix = namespace_prefix
-        self._layout: dict[str, dict[str, list[LakeTable]]] | None = None
+        self._namespaces: dict[tuple[str, str], str] | None = None
+        self._tables: dict[str, list[LakeTable]] = {}
+        self._lock = threading.Lock()
 
-    def _structure(self) -> dict[str, dict[str, list[LakeTable]]]:
-        if self._layout is not None:
-            return self._layout
-
-        by_market: dict[tuple[str, str], list[tuple[LakeTable, dict[str, str]]]] = {}
-        for identifier in all_tables(self._catalog):
-            # every check that can be made on the name alone comes first: a
-            # load_table is a REST round trip per table
-            if len(identifier) != 2 or not is_lake_namespace(identifier[0], prefix=self._namespace_prefix):
-                continue
-            venue, _, market = identifier[0].removeprefix(self._namespace_prefix).rpartition("_")
-            qubx_names = VENUE_MAP.get((venue, market))
-            if qubx_names is None:
-                continue
-            properties = self._catalog.load_table(identifier).properties
-            decoded = decode_table(identifier, properties, prefix=self._namespace_prefix)
-            if decoded is None:
-                continue
-            by_market.setdefault(qubx_names, []).append((decoded, properties))
-
-        layout: dict[str, dict[str, list[LakeTable]]] = {}
-        for (exchange, market), entries in sorted(by_market.items()):
-            layout.setdefault(exchange, {})[market] = _attach_rollups(entries)
-        self._layout = layout
-        return layout
+    def _lake_namespaces(self) -> dict[tuple[str, str], str]:
+        """(EXCHANGE, MARKET) -> namespace, from names alone plus one list_tables per namespace."""
+        if self._namespaces is None:
+            found: dict[tuple[str, str], str] = {}
+            for identifier in self._catalog.list_namespaces():
+                if len(identifier) != 1 or not is_lake_namespace(identifier[0], prefix=self._namespace_prefix):
+                    continue
+                namespace = identifier[0]
+                venue, _, market = namespace.removeprefix(self._namespace_prefix).rpartition("_")
+                qubx_names = VENUE_MAP.get((venue, market))
+                if qubx_names is None or not self._catalog.list_tables(namespace):
+                    continue
+                found[qubx_names] = namespace
+            self._namespaces = found
+        return self._namespaces
 
     def get_exchanges(self) -> list[str]:
-        return sorted(self._structure())
+        return sorted({exchange for exchange, _ in self._lake_namespaces()})
 
     def get_market_types(self, exchange: str) -> list[str]:
-        return sorted(self._structure().get(exchange.upper(), {}))
+        return sorted(market for name, market in self._lake_namespaces() if name == exchange.upper())
 
     def get_reader(self, exchange: str, market: str) -> IcebergLakeReader:
         """Handing out a reader costs nothing: the layout is discovered on the
@@ -718,13 +706,28 @@ class IcebergLakeStorage(IStorage):
         return pd.concat(frames) if frames else pd.DataFrame(columns=["venue"])
 
     def _tables_for(self, exchange: str, market: str) -> list[LakeTable]:
-        tables = self._structure().get(exchange.upper(), {}).get(market.upper())
-        if not tables:
+        namespace = self._lake_namespaces().get((exchange.upper(), market.upper()))
+        if namespace is None:
             raise ValueError(f"no lake tables for exchange {exchange!r} and market type {market!r}")
-        return tables
+        with self._lock:
+            if namespace not in self._tables:
+                self._tables[namespace] = self._load_namespace(namespace)
+            return self._tables[namespace]
+
+    def _load_namespace(self, namespace: str) -> list[LakeTable]:
+        identifiers = [tuple(t) for t in self._catalog.list_tables(namespace)]
+        with ThreadPoolExecutor(max_workers=DISCOVERY_WORKERS) as pool:
+            properties = list(pool.map(lambda i: self._catalog.load_table(i).properties, identifiers))
+        entries = []
+        for identifier, props in zip(identifiers, properties):
+            decoded = decode_table(identifier, props, prefix=self._namespace_prefix)
+            if decoded is not None:
+                entries.append((decoded, props))
+        return _attach_rollups(entries)
 
     def close(self) -> None:
-        self._layout = None
+        self._namespaces = None
+        self._tables.clear()
 
 
 def _attach_rollups(entries: list[tuple[LakeTable, dict[str, str]]]) -> list[LakeTable]:
