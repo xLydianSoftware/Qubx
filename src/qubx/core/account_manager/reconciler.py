@@ -38,6 +38,7 @@ from qubx.core.basics import (
     OrderOrigin,
     OrderStatus,
     Position,
+    RejectCause,
     external_client_id,
 )
 from qubx.core.events import (
@@ -765,7 +766,13 @@ class Reconciler:
         ResolveMissingOrder is exactly the right shape: it waits, fetches the status on a
         budget, and routes LOST if the venue never answers. Spawning dedups by cid, so the
         repeat rejections that follow cost nothing.
+
+        RATE_LIMITED is the one refusal that is not a question: our own gate declined to
+        send, the venue never saw the request, and the order is by definition unchanged. A
+        probe there would only add a read at the moment we are shedding load.
         """
+        if event.cause is RejectCause.RATE_LIMITED:
+            return
         order = state.get_active_order(event.client_order_id)
         if order is None and event.venue_order_id is not None:
             order = state.get_order_by_venue_id(event.venue_order_id)

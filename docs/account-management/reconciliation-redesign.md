@@ -256,7 +256,10 @@ A venue refusing a cancel or an update says nothing about whether the order is l
 frequently means the opposite — Hyperliquid answers a cancel for an already-filled order with
 `Order was never placed, already canceled, or filled`. So a rejection is treated as a question,
 not an answer: it spawns the same probe a missing-from-snapshot order gets, and it does **not**
-resolve a task waiting on that order (see `REQUEST_REJECTIONS`). Without both halves the pair
+resolve a task waiting on that order (see `REQUEST_REJECTIONS`). The one exception is a
+`cause == RATE_LIMITED` refusal: that is our own gate declining to send, the venue never saw
+the request, so there is nothing to ask — no probe is spawned (an existing task still does not
+resolve on it). Without both halves the pair
 deadlocks — the strategy re-issues the cancel every tick, each rejection retires the probe
 before it fetches anything, and the order stays ACCEPTED forever.
 

@@ -91,6 +91,8 @@ _REJECT_CAUSE_BY_CCXT_ERROR: dict[str, RejectCause] = {
     "OrderImmediatelyFillable": RejectCause.NOT_FILLABLE,
     "RateLimitExceeded": RejectCause.RATE_LIMITED,
     "DDoSProtection": RejectCause.RATE_LIMITED,
+    # qubx's own gate, not a ccxt class: the request never left the box, same portable reading
+    "RateLimitGateTimeout": RejectCause.RATE_LIMITED,
     "OrderNotFound": RejectCause.NOT_FOUND,
     "InvalidOrder": RejectCause.TOO_SMALL,
 }

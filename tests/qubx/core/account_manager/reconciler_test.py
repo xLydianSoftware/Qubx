@@ -24,7 +24,18 @@ from qubx.core.account_manager.reconciler import (
     RouteEvent,
 )
 from qubx.core.account_manager.state import AccountState
-from qubx.core.basics import Balance, Deal, Instrument, Order, OrderOrigin, OrderSide, OrderStatus, OrderType, Position
+from qubx.core.basics import (
+    Balance,
+    Deal,
+    Instrument,
+    Order,
+    OrderOrigin,
+    OrderSide,
+    OrderStatus,
+    OrderType,
+    Position,
+    RejectCause,
+)
 from qubx.core.events import (
     AccountSnapshot,
     DealEvent,
@@ -1022,13 +1033,14 @@ def _prime_snapshot_timer(rec: Reconciler, st: AccountState) -> None:
     rec.on_tick(st, _passed_seconds(T0, -1))
 
 
-def _cancel_rejected(cid: str, *, venue_id=_GEN) -> OrderCancelRejectedEvent:
+def _cancel_rejected(cid: str, *, venue_id=_GEN, cause: RejectCause = RejectCause.UNKNOWN) -> OrderCancelRejectedEvent:
     vid = f"v_{cid}" if venue_id is _GEN else venue_id
     return OrderCancelRejectedEvent(
         instrument=_inst(),
         client_order_id=cid,
         venue_order_id=vid,
         reason="Order was never placed, already canceled, or filled. asset=210",
+        cause=cause,
     )
 
 
@@ -1122,6 +1134,26 @@ def test_the_venue_answer_to_a_rejection_driven_status_fetch_resolves_it():
         _passed_seconds(T0, 4),
     )
     assert rec.active_keys() == set()
+
+
+def test_a_rate_limited_rejection_does_not_spawn_a_probe():
+    # RATE_LIMITED means our own gate refused to send the request: the venue never saw it,
+    # so the order's state is by definition unchanged. Probing it would only add a read at
+    # the one moment we are trying to shed load.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_event(st, _cancel_rejected("X1", cause=RejectCause.RATE_LIMITED), T0)
+    assert rec.active_keys() == set()
+
+
+def test_a_rate_limited_rejection_still_does_not_resolve_a_task():
+    # Not starting a probe is not the same as answering one: a throttled request carries no
+    # venue state either, so an existing task keeps waiting for a real answer.
+    rec = _reconciler()
+    st = _local(_order("X1"))
+    rec.on_snapshot(st, _origin(open_orders=[]), T0)
+    rec.on_event(st, _cancel_rejected("X1", cause=RejectCause.RATE_LIMITED), _passed_seconds(T0, 1))
+    assert rec.active_keys() == {"X1"}
 
 
 def test_cancel_rejection_does_not_confirm_a_sent_order():
