@@ -7,12 +7,14 @@ says "Unknown storage type", which reads like a typo rather than a missing packa
 from qubx.data.registry import StorageRegistry
 
 
-def register_missing_extra(name: str, extra: str, error: ImportError) -> None:
+def register_missing_extra(name: str, extra: str, error: ImportError, requires: str = "") -> None:
+    """`requires` names the pinned package, so a version mismatch reads as one too."""
     if StorageRegistry.is_registered(name):
         return
 
     class _MissingExtraStorage:
         def __init__(self, *args, **kwargs):
-            raise ImportError(f"storage {name!r} needs the optional dependency {extra}: uv add '{extra}'") from error
+            needs = f"{extra} ({requires})" if requires else extra
+            raise ImportError(f"storage {name!r} needs the optional dependency {needs}: uv add '{extra}'") from error
 
     StorageRegistry.register(name)(_MissingExtraStorage)
