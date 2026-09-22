@@ -104,6 +104,11 @@ whole, so it can't resurrect a terminal order or force an illegal transition.
 - `Order.last_update_time` (new, venue clock) — distinct from the local-clock
   `last_updated_at` eviction key. `Balance.last_update_time` added; `Position` already had it.
 - `OrderEvent.last_update_time` carries the WS venue ts; the reducer stamps it (not local `now`).
+- Locally driven transitions — arming `PENDING_*` from the trading mixin, or reverting it
+  because the venue refused the cancel/update — do **not** stamp it. Their age lives in
+  `AccountState.pending_since` (local clock), which is what `_pending_expired` reads for the
+  confirm window. Keeping the two clocks apart is what lets a request loop against a gone
+  order (arm cancel, refused, revert, repeat) still look stale to the grace gate.
 - ccxt: `ccxt_convert_order_info` reads `lastUpdateTimestamp`/`info.updateTime`;
   `ccxt_convert_position` carries `info["timestamp"]`; `Deal.time` is already venue ms.
 
@@ -163,7 +168,9 @@ whose local `seen_at` (its `last_update_time`, else `submitted_at`) falls inside
 suppressed (a single `(as_of − seen_at) < grace` comparison; untimestamped → skip). The
 gate applies only where there's a local order with a `seen_at`:
 `OriginalOrderMissing` (no local seen_at) is never gated; positions/balances/figures have no
-grace gate.
+grace gate. `seen_at` is the **venue** clock only — a `PENDING_*` marker we armed ourselves, or a
+cancel/update the venue refused, does not advance it (prod 2026-09-19: a refused-cancel loop every
+5s kept a filled order inside the gate for 20 hours).
 
 ### Order matching
 

@@ -904,8 +904,10 @@ class Order:
     accepted_at: dt_64 | None = None
     # Last update timestamp: the VENUE's update time when we have it (snapshot order
     # `lastUpdateTimestamp`/`updateTime`, or the venue event's own ts), else our local
-    # processing time as a fallback. The single canonical update clock — drives the Differ
-    # grace gate, terminal eviction, and the reconciler's monotonic guard.
+    # processing time when the venue drove the change. Locally driven transitions — arming
+    # PENDING_* on our own request, or reverting it because the venue refused — leave it
+    # alone (AccountState keeps a separate pending_since for those). Drives the Differ grace
+    # gate, terminal eviction, and the reconciler's monotonic guard.
     last_update_time: dt_64 | None = None
     rejected_reason: str | None = None
     # venue/connector error code accompanying a reject (e.g. the ccxt error class name);

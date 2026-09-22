@@ -207,7 +207,8 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         self._reconcilers[exchange].on_order_sent(state, order, self._time.time())
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
-        reducer.transition(self._states[exchange], cid, new_status, self._time.time())
+        # The trading mixin arming PENDING_*: our own intent, not venue state.
+        reducer.transition(self._states[exchange], cid, new_status, self._time.time(), venue_state=False)
 
     def remove_order(self, exchange: str, cid: str) -> None:
         self._states[exchange].remove_order(cid)

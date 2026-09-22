@@ -65,6 +65,7 @@ class AccountState:
         "_seen_trade_ids",
         "_terminal_history",
         "_pre_pending_status",
+        "_pending_since",
         "_last_snapshot_as_of",
         "_transition_counts",
         "_venue_figures",
@@ -101,6 +102,11 @@ class AccountState:
         self._terminal_history: deque[Order] = deque(maxlen=terminal_history_size)
         # cid -> status captured on entry to PENDING_*; revert target on reject/give-up
         self._pre_pending_status: dict[str, OrderStatus] = {}
+        # cid -> local clock at the latest entry into PENDING_*; the reconciler's confirm-window
+        # clock for a pending marker. Kept apart from Order.last_update_time, which is the VENUE
+        # clock: a request loop (arm cancel, venue refuses, revert, repeat) must not make a gone
+        # order look freshly updated to the Differ's grace gate.
+        self._pending_since: dict[str, np.datetime64] = {}
 
         # ratchet for out-of-order snapshot rejection (written by AM reconcile)
         self._last_snapshot_as_of: np.datetime64 | None = None
@@ -177,6 +183,9 @@ class AccountState:
 
     def get_pre_pending(self, cid: str) -> OrderStatus | None:
         return self._pre_pending_status.get(cid)
+
+    def get_pending_since(self, cid: str) -> np.datetime64 | None:
+        return self._pending_since.get(cid)
 
     def get_last_snapshot_as_of(self) -> np.datetime64 | None:
         return self._last_snapshot_as_of
@@ -328,17 +337,31 @@ class AccountState:
             self._pending_evict_index[cid] = order.last_update_time
 
     def transition_order(
-        self, cid: str, new_status: OrderStatus, now: np.datetime64, *, update_time: np.datetime64 | None = None
+        self,
+        cid: str,
+        new_status: OrderStatus,
+        now: np.datetime64,
+        *,
+        update_time: np.datetime64 | None = None,
+        venue_state: bool = True,
     ) -> Order:
         """Low-level status setter and the sole maintainer of every status-derived
-        structure: the in-flight and pending-evict indices, the retry counter, and
-        the pre-pending status capture.
+        structure: the in-flight and pending-evict indices, the retry counter, the
+        pre-pending status capture and the pending-since clock.
+
+        ``last_update_time`` is the order's VENUE clock: ``update_time`` when the event carries
+        one, else ``now`` for a change the venue drove. A locally driven change — arming
+        PENDING_* on our own request, or reverting it because the venue refused — passes
+        ``venue_state=False`` and leaves that clock alone; its own age lives in ``pending_since``.
         """
         order = self._active_orders[cid]
         old_status = order.status
         self._transition_counts[new_status.value] += 1
         order.status = new_status
-        order.last_update_time = update_time if update_time is not None else now
+        if update_time is not None:
+            order.last_update_time = update_time
+        elif venue_state:
+            order.last_update_time = now
 
         if new_status.is_inflight:
             self._inflight_index.add(cid)
@@ -351,11 +374,14 @@ class AccountState:
             self._pending_evict_index.pop(cid, None)
 
         if new_status.is_pending:
-            # capture only on first entry, so PENDING_UPDATE -> PENDING_CANCEL keeps the original
+            # status: capture only on first entry, so PENDING_UPDATE -> PENDING_CANCEL keeps the original
             if not old_status.is_pending:
                 self._pre_pending_status[cid] = old_status
+            # clock: restamp on every entry — the newest request is the one the confirm window waits on
+            self._pending_since[cid] = now
         else:
             self._pre_pending_status.pop(cid, None)
+            self._pending_since.pop(cid, None)
 
         return order
 
@@ -402,6 +428,7 @@ class AccountState:
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
+        self._pending_since.pop(cid, None)
 
     def evict_to_history(self, cid: str) -> None:
         """Evict a terminal order from active state into the history ring buffer,
@@ -417,6 +444,7 @@ class AccountState:
         self._pending_evict_index.pop(cid, None)
         self._seen_trade_ids.pop(cid, None)
         self._pre_pending_status.pop(cid, None)
+        self._pending_since.pop(cid, None)
         self._terminal_history.append(order)
 
     def prune_terminal_orders(self, now: np.datetime64, retention: np.timedelta64) -> None:

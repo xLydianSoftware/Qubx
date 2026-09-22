@@ -679,24 +679,29 @@ class Reconciler:
         if local.status.is_pending:
             # - a pending marker carries the local clock while the snapshot carries the venue's, so
             #   _venue_newer cannot judge it: the confirm window decides instead
-            if not snap_order.status.is_terminal and not self._pending_expired(local, now):
+            if not snap_order.status.is_terminal and not self._pending_expired(state, local, now):
                 return None
         elif not self._venue_newer(snap_order, local):
             return None
         self._apply_order_snapshot(state, local, snap_order)
         return self._fill_event(local)
 
-    def _pending_expired(self, local: Order, now: np.datetime64) -> bool:
+    def _pending_expired(self, state: AccountState, local: Order, now: np.datetime64) -> bool:
         """
         True once a pending marker has outlived the confirm window with the venue still holding the
         order live — the cancel or update never reached it, so the snapshot has to win.
 
         Inside the window the marker is defended: a snapshot fetched before the cancel landed shows
         the order alive, and reverting then would undo a correct PENDING_CANCEL. Measured cancel
-        confirm on LIGHTER is 568 ms median, so the window is ~9x headroom. Both stamps are the
-        local clock — transition_order stamps a locally-driven transition with `now`.
+        confirm on LIGHTER is 568 ms median, so the window is ~9x headroom. The marker's age is its
+        own local-clock stamp (``pending_since``) against local ``now`` — never the order's venue
+        clock, which a locally driven transition leaves alone. An order added already pending
+        (restored state) carries no stamp and reads its age off ``last_update_time`` as before.
         """
-        return local.last_update_time is not None and (now - local.last_update_time) >= self._order_confirm_wait  # type: ignore
+        since = state.get_pending_since(local.client_order_id)
+        if since is None:
+            since = local.last_update_time
+        return since is not None and (now - since) >= self._order_confirm_wait  # type: ignore
 
     @staticmethod
     def _venue_newer(snap: Order, local: Order) -> bool:

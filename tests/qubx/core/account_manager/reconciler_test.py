@@ -159,6 +159,12 @@ def _passed_seconds(base, s: int):
     return base + np.timedelta64(s, "s")
 
 
+def _arm_pending(st: AccountState, cid: str, status: OrderStatus, at: np.datetime64) -> None:
+    # The trading mixin's path: a locally-driven PENDING_* marker, stamped on the local clock
+    # (pending_since) and leaving the order's venue clock (last_update_time) untouched.
+    reducer.transition(st, cid, status, at, venue_state=False)
+
+
 def _mark_in_session(st: AccountState) -> None:
     # Simulate a prior applied snapshot so the reconcile under test is IN-SESSION — not the FIRST
     # reconcile after start, which intentionally adopts venue positions WITHOUT requesting hist-deals
@@ -381,7 +387,8 @@ def test_snapshot_does_not_wipe_a_fresh_pending_cancel_marker():
     # our cancel is in flight (PENDING_CANCEL) and was armed a moment ago. A snapshot poll still
     # showing the order live was fetched before the cancel landed, so it must NOT wipe the marker.
     rec = _reconciler()  # order_confirm_wait = 2s
-    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL, last_update_time=_passed_seconds(T0, 4)))
+    st = _local(_order("order1"))
+    _arm_pending(st, "order1", OrderStatus.PENDING_CANCEL, _passed_seconds(T0, 4))
     a = rec.on_snapshot(
         st,
         _origin(
@@ -402,7 +409,8 @@ def test_a_pending_cancel_past_the_confirm_window_yields_to_the_venue():
     # every snapshot logging the mismatch and doing nothing. Past the window the venue wins, which
     # is what a delivered cancel-reject would have done — and OrderManager.sync then re-cancels.
     rec = _reconciler()  # order_confirm_wait = 2s
-    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL))  # marker stamped at SETTLED
+    st = _local(_order("order1"))
+    _arm_pending(st, "order1", OrderStatus.PENDING_CANCEL, SETTLED)  # marker stamped at SETTLED
     rec.on_snapshot(
         st,
         _origin(
@@ -421,7 +429,8 @@ def test_a_pending_marker_stamped_after_the_venue_still_yields_past_the_window()
     # venue updated_at was still the 14:25:10 amend. Comparing the two made the snapshot look older
     # than the marker, so the order never left PENDING_CANCEL and LOE stalled on it for minutes.
     rec = _reconciler()  # order_confirm_wait = 2s
-    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL, last_update_time=_passed_seconds(T0, 4)))
+    st = _local(_order("order1"))
+    _arm_pending(st, "order1", OrderStatus.PENDING_CANCEL, _passed_seconds(T0, 4))
     rec.on_snapshot(
         st,
         _origin(
@@ -437,7 +446,8 @@ def test_a_pending_marker_stamped_after_the_venue_still_yields_past_the_window()
 def test_a_pending_update_past_the_window_yields_the_same_way():
     D_ON()
     rec = _reconciler()
-    st = _local(_order("order1", status=OrderStatus.PENDING_UPDATE))  # stamped at SETTLED
+    st = _local(_order("order1"))
+    _arm_pending(st, "order1", OrderStatus.PENDING_UPDATE, SETTLED)
     rec.on_snapshot(
         st,
         _origin(
@@ -448,6 +458,36 @@ def test_a_pending_update_past_the_window_yields_the_same_way():
     )
     assert st.get_order("order1").status == OrderStatus.ACCEPTED  # type: ignore
     D_OFF()
+
+
+def test_a_pending_marker_with_no_since_falls_back_to_last_update_time():
+    # An order added already pending (restored state) never went through transition_order,
+    # so it has no pending_since; the marker's age then reads off last_update_time as before.
+    rec = _reconciler()  # order_confirm_wait = 2s
+    st = _local(_order("order1", status=OrderStatus.PENDING_CANCEL, last_update_time=_passed_seconds(T0, 4)))
+    venue = [_order("order1", status=OrderStatus.ACCEPTED, last_update_time=_passed_seconds(T0, 5))]
+    rec.on_snapshot(st, _origin(as_of=_passed_seconds(T0, 5), open_orders=venue), _passed_seconds(T0, 5))
+    assert st.get_order("order1").status == OrderStatus.PENDING_CANCEL  # type: ignore  # 1s old: defended
+    rec.on_snapshot(st, _origin(as_of=_passed_seconds(T0, 40), open_orders=venue), _passed_seconds(T0, 40))
+    assert st.get_order("order1").status == OrderStatus.ACCEPTED  # type: ignore  # 36s old: yields
+
+
+def test_the_cancel_loop_no_longer_hides_a_missing_order_from_the_snapshot():
+    # The prod wedge, snapshot path only (the rejection is applied to state, not routed to the
+    # reconciler, so the probe #434 spawns on it is out of the picture). X1's last venue state
+    # is at SETTLED; from T0 our cancel is armed and refused every 5s. Each hop used to stamp
+    # the local clock into last_update_time, so at the snapshot the order looked 4s fresh and
+    # the grace gate (5s) swallowed the diff — every 5 minutes, for 20 hours.
+    rec = _reconciler()  # differ grace 5s
+    st = _local(_order("X1"))
+    for offset in range(0, 30, 5):
+        _arm_pending(st, "X1", OrderStatus.PENDING_CANCEL, _passed_seconds(T0, offset))
+        reducer.apply(st, _cancel_rejected("X1"), _passed_seconds(T0, offset + 1))
+    assert st.get_order("X1").status == OrderStatus.ACCEPTED  # type: ignore
+    assert st.get_order("X1").last_update_time == SETTLED  # type: ignore  # the venue said nothing new
+
+    rec.on_snapshot(st, _origin(as_of=_passed_seconds(T0, 30), open_orders=[]), _passed_seconds(T0, 30))
+    assert rec.active_keys() == {"X1"}  # missing past grace -> ResolveMissingOrder owns it
 
 
 def test_a_locally_terminal_order_is_never_reopened_by_a_snapshot():
