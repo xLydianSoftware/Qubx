@@ -404,24 +404,31 @@ class IcebergLakeReader(IReader):
                 )
             claimed[tf] = identifier
 
-        resample = None
+        resample, table = None, None
         if timeframe is None:
             chosen = claimed.get(None) or claimed[min((tf for tf in claimed if tf), key=_seconds)]
         elif timeframe in claimed:
             chosen = claimed[timeframe]
         else:
-            finer = [tf for tf in claimed if tf and _seconds(tf) < _seconds(timeframe)]
-            if not finer:
-                raise ValueError(f"no lake table at or below {timeframe} for {request!r}")
-            if timeframe not in RESAMPLE_INTERVALS:
+            finer = sorted((tf for tf in claimed if tf and _seconds(tf) < _seconds(timeframe)), key=_seconds)
+            if timeframe not in RESAMPLE_INTERVALS and finer:
                 raise ValueError(f"{request!r}: no {timeframe} rollup, and only {RESAMPLE_INTERVALS} can be resampled")
-            chosen, resample = claimed[max(finer, key=_seconds)], timeframe
+            # - a resample aggregates the finest-grained truth it can: a base table, never another rollup
+            for tf in reversed(finer):
+                table = candidates[claimed[tf]][0] or self._load(claimed[tf])
+                if table is not None and table.kind != "rollup":
+                    chosen, resample = claimed[tf], timeframe
+                    break
+            else:
+                raise ValueError(f"no lake table at or below {timeframe} for {request!r}")
 
-        table = candidates[chosen][0] or self._load(chosen)
+        table = table or candidates[chosen][0] or self._load(chosen)
         if table is None:
             # - a namespace with no lake table at all answers with the storage's own error
             self._discover()
             raise ValueError(missing)
+        if table.timeframe is None or table.kind in ("raw", "event"):
+            return table, resample
         return replace(table, rollups=self._rollups_by_name(chosen)), resample
 
     def _rollups_by_name(self, identifier: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
@@ -772,7 +779,12 @@ class IcebergLakeStorage(IStorage):
         return namespace
 
     def _table_names(self, exchange: str, market: str) -> list[tuple[str, ...]]:
-        return self._names[self._namespace_of(exchange, market)]
+        """Refilled on a miss: a concurrent `close()` may clear the list after the namespace resolved."""
+        namespace = self._namespace_of(exchange, market)
+        names = self._names.get(namespace)
+        if names is None:
+            names = self._names[namespace] = [tuple(t) for t in self._catalog.list_tables(namespace)]
+        return names
 
     def _load_table(self, identifier: tuple[str, ...]) -> LakeTable | None:
         """One table's decoded properties, loaded once for the life of the storage.
@@ -801,6 +813,8 @@ class IcebergLakeStorage(IStorage):
         entries = []
         for identifier, props in zip(identifiers, properties):
             decoded = decode_table(identifier, props, prefix=self._namespace_prefix)
+            with self._table_lock:
+                self._decoded.setdefault(identifier, decoded)
             if decoded is not None:
                 entries.append((decoded, props))
         return _attach_rollups(entries)

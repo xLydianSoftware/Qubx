@@ -750,3 +750,50 @@ def test_two_stems_answering_one_alias_request_clash(catalog):
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
     with pytest.raises(ValueError, match=r"both answer"):
         reader.read("BTCUSDT", "ohlc(1m)", "2026-08-10", "2026-08-11")
+
+
+def test_a_raw_table_never_borrows_a_same_stem_feature_familys_rollups(catalog, lake):
+    """Raw quotes hold BTCUSDT on 2026-08-10; the `quotes` kernel family holds both symbols on 2026-07-01 only."""
+    _create(catalog, ("binance_perp", "quotes_1m"), FLOW_SCHEMA, _feature_props("quotes", "1m"))
+    rollup = _create(
+        catalog,
+        ("binance_perp", "quotes_1d"),
+        FLOW_SCHEMA,
+        _feature_props("quotes", "1d", kind="rollup", rollup_of="binance_perp.quotes_1m"),
+    )
+    rollup.append(_feature_day(dt.date(2026, 7, 1), ["BTCUSDT", "ETHUSDT"], minutes=1))
+    reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
+    assert reader.get_data_id("quote") == ["BTCUSDT"]
+    s, e = reader.get_time_range("BTCUSDT", "quote")
+    assert (str(s), str(e)) == ("2026-08-10T00:00:00.000000", "2026-08-10T00:00:09.000000")
+
+
+def test_a_resample_aggregates_the_base_table_not_a_finer_rollup(catalog, lake):
+    """With `_1m` and `_1h` present and no `_1d`, half an hour of minutes sums to 0..29, the 00:00 hour to 0..59."""
+    _rollup(catalog, "binance_perp", "1h")
+    reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
+    df = reader.read("BTCUSDT", "trade_flow(1d)", "2026-08-10", "2026-08-10T00:30", columns=["taker_buy_volume"])
+    assert df.to_pd()["taker_buy_volume"].tolist() == [sum(range(30))]
+
+
+def test_a_read_after_enumeration_decodes_nothing_again(lake, monkeypatch):
+    reader = lake["BINANCE.UM", "SWAP"]
+    reader.tables
+    loaded = _load_spy(monkeypatch)
+    reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11")
+    assert loaded == [("binance_perp", "trade_flow_1m")]  # _plan's own read-time load only
+
+
+def test_table_names_refill_after_a_concurrent_close(lake):
+    reader = lake["BINANCE.UM", "SWAP"]
+    lake._lake_namespaces()
+    lake._names.clear()
+    assert reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").data.num_rows == 120
+
+
+def test_symbol_and_range_discovery_load_only_the_table_and_its_daily_rollup(daily_lake, monkeypatch):
+    loaded = _load_spy(monkeypatch)
+    reader = daily_lake["BINANCE.UM", "SWAP"]
+    assert reader.get_data_id("trade_flow") == ["BTCUSDT", "ETHUSDT"]
+    reader.get_time_range("BTCUSDT", "trade_flow")
+    assert set(loaded) == {("binance_perp", "trade_flow_1m"), ("binance_perp", "trade_flow_1d")}
