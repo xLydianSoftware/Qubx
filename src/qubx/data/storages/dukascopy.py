@@ -29,12 +29,28 @@ Prices are integers scaled by the instrument's point.
 Bars use the candle files because a year of 1-minute bars is 365 requests there against 8,760 from
 ticks; one day of EURUSD ticks measured 117 seconds. Ticks are fetched only for a `quote` read.
 
-Requests carry a browser User-Agent. The feed throttles on that string, not on a rate: with
-urllib's default agent it answers 429 after 45 to 60 requests at 0.2 req/s, and sending a Referer
-or an Accept instead makes no difference, while the User-Agent alone ran 200 requests clean and all
-three ran 600. The ceiling with an agent set is unmeasured and above 600. Requests still go through
-`TokenBucketRateLimiter`, shared by every reader of one storage so several threads pace as one, and
-a 429 drains the bucket to make all of them wait the block out. A wide first fetch takes hours.
+The feed limits requests the way a token bucket does. Measured 2026-09-21: after 300 seconds idle,
+60 files 8 at a time were served clean in 68 seconds (0.88 req/s), so the allowance is at least 60;
+600 requests at 0.176 req/s ran clean and 40 requests at 0.25 req/s ran clean for 158 seconds only,
+so the refill rate is between those two. Spending the allowance gets every further request refused
+with 503 until it recovers; one block cleared in 109 seconds. `requests_per_second` defaults to 0.2
+and `burst` to 60. A higher rate does not make a wide read faster - it spends the time in backoff
+pauses instead.
+
+Files are fetched several at a time. One file takes 4 to 10 seconds and 8 concurrent requests are
+answered in parallel, so workers cover that wait while the shared `TokenBucketRateLimiter` holds the
+average at `requests_per_second`. A 429 or 503 starts one `cooldown` pause that every thread waits
+out, counted once however many workers are refused at the same instant. A file the feed keeps
+refusing raises `FeedRefused` instead of being skipped, so a frame with a hole never reaches the
+cache.
+
+Requests carry a browser User-Agent. Without one the feed answers 429 after 45 to 60 requests. A
+Referer or an Accept instead of it makes no difference; the User-Agent alone ran 200 requests clean
+and all three headers ran 600.
+
+Bars the market never traded are dropped at decode time: the feed pads a closed session with the
+last price at zero volume. The FX week runs Sunday 21:00 UTC to Friday 21:00 UTC, so a 1-minute
+month arrives about a third shorter than 1440 rows a day, with a gap over every weekend.
 
 The point is 1e-5 for FX, 1e-3 for JPY crosses and metals. Other instruments raise unless passed
 `point=` or added to POINTS. A wrong point scales every price by 100.
@@ -46,10 +62,12 @@ import json
 import lzma
 import os
 import struct
+import threading
 import time
 import urllib.error
 import urllib.request
 from collections.abc import Iterator
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
@@ -211,6 +229,13 @@ def point_of(symbol: str, market: str, override: float | None = None, catalogue:
     )
 
 
+class FeedRefused(RuntimeError):
+    """
+    The feed kept refusing a file. Raised so a partial frame never reaches the cache, which would
+    otherwise record the whole window as covered and serve the hole forever.
+    """
+
+
 class DukascopyFetcher:
     """
     Downloads and decompresses one `.bi5` file per call.
@@ -220,26 +245,32 @@ class DukascopyFetcher:
         self,
         timeout: float = 30.0,
         retries: int = 6,
-        requests_per_second: float = 5.0,
-        burst: float = 20.0,
-        cooldown: float = 30.0,
+        requests_per_second: float = 0.2,
+        burst: float = 60.0,
+        cooldown: float = 120.0,
     ) -> None:
         self._timeout = timeout
         self._retries = retries
         self._cooldown = cooldown
         self._limiter = TokenBucketRateLimiter(capacity=burst, refill_rate=requests_per_second, name="dukascopy")
+        self._block_lock = threading.Lock()
+        self._blocked_until = 0.0
 
     def get(self, path: str) -> bytes | None:
         """
         Decompressed bytes, or None when the file is not there or the feed kept refusing.
 
-        404 means no file: a weekend, a holiday, or a date before the instrument was listed.
-        429 and 5xx mean the feed is pushing back; both drain the token bucket so every thread
-        sharing this fetcher waits, then the request is retried. Running out of retries returns
-        None and logs, because one missing hour must not abort a fetch spanning thousands.
+        404 means no file: a bogus symbol or a date past the end of the history. A weekend or a
+        pre-listing date answers 200 with a padding body instead, which decodes to no rows.
+
+        429 and 5xx mean the feed has stopped answering; every thread sharing this fetcher waits the
+        block out, then the request is retried. Running out of retries raises FeedRefused rather
+        than returning None: a skipped file would leave a hole in the frame, and the cache would
+        then record the window as covered and serve that hole from then on.
         """
         request = urllib.request.Request(f"{BASE_URL}/{path}", headers=DATAFEED_HEADERS)
         for attempt in range(self._retries):
+            self._wait_out_block()
             self._limiter.acquire_blocking()
             try:
                 with urllib.request.urlopen(request, timeout=self._timeout) as response:
@@ -249,7 +280,7 @@ class DukascopyFetcher:
                 if e.code == 404:
                     return None
                 if e.code == 429 or e.code >= 500:
-                    self._back_off(e.code, attempt)
+                    self._back_off(e.code)
                     continue
                 raise
             except (urllib.error.URLError, TimeoutError, ConnectionResetError, lzma.LZMAError) as e:
@@ -257,27 +288,51 @@ class DukascopyFetcher:
                     logger.error(f"[Dukascopy] {path} failed after {self._retries} attempts: {e}")
                     return None
                 time.sleep(2**attempt)
-        logger.error(f"[Dukascopy] {path} still refused after {self._retries} attempts")
-        return None
+        raise FeedRefused(f"{path} still refused after {self._retries} attempts")
 
-    def _back_off(self, code: int, attempt: int) -> None:
+    def _back_off(self, code: int) -> None:
         """
-        Drain the bucket so every thread waits, not only the one that was refused.
+        Start one pause that every thread waits out.
+
+        A measured block cleared in 109 seconds, so `cooldown` covers one. Every retry waits that
+        same length, and a thread refused inside a pause already running does not restart it, so
+        several workers meeting one block wait it out once between them.
+
+        The bucket is emptied rather than driven negative, so the next request after the pause goes
+        at the refill rate instead of opening a fresh burst into a feed that has just recovered.
         """
-        pause = self._cooldown * (attempt + 1)
-        self._limiter.set_tokens(-pause * self._limiter.refill_rate)
-        logger.warning(f"[Dukascopy] HTTP {code} — pausing about {pause:.0f}s")
+        with self._block_lock:
+            if time.monotonic() < self._blocked_until:
+                return
+            self._blocked_until = time.monotonic() + self._cooldown
+        self._limiter.set_tokens(0.0)
+        logger.warning(f"[Dukascopy] HTTP {code} — feed blocked, waiting {self._cooldown:.0f}s")
+
+    def _wait_out_block(self) -> None:
+        """
+        Hold until the pause started by `_back_off` has run out.
+        """
+        while True:
+            with self._block_lock:
+                left = self._blocked_until - time.monotonic()
+            if left <= 0:
+                return
+            time.sleep(min(left, 1.0))
 
 
 def decode_candles(body: bytes, base: datetime, point: float) -> pd.DataFrame:
     """
     Candle file to an OHLCV frame. Record: offset in seconds, open, close, low, high, volume.
+
+    Minutes with no volume are dropped. The feed fills a closed session with the last traded price
+    repeated at zero volume, which is a third of a 1-minute FX month. Zero volume never comes with a
+    price range, and a real one-price minute keeps its volume, so this drops only the closed hours.
     """
     rows = []
     for off in range(0, len(body) - CANDLE_SIZE + 1, CANDLE_SIZE):
         t, o, c, lo, hi, v = struct.unpack(CANDLE_FMT, body[off : off + CANDLE_SIZE])
-        if o == 0 and c == 0 and hi == 0 and lo == 0:
-            continue  # - minute with no trading
+        if v == 0 or (o == 0 and c == 0 and hi == 0 and lo == 0):
+            continue
         rows.append((base + timedelta(seconds=t), o * point, hi * point, lo * point, c * point, float(v)))
     frame = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
     return frame.set_index("timestamp").sort_index()
@@ -364,11 +419,16 @@ class DukascopyFetchReader(IReader):
     """
 
     def __init__(
-        self, fetcher: DukascopyFetcher | None = None, market: str = "FX", catalogue: Instruments | None = None
+        self,
+        fetcher: DukascopyFetcher | None = None,
+        market: str = "FX",
+        catalogue: Instruments | None = None,
+        workers: int = 8,
     ) -> None:
         self._fetcher = fetcher or DukascopyFetcher()
         self._market = market.upper()
         self._catalogue = catalogue
+        self._workers = max(1, workers)
         self._seen: set[str] = set()
 
     def _read_one(self, data_id: str, dtype: DataType | str, start: str | None, stop: str | None, **kwargs) -> RawData:
@@ -402,11 +462,8 @@ class DukascopyFetchReader(IReader):
     def _bars(self, symbol: str, tf: str, t0: datetime, t1: datetime, point: float, side: str) -> pd.DataFrame:
         # - a non-native timeframe is built from the finest native one that divides it
         native = tf if tf in NATIVE else self._nearest_native(tf)
-        parts = []
-        for path, base in _candle_paths(symbol, native, t0, t1, side):
-            body = self._fetcher.get(path)
-            if body:
-                parts.append(decode_candles(body, base.replace(tzinfo=None), point))
+        jobs = _candle_paths(symbol, native, t0, t1, side)
+        parts = [decode_candles(body, base.replace(tzinfo=None), point) for body, base in self._fetch_all(jobs) if body]
         if not parts:
             return _empty_ohlc()
         frame = pd.concat(parts).sort_index()
@@ -414,16 +471,33 @@ class DukascopyFetchReader(IReader):
         return frame if native == tf else _resample(frame, tf)
 
     def _ticks(self, symbol: str, t0: datetime, t1: datetime, point: float) -> pd.DataFrame:
-        parts = []
-        for path, base in _tick_paths(symbol, t0, t1):
-            body = self._fetcher.get(path)
-            if body:
-                parts.append(decode_ticks(body, base.replace(tzinfo=None), point))
+        jobs = _tick_paths(symbol, t0, t1)
+        parts = [decode_ticks(body, base.replace(tzinfo=None), point) for body, base in self._fetch_all(jobs) if body]
         if not parts:
             return pd.DataFrame(
                 columns=["bid", "ask", "bid_size", "ask_size"], index=pd.DatetimeIndex([], name="timestamp")
             )
         return pd.concat(parts).sort_index()
+
+    def _fetch_all(self, jobs: list[tuple[str, datetime]]) -> list[tuple[bytes | None, datetime]]:
+        """
+        Download the files for one read, several at a time.
+
+        One file takes 4 to 10 seconds, so one request at a time caps a read at 0.1 to 0.25 files/s.
+        The server answers concurrent requests in parallel, so overlapping the waits lets the rate
+        limiter set the pace instead. The bucket is shared and thread-safe, so the average rate is
+        the same however many workers there are.
+
+        The order of `jobs` is preserved, and a FeedRefused from any worker propagates: a partial
+        frame must never reach the cache.
+        """
+        if not jobs:
+            return []
+        if self._workers <= 1 or len(jobs) == 1:
+            return [(self._fetcher.get(path), base) for path, base in jobs]
+        with ThreadPoolExecutor(max_workers=min(self._workers, len(jobs)), thread_name_prefix="dukas") as pool:
+            bodies = list(pool.map(lambda job: self._fetcher.get(job[0]), jobs))
+        return [(body, base) for body, (_, base) in zip(bodies, jobs)]
 
     @staticmethod
     def _nearest_native(tf: str) -> str:
@@ -582,7 +656,8 @@ class DukascopyStorage(IStorage):
         self,
         path: str | None = None,
         prefetch_period: str | None = None,
-        requests_per_second: float = 5.0,
+        requests_per_second: float = 0.2,
+        workers: int = 8,
         catalogue: Instruments | None = None,
         **kwargs,
     ) -> None:
@@ -590,6 +665,7 @@ class DukascopyStorage(IStorage):
         self._path.mkdir(parents=True, exist_ok=True)
         self._prefetch_period = prefetch_period
         self._requests_per_second = requests_per_second
+        self._workers = workers
         self._fetcher_kwargs = kwargs
         self._cache: ParquetCache | None = None
         self._catalogue: Instruments | None = catalogue
@@ -617,6 +693,7 @@ class DukascopyStorage(IStorage):
                 DukascopyFetcher(requests_per_second=self._requests_per_second, **self._fetcher_kwargs),
                 m,
                 self._catalogue,
+                self._workers,
             )
             self._readers[m] = DukascopyReader(
                 CachedReader(fetch, self._cache, self._prefetch_period), self._cache, self._catalogue

@@ -6,6 +6,7 @@ serves synthesised `.bi5` bodies.
 import json
 import lzma
 import struct
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -20,7 +21,9 @@ from qubx.data.storages.dukascopy import (
     BASE_URL,
     DATAFEED_HEADERS,
     DukascopyFetcher,
+    DukascopyFetchReader,
     DukascopyStorage,
+    FeedRefused,
     Instruments,
     _candle_paths,
     _resample,
@@ -63,6 +66,16 @@ class TestDecoding:
             candle_body([(0, 1, 1, 1, 1, 1.0), (60, 2, 2, 2, 2, 1.0), (120, 0, 0, 0, 0, 0.0)]), DAY, 1e-5
         )
         assert list(frame.index) == [DAY, DAY + pd.Timedelta(minutes=1)]
+
+    def test_closed_session_padding_goes_but_a_one_price_minute_stays(self):
+        # - the feed fills closed hours with the last price at zero volume; a real quiet minute
+        #   has the same flat shape but keeps its volume
+        frame = decode_candles(
+            candle_body([(0, 108540, 108540, 108540, 108540, 0.0), (60, 108540, 108540, 108540, 108540, 0.4)]),
+            DAY,
+            1e-5,
+        )
+        assert list(frame.index) == [DAY + pd.Timedelta(minutes=1)]
 
     def test_tick_field_order_is_ask_before_bid(self):
         # - reversed, every spread comes out negative
@@ -382,7 +395,7 @@ def test_registered_without_importing_the_module():
 
 
 class TestFetcherErrors:
-    def _fetcher_with(self, monkeypatch, codes):
+    def _fetcher_with(self, monkeypatch, codes, cooldown=0.0):
         """
         A fetcher whose urlopen raises the given HTTP codes in turn, then succeeds.
         """
@@ -406,11 +419,11 @@ class TestFetcherErrors:
             return Response()
 
         monkeypatch.setattr(urllib.request, "urlopen", fake_urlopen)
-        return DukascopyFetcher(requests_per_second=1e6, cooldown=0.0), calls
+        return DukascopyFetcher(requests_per_second=1e6, cooldown=cooldown), calls
 
     def test_503_is_retried_not_raised(self, monkeypatch):
         """
-        A 503 used to escape and abort a fetch spanning thousands of files.
+        A 503 is the feed pushing back, not a failure: the file is there and the retry gets it.
         """
         fetcher, calls = self._fetcher_with(monkeypatch, [503, 503])
         assert fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5") == b"payload"
@@ -421,15 +434,97 @@ class TestFetcherErrors:
         assert fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5") is None
         assert calls["n"] == 1
 
-    def test_giving_up_returns_none_instead_of_aborting_the_walk(self, monkeypatch):
+    def test_giving_up_raises_so_no_hole_reaches_the_cache(self, monkeypatch):
+        """
+        Skipping the file would leave a gap in the frame, and CachedReader would then record the
+        whole window as covered and serve that gap from then on.
+        """
         fetcher, _ = self._fetcher_with(monkeypatch, [503] * 20)
-        assert fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5") is None
+        with pytest.raises(FeedRefused):
+            fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5")
 
     def test_other_codes_still_raise(self, monkeypatch):
         fetcher, _ = self._fetcher_with(monkeypatch, [403])
         with pytest.raises(urllib.error.HTTPError):
             fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5")
 
+    def test_repeated_refusals_wait_the_same_pause_each_time(self, monkeypatch):
+        """
+        Each retry waits one cooldown, not a growing multiple of it.
+        """
+        cooldown = 0.2
+        fetcher, calls = self._fetcher_with(monkeypatch, [503, 503, 503], cooldown=cooldown)
+
+        t0 = time.time()
+        assert fetcher.get("EURUSD/2024/02/05/10h_ticks.bi5") == b"payload"
+        elapsed = time.time() - t0
+
+        assert calls["n"] == 4
+        assert elapsed < 4 * cooldown  # - three pauses of 0.2, not 0.2 + 0.4 + 0.6
+
     def test_base_url_is_the_direct_host(self):
         # - www.dukascopy.com/datafeed 302s here; each hop is another request
         assert "datafeed.dukascopy.com" in BASE_URL
+
+
+class TestConcurrentFetch:
+    def _reader(self, bodies, workers):
+        class Fetcher:
+            def __init__(self):
+                self.paths = []
+                self.lock = threading.Lock()
+
+            def get(self, path):
+                with self.lock:
+                    self.paths.append(path)
+                time.sleep(0.05)  # - stand in for the ~8s the server takes
+                return bodies(path)
+
+        f = Fetcher()
+        return DukascopyFetchReader(f, "FX", NoCatalogue(), workers=workers), f  # type: ignore[arg-type]
+
+    def test_order_is_preserved_across_workers(self, tmp_path):
+        """
+        Workers finish out of order; the frames must still be concatenated in date order.
+        """
+
+        def body(path):
+            day = int(path.split("/")[3])
+            return candle_body([(0, 108000 + day, 108000 + day, 108000 + day, 108000 + day, 1.0)])
+
+        reader, _ = self._reader(body, workers=8)
+        raw = reader.read("EURUSD", "ohlc(1Min)", "2024-03-01", "2024-03-09", side="bid")
+        opens = raw.data.to_pandas()["open"].tolist()
+
+        assert opens == sorted(opens)
+        assert len(opens) == 8
+
+    def test_workers_overlap_the_waiting(self, tmp_path):
+        def body(path):
+            return candle_body([(0, 108000, 108000, 108000, 108000, 1.0)])
+
+        serial, _ = self._reader(body, workers=1)
+        t0 = time.monotonic()
+        serial.read("EURUSD", "ohlc(1Min)", "2024-03-01", "2024-03-09", side="bid")
+        one = time.monotonic() - t0
+
+        parallel, _ = self._reader(body, workers=8)
+        t0 = time.monotonic()
+        parallel.read("EURUSD", "ohlc(1Min)", "2024-03-01", "2024-03-09", side="bid")
+        many = time.monotonic() - t0
+
+        assert many < one / 2, f"serial {one:.2f}s, parallel {many:.2f}s"
+
+    def test_a_refusal_in_any_worker_propagates(self, tmp_path):
+        """
+        Swallowing it would hand a short frame to the cache, which then records the window covered.
+        """
+
+        def body(path):
+            if path.endswith("05/BID_candles_min_1.bi5"):
+                raise FeedRefused(path)
+            return candle_body([(0, 108000, 108000, 108000, 108000, 1.0)])
+
+        reader, _ = self._reader(body, workers=8)
+        with pytest.raises(FeedRefused):
+            reader.read("EURUSD", "ohlc(1Min)", "2024-03-01", "2024-03-09", side="bid")
