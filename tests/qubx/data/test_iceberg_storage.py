@@ -246,7 +246,7 @@ def test_get_reader_defers_discovery(lake, monkeypatch):
     assert reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").data.num_rows == 120
 
 
-def test_discovery_publishes_its_index_before_it_looks_done():
+def test_discovery_runs_once_and_publishes_resolved_last():
     tables = [
         decode_table(("binance_perp", "trade_flow_1m"), {"dvault.kind": "feature"}),
         decode_table(("binance_perp", "quotes"), {"dvault.kind": "raw"}),
@@ -255,20 +255,20 @@ def test_discovery_publishes_its_index_before_it_looks_done():
 
     class Spy(IcebergLakeReader):
         def __setattr__(self, name, value):
-            if name in ("_index", "_resolved") and value:
+            if calls:
                 published.append(name)
             super().__setattr__(name, value)
 
     def source():
-        calls.append((reader._resolved, dict(reader._index)))
+        calls.append(reader._resolved)
         return tables
 
     reader = Spy(None, "BINANCE.UM", "SWAP", source)
     assert reader.tables == tables
-    assert calls == [(None, {})]
-    assert published == ["_index", "_resolved"]
-    assert set(reader._lookup) >= {"trade_flow", "quotes", "quote"}
+    assert calls == [None]
+    assert published == ["_resolved"]
     reader._discover()
+    assert reader.tables == tables
     assert len(calls) == 1
 
 
@@ -549,6 +549,16 @@ def test_columns_project_a_streamed_raw_read(raw_lake):
     assert [len(f) for f in frames] == [4000, 4000, 2000]
 
 
+def test_a_single_column_name_projects_like_a_one_item_list(lake):
+    df = (
+        lake["BINANCE.UM", "SWAP"]
+        .read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11", columns="taker_buy_volume")
+        .to_pd()
+    )
+    assert list(df.columns) == ["taker_buy_volume"]
+    assert len(df) == 120
+
+
 def test_an_unknown_column_is_named_in_the_error(lake):
     with pytest.raises(ValueError, match=r"binance_perp.trade_flow_1m has no column\(s\) \['nope'\]"):
         lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11", columns=["nope"])
@@ -797,3 +807,53 @@ def test_symbol_and_range_discovery_load_only_the_table_and_its_daily_rollup(dai
     assert reader.get_data_id("trade_flow") == ["BTCUSDT", "ETHUSDT"]
     reader.get_time_range("BTCUSDT", "trade_flow")
     assert set(loaded) == {("binance_perp", "trade_flow_1m"), ("binance_perp", "trade_flow_1d")}
+
+
+def _list_spy(monkeypatch) -> list[str]:
+    listed: list[str] = []
+    original = SqlCatalog.list_tables
+
+    def spy(self, namespace):
+        listed.append(namespace if isinstance(namespace, str) else ".".join(namespace))
+        return original(self, namespace)
+
+    monkeypatch.setattr(SqlCatalog, "list_tables", spy)
+    return listed
+
+
+def test_a_readers_first_read_lists_only_its_own_namespace(two_venue_lake, monkeypatch):
+    listed = _list_spy(monkeypatch)
+    df = two_venue_lake["BYBIT.F", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").to_pd()
+    assert len(df) == 120
+    assert listed == ["bybit_perp"]
+
+
+def test_exchanges_list_every_namespace_concurrently(two_venue_lake, monkeypatch):
+    """Two lake namespaces; a barrier of two passes only if both listings are in flight at once."""
+    barrier = threading.Barrier(2, timeout=5)
+    original = SqlCatalog.list_tables
+
+    def gated(self, namespace):
+        barrier.wait()
+        return original(self, namespace)
+
+    monkeypatch.setattr(SqlCatalog, "list_tables", gated)
+    assert two_venue_lake.get_exchanges() == ["BINANCE.UM", "BYBIT.F"]
+
+
+def test_an_empty_namespace_reader_raises_the_storages_own_error(catalog):
+    catalog.create_namespace("okx_perp")
+    reader = IcebergLakeStorage.from_catalog(catalog)["OKX.F", "SWAP"]
+    with pytest.raises(ValueError, match="no lake tables for exchange 'OKX.F' and market type 'SWAP'"):
+        reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11")
+
+
+def test_a_suffix_that_is_not_an_interval_is_no_timeframe(catalog, lake):
+    """`trade_flow_20lvl` is a name of its own, not a `20lvl` timeframe of `trade_flow`."""
+    _create(catalog, ("binance_perp", "trade_flow_20lvl"), FLOW_SCHEMA, {"dvault.kind": "event"})
+    _create(catalog, ("binance_perp", "depth_1mo"), FLOW_SCHEMA, {"dvault.kind": "event"})
+    reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
+    assert reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").data.num_rows == 120
+    assert reader.read("BTCUSDT", "trade_flow(1h)", "2026-08-10", "2026-08-11").data.num_rows == 2
+    with pytest.raises(ValueError, match=r"no lake table for 'depth' in BINANCE.UM/SWAP"):
+        reader.read("BTCUSDT", "depth", "2026-08-10", "2026-08-11")

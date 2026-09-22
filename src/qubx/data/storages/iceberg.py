@@ -106,13 +106,12 @@ def aggregate(data: pa.Table, aggs: dict[str, str], interval: str) -> pa.Table:
         con.close()
 
 
-# Rollup intervals Task 5 materializes; a coarser request without a sibling
-# rollup table is resampled to one of these in DuckDB and nothing else.
+# - a coarser request without a sibling rollup table is resampled to one of these in DuckDB and nothing else
 RESAMPLE_INTERVALS = ("1h", "1d")
 OHLC_AGGS = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
 DISCOVERY_ROLLUP = "1d"
 DISCOVERY_PARTITIONS = 7
-# A day in the `_1d` rollup stands for the whole day of the minute table.
+# - a day in the `_1d` rollup stands for the whole day of the minute table
 DAY_END = dt.timedelta(hours=23, minutes=59)
 
 # - REST round trips per table dominate a cold enumeration (51 s for 66 tables serially, 2026-09-22);
@@ -149,6 +148,18 @@ def _canonical_timeframe(value: str) -> str:
         return _CANONICAL_TF.get(int(_seconds(value)), value.lower())
     except (ValueError, TypeError):
         return value.lower()
+
+
+def _suffixed(name: str) -> tuple[str, str] | None:
+    """`(stem, canonical timeframe)` of a `<stem>_<interval>` name; a suffix that is no interval is part of the name."""
+    parsed = FEATURE_NAME_RE.match(name)
+    if parsed is None:
+        return None
+    try:
+        _seconds(parsed["interval"])
+    except (ValueError, TypeError):
+        return None
+    return parsed["stem"], _canonical_timeframe(parsed["interval"])
 
 
 def _known_dtype(name: str) -> DataType | None:
@@ -216,8 +227,7 @@ def decode_table(identifier: tuple[str, ...], properties: dict[str, str], *, pre
 def _record_batch(data: pa.Table) -> pa.RecordBatch:
     batches = data.combine_chunks().to_batches()
     if len(batches) > 1:
-        # A Qubx RawData holds exactly one RecordBatch, and only >2GiB of a
-        # single variable-width column can force Arrow to keep several chunks.
+        # - a RawData holds one RecordBatch; only >2GiB of one variable-width column keeps several chunks
         raise ValueError(f"{data.num_rows} rows do not fit one Arrow record batch: read a narrower range")
     if not batches:
         return pa.RecordBatch.from_pylist([], schema=data.schema)
@@ -275,9 +285,8 @@ def _task_order(task: FileScanTask, field_id: int) -> tuple[int, int]:
 def _task_batches(scan: DataScan, tasks: list[FileScanTask]) -> Iterator[pa.RecordBatch]:
     arrow = ArrowScan(scan.table_metadata, scan.io, scan.projection(), scan.row_filter, scan.case_sensitive)
     for task in tasks:
-        # pyiceberg 0.12's public ArrowScan.to_record_batches maps tasks through
-        # an executor that materializes a task's batches as a list before it
-        # yields; this private generator is the only batch-lazy entry point.
+        # - pyiceberg 0.12's public to_record_batches materializes each task's batches as a list;
+        #   this private generator is the only batch-lazy entry point
         deletes = _read_all_delete_files(scan.io, [task])
         yield from arrow._record_batches_from_scan_tasks_and_deletes([task], deletes)
 
@@ -291,8 +300,7 @@ def _row_chunks(batches: Iterator[pa.RecordBatch], chunksize: int) -> Iterator[p
         table = pa.Table.from_batches([batch])
         while rows + table.num_rows >= chunksize:
             pending.append(table.slice(0, chunksize - rows))
-            # different files can differ in string width, exactly as `to_table`
-            # allows, so the chunk is promoted rather than schema-checked
+            # - files can differ in string width, as `to_table` allows, so the chunk is promoted
             yield pa.concat_tables(pending, promote_options="permissive")
             table = table.slice(chunksize - rows)
             pending, rows = [], 0
@@ -325,7 +333,6 @@ class IcebergLakeReader(IReader):
         self._names = names or (lambda: [t.identifier for t in self.tables])
         self._load = load or (lambda identifier: {t.identifier: t for t in self.tables}.get(identifier))
         self._resolved: list[LakeTable] | None = None
-        self._index: dict[str, list[LakeTable]] = {}
         self._symbols: dict[tuple[str, ...], list[str]] = {}
         self._days: dict[tuple[str, ...], dict[str, tuple[np.datetime64, np.datetime64]]] = {}
 
@@ -345,27 +352,13 @@ class IcebergLakeReader(IReader):
                     f"both answer {table.name_key}({table.timeframe})"
                 )
             claimed[key] = table.identifier
-        index: dict[str, list[LakeTable]] = {}
-        for table in resolved:
-            keys = {table.name_key}
-            if table.dtype != DataType.RECORD:
-                keys.add(str(table.dtype))
-            for key in keys:
-                index.setdefault(key, []).append(table)
-        # `_resolved` is what says "discovery is done", so it is published last:
-        # a second thread arriving mid-discovery must not see an empty index.
-        self._index = index
+        # - `_resolved` says "discovery is done", so it is published only once the clash check passed
         self._resolved = resolved
 
     @property
     def tables(self) -> list[LakeTable]:
         self._discover()
         return self._resolved  # type: ignore[return-value]
-
-    @property
-    def _lookup(self) -> dict[str, list[LakeTable]]:
-        self._discover()
-        return self._index
 
     def _candidates(self, name: str) -> dict[tuple[str, ...], tuple[LakeTable | None, str | None]]:
         """Every table answering `name`, by identifier: a suffixed name carries its
@@ -375,10 +368,10 @@ class IcebergLakeReader(IReader):
         stems = (name, *_STEM_ALIASES.get(name, ()))
         found: dict[tuple[str, ...], tuple[LakeTable | None, str | None]] = {}
         for identifier in self._names():
-            parsed = FEATURE_NAME_RE.match(identifier[-1])
-            if parsed:
-                if parsed["stem"] in stems:
-                    found[identifier] = (None, _canonical_timeframe(parsed["interval"]))
+            suffixed = _suffixed(identifier[-1])
+            if suffixed:
+                if suffixed[0] in stems:
+                    found[identifier] = (None, suffixed[1])
             elif identifier[-1] in stems and (table := self._load(identifier)) is not None:
                 found[identifier] = (table, table.timeframe)
         return found
@@ -432,8 +425,8 @@ class IcebergLakeReader(IReader):
         return replace(table, rollups=self._rollups_by_name(chosen)), resample
 
     def _rollups_by_name(self, identifier: tuple[str, ...]) -> dict[str, tuple[str, ...]]:
-        parsed = FEATURE_NAME_RE.match(identifier[-1])
-        stem = parsed["stem"] if parsed else identifier[-1]
+        suffixed = _suffixed(identifier[-1])
+        stem = suffixed[0] if suffixed else identifier[-1]
         names = set(self._names())
         rollups = {i: (*identifier[:-1], f"{stem}_{i}") for i in RESAMPLE_INTERVALS}
         return {i: r for i, r in rollups.items() if r in names and r != identifier}
@@ -537,7 +530,8 @@ class IcebergLakeReader(IReader):
     ) -> Iterator[Transformable] | Transformable:
         table, resample = self._resolve(dtype)
         columns = kwargs.get("columns")
-        columns = list(columns) if columns is not None else None
+        if columns is not None:
+            columns = [columns] if isinstance(columns, str) else list(columns)
         if isinstance(data_id, str):
             symbols = [data_id]
         else:
@@ -550,7 +544,7 @@ class IcebergLakeReader(IReader):
         timeframe = resample or table.timeframe or ""
         if not timeframe:
             return self._stream(table, dtype, data_id, symbols, start_ts, stop_ts, chunksize, columns)
-        # An open-ended range has no windows to cut: read it as one block.
+        # - an open-ended range has no windows to cut: read it as one block
         windows = calculate_time_windows_for_chunking(start_ts, stop_ts, timeframe, chunksize) or [(start_ts, stop_ts)]
         return (self._block(table, resample, dtype, data_id, symbols, w0, w1, columns) for w0, w1 in windows)
 
@@ -710,30 +704,36 @@ class IcebergLakeStorage(IStorage):
         self._table_lock = threading.Lock()
 
     def _lake_namespaces(self) -> dict[tuple[str, str], str]:
-        """(EXCHANGE, MARKET) -> namespace, from names alone plus one list_tables per namespace."""
-        if self._namespaces is None:
-            found: dict[tuple[str, str], str] = {}
+        """(EXCHANGE, MARKET) -> namespace, from namespace names alone."""
+        namespaces = self._namespaces
+        if namespaces is None:
+            namespaces = {}
             for identifier in self._catalog.list_namespaces():
                 if len(identifier) != 1 or not is_lake_namespace(identifier[0], prefix=self._namespace_prefix):
                     continue
                 namespace = identifier[0]
                 venue, _, market = namespace.removeprefix(self._namespace_prefix).rpartition("_")
                 qubx_names = VENUE_MAP.get((venue, market))
-                if qubx_names is None:
-                    continue
-                tables = [tuple(t) for t in self._catalog.list_tables(namespace)]
-                if not tables:
-                    continue
-                self._names[namespace] = tables
-                found[qubx_names] = namespace
-            self._namespaces = found
-        return self._namespaces
+                if qubx_names is not None:
+                    namespaces[qubx_names] = namespace
+            self._namespaces = namespaces
+        return namespaces
+
+    def _venues(self) -> list[tuple[str, str]]:
+        """(EXCHANGE, MARKET) pairs whose namespace holds a table: an empty namespace is no venue."""
+        namespaces = self._lake_namespaces()
+        if len(namespaces) > 1:
+            with ThreadPoolExecutor(max_workers=min(DISCOVERY_WORKERS, len(namespaces))) as pool:
+                listed = list(pool.map(self._list_names, namespaces.values()))
+        else:
+            listed = [self._list_names(n) for n in namespaces.values()]
+        return [venue for venue, names in zip(namespaces, listed) if names]
 
     def get_exchanges(self) -> list[str]:
-        return sorted({exchange for exchange, _ in self._lake_namespaces()})
+        return sorted({exchange for exchange, _ in self._venues()})
 
     def get_market_types(self, exchange: str) -> list[str]:
-        return sorted(market for name, market in self._lake_namespaces() if name == exchange.upper())
+        return sorted(market for name, market in self._venues() if name == exchange.upper())
 
     def get_reader(self, exchange: str, market: str) -> IcebergLakeReader:
         """Handing out a reader costs nothing: the layout is discovered on the
@@ -778,12 +778,17 @@ class IcebergLakeStorage(IStorage):
             raise ValueError(f"no lake tables for exchange {exchange!r} and market type {market!r}")
         return namespace
 
-    def _table_names(self, exchange: str, market: str) -> list[tuple[str, ...]]:
-        """Refilled on a miss: a concurrent `close()` may clear the list after the namespace resolved."""
-        namespace = self._namespace_of(exchange, market)
+    def _list_names(self, namespace: str) -> list[tuple[str, ...]]:
+        """Listed on first use and refilled on a miss: a concurrent `close()` may clear the cache."""
         names = self._names.get(namespace)
         if names is None:
             names = self._names[namespace] = [tuple(t) for t in self._catalog.list_tables(namespace)]
+        return names
+
+    def _table_names(self, exchange: str, market: str) -> list[tuple[str, ...]]:
+        names = self._list_names(self._namespace_of(exchange, market))
+        if not names:
+            raise ValueError(f"no lake tables for exchange {exchange!r} and market type {market!r}")
         return names
 
     def _load_table(self, identifier: tuple[str, ...]) -> LakeTable | None:
@@ -807,7 +812,7 @@ class IcebergLakeStorage(IStorage):
             return self._tables[namespace]
 
     def _load_namespace(self, namespace: str) -> list[LakeTable]:
-        identifiers = [tuple(t) for t in self._catalog.list_tables(namespace)]
+        identifiers = self._list_names(namespace)
         with ThreadPoolExecutor(max_workers=DISCOVERY_WORKERS) as pool:
             properties = list(pool.map(lambda i: self._catalog.load_table(i).properties, identifiers))
         entries = []
