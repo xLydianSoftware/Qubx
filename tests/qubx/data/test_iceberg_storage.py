@@ -610,3 +610,19 @@ def test_fundamental_request_resolves_through_the_data_type(coingecko_lake):
 def test_fundamental_time_range_crosses_a_month_partition(coingecko_lake):
     s, e = coingecko_lake["COINGECKO", "FUNDAMENTAL"].get_time_range("ETH", "fundamental")
     assert (str(s)[:10], str(e)[:10]) == ("2026-07-31", "2026-08-01")
+
+
+def test_two_tables_answering_one_request_are_refused(catalog):
+    props = {"dvault.kind": "feature", "dvault.kernel": "open_interest", "dvault.interval": "1m"}
+    oi_schema = pa.schema(
+        [
+            pa.field("timestamp", pa.timestamp("us"), nullable=False),
+            pa.field("symbol", pa.string(), nullable=False),
+            pa.field("open_interest", pa.float64()),
+        ]
+    )
+    _create(catalog, ("binance_perp", "open_interest"), oi_schema, props)
+    _create(catalog, ("binance_perp", "open_interest_1m"), oi_schema, props)
+    reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
+    with pytest.raises(ValueError, match=r"both answer open_interest\(1m\)"):
+        reader.get_data_id("open_interest")

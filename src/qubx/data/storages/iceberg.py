@@ -330,6 +330,15 @@ class IcebergLakeReader(IReader):
         if self._resolved is not None:
             return
         resolved = self._source() if callable(self._source) else list(self._source)
+        claimed: dict[tuple[str, str | None], tuple[str, ...]] = {}
+        for table in resolved:
+            key = (table.name_key, table.timeframe)
+            if key in claimed:
+                raise ValueError(
+                    f"{self.exchange}/{self.market}: {'.'.join(claimed[key])} and {'.'.join(table.identifier)} "
+                    f"both answer {table.name_key}({table.timeframe})"
+                )
+            claimed[key] = table.identifier
         index: dict[str, list[LakeTable]] = {}
         for table in resolved:
             keys = {table.name_key}
