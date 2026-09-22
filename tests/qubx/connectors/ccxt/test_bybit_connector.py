@@ -85,7 +85,8 @@ def _position_row(symbol: str = BTC, **info) -> dict:
 
 def _wallet_balance(**overrides) -> dict:
     account = {
-        "totalEquity": "18070.32797922",
+        # above totalMarginBalance by the collateral discount on non-USDT holdings
+        "totalEquity": "19250.5",
         "accountIMRate": "0.0101",
         "totalMarginBalance": "18070.32797922",
         "totalInitialMargin": "182.60183684",
@@ -114,7 +115,7 @@ def test_venue_figures_read_the_unified_account_block():
 
     equity, available, ratio, withdrawable, maint, initial = conn._extract_venue_figures(_wallet_balance())
 
-    assert equity == 18070.32797922
+    assert equity == 19250.5  # totalEquity, not the discounted totalMarginBalance
     assert available == 17887.72614237
     assert ratio == pytest.approx(1.0 / 0.03)  # accountMMRate is the reciprocal
     assert withdrawable is None
