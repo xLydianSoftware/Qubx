@@ -24,14 +24,17 @@ from qubx.data.storages.dukascopy import (
     DukascopyFetchReader,
     DukascopyStorage,
     FeedRefused,
-    Instruments,
-    _candle_paths,
-    _resample,
-    _tick_paths,
-    decode_candles,
-    decode_ticks,
-    point_of,
 )
+from qubx.data.storages.dukascopy import (
+    _DukasInstruments as Instruments,
+)
+
+candle_paths = DukascopyFetchReader._candle_paths
+tick_paths = DukascopyFetchReader._tick_paths
+resample = DukascopyFetchReader._resample
+decode_candles = DukascopyFetchReader.decode_candles
+decode_ticks = DukascopyFetchReader.decode_ticks
+point_of = DukascopyFetchReader.point_of
 
 DAY = datetime(2024, 3, 5)
 
@@ -60,6 +63,18 @@ class TestDecoding:
         assert row["low"] == pytest.approx(1.08531)
         assert row["high"] == pytest.approx(1.08560)
         assert row["low"] <= min(row["open"], row["close"]) and row["high"] >= max(row["open"], row["close"])
+
+    def test_a_file_of_only_padding_decodes_to_a_typed_empty_frame(self):
+        """
+        A weekend file holds nothing but padding. An untyped empty frame carries object columns
+        and a plain Index, and pandas then lets those decide the dtypes of the frames it is
+        concatenated with.
+        """
+        frame = decode_candles(candle_body([(0, 108540, 108540, 108540, 108540, 0.0)]), DAY, 1e-5)
+
+        assert len(frame) == 0
+        assert isinstance(frame.index, pd.DatetimeIndex)
+        assert all(frame[c].dtype == "float64" for c in ("open", "high", "low", "close", "volume"))
 
     def test_candle_offsets_are_seconds_and_padding_is_dropped(self):
         frame = decode_candles(
@@ -107,7 +122,7 @@ class TestPaths:
         # - March is 02 in the feed's paths; off by one reads the wrong month
         paths = [
             p
-            for p, _ in _candle_paths(
+            for p, _ in candle_paths(
                 "EURUSD", "1Min", DAY.replace(tzinfo=timezone.utc), datetime(2024, 3, 6, tzinfo=timezone.utc), "bid"
             )
         ]
@@ -116,15 +131,15 @@ class TestPaths:
     def test_file_granularity_per_timeframe(self):
         t0 = datetime(2024, 3, 5, tzinfo=timezone.utc)
         t1 = datetime(2024, 3, 7, tzinfo=timezone.utc)
-        assert len(_candle_paths("EURUSD", "1Min", t0, t1, "bid")) == 2  # - a file a day
-        assert len(_candle_paths("EURUSD", "1h", t0, t1, "bid")) == 1  # - a file a month
-        assert len(_candle_paths("EURUSD", "1d", t0, t1, "bid")) == 1  # - a file a year
-        assert len(_tick_paths("EURUSD", t0, t1)) == 48  # - a file an hour
+        assert len(candle_paths("EURUSD", "1Min", t0, t1, "bid")) == 2  # - a file a day
+        assert len(candle_paths("EURUSD", "1h", t0, t1, "bid")) == 1  # - a file a month
+        assert len(candle_paths("EURUSD", "1d", t0, t1, "bid")) == 1  # - a file a year
+        assert len(tick_paths("EURUSD", t0, t1)) == 48  # - a file an hour
 
     def test_side_selects_the_bid_or_ask_file(self):
         t0 = datetime(2024, 3, 5, tzinfo=timezone.utc)
         t1 = datetime(2024, 3, 6, tzinfo=timezone.utc)
-        assert "ASK_candles_min_1" in _candle_paths("EURUSD", "1Min", t0, t1, "ask")[0][0]
+        assert "ASK_candles_min_1" in candle_paths("EURUSD", "1Min", t0, t1, "ask")[0][0]
 
 
 class TestRateLimiterUse:
@@ -322,7 +337,7 @@ class TestDailyBoundary:
             },
             index=pd.DatetimeIndex(hours, name="timestamp"),
         )
-        daily = _resample(frame, "1d")
+        daily = resample(frame, "1d")
 
         assert list(daily.index) == [pd.Timestamp("2024-03-04"), pd.Timestamp("2024-03-05")]
         assert daily["open"].iloc[0] == pytest.approx(1.0)
@@ -528,3 +543,64 @@ class TestConcurrentFetch:
         reader, _ = self._reader(body, workers=8)
         with pytest.raises(FeedRefused):
             reader.read("EURUSD", "ohlc(1Min)", "2024-03-01", "2024-03-09", side="bid")
+
+
+class TestMissingPeriodFallback:
+    def _reader(self, bodies):
+        class Fetcher:
+            def __init__(self):
+                self.paths = []
+
+            def get(self, path):
+                self.paths.append(path)
+                return bodies(path)
+
+        f = Fetcher()
+        return DukascopyFetchReader(f, "FX", NoCatalogue(), workers=1), f  # type: ignore[arg-type]
+
+    def test_a_month_without_its_hourly_file_is_rebuilt_from_day_files(self):
+        """
+        The hourly file holds a whole month and is published once the month ends, so the running
+        month has none and the read comes back empty without the fallback.
+        """
+
+        def body(path):
+            if "candles_hour_1" in path:
+                return None
+            return candle_body([(0, 108000, 108000, 108000, 108000, 1.0)])
+
+        reader, fetcher = self._reader(body)
+        frame = reader.read("EURUSD", "ohlc(1h)", "2024-03-01", "2024-04-01", side="bid").data.to_pandas()
+
+        assert len(frame) == 31  # - one bar a day, rebuilt from the minute files
+        assert sum("candles_min_1" in p for p in fetcher.paths) == 31
+
+    def test_a_month_with_its_hourly_file_asks_for_nothing_finer(self):
+        def body(path):
+            return candle_body([(0, 108000, 108000, 108000, 108000, 1.0)]) if "candles_hour_1" in path else None
+
+        reader, fetcher = self._reader(body)
+        reader.read("EURUSD", "ohlc(1h)", "2024-03-01", "2024-04-01", side="bid")
+
+        assert all("candles_min_1" not in p for p in fetcher.paths)
+
+    def test_a_year_without_its_daily_file_falls_back_through_the_months(self):
+        def body(path):
+            if "candles_day_1" in path:
+                return None
+            if "candles_hour_1" in path:
+                return candle_body([(0, 108000, 108000, 108000, 108000, 1.0)])
+            return None
+
+        reader, fetcher = self._reader(body)
+        frame = reader.read("EURUSD", "ohlc(1d)", "2024-01-01", "2024-04-01", side="bid").data.to_pandas()
+
+        assert len(frame) == 3  # - one bar a month from the hourly files
+        assert sum("candles_hour_1" in p for p in fetcher.paths) == 3
+
+    def test_a_missing_day_file_has_nothing_finer_to_fall_back_to(self):
+        reader, fetcher = self._reader(lambda path: None)
+        frame = reader.read("EURUSD", "ohlc(1Min)", "2024-03-01", "2024-03-05", side="bid").data.to_pandas()
+
+        assert len(frame) == 0
+        assert all("candles_min_1" in p for p in fetcher.paths)  # - no tick files requested

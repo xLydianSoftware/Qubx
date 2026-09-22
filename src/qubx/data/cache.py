@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 from collections import OrderedDict
 from collections.abc import Callable, Iterator
@@ -41,7 +42,7 @@ from qubx import logger
 from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.storage import IReader, IStorage, Transformable
-from qubx.utils.time import now_utc, to_timedelta, to_timestamp
+from qubx.utils.time import now_utc, timedelta_to_str, to_timedelta, to_timestamp
 
 
 class ICache:
@@ -392,6 +393,7 @@ class ParquetCache(ICache):
         self._root.mkdir(parents=True, exist_ok=True)
         self._index = {}
         self._dirty = set()
+        self._empty: dict[str, dict] = {}
 
     def get(self, cache_key: str, data_id: str) -> RawData | None:
         path = self._file(cache_key, data_id)
@@ -404,15 +406,17 @@ class ParquetCache(ICache):
         return RawData.from_table(data_id, dtype, pq.ParquetFile(path).read())  # type: ignore[arg-type]
 
     def put(self, cache_key: str, data: RawData, start: str, stop: str) -> None:
+        if len(data) == 0:
+            self._record_empty(cache_key, data.data_id, start, stop)
+            return
         index = self._load_index(cache_key)
-        if len(data) > 0:
-            existing = self.get(cache_key, data.data_id)
-            batch = data._raw
-            if existing is not None and len(existing) > 0:
-                batch = _merge_batches(existing._raw, batch, existing.index)
-            path = self._file(cache_key, data.data_id)
-            path.parent.mkdir(parents=True, exist_ok=True)
-            pq.write_table(pa.Table.from_batches([batch]), path)
+        existing = self.get(cache_key, data.data_id)
+        batch = data._raw
+        if existing is not None and len(existing) > 0:
+            batch = _merge_batches(existing._raw, batch, existing.index)
+        path = self._file(cache_key, data.data_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        pq.write_table(pa.Table.from_batches([batch]), path)
         entry = index["symbols"].setdefault(data.data_id, {"ranges": [], "dtype": str(data.dtype)})
         entry["dtype"] = str(data.dtype)
         entry["ranges"] = _merged_strings(entry["ranges"] + [(start, stop)])
@@ -422,13 +426,34 @@ class ParquetCache(ICache):
 
     def covers(self, cache_key: str, start: str | None, stop: str | None) -> bool:
         index = self._load_index(cache_key)
+        seen = self._empty.get(cache_key, {})
         if start is None and stop is None:
-            return bool(index["symbols"])
-        return _ranges_cover(index["ranges"], start, stop)
+            return bool(index["symbols"]) or bool(seen.get("symbols"))
+        return _ranges_cover(_merged_strings(index["ranges"] + seen.get("ranges", [])), start, stop)
 
     def check(self, cache_key: str, ids: list[str], start: str | None, stop: str | None) -> list[str]:
         symbols = self._load_index(cache_key)["symbols"]
-        return [i for i in ids if not _ranges_cover(symbols.get(i, {}).get("ranges", []), start, stop)]
+        empty = self._empty.get(cache_key, {}).get("symbols", {})
+        missing = []
+        for i in ids:
+            ranges = _merged_strings(symbols.get(i, {}).get("ranges", []) + empty.get(i, []))
+            if not _ranges_cover(ranges, start, stop):
+                missing.append(i)
+        return missing
+
+    def _record_empty(self, cache_key: str, data_id: str, start: str, stop: str) -> None:
+        """
+        Remember a window the reader answered with no rows, for this process only.
+
+        It is deliberately not written to the index. A window can come back empty because the
+        source has nothing there, but also because a reader could not build it, and the two are
+        indistinguishable here. Persisting the second kind makes it permanent: the window reads as
+        covered from then on and is served empty, without a refetch and without an error. Keeping
+        it in memory stops one run asking repeatedly and still lets the next run find out.
+        """
+        seen = self._empty.setdefault(cache_key, {"ranges": [], "symbols": {}})
+        seen["symbols"][data_id] = _merged_strings(seen["symbols"].get(data_id, []) + [(start, stop)])
+        seen["ranges"] = _merged_strings(seen["ranges"] + [(start, stop)])
 
     def get_ranges(self, cache_key: str) -> list[tuple[str, str]]:
         return [(str(s), str(e)) for s, e in self._load_index(cache_key)["ranges"]]
@@ -447,9 +472,11 @@ class ParquetCache(ICache):
         if cache_key is None:
             self._index.clear()
             self._dirty.clear()
+            self._empty.clear()
         else:
             self._index.pop(cache_key, None)
             self._dirty.discard(cache_key)
+            self._empty.pop(cache_key, None)
 
     def size_bytes(self) -> int:
         return sum(f.stat().st_size for f in self._root.rglob("*.parquet"))
@@ -459,23 +486,35 @@ class ParquetCache(ICache):
             self._flush(key)
 
     @staticmethod
-    def _safe(value: str) -> str:
+    def _safe_key(value: str) -> str:
         """
-        Percent-encode a Hive partition value.
+        Plain directory name for a cache key: `ohlc(1h)|side=bid` -> `ohlc_1h_side_bid`.
 
-        A second `=` in `data_id=ES=F` makes the key unparseable. Percent-encoding is reversible
-        and DuckDB decodes it, so `WHERE data_id = 'ES=F'` still selects. `^` parses as-is.
+        Letters, digits, `.`, `_` and `-` survive; every other run becomes one underscore. The key
+        is ours, built by `_make_cache_key`, so nothing reads it back - it only has to name a
+        directory, and brackets and pipes are awkward in a shell and illegal on Windows.
+        """
+        return re.sub(r"[^A-Za-z0-9._-]+", "_", value).strip("_") or "_"
+
+    @staticmethod
+    def _safe_id(value: str) -> str:
+        """
+        Hive partition value for a data id, percent-encoded where it has to be.
+
+        Unlike the cache key this must stay reversible: the id is the symbol, and a DuckDB query
+        reads it back with `WHERE data_id = '^GSPC'`. Only `=` and `/` are encoded - a second `=`
+        in `data_id=ES=F` makes the segment unparseable - and DuckDB decodes `%3D` on the way out.
         """
         return quote(value, safe="._^-")
 
     def _dir(self, cache_key: str) -> Path:
-        return self._root / f"cache_key={self._safe(cache_key)}"
+        return self._root / f"cache_key={self._safe_key(cache_key)}"
 
     def _file(self, cache_key: str, data_id: str) -> Path:
-        return self._dir(cache_key) / f"data_id={self._safe(data_id)}" / "data.parquet"
+        return self._dir(cache_key) / f"data_id={self._safe_id(data_id)}" / "data.parquet"
 
     def _index_file(self, cache_key: str) -> Path:
-        return self._root / "_index" / f"{self._safe(cache_key)}.json"
+        return self._root / "_index" / f"{self._safe_key(cache_key)}.json"
 
     def _load_index(self, cache_key: str) -> dict:
         if cache_key not in self._index:
@@ -781,13 +820,34 @@ class CachedStorage(IStorage):
         return f"CachedStorage({self._storage!r}{pf})"
 
 
+def _canonical_dtype(dtype: DataType | str) -> str:
+    """
+    One spelling per data type, so `ohlc(1Min)`, `ohlc(1min)`, `ohlc(1m)` and `ohlc(60s)` share one
+    cache entry instead of fetching the same bars into four.
+
+    Only a parameter shaped like a timeframe is rewritten. `orderbook(0.01,10)` and a bare `trade`
+    are left exactly as they came in.
+    """
+    text = str(dtype)
+    head, sep, tail = text.partition("(")
+    if not sep or not tail.endswith(")"):
+        return text
+    param = tail[:-1].strip()
+    if not re.fullmatch(r"\d+\s*[A-Za-z]+", param):
+        return text
+    try:
+        return f"{head}({timedelta_to_str(to_timedelta(param))})"
+    except (ValueError, TypeError):
+        return text
+
+
 def _make_cache_key(dtype: DataType | str, **kwargs) -> str:
     """
     Generate a time-stripped cache key from dtype and extra kwargs.
     Time parameters (start, stop) are excluded so the same cache entry
     can serve overlapping time ranges.
     """
-    parts = [str(dtype)]
+    parts = [_canonical_dtype(dtype)]
     for k, v in sorted(kwargs.items()):
         if k in ("start", "stop", "chunksize"):
             continue

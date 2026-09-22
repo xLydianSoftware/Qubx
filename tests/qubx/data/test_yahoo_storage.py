@@ -11,7 +11,12 @@ from qubx.data.cache import ParquetCache
 from qubx.data.containers import RawData
 from qubx.data.registry import StorageRegistry
 from qubx.data.storages import yahoo as yahoo_module
-from qubx.data.storages.yahoo import YahooStorage, _timeframe_of, from_yahoo, normalize, to_yahoo
+from qubx.data.storages.yahoo import YahooFetcher, YahooFetchReader, YahooReader, YahooStorage
+
+_timeframe_of = YahooFetchReader._timeframe_of
+normalize = YahooFetcher.normalize
+to_yahoo = YahooReader.to_yahoo
+from_yahoo = YahooReader.from_yahoo
 
 
 def _yf_frame(stamps, close, adjclose, ticker="SPY"):
@@ -132,6 +137,35 @@ class TestParquetCache:
         got = cache.get("ohlc(1d)", "SPY")
         assert got is not None
         assert "cache_key" not in got.names and "data_id" not in got.names
+
+    def test_an_empty_answer_holds_for_this_process_but_is_not_written_down(self, tmp_path, frame):
+        """
+        A window can read empty because the source has nothing there or because the reader could
+        not build it. Writing that down makes the second kind permanent, so it is kept in memory:
+        the same run does not ask again, the next run does.
+        """
+        empty = frame.iloc[:0]
+        cache = ParquetCache(tmp_path)
+        cache.put("ohlc(1d)", RawData.from_pandas("SPY", DataType.OHLC["1d"], empty), "2024-01-01", "2024-01-10")
+
+        # - this run treats it as answered
+        assert cache.check("ohlc(1d)", ["SPY"], "2024-01-02", "2024-01-09") == []
+        cache.close()
+
+        # - the next run asks again, and finds no file claiming to hold it
+        reopened = ParquetCache(tmp_path)
+        assert reopened.check("ohlc(1d)", ["SPY"], "2024-01-02", "2024-01-09") == ["SPY"]
+        assert reopened.get("ohlc(1d)", "SPY") is None
+
+    def test_an_empty_answer_does_not_cover_a_window_with_data(self, tmp_path, frame):
+        cache = ParquetCache(tmp_path)
+        dt = DataType.OHLC["1d"]
+        cache.put("ohlc(1d)", RawData.from_pandas("SPY", dt, frame.iloc[:6]), "2024-01-01", "2024-01-06")
+        cache.put("ohlc(1d)", RawData.from_pandas("SPY", dt, frame.iloc[:0]), "2024-01-06", "2024-01-10")
+
+        # - the stored rows survive an empty put over a later window
+        got = cache.get("ohlc(1d)", "SPY")
+        assert got is not None and len(got) == 6
 
     def test_clear_removes_data_and_the_index(self, tmp_path, frame):
         cache = ParquetCache(tmp_path)

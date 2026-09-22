@@ -129,12 +129,15 @@ NATIVE: dict[str, tuple[str, str]] = {
 }
 NATIVE_STEP = {"1Min": timedelta(minutes=1), "1h": timedelta(hours=1), "1d": timedelta(days=1)}
 
+# - what to rebuild a period from when its own file is not published yet
+FINER = {"1d": "1h", "1h": "1Min"}
+
 
 CATALOGUE_URL = "https://freeserv.dukascopy.com/2.0/index.php?path=common/instruments"
 CATALOGUE_HEADERS = {"User-Agent": "Mozilla/5.0", "Referer": "https://www.dukascopy.com/"}
 
 
-class Instruments:
+class _DukasInstruments:
     """
     Dukascopy's instrument catalogue: 1,604 entries keyed by the datafeed symbol.
 
@@ -204,29 +207,6 @@ class Instruments:
         except (TypeError, ValueError):
             return None
         return datetime.fromtimestamp(ms / 1000, timezone.utc) if ms else None
-
-
-def point_of(symbol: str, market: str, override: float | None = None, catalogue: Instruments | None = None) -> float:
-    """
-    Price multiplier for a symbol. POINTS first, then the catalogue's pipValue / 10, then the
-    market default. Raises when none of them answers.
-    """
-    if override is not None:
-        return override
-    s = symbol.upper()
-    if s in POINTS:
-        return POINTS[s]
-    if catalogue is not None:
-        from_catalogue = catalogue.point(s)
-        if from_catalogue:
-            return from_catalogue
-    default = MARKET_POINTS.get(market.upper())
-    if default is not None:
-        return default
-    raise ValueError(
-        f"No price point known for '{symbol}' under market type '{market}'. "
-        f"Pass point=... to read(), or add it to qubx.data.storages.dukascopy.POINTS."
-    )
 
 
 class FeedRefused(RuntimeError):
@@ -320,99 +300,6 @@ class DukascopyFetcher:
             time.sleep(min(left, 1.0))
 
 
-def decode_candles(body: bytes, base: datetime, point: float) -> pd.DataFrame:
-    """
-    Candle file to an OHLCV frame. Record: offset in seconds, open, close, low, high, volume.
-
-    Minutes with no volume are dropped. The feed fills a closed session with the last traded price
-    repeated at zero volume, which is a third of a 1-minute FX month. Zero volume never comes with a
-    price range, and a real one-price minute keeps its volume, so this drops only the closed hours.
-    """
-    rows = []
-    for off in range(0, len(body) - CANDLE_SIZE + 1, CANDLE_SIZE):
-        t, o, c, lo, hi, v = struct.unpack(CANDLE_FMT, body[off : off + CANDLE_SIZE])
-        if v == 0 or (o == 0 and c == 0 and hi == 0 and lo == 0):
-            continue
-        rows.append((base + timedelta(seconds=t), o * point, hi * point, lo * point, c * point, float(v)))
-    frame = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
-    return frame.set_index("timestamp").sort_index()
-
-
-def decode_ticks(body: bytes, base: datetime, point: float) -> pd.DataFrame:
-    """
-    Tick file to bid/ask quotes. Record: offset in ms, ask, bid, ask volume, bid volume.
-    """
-    n = len(body) // TICK_SIZE
-    if n == 0:
-        return pd.DataFrame(
-            columns=["bid", "ask", "bid_size", "ask_size"], index=pd.DatetimeIndex([], name="timestamp")
-        )
-    raw = np.frombuffer(
-        body[: n * TICK_SIZE],
-        dtype=np.dtype([("ms", ">i4"), ("ask", ">i4"), ("bid", ">i4"), ("av", ">f4"), ("bv", ">f4")]),
-    )
-    frame = pd.DataFrame(
-        {
-            "bid": raw["bid"].astype("float64") * point,
-            "ask": raw["ask"].astype("float64") * point,
-            "bid_size": raw["bv"].astype("float64"),
-            "ask_size": raw["av"].astype("float64"),
-        },
-        index=pd.DatetimeIndex(base + pd.to_timedelta(raw["ms"].astype("int64"), unit="ms"), name="timestamp"),
-    )
-    return frame.sort_index()
-
-
-def _timeframe_of(dtype: DataType | str) -> str | None:
-    s = str(dtype)
-    if not s.lower().startswith("ohlc"):
-        return None
-    return s[s.index("(") + 1 : s.index(")")] if "(" in s else "1d"
-
-
-def _candle_paths(symbol: str, tf: str, start: datetime, stop: datetime, side: str) -> list[tuple[str, datetime]]:
-    """
-    Candle files covering [start, stop), each with the timestamp its offsets count from.
-    """
-    name, period = NATIVE[tf]
-    prefix = side.upper()
-    out: list[tuple[str, datetime]] = []
-    if period == "day":
-        cur = start.replace(hour=0, minute=0, second=0, microsecond=0)
-        while cur < stop:
-            out.append((f"{symbol}/{cur.year}/{cur.month - 1:02d}/{cur.day:02d}/{prefix}_{name}.bi5", cur))
-            cur += timedelta(days=1)
-    elif period == "month":
-        cur = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
-        while cur < stop:
-            out.append((f"{symbol}/{cur.year}/{cur.month - 1:02d}/{prefix}_{name}.bi5", cur))
-            cur = (cur + timedelta(days=32)).replace(day=1)
-    else:
-        for year in range(start.year, stop.year + 1):
-            base = datetime(year, 1, 1, tzinfo=timezone.utc)
-            if base < stop:
-                out.append((f"{symbol}/{year}/{prefix}_{name}.bi5", base))
-    return out
-
-
-def _tick_paths(symbol: str, start: datetime, stop: datetime) -> list[tuple[str, datetime]]:
-    cur = start.replace(minute=0, second=0, microsecond=0)
-    out = []
-    while cur < stop:
-        out.append((f"{symbol}/{cur.year}/{cur.month - 1:02d}/{cur.day:02d}/{cur.hour:02d}h_ticks.bi5", cur))
-        cur += timedelta(hours=1)
-    return out
-
-
-def _as_utc(t: str | pd.Timestamp | None, default: datetime) -> datetime:
-    if t is None:
-        return default
-    ts = pd.Timestamp("now", tz="UTC") if str(t).lower() in ("now", "today") else pd.Timestamp(t)
-    if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
-    return ts.to_pydatetime()
-
-
 class DukascopyFetchReader(IReader):
     """
     Downloads and decodes. Bars from the candle files, ticks only for a `quote` read.
@@ -422,7 +309,7 @@ class DukascopyFetchReader(IReader):
         self,
         fetcher: DukascopyFetcher | None = None,
         market: str = "FX",
-        catalogue: Instruments | None = None,
+        catalogue: _DukasInstruments | None = None,
         workers: int = 8,
     ) -> None:
         self._fetcher = fetcher or DukascopyFetcher()
@@ -433,26 +320,25 @@ class DukascopyFetchReader(IReader):
 
     def _read_one(self, data_id: str, dtype: DataType | str, start: str | None, stop: str | None, **kwargs) -> RawData:
         symbol = data_id.upper()
-        point = point_of(symbol, self._market, kwargs.get("point"), self._catalogue)
+        point = self.point_of(symbol, self._market, kwargs.get("point"), self._catalogue)
         side = str(kwargs.get("side", "bid")).lower()
         if side not in ("bid", "ask"):
             raise ValueError(f"the fetch reader serves 'bid' or 'ask', not '{side}'")
-        t0 = _as_utc(start, datetime(2003, 1, 1, tzinfo=timezone.utc))
-        t1 = _as_utc(stop, datetime.now(timezone.utc))
+        t0 = self._as_utc(start, datetime(2003, 1, 1, tzinfo=timezone.utc))
+        t1 = self._as_utc(stop, datetime.now(timezone.utc))
         if self._catalogue is not None:
             # - clamp to the first tick Dukascopy has, else the walk requests years of 404s
             first = self._catalogue.history_start(symbol)
             if first is not None and first > t0:
                 t0 = first
 
-        tf = _timeframe_of(dtype)
-        if tf is None:
-            if str(dtype).lower().startswith("quote"):
-                frame = self._ticks(symbol, t0, t1, point)
-            else:
-                raise ValueError(f"Dukascopy serves OHLC and quotes, not '{dtype}'")
+        kind, params = DataType.from_str(dtype)
+        if kind == DataType.OHLC:
+            frame = self._bars(symbol, params.get("timeframe", "1d"), t0, t1, point, side)
+        elif kind == DataType.QUOTE:
+            frame = self._ticks(symbol, t0, t1, point)
         else:
-            frame = self._bars(symbol, tf, t0, t1, point, side)
+            raise ValueError(f"Dukascopy serves OHLC and quotes, not '{dtype}'")
 
         if len(frame):
             self._seen.add(symbol)
@@ -462,17 +348,53 @@ class DukascopyFetchReader(IReader):
     def _bars(self, symbol: str, tf: str, t0: datetime, t1: datetime, point: float, side: str) -> pd.DataFrame:
         # - a non-native timeframe is built from the finest native one that divides it
         native = tf if tf in NATIVE else self._nearest_native(tf)
-        jobs = _candle_paths(symbol, native, t0, t1, side)
-        parts = [decode_candles(body, base.replace(tzinfo=None), point) for body, base in self._fetch_all(jobs) if body]
+        frame = self._native_bars(symbol, native, t0, t1, point, side)
+        if not len(frame):
+            return self._empty_ohlc()
+        return frame if native == tf else self._resample(frame, tf)
+
+    def _native_bars(
+        self, symbol: str, native: str, t0: datetime, t1: datetime, point: float, side: str
+    ) -> pd.DataFrame:
+        """
+        Bars at one of the feed's own resolutions, rebuilding any period whose file is absent.
+
+        A file covers a whole period and is published once that period has ended: the hourly file
+        holds a month and appears when the month is over, the daily file holds a year and appears
+        when the year is over. So the running month has no hourly file and the running year no
+        daily file, and both read as empty without this. A period that answers 404 is rebuilt from
+        the next finer resolution and resampled. 1-minute files are per day and have no fallback.
+        """
+        jobs = self._candle_paths(symbol, native, t0, t1, side)
+        parts: list[pd.DataFrame] = []
+        absent: list[datetime] = []
+        for body, base in self._fetch_all(jobs):
+            if body:
+                parts.append(self.decode_candles(body, base.replace(tzinfo=None), point))
+            else:
+                absent.append(base)
+
+        finer = FINER.get(native)
+        for base in absent if finer else []:
+            g0, g1 = max(t0, base), min(t1, self._period_end(native, base))
+            if g1 <= g0:
+                continue
+            sub = self._native_bars(symbol, finer, g0, g1, point, side)
+            if len(sub):
+                parts.append(self._resample(sub, native))
+
+        parts = [f for f in parts if len(f)]
         if not parts:
-            return _empty_ohlc()
+            return self._empty_ohlc()
         frame = pd.concat(parts).sort_index()
-        frame = frame[~frame.index.duplicated(keep="last")]
-        return frame if native == tf else _resample(frame, tf)
+        return frame[~frame.index.duplicated(keep="last")]
 
     def _ticks(self, symbol: str, t0: datetime, t1: datetime, point: float) -> pd.DataFrame:
-        jobs = _tick_paths(symbol, t0, t1)
-        parts = [decode_ticks(body, base.replace(tzinfo=None), point) for body, base in self._fetch_all(jobs) if body]
+        jobs = self._tick_paths(symbol, t0, t1)
+        parts = [
+            self.decode_ticks(body, base.replace(tzinfo=None), point) for body, base in self._fetch_all(jobs) if body
+        ]
+        parts = [f for f in parts if len(f)]
         if not parts:
             return pd.DataFrame(
                 columns=["bid", "ask", "bid_size", "ask_size"], index=pd.DatetimeIndex([], name="timestamp")
@@ -538,54 +460,155 @@ class DukascopyFetchReader(IReader):
     def close(self) -> None:
         pass
 
+    @staticmethod
+    def point_of(
+        symbol: str, market: str, override: float | None = None, catalogue: _DukasInstruments | None = None
+    ) -> float:
+        """
+        Price multiplier for a symbol. POINTS first, then the catalogue's pipValue / 10, then the
+        market default. Raises when none of them answers.
+        """
+        if override is not None:
+            return override
+        s = symbol.upper()
+        if s in POINTS:
+            return POINTS[s]
+        if catalogue is not None:
+            from_catalogue = catalogue.point(s)
+            if from_catalogue:
+                return from_catalogue
+        default = MARKET_POINTS.get(market.upper())
+        if default is not None:
+            return default
+        raise ValueError(
+            f"No price point known for '{symbol}' under market type '{market}'. "
+            f"Pass point=... to read(), or add it to qubx.data.storages.dukascopy.POINTS."
+        )
 
-def _empty_ohlc() -> pd.DataFrame:
-    return pd.DataFrame(
-        {c: pd.Series(dtype="float64") for c in ("open", "high", "low", "close", "volume")},
-        index=pd.DatetimeIndex([], name="timestamp"),
-    )
+    @staticmethod
+    def decode_candles(body: bytes, base: datetime, point: float) -> pd.DataFrame:
+        """
+        Candle file to an OHLCV frame. Record: offset in seconds, open, close, low, high, volume.
 
+        Minutes with no volume are dropped. The feed fills a closed session with the last traded price
+        repeated at zero volume, which is a third of a 1-minute FX month. Zero volume never comes with a
+        price range, and a real one-price minute keeps its volume, so this drops only the closed hours.
+        """
+        rows = []
+        for off in range(0, len(body) - CANDLE_SIZE + 1, CANDLE_SIZE):
+            t, o, c, lo, hi, v = struct.unpack(CANDLE_FMT, body[off : off + CANDLE_SIZE])
+            if v == 0 or (o == 0 and c == 0 and hi == 0 and lo == 0):
+                continue
+            rows.append((base + timedelta(seconds=t), o * point, hi * point, lo * point, c * point, float(v)))
+        if not rows:
+            # - a file of nothing but closed-session padding: without this the frame carries object
+            #   columns and a plain Index, which then decides the dtypes of whatever it is concatenated with
+            return DukascopyFetchReader._empty_ohlc()
+        frame = pd.DataFrame(rows, columns=["timestamp", "open", "high", "low", "close", "volume"])
+        return frame.set_index("timestamp").sort_index()
 
-def _resample(frame: pd.DataFrame, tf: str) -> pd.DataFrame:
-    """
-    Build a coarser timeframe from a finer one.
+    @staticmethod
+    def decode_ticks(body: bytes, base: datetime, point: float) -> pd.DataFrame:
+        """
+        Tick file to bid/ask quotes. Record: offset in ms, ask, bid, ask volume, bid volume.
+        """
+        n = len(body) // TICK_SIZE
+        if n == 0:
+            return pd.DataFrame(
+                columns=["bid", "ask", "bid_size", "ask_size"], index=pd.DatetimeIndex([], name="timestamp")
+            )
+        raw = np.frombuffer(
+            body[: n * TICK_SIZE],
+            dtype=np.dtype([("ms", ">i4"), ("ask", ">i4"), ("bid", ">i4"), ("av", ">f4"), ("bv", ">f4")]),
+        )
+        frame = pd.DataFrame(
+            {
+                "bid": raw["bid"].astype("float64") * point,
+                "ask": raw["ask"].astype("float64") * point,
+                "bid_size": raw["bv"].astype("float64"),
+                "ask_size": raw["av"].astype("float64"),
+            },
+            index=pd.DatetimeIndex(base + pd.to_timedelta(raw["ms"].astype("int64"), unit="ms"), name="timestamp"),
+        )
+        return frame.sort_index()
 
-    Buckets start at UTC midnight, which is what Dukascopy's own candle files use: their daily bar
-    for EURUSD 2024-03-04 (1.08417 / 1.08667 / 1.08377 / 1.08541) is reproduced exactly by hourly
-    bars resampled at 00:00 UTC, and not by 21:00 or 22:00.
+    @staticmethod
+    def _candle_paths(symbol: str, tf: str, start: datetime, stop: datetime, side: str) -> list[tuple[str, datetime]]:
+        """
+        Candle files covering [start, stop), each with the timestamp its offsets count from.
+        """
+        name, period = NATIVE[tf]
+        prefix = side.upper()
+        out: list[tuple[str, datetime]] = []
+        if period == "day":
+            cur = start.replace(hour=0, minute=0, second=0, microsecond=0)
+            while cur < stop:
+                out.append((f"{symbol}/{cur.year}/{cur.month - 1:02d}/{cur.day:02d}/{prefix}_{name}.bi5", cur))
+                cur += timedelta(days=1)
+        elif period == "month":
+            cur = start.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
+            while cur < stop:
+                out.append((f"{symbol}/{cur.year}/{cur.month - 1:02d}/{prefix}_{name}.bi5", cur))
+                cur = (cur + timedelta(days=32)).replace(day=1)
+        else:
+            for year in range(start.year, stop.year + 1):
+                base = datetime(year, 1, 1, tzinfo=timezone.utc)
+                if base < stop:
+                    out.append((f"{symbol}/{year}/{prefix}_{name}.bi5", base))
+        return out
 
-    That is separate from the overnight policy, which rolls positions at 21:00/22:00 GMT for swap
-    (19:00/18:00 for NZD pairs, except Fridays). The rollover does not move the bar boundary.
-    """
-    rule = tf.replace("Min", "min")
-    out = frame.resample(rule).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
-    return out.dropna(subset=["open"])
+    @staticmethod
+    def _tick_paths(symbol: str, start: datetime, stop: datetime) -> list[tuple[str, datetime]]:
+        cur = start.replace(minute=0, second=0, microsecond=0)
+        out = []
+        while cur < stop:
+            out.append((f"{symbol}/{cur.year}/{cur.month - 1:02d}/{cur.day:02d}/{cur.hour:02d}h_ticks.bi5", cur))
+            cur += timedelta(hours=1)
+        return out
 
+    @staticmethod
+    def _as_utc(t: str | pd.Timestamp | None, default: datetime) -> datetime:
+        if t is None:
+            return default
+        ts = pd.Timestamp("now", tz="UTC") if str(t).lower() in ("now", "today") else pd.Timestamp(t)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        return ts.to_pydatetime()
 
-def _mid_one(bid: RawData, ask: RawData) -> RawData:
-    """
-    Average two candle frames into a mid one. Volume is summed.
-    """
-    b, a = bid.data.to_pandas(), ask.data.to_pandas()
-    if not len(b):
-        return ask
-    if not len(a):
-        return bid
-    b, a = b.set_index("timestamp"), a.set_index("timestamp")
-    common = b.index.intersection(a.index)
-    b, a = b.loc[common], a.loc[common]
-    out = (b[["open", "high", "low", "close"]] + a[["open", "high", "low", "close"]]) / 2.0
-    out["volume"] = b["volume"] + a["volume"]
-    return RawData.from_pandas(bid.data_id, bid.dtype, out)
+    @staticmethod
+    def _period_end(tf: str, base: datetime) -> datetime:
+        """
+        First instant after the file starting at `base` at this resolution.
+        """
+        period = NATIVE[tf][1]
+        if period == "day":
+            return base + timedelta(days=1)
+        if period == "month":
+            return (base + timedelta(days=32)).replace(day=1)
+        return base.replace(year=base.year + 1, month=1, day=1)
 
+    @staticmethod
+    def _empty_ohlc() -> pd.DataFrame:
+        return pd.DataFrame(
+            {c: pd.Series(dtype="float64") for c in ("open", "high", "low", "close", "volume")},
+            index=pd.DatetimeIndex([], name="timestamp"),
+        )
 
-def _mid(bid: Any, ask: Any) -> Any:
-    if isinstance(bid, RawData) and isinstance(ask, RawData):
-        return _mid_one(bid, ask)
-    if isinstance(bid, RawMultiData) and isinstance(ask, RawMultiData):
-        by_id = {r.data_id: r for r in ask.data}
-        return RawMultiData([_mid_one(r, by_id[r.data_id]) for r in bid.data if r.data_id in by_id])
-    return bid
+    @staticmethod
+    def _resample(frame: pd.DataFrame, tf: str) -> pd.DataFrame:
+        """
+        Build a coarser timeframe from a finer one.
+
+        Buckets start at UTC midnight, which is what Dukascopy's own candle files use: their daily bar
+        for EURUSD 2024-03-04 (1.08417 / 1.08667 / 1.08377 / 1.08541) is reproduced exactly by hourly
+        bars resampled at 00:00 UTC, and not by 21:00 or 22:00.
+
+        That is separate from the overnight policy, which rolls positions at 21:00/22:00 GMT for swap
+        (19:00/18:00 for NZD pairs, except Fridays). The rollover does not move the bar boundary.
+        """
+        rule = tf.replace("Min", "min")
+        out = frame.resample(rule).agg({"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"})
+        return out.dropna(subset=["open"])
 
 
 class DukascopyReader(IReader):
@@ -593,7 +616,9 @@ class DukascopyReader(IReader):
     Reads through the parquet cache and answers `get_data_id` from it.
     """
 
-    def __init__(self, inner: IReader, cache: ParquetCache | None = None, catalogue: Instruments | None = None) -> None:
+    def __init__(
+        self, inner: IReader, cache: ParquetCache | None = None, catalogue: _DukasInstruments | None = None
+    ) -> None:
         self._inner = inner
         self._cache = cache
         self._catalogue = catalogue
@@ -613,7 +638,7 @@ class DukascopyReader(IReader):
             return self._inner.read(data_id, dtype, start, stop, chunksize, side=s, **kwargs)
         bid = self._inner.read(data_id, dtype, start, stop, chunksize, side="bid", **kwargs)
         ask = self._inner.read(data_id, dtype, start, stop, chunksize, side="ask", **kwargs)
-        return _mid(bid, ask)
+        return self._mid(bid, ask)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """
@@ -641,8 +666,35 @@ class DukascopyReader(IReader):
     def close(self) -> None:
         self._inner.close()
 
+    @staticmethod
+    def _mid_one(bid: RawData, ask: RawData) -> RawData:
+        """
+        Average two candle frames into a mid one. Volume is summed.
+        """
+        b, a = bid.data.to_pandas(), ask.data.to_pandas()
+        if not len(b):
+            return ask
+        if not len(a):
+            return bid
+        b, a = b.set_index("timestamp"), a.set_index("timestamp")
+        common = b.index.intersection(a.index)
+        b, a = b.loc[common], a.loc[common]
+        out = (b[["open", "high", "low", "close"]] + a[["open", "high", "low", "close"]]) / 2.0
+        out["volume"] = b["volume"] + a["volume"]
+        return RawData.from_pandas(bid.data_id, bid.dtype, out)
+
+    @staticmethod
+    def _mid(bid: Any, ask: Any) -> Any:
+        if isinstance(bid, RawData) and isinstance(ask, RawData):
+            return DukascopyReader._mid_one(bid, ask)
+        if isinstance(bid, RawMultiData) and isinstance(ask, RawMultiData):
+            by_id = {r.data_id: r for r in ask.data}
+            return RawMultiData([DukascopyReader._mid_one(r, by_id[r.data_id]) for r in bid.data if r.data_id in by_id])
+        return bid
+
 
 @storage("dukascopy")
+@storage("dukas")
 class DukascopyStorage(IStorage):
     """
     Reader chain:
@@ -658,7 +710,7 @@ class DukascopyStorage(IStorage):
         prefetch_period: str | None = None,
         requests_per_second: float = 0.2,
         workers: int = 8,
-        catalogue: Instruments | None = None,
+        catalogue: _DukasInstruments | None = None,
         **kwargs,
     ) -> None:
         self._path = Path(os.path.expanduser(path)) if path else Path(get_local_data_cache_folder("dukascopy"))
@@ -668,7 +720,7 @@ class DukascopyStorage(IStorage):
         self._workers = workers
         self._fetcher_kwargs = kwargs
         self._cache: ParquetCache | None = None
-        self._catalogue: Instruments | None = catalogue
+        self._catalogue: _DukasInstruments | None = catalogue
         self._own_catalogue = catalogue is None
         self._readers: dict[str, DukascopyReader] = {}
 
@@ -687,7 +739,7 @@ class DukascopyStorage(IStorage):
         if self._cache is None:
             self._cache = ParquetCache(self._path)
             if self._own_catalogue:
-                self._catalogue = Instruments(self._path)
+                self._catalogue = _DukasInstruments(self._path)
         if m not in self._readers:
             fetch = DukascopyFetchReader(
                 DukascopyFetcher(requests_per_second=self._requests_per_second, **self._fetcher_kwargs),

@@ -74,112 +74,6 @@ MARKET_AFFIXES: dict[str, tuple[str, str]] = {
 MARKET_TYPES = tuple(MARKET_AFFIXES)
 
 
-def to_yahoo(symbol: str, market: str) -> str:
-    """
-    Plain name to Yahoo's spelling. An already-marked symbol passes through unchanged.
-    """
-    prefix, suffix = MARKET_AFFIXES[market.upper()]
-    s = symbol.upper()
-    if market.upper() == "CRYPTO":
-        return s if "-" in s else s + suffix
-    if prefix and not s.startswith(prefix):
-        s = prefix + s
-    if suffix and not s.endswith(suffix):
-        s = s + suffix
-    return s
-
-
-def from_yahoo(symbol: str, market: str) -> str:
-    """
-    Yahoo's spelling to the plain name the caller used.
-    """
-    prefix, suffix = MARKET_AFFIXES[market.upper()]
-    s = symbol
-    if prefix and s.startswith(prefix):
-        s = s[len(prefix) :]
-    if suffix and s.endswith(suffix):
-        s = s[: -len(suffix)]
-    return s
-
-
-def belongs_to(symbol: str, market: str) -> bool:
-    """
-    Whether a Yahoo symbol belongs to this market type, used to filter the cache listing.
-    """
-    m = market.upper()
-    if m == "CRYPTO":
-        return "-" in symbol
-    if m == "INDEX":
-        return symbol.startswith("^")
-    if m == "FUTURE":
-        return symbol.endswith("=F")
-    if m == "FX":
-        return symbol.endswith("=X")
-    # - STOCK / ETF / FUND carry no mark of their own
-    return not (symbol.startswith("^") or symbol.endswith(("=F", "=X")) or "-" in symbol)
-
-
-def _yfinance():
-    try:
-        import yfinance  # noqa: PLC0415
-    except ImportError as e:
-        raise ImportError("Yahoo storage needs the 'yahoo' extra: pip install qubx[yahoo]") from e
-    return yfinance
-
-
-def _timeframe_of(dtype: DataType | str) -> str:
-    """
-    Pull the timeframe out of `ohlc(1d)` and check it against what Yahoo keeps history for.
-    """
-    s = str(dtype)
-    if not s.lower().startswith("ohlc"):
-        raise ValueError(f"Yahoo storage serves OHLC only, got '{dtype}'")
-    tf = s[s.index("(") + 1 : s.index(")")] if "(" in s else "1d"
-    tf = {"1day": "1d", "d": "1d", "1D": "1d", "1week": "1w", "1month": "1M"}.get(tf, tf)
-    if tf not in _INTERVALS:
-        raise ValueError(f"Yahoo storage serves {sorted(_INTERVALS)} only, got '{tf}'. Intraday history is too short.")
-    return tf
-
-
-def _epoch(t: str | pd.Timestamp | None, default: int) -> int:
-    if t is None:
-        return default
-    ts = pd.Timestamp("now", tz="UTC") if str(t).lower() in ("now", "today") else pd.Timestamp(t)
-    if ts.tzinfo is None:
-        ts = ts.tz_localize("UTC")
-    return int(ts.timestamp())
-
-
-def empty_frame() -> pd.DataFrame:
-    return pd.DataFrame({c: pd.Series(dtype="float64") for c in COLUMNS}, index=pd.DatetimeIndex([], name="timestamp"))
-
-
-def normalize(frame: pd.DataFrame) -> pd.DataFrame:
-    """
-    yfinance's frame to the column names and index this storage caches.
-
-    Columns arrive capitalised and, for a single ticker, under a MultiIndex level naming it. The
-    ticker level is dropped, names lowercased, `adj close` renamed to `adjclose`, and the index made
-    tz-naive so parquet round-trips it.
-    """
-    if frame is None or not len(frame):
-        return empty_frame()
-    out = frame.copy()
-    if isinstance(out.columns, pd.MultiIndex):
-        out.columns = out.columns.get_level_values(0)
-    out.columns = [str(c).lower().replace(" ", "") for c in out.columns]
-    out = out.rename(columns={"adjclose": "adjclose", "adj_close": "adjclose"})
-    if "adjclose" not in out.columns and "close" in out.columns:
-        out["adjclose"] = out["close"]
-    keep = [c for c in COLUMNS if c in out.columns]
-    out = out[keep]
-    idx = pd.DatetimeIndex(out.index)
-    out.index = idx.tz_localize(None) if idx.tz is not None else idx
-    out.index.name = "timestamp"
-    # - a session still in progress comes through with a null close
-    return out.dropna(subset=["close"]).astype("float64")
-
-
 class YahooFetcher:
     """
     One `yfinance` download per symbol. Separate from the reader so the transport can be replaced
@@ -192,7 +86,7 @@ class YahooFetcher:
         self._pause = pause
 
     def fetch(self, symbol: str, interval: str, start: int, stop: int) -> pd.DataFrame:
-        yf = _yfinance()
+        yf = self._yfinance()
         t0 = pd.Timestamp(start, unit="s")
         t1 = pd.Timestamp(stop, unit="s")
         last: Exception | None = None
@@ -210,13 +104,53 @@ class YahooFetcher:
                     threads=False,
                     timeout=self._timeout,
                 )
-                return normalize(frame)
+                return self.normalize(frame)
             except Exception as e:  # - yfinance raises its own types; treat them all as retryable
                 last = e
                 if attempt < self._retries - 1:
                     time.sleep(self._pause * (attempt + 1))
         logger.error(f"[YahooFetcher] '{symbol}' failed after {self._retries} attempts: {last}")
-        return empty_frame()
+        return self.empty_frame()
+
+    @staticmethod
+    def _yfinance():
+        try:
+            import yfinance  # noqa: PLC0415
+        except ImportError as e:
+            raise ImportError("Yahoo storage needs the 'yahoo' extra: pip install qubx[yahoo]") from e
+        return yfinance
+
+    @staticmethod
+    def empty_frame() -> pd.DataFrame:
+        return pd.DataFrame(
+            {c: pd.Series(dtype="float64") for c in COLUMNS}, index=pd.DatetimeIndex([], name="timestamp")
+        )
+
+    @staticmethod
+    def normalize(frame: pd.DataFrame) -> pd.DataFrame:
+        """
+        yfinance's frame to the column names and index this storage caches.
+
+        Columns arrive capitalised and, for a single ticker, under a MultiIndex level naming it. The
+        ticker level is dropped, names lowercased, `adj close` renamed to `adjclose`, and the index made
+        tz-naive so parquet round-trips it.
+        """
+        if frame is None or not len(frame):
+            return YahooFetcher.empty_frame()
+        out = frame.copy()
+        if isinstance(out.columns, pd.MultiIndex):
+            out.columns = out.columns.get_level_values(0)
+        out.columns = [str(c).lower().replace(" ", "") for c in out.columns]
+        out = out.rename(columns={"adjclose": "adjclose", "adj_close": "adjclose"})
+        if "adjclose" not in out.columns and "close" in out.columns:
+            out["adjclose"] = out["close"]
+        keep = [c for c in COLUMNS if c in out.columns]
+        out = out[keep]
+        idx = pd.DatetimeIndex(out.index)
+        out.index = idx.tz_localize(None) if idx.tz is not None else idx
+        out.index.name = "timestamp"
+        # - a session still in progress comes through with a null close
+        return out.dropna(subset=["close"]).astype("float64")
 
 
 class YahooFetchReader(IReader):
@@ -229,8 +163,10 @@ class YahooFetchReader(IReader):
         self._seen: set[str] = set()
 
     def _read_one(self, data_id: str, dtype: DataType | str, start: str | None, stop: str | None) -> RawData:
-        interval = _INTERVALS[_timeframe_of(dtype)]
-        frame = self._fetcher.fetch(data_id.upper(), interval, _epoch(start, 0), _epoch(stop, int(time.time())))
+        interval = _INTERVALS[self._timeframe_of(dtype)]
+        frame = self._fetcher.fetch(
+            data_id.upper(), interval, self._epoch(start, 0), self._epoch(stop, int(time.time()))
+        )
         if len(frame):
             self._seen.add(data_id.upper())
         return RawData.from_pandas(data_id, dtype, frame)  # type: ignore[arg-type]
@@ -266,6 +202,36 @@ class YahooFetchReader(IReader):
     def close(self) -> None:
         pass
 
+    @staticmethod
+    def _timeframe_of(dtype: DataType | str) -> str:
+        """
+        The Yahoo interval for a dtype, or a ValueError naming what it does serve.
+
+        This parses the string itself instead of calling `DataType.from_str`, which cannot be used
+        here: it normalises the timeframe through `to_timedelta`, and pandas rejects `M` and `Y` as
+        durations, so `DataType.from_str("ohlc(1M)")` raises. Monthly is one of the three intervals
+        Yahoo keeps long history for.
+        """
+        s = str(dtype)
+        if not s.lower().startswith("ohlc"):
+            raise ValueError(f"Yahoo storage serves OHLC only, got '{dtype}'")
+        tf = s[s.index("(") + 1 : s.index(")")] if "(" in s else "1d"
+        tf = {"1day": "1d", "d": "1d", "1D": "1d", "1week": "1w", "1month": "1M"}.get(tf, tf)
+        if tf not in _INTERVALS:
+            raise ValueError(
+                f"Yahoo storage serves {sorted(_INTERVALS)} only, got '{tf}'. Intraday history is too short."
+            )
+        return tf
+
+    @staticmethod
+    def _epoch(t: str | pd.Timestamp | None, default: int) -> int:
+        if t is None:
+            return default
+        ts = pd.Timestamp("now", tz="UTC") if str(t).lower() in ("now", "today") else pd.Timestamp(t)
+        if ts.tzinfo is None:
+            ts = ts.tz_localize("UTC")
+        return int(ts.timestamp())
+
 
 class YahooReader(IReader):
     """
@@ -292,13 +258,13 @@ class YahooReader(IReader):
         **kwargs,
     ) -> Iterator[Transformable] | Transformable:
         if isinstance(data_id, (list, tuple, set)):
-            requested = {to_yahoo(d, self._market): d for d in data_id}
+            requested = {self.to_yahoo(d, self._market): d for d in data_id}
             ids: str | list[str] = list(requested)
         else:
-            requested = {to_yahoo(data_id, self._market): data_id}
+            requested = {self.to_yahoo(data_id, self._market): data_id}
             ids = next(iter(requested))
         result = self._inner.read(ids, dtype, start, stop, chunksize, **kwargs)
-        return _adjust(result, adjusted, requested)
+        return self._adjust(result, adjusted, requested)
 
     def get_data_id(self, dtype: DataType | str = DataType.ALL) -> list[str]:
         """
@@ -312,44 +278,89 @@ class YahooReader(IReader):
         found: set[str] = set()
         for k in keys:
             found.update(self._cache.get_stored_ids(k))
-        return sorted(from_yahoo(f, self._market) for f in found if belongs_to(f, self._market))
+        return sorted(self.from_yahoo(f, self._market) for f in found if self.belongs_to(f, self._market))
 
     def get_data_types(self, data_id: str) -> list[DataType]:
         return self._inner.get_data_types(data_id)
 
     def get_time_range(self, data_id: str, dtype: DataType | str) -> tuple[Any, Any]:
-        return self._inner.get_time_range(to_yahoo(data_id, self._market), dtype)
+        return self._inner.get_time_range(self.to_yahoo(data_id, self._market), dtype)
 
     def close(self) -> None:
         self._inner.close()
 
+    @staticmethod
+    def to_yahoo(symbol: str, market: str) -> str:
+        """
+        Plain name to Yahoo's spelling. An already-marked symbol passes through unchanged.
+        """
+        prefix, suffix = MARKET_AFFIXES[market.upper()]
+        s = symbol.upper()
+        if market.upper() == "CRYPTO":
+            return s if "-" in s else s + suffix
+        if prefix and not s.startswith(prefix):
+            s = prefix + s
+        if suffix and not s.endswith(suffix):
+            s = s + suffix
+        return s
 
-def _adjust_one(raw: RawData, adjusted: bool, names: dict[str, str]) -> RawData:
-    """
-    Apply the price adjustment and restore the caller's symbol on the result.
-    """
-    display = names.get(raw.data_id, raw.data_id)
-    if "adjclose" not in raw.names:
-        return raw if display == raw.data_id else RawData.from_pandas(display, raw.dtype, raw.data.to_pandas())
-    frame = raw.data.to_pandas()
-    if adjusted and len(frame):
-        ratio = (frame["adjclose"] / frame["close"]).replace([np.inf, -np.inf], np.nan).fillna(1.0)
-        for col in ("open", "high", "low"):
-            if col in frame:
-                frame[col] = frame[col] * ratio
-        frame["close"] = frame["adjclose"]
-    return RawData.from_pandas(display, raw.dtype, frame.drop(columns=["adjclose"]))
+    @staticmethod
+    def from_yahoo(symbol: str, market: str) -> str:
+        """
+        Yahoo's spelling to the plain name the caller used.
+        """
+        prefix, suffix = MARKET_AFFIXES[market.upper()]
+        s = symbol
+        if prefix and s.startswith(prefix):
+            s = s[len(prefix) :]
+        if suffix and s.endswith(suffix):
+            s = s[: -len(suffix)]
+        return s
 
+    @staticmethod
+    def belongs_to(symbol: str, market: str) -> bool:
+        """
+        Whether a Yahoo symbol belongs to this market type, used to filter the cache listing.
+        """
+        m = market.upper()
+        if m == "CRYPTO":
+            return "-" in symbol
+        if m == "INDEX":
+            return symbol.startswith("^")
+        if m == "FUTURE":
+            return symbol.endswith("=F")
+        if m == "FX":
+            return symbol.endswith("=X")
+        # - STOCK / ETF / FUND carry no mark of their own
+        return not (symbol.startswith("^") or symbol.endswith(("=F", "=X")) or "-" in symbol)
 
-def _adjust(result: Any, adjusted: bool, names: dict[str, str] | None = None) -> Any:
-    names = names or {}
-    if isinstance(result, RawData):
-        return _adjust_one(result, adjusted, names)
-    if isinstance(result, RawMultiData):
-        return RawMultiData([_adjust_one(r, adjusted, names) for r in result.data])
-    if isinstance(result, Iterator):
-        return (_adjust(chunk, adjusted, names) for chunk in result)
-    return result
+    @staticmethod
+    def _adjust_one(raw: RawData, adjusted: bool, names: dict[str, str]) -> RawData:
+        """
+        Apply the price adjustment and restore the caller's symbol on the result.
+        """
+        display = names.get(raw.data_id, raw.data_id)
+        if "adjclose" not in raw.names:
+            return raw if display == raw.data_id else RawData.from_pandas(display, raw.dtype, raw.data.to_pandas())
+        frame = raw.data.to_pandas()
+        if adjusted and len(frame):
+            ratio = (frame["adjclose"] / frame["close"]).replace([np.inf, -np.inf], np.nan).fillna(1.0)
+            for col in ("open", "high", "low"):
+                if col in frame:
+                    frame[col] = frame[col] * ratio
+            frame["close"] = frame["adjclose"]
+        return RawData.from_pandas(display, raw.dtype, frame.drop(columns=["adjclose"]))
+
+    @staticmethod
+    def _adjust(result: Any, adjusted: bool, names: dict[str, str] | None = None) -> Any:
+        names = names or {}
+        if isinstance(result, RawData):
+            return YahooReader._adjust_one(result, adjusted, names)
+        if isinstance(result, RawMultiData):
+            return RawMultiData([YahooReader._adjust_one(r, adjusted, names) for r in result.data])
+        if isinstance(result, Iterator):
+            return (YahooReader._adjust(chunk, adjusted, names) for chunk in result)
+        return result
 
 
 @storage("yahoo")
