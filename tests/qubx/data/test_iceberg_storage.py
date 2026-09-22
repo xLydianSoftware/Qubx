@@ -857,3 +857,11 @@ def test_a_suffix_that_is_not_an_interval_is_no_timeframe(catalog, lake):
     assert reader.read("BTCUSDT", "trade_flow(1h)", "2026-08-10", "2026-08-11").data.num_rows == 2
     with pytest.raises(ValueError, match=r"no lake table for 'depth' in BINANCE.UM/SWAP"):
         reader.read("BTCUSDT", "depth", "2026-08-10", "2026-08-11")
+
+
+def test_a_feature_table_with_a_non_interval_suffix_reads_under_its_own_name(catalog):
+    """Without `dvault.interval`, `flow_20lvl` is a kernel of its own, never a `20lvl` timeframe."""
+    table = _create(catalog, ("binance_perp", "flow_20lvl"), FLOW_SCHEMA, {"dvault.kind": "feature"})
+    table.append(_feature_day(dt.date(2026, 8, 10), ["BTCUSDT"]))
+    reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
+    assert reader.read("BTCUSDT", "flow_20lvl", "2026-08-10", "2026-08-11").data.num_rows == 120

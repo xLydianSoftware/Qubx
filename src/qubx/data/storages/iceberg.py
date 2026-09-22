@@ -216,9 +216,7 @@ def decode_table(identifier: tuple[str, ...], properties: dict[str, str], *, pre
 
     kernel, interval = properties.get("dvault.kernel"), properties.get("dvault.interval")
     if not kernel or not interval:
-        parsed = FEATURE_NAME_RE.match(name)
-        kernel = parsed["stem"] if parsed else name
-        interval = parsed["interval"] if parsed else None
+        kernel, interval = _suffixed(name) or (name, None)
     dtype = _FEATURE_DTYPES.get(kernel) or _known_dtype(kernel) or DataType.RECORD
     alias = kernel if dtype == DataType.RECORD else None
     return LakeTable(tuple(identifier), kind, provider, dtype, alias, interval, aggs, {})
