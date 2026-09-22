@@ -556,3 +556,57 @@ def test_an_unknown_column_is_named_in_the_error(lake):
 def test_no_columns_argument_reads_every_data_column(lake):
     df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").to_pd()
     assert list(df.columns) == list(FLOW_AGGS)
+
+
+FUNDAMENTAL_SCHEMA = pa.schema(
+    [
+        pa.field("timestamp", pa.timestamp("us"), nullable=False),
+        pa.field("symbol", pa.string(), nullable=False),
+        pa.field("asset", pa.string()),
+        pa.field("metric", pa.string()),
+        pa.field("value", pa.float64()),
+    ]
+)
+
+
+@pytest.fixture
+def coingecko_lake(catalog):
+    table = _create(
+        catalog,
+        ("global_crypto", "fundamental"),
+        FUNDAMENTAL_SCHEMA,
+        {"dvault.kind": "event", "dvault.kernel": "fundamental", "dvault.provider": "coingecko"},
+        ("timestamp", MonthTransform()),
+    )
+    rows = {n: [] for n in FUNDAMENTAL_SCHEMA.names}
+    for day in (dt.datetime(2026, 7, 31), dt.datetime(2026, 8, 1)):
+        for asset, cap in (("BTC", 1.5e12), ("ETH", 4.0e11)):
+            for metric, value in (("market_cap", cap), ("price", cap / 1e7), ("total_volume", cap / 50)):
+                rows["timestamp"].append(day)
+                rows["symbol"].append(asset)
+                rows["asset"].append(asset)
+                rows["metric"].append(metric)
+                rows["value"].append(value)
+    table.append(pa.Table.from_pydict(rows, schema=FUNDAMENTAL_SCHEMA))
+    return IcebergLakeStorage.from_catalog(catalog)
+
+
+def test_coingecko_is_addressed_like_the_questdb_storage_addresses_it(coingecko_lake):
+    assert coingecko_lake.get_exchanges() == ["COINGECKO"]
+    assert coingecko_lake.get_market_types("COINGECKO") == ["FUNDAMENTAL"]
+
+
+def test_fundamental_request_resolves_through_the_data_type(coingecko_lake):
+    reader = coingecko_lake["COINGECKO", "FUNDAMENTAL"]
+    assert reader.get_data_id("fundamental") == ["BTC", "ETH"]
+    multi = reader.read(["BTC", "ETH"], "fundamental", "2026-07-31", "2026-08-02", columns=["metric", "value"])
+    df = multi.to_pd(id_in_index=True)
+    assert list(df.columns) == ["metric", "value"]
+    caps = df[df["metric"] == "market_cap"]["value"]
+    assert len(caps) == 4
+    assert caps.xs("BTC", level="symbol").iloc[0] == 1.5e12
+
+
+def test_fundamental_time_range_crosses_a_month_partition(coingecko_lake):
+    s, e = coingecko_lake["COINGECKO", "FUNDAMENTAL"].get_time_range("ETH", "fundamental")
+    assert (str(s)[:10], str(e)[:10]) == ("2026-07-31", "2026-08-01")

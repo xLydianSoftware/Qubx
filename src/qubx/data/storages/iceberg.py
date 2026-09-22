@@ -132,6 +132,8 @@ VENUE_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("deribit", "options"): ("DERIBIT", "OPTION"),
     ("deribit", "perp"): ("DERIBIT", "SWAP"),
     ("lighter", "perp"): ("LIGHTER", "SWAP"),
+    # - venue-less provider data: the pair Qubx's QuestDB storage decodes `coingecko.fundamental` to
+    ("global", "crypto"): ("COINGECKO", "FUNDAMENTAL"),
 }
 
 _FEATURE_DTYPES = {"candles": DataType.OHLC, "quotes": DataType.QUOTE}
