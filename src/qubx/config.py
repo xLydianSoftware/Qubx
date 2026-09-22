@@ -35,6 +35,15 @@ class S3Account(BaseModel):
     region: str | None = None
 
 
+class IcebergAccount(BaseModel):
+    """Iceberg lake catalog account; unset fields fall back to DVAULT_ICEBERG_* env vars."""
+
+    uri: str | None = None
+    warehouse: str | None = None
+    token: str | None = None
+    namespace_prefix: str = ""
+
+
 class LookupConfig(BaseModel):
     """Configuration for instrument/fees lookups."""
 
@@ -82,6 +91,7 @@ class QubxSettings(BaseSettings):
 
     s3: dict[str, S3Account] = {}
     default_s3_account: str | None = None
+    iceberg: dict[str, IcebergAccount] = {}
     log_level: str = "WARNING"
     # Comma-separated diagnostic areas to raise to DEBUG without flipping global log level,
     # e.g. "account_manager,connector" or a specific connector "connector.hyperliquid".

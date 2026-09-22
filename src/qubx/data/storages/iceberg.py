@@ -11,7 +11,6 @@ ones, with `ts_event` presented as `timestamp`.
 """
 
 import datetime as dt
-import json
 import os
 import re
 import threading
@@ -19,7 +18,6 @@ from collections.abc import Callable, Hashable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import partial
-from pathlib import Path
 
 import duckdb
 import numpy as np
@@ -33,6 +31,7 @@ from pyiceberg.io.pyarrow import ArrowScan, _read_all_delete_files
 from pyiceberg.table import DataScan, FileScanTask, Table
 
 from qubx import logger
+from qubx.config import get_settings
 from qubx.core.basics import DataType
 from qubx.data.containers import RawData, RawMultiData
 from qubx.data.registry import storage
@@ -832,13 +831,9 @@ def _attach_rollups(entries: list[tuple[LakeTable, dict[str, str]]]) -> list[Lak
 
 
 def _qubx_account(account: str) -> dict[str, str]:
-    path = Path.home() / ".qubx" / "config.json"
-    if not path.exists():
-        return {}
-    try:
-        return json.loads(path.read_text())["iceberg"][account]
-    except (OSError, ValueError, KeyError, TypeError):
-        return {}
+    """The account's fields set in QubxSettings (`~/.qubx/config.json` or `QUBX_ICEBERG__<ACCOUNT>__<FIELD>`)."""
+    configured = get_settings().iceberg.get(account)
+    return configured.model_dump(exclude_none=True) if configured else {}
 
 
 def _namespace_prefix_from_env() -> str:

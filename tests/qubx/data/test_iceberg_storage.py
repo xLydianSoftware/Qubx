@@ -1,4 +1,6 @@
 import datetime as dt
+import json
+import os
 import threading
 from functools import partial
 from types import SimpleNamespace
@@ -16,8 +18,10 @@ from pyiceberg.transforms import DayTransform, MonthTransform  # noqa: E402
 from qubx.core.basics import DataType  # noqa: E402
 from qubx.data.containers import RawData, RawMultiData  # noqa: E402
 from qubx.data.storages.iceberg import (  # noqa: E402
+    IcebergConfig,
     IcebergLakeReader,
     IcebergLakeStorage,
+    _resolve_config,
     _resolve_namespace_prefix,
     _task_order,
     aggregate,
@@ -865,3 +869,44 @@ def test_a_feature_table_with_a_non_interval_suffix_reads_under_its_own_name(cat
     table.append(_feature_day(dt.date(2026, 8, 10), ["BTCUSDT"]))
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
     assert reader.read("BTCUSDT", "flow_20lvl", "2026-08-10", "2026-08-11").data.num_rows == 120
+
+
+@pytest.fixture
+def qubx_settings(tmp_path, monkeypatch):
+    """`~/.qubx/config.json` at a tmp path, no QUBX_*/DVAULT_ICEBERG_* env; settings cache cleared around the test."""
+    from qubx.config import _QubxJsonConfigSource, get_settings
+
+    path = tmp_path / "config.json"
+    monkeypatch.setattr(_QubxJsonConfigSource, "_CONFIG_PATH", path)
+    for name in list(os.environ):
+        if name.startswith(("QUBX_", "DVAULT_ICEBERG_")):
+            monkeypatch.delenv(name)
+    get_settings.cache_clear()
+    yield path
+    get_settings.cache_clear()
+
+
+def test_config_and_prefix_resolve_from_qubx_settings(qubx_settings):
+    qubx_settings.write_text(
+        json.dumps({"iceberg": {"r2": {"uri": "u", "warehouse": "w", "token": "t", "namespace_prefix": "scratch__"}}})
+    )
+    assert _resolve_config("r2", None, None, None) == IcebergConfig("u", "w", "t")
+    assert _resolve_config("r2", "explicit", None, None).uri == "explicit"
+    assert _resolve_namespace_prefix("r2", "") == "scratch__"
+
+
+def test_settings_env_vars_configure_an_iceberg_account(qubx_settings, monkeypatch):
+    monkeypatch.setenv("QUBX_ICEBERG__R2__URI", "u")
+    monkeypatch.setenv("QUBX_ICEBERG__R2__WAREHOUSE", "w")
+    monkeypatch.setenv("QUBX_ICEBERG__R2__TOKEN", "t")
+    monkeypatch.setenv("DVAULT_ICEBERG_TOKEN", "dvault")
+    assert _resolve_config("r2", None, None, None) == IcebergConfig("u", "w", "t")
+
+
+def test_dvault_env_fills_what_settings_lack(qubx_settings, monkeypatch):
+    qubx_settings.write_text(json.dumps({"iceberg": {"r2": {"uri": "u"}}}))
+    monkeypatch.setenv("DVAULT_ICEBERG_WAREHOUSE", "w")
+    monkeypatch.setenv("DVAULT_ICEBERG_TOKEN", "t")
+    assert _resolve_config("r2", None, None, None) == IcebergConfig("u", "w", "t")
+    with pytest.raises(ValueError, match=r"iceberg account 'other': missing uri"):
+        _resolve_config("other", None, None, None)
