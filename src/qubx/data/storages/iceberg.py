@@ -1,7 +1,6 @@
 """Qubx `IStorage`/`IReader` over the datavault Iceberg lake (R2 Data Catalog).
 
-Moved here from datavault (`dvault.storage.iceberg.qubx_storage`) so consumers need
-Qubx alone; install with `qubx[iceberg]`. Read-only: datavault writes the lake.
+Install with `qubx[iceberg]`. Read-only: datavault writes the lake.
 
 A lake table is `<venue>_<market>.<name>`, where the name is either a canonical
 raw data type or `<kernel>_<interval>`; provider and lineage are table
@@ -16,7 +15,7 @@ import json
 import os
 import re
 import threading
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Hashable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
 from functools import partial
@@ -114,8 +113,7 @@ DISCOVERY_PARTITIONS = 7
 # - a day in the `_1d` rollup stands for the whole day of the minute table
 DAY_END = dt.timedelta(hours=23, minutes=59)
 
-# - REST round trips per table dominate a cold enumeration (51 s for 66 tables serially, 2026-09-22);
-#   load_table is latency-bound, so 16 in flight beat 8 (median 11.5 s of 9.3/11.5/19.2 s cold on R2)
+# - load_table is latency-bound: 16 in flight beat 8 on a cold R2 enumeration
 DISCOVERY_WORKERS = 16
 
 VENUE_MAP: dict[tuple[str, str], tuple[str, str]] = {
@@ -156,10 +154,10 @@ def _suffixed(name: str) -> tuple[str, str] | None:
     if parsed is None:
         return None
     try:
-        _seconds(parsed["interval"])
+        seconds = int(_seconds(parsed["interval"]))
     except (ValueError, TypeError):
         return None
-    return parsed["stem"], _canonical_timeframe(parsed["interval"])
+    return parsed["stem"], _CANONICAL_TF.get(seconds, parsed["interval"].lower())
 
 
 def _known_dtype(name: str) -> DataType | None:
@@ -341,17 +339,21 @@ class IcebergLakeReader(IReader):
         if self._resolved is not None:
             return
         resolved = self._source() if callable(self._source) else list(self._source)
-        claimed: dict[tuple[str, str | None], tuple[str, ...]] = {}
-        for table in resolved:
-            key = (table.name_key, table.timeframe)
-            if key in claimed:
-                raise ValueError(
-                    f"{self.exchange}/{self.market}: {'.'.join(claimed[key])} and {'.'.join(table.identifier)} "
-                    f"both answer {table.name_key}({table.timeframe})"
-                )
-            claimed[key] = table.identifier
+        self._claim(((t.name_key, t.timeframe), f"{t.name_key}({t.timeframe})", t.identifier) for t in resolved)
         # - `_resolved` says "discovery is done", so it is published only once the clash check passed
         self._resolved = resolved
+
+    def _claim(self, entries: Iterable[tuple[Hashable, str, tuple[str, ...]]]) -> dict:
+        """`key -> identifier`, refusing two tables that answer one request."""
+        claimed: dict = {}
+        for key, request, identifier in entries:
+            if key in claimed:
+                raise ValueError(
+                    f"{self.exchange}/{self.market}: {'.'.join(claimed[key])} and {'.'.join(identifier)} "
+                    f"both answer {request}"
+                )
+            claimed[key] = identifier
+        return claimed
 
     @property
     def tables(self) -> list[LakeTable]:
@@ -386,14 +388,7 @@ class IcebergLakeReader(IReader):
         candidates = self._candidates(name)
         if not candidates:
             raise ValueError(missing)
-        claimed: dict[str | None, tuple[str, ...]] = {}
-        for identifier, (_, tf) in sorted(candidates.items()):
-            if tf in claimed:
-                raise ValueError(
-                    f"{self.exchange}/{self.market}: {'.'.join(claimed[tf])} and {'.'.join(identifier)} "
-                    f"both answer {name}({tf})"
-                )
-            claimed[tf] = identifier
+        claimed = self._claim((tf, f"{name}({tf})", i) for i, (_, tf) in sorted(candidates.items()))
 
         resample, table = None, None
         if timeframe is None:
@@ -483,18 +478,12 @@ class IcebergLakeReader(IReader):
         stop,
         columns: list[str] | None = None,
     ) -> Transformable:
-        source, to_aggregate = table, None
-        if resample:
-            rollup = table.rollups.get(resample)
-            if rollup is not None:
-                source = replace(table, identifier=rollup, timeframe=resample)
-            else:
-                to_aggregate = resample
-
+        rollup = table.rollups.get(resample) if resample else None
+        source = replace(table, identifier=rollup, timeframe=resample) if rollup else table
         data = self._scan(source, symbols, start, stop, columns)
-        if to_aggregate:
+        if resample and rollup is None:
             columns = [n for n in data.column_names if n not in (TIME_COLUMN, SYMBOL_COLUMN)]
-            data = aggregate(data, self._aggs_for(table, columns), to_aggregate)
+            data = aggregate(data, self._aggs_for(table, columns), resample)
         return _containers(data, dtype, data_id)
 
     def _stream(
@@ -720,11 +709,8 @@ class IcebergLakeStorage(IStorage):
     def _venues(self) -> list[tuple[str, str]]:
         """(EXCHANGE, MARKET) pairs whose namespace holds a table: an empty namespace is no venue."""
         namespaces = self._lake_namespaces()
-        if len(namespaces) > 1:
-            with ThreadPoolExecutor(max_workers=min(DISCOVERY_WORKERS, len(namespaces))) as pool:
-                listed = list(pool.map(self._list_names, namespaces.values()))
-        else:
-            listed = [self._list_names(n) for n in namespaces.values()]
+        with ThreadPoolExecutor(max_workers=max(1, min(DISCOVERY_WORKERS, len(namespaces)))) as pool:
+            listed = list(pool.map(self._list_names, namespaces.values()))
         return [venue for venue, names in zip(namespaces, listed) if names]
 
     def get_exchanges(self) -> list[str]:
@@ -773,7 +759,7 @@ class IcebergLakeStorage(IStorage):
     def _namespace_of(self, exchange: str, market: str) -> str:
         namespace = self._lake_namespaces().get((exchange.upper(), market.upper()))
         if namespace is None:
-            raise ValueError(f"no lake tables for exchange {exchange!r} and market type {market!r}")
+            raise _no_tables(exchange, market)
         return namespace
 
     def _list_names(self, namespace: str) -> list[tuple[str, ...]]:
@@ -786,7 +772,7 @@ class IcebergLakeStorage(IStorage):
     def _table_names(self, exchange: str, market: str) -> list[tuple[str, ...]]:
         names = self._list_names(self._namespace_of(exchange, market))
         if not names:
-            raise ValueError(f"no lake tables for exchange {exchange!r} and market type {market!r}")
+            raise _no_tables(exchange, market)
         return names
 
     def _load_table(self, identifier: tuple[str, ...]) -> LakeTable | None:
@@ -799,13 +785,12 @@ class IcebergLakeStorage(IStorage):
             return self._decoded[identifier]
 
     def _tables_for(self, exchange: str, market: str) -> list[LakeTable]:
-        missing = f"no lake tables for exchange {exchange!r} and market type {market!r}"
         namespace = self._namespace_of(exchange, market)
         with self._lock:
             if namespace not in self._tables:
                 tables = self._load_namespace(namespace)
                 if not tables:
-                    raise ValueError(missing)
+                    raise _no_tables(exchange, market)
                 self._tables[namespace] = tables
             return self._tables[namespace]
 
@@ -827,6 +812,10 @@ class IcebergLakeStorage(IStorage):
         self._names.clear()
         self._tables.clear()
         self._decoded.clear()
+
+
+def _no_tables(exchange: str, market: str) -> ValueError:
+    return ValueError(f"no lake tables for exchange {exchange!r} and market type {market!r}")
 
 
 def _attach_rollups(entries: list[tuple[LakeTable, dict[str, str]]]) -> list[LakeTable]:
