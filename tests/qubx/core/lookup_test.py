@@ -1,11 +1,15 @@
+import multiprocessing as mp
 import os
+import random
+import sys
 import tempfile
+import time
 from unittest import mock
 
 import pytest
 
 from qubx.core.basics import TransactionCostsCalculator
-from qubx.core.lookups import FeesLookupFile
+from qubx.core.lookups import FeesLookupFile, FileInstrumentsLookupWithCCXT
 
 
 class TestFeesLookup:
@@ -78,3 +82,49 @@ class TestFeesLookup:
                 costs = fees_lookup.find_fees("binance", "vip0_usdt")
                 assert costs.maker == 0.1000 / 100.0
                 assert costs.taker == 0.1000 / 100.0
+
+
+class TestFileInstrumentsLookupCache:
+    @pytest.mark.skipif(sys.platform == "win32", reason="fork start method")
+    def test_concurrent_cold_starts_all_see_the_full_cache(self, tmp_path):
+        """xdist workers (or bots) sharing a fresh ~/.qubx/instruments must never load a half-built cache."""
+        ctx = mp.get_context("fork")
+        with ctx.Pool(8) as pool:
+            for round_ in range(10):
+                path = str(tmp_path / f"round{round_}" / "instruments")
+                os.makedirs(path)
+                # - staggered starts put readers inside another process's write, as CI's workers did
+                starts = [(path, random.random() * 0.4) for _ in range(8)]
+                assert all(pool.map(_binance_btc_known, starts, chunksize=1))
+
+    def test_a_cold_start_publishes_the_cache_and_leaves_no_temp_files(self, tmp_path):
+        path = tmp_path / "instruments"
+        path.mkdir()
+        lookup = FileInstrumentsLookupWithCCXT(str(path))
+        assert lookup.find_symbol("BINANCE", "BTCUSDT") is not None
+        assert list(path.glob("*.json"))
+        assert [p.name for p in tmp_path.iterdir()] == ["instruments"]
+        assert not [p for p in path.iterdir() if not p.name.endswith(".json")]
+
+    def test_a_cold_start_that_loses_the_publish_race_uses_the_winner_cache(self, tmp_path, monkeypatch):
+        path = tmp_path / "instruments"
+        path.mkdir()
+        original = FileInstrumentsLookupWithCCXT.refresh
+
+        def refresh_then_lose(self, query_exchanges=False, path=None):
+            original(self, query_exchanges, path)
+            # - another process publishes its cache while this one was building
+            winner = tmp_path / "instruments"
+            if not any(winner.iterdir()):
+                original(self, query_exchanges, str(winner))
+
+        monkeypatch.setattr(FileInstrumentsLookupWithCCXT, "refresh", refresh_then_lose)
+        lookup = FileInstrumentsLookupWithCCXT(str(path))
+        assert lookup.find_symbol("BINANCE", "BTCUSDT") is not None
+        assert [p.name for p in tmp_path.iterdir()] == ["instruments"]
+
+
+def _binance_btc_known(start: tuple[str, float]) -> bool:
+    path, delay = start
+    time.sleep(delay)
+    return FileInstrumentsLookupWithCCXT(path).find_symbol("BINANCE", "BTCUSDT") is not None

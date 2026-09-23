@@ -108,6 +108,9 @@ bitfinex = ["qubx-bitfinex-api>=3.0.7,<4"]
 # - Yahoo rejects plain HTTP clients (429 even with browser headers and a session cookie);
 # - yfinance carries the browser-impersonation machinery that gets past it.
 yahoo = ["yfinance>=0.2.54"]
+# - - - Iceberg lake reader (qubx.data.storages.iceberg) - - -
+# - pinned: the reader streams through pyiceberg's private ArrowScan batch generator
+iceberg = ["pyiceberg[pyarrow]==0.12.0"]
 # - - - Visualization & charting - - - 
 viz = [
     "matplotlib>=3.8.4,<4",
@@ -175,6 +178,7 @@ dev = [
     "pytest-xdist>=3.6.1,<4",
     "pytest-textual-snapshot>=1.1.0,<2",
     "mongomock>=4.3.0,<5",
+    "pyiceberg[pyarrow,sql-sqlite,pyiceberg-core]==0.12.0",
 
     # - - - Linting & formatting - - - 
     "ruff>=0.9.7,<1",
