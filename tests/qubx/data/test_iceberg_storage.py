@@ -28,11 +28,11 @@ from qubx.data.storages.iceberg import (  # noqa: E402
     decode_table,
 )
 
-# - the lake layout datavault writes, rebuilt with pyiceberg alone (Qubx cannot import the datavault writers)
-FLOW_AGGS = {"taker_buy_volume": "sum", "taker_sell_volume": "sum", "flow_toxicity_score": "avg"}
-FLOW_SCHEMA = pa.schema(
+# - the lake layout, rebuilt with pyiceberg alone
+STATS_AGGS = {"buy_volume": "sum", "sell_volume": "sum", "mean_score": "avg"}
+STATS_SCHEMA = pa.schema(
     [pa.field("timestamp", pa.timestamp("us"), nullable=False), pa.field("symbol", pa.string(), nullable=False)]
-    + [pa.field(c, pa.float64()) for c in FLOW_AGGS]
+    + [pa.field(c, pa.float64()) for c in STATS_AGGS]
 )
 QUOTES_SCHEMA = pa.schema(
     [
@@ -43,7 +43,6 @@ QUOTES_SCHEMA = pa.schema(
         pa.field("bid_amount", pa.float64()),
         pa.field("ask_price", pa.float64()),
         pa.field("ask_amount", pa.float64()),
-        pa.field("src_month", pa.string()),
     ]
 )
 
@@ -64,31 +63,31 @@ def _create(catalog, identifier, schema, properties, partition=None):
 
 
 def _feature_props(kernel, interval, kind="feature", rollup_of=None):
-    props = {"dvault.kind": kind, "dvault.kernel": kernel, "dvault.interval": interval, "dvault.provider": "tardis"}
-    props |= {f"dvault.agg.{c}": op for c, op in FLOW_AGGS.items()}
+    props = {"dvault.kind": kind, "dvault.kernel": kernel, "dvault.interval": interval, "dvault.provider": "vendor"}
+    props |= {f"dvault.agg.{c}": op for c, op in STATS_AGGS.items()}
     if rollup_of:
         props["dvault.rollup_of"] = rollup_of
     return props
 
 
 def _feature_day(day, symbols, minutes=120):
-    rows = {n: [] for n in FLOW_SCHEMA.names}
+    rows = {n: [] for n in STATS_SCHEMA.names}
     t0 = dt.datetime(day.year, day.month, day.day)
     for s in symbols:
         for m in range(minutes):
             rows["timestamp"].append(t0 + dt.timedelta(minutes=m))
             rows["symbol"].append(s)
-            for c in FLOW_AGGS:
+            for c in STATS_AGGS:
                 rows[c].append(float(m))
-    return pa.Table.from_pydict(rows, schema=FLOW_SCHEMA)
+    return pa.Table.from_pydict(rows, schema=STATS_SCHEMA)
 
 
-def _flow_table(catalog, namespace, days_symbols):
+def _stats_table(catalog, namespace, days_symbols):
     table = _create(
         catalog,
-        (namespace, "trade_flow_1m"),
-        FLOW_SCHEMA,
-        _feature_props("trade_flow", "1m"),
+        (namespace, "bar_stats_1m"),
+        STATS_SCHEMA,
+        _feature_props("bar_stats", "1m"),
         ("timestamp", DayTransform()),
     )
     for day, symbols in days_symbols:
@@ -97,13 +96,13 @@ def _flow_table(catalog, namespace, days_symbols):
 
 
 def _rollup(catalog, namespace, interval):
-    base = catalog.load_table((namespace, "trade_flow_1m")).scan().to_arrow()
-    rolled = aggregate(base, FLOW_AGGS, interval).cast(FLOW_SCHEMA)
+    base = catalog.load_table((namespace, "bar_stats_1m")).scan().to_arrow()
+    rolled = aggregate(base, STATS_AGGS, interval).cast(STATS_SCHEMA)
     table = _create(
         catalog,
-        (namespace, f"trade_flow_{interval}"),
-        FLOW_SCHEMA,
-        _feature_props("trade_flow", interval, kind="rollup", rollup_of=f"{namespace}.trade_flow_1m"),
+        (namespace, f"bar_stats_{interval}"),
+        STATS_SCHEMA,
+        _feature_props("bar_stats", interval, kind="rollup", rollup_of=f"{namespace}.bar_stats_1m"),
         ("timestamp", MonthTransform()),
     )
     table.append(rolled)
@@ -120,7 +119,6 @@ def _quotes(t0, rows, symbol, price):
             "bid_amount": [1.0] * rows,
             "ask_price": [price + i + 0.5 for i in range(rows)],
             "ask_amount": [2.0] * rows,
-            "src_month": ["2026-08"] * rows,
         },
         schema=QUOTES_SCHEMA,
     )
@@ -131,7 +129,7 @@ def _quotes_table(catalog):
         catalog,
         ("binance_perp", "quotes"),
         QUOTES_SCHEMA,
-        {"dvault.kind": "raw", "dvault.provider": "tardis"},
+        {"dvault.kind": "raw", "dvault.provider": "vendor"},
         ("symbol", None),
     )
 
@@ -146,7 +144,7 @@ DAYS = (dt.date(2026, 8, 10), dt.date(2026, 8, 11))
 
 @pytest.fixture
 def lake(catalog):
-    _flow_table(catalog, "binance_perp", [(d, ["BTCUSDT", "ETHUSDT"]) for d in DAYS])
+    _stats_table(catalog, "binance_perp", [(d, ["BTCUSDT", "ETHUSDT"]) for d in DAYS])
     _quotes_table(catalog).append(_quotes(dt.datetime(2026, 8, 10), 10, "BTCUSDT", 1.0))
     return IcebergLakeStorage.from_catalog(catalog)
 
@@ -185,38 +183,36 @@ def daily_lake(catalog, lake):
 
 @pytest.fixture
 def two_venue_lake(catalog, lake):
-    _flow_table(catalog, "bybit_perp", [(dt.date(2026, 8, 10), ["BTCUSDT"])])
+    _stats_table(catalog, "bybit_perp", [(dt.date(2026, 8, 10), ["BTCUSDT"])])
     return IcebergLakeStorage.from_catalog(catalog)
 
 
 @pytest.fixture
 def scratch_lake(catalog):
-    """A `trade_flow_1m` table under a `scratch__` namespace prefix: the plain reader must not see it."""
-    _flow_table(catalog, "scratch__binance_perp", [(dt.date(2026, 8, 10), ["BTCUSDT"])])
+    """A `bar_stats_1m` table under a `scratch__` namespace prefix: the plain reader must not see it."""
+    _stats_table(catalog, "scratch__binance_perp", [(dt.date(2026, 8, 10), ["BTCUSDT"])])
     return catalog
 
 
 def test_decode_feature_and_raw_names():
-    f = decode_table(
-        ("binance_perp", "trade_flow_1m"), {"dvault.kind": "feature", "dvault.agg.taker_buy_volume": "sum"}
-    )
-    assert (f.kind, f.provider, f.dtype, f.alias, f.timeframe) == ("feature", "", DataType.RECORD, "trade_flow", "1m")
-    assert f.aggs == {"taker_buy_volume": "sum"}
-    r = decode_table(("binance_perp", "quotes"), {"dvault.kind": "raw", "dvault.provider": "tardis"})
-    assert (r.kind, r.provider, r.dtype, r.alias) == ("raw", "tardis", DataType.QUOTE, None)
+    f = decode_table(("binance_perp", "bar_stats_1m"), {"dvault.kind": "feature", "dvault.agg.buy_volume": "sum"})
+    assert (f.kind, f.provider, f.dtype, f.alias, f.timeframe) == ("feature", "", DataType.RECORD, "bar_stats", "1m")
+    assert f.aggs == {"buy_volume": "sum"}
+    r = decode_table(("binance_perp", "quotes"), {"dvault.kind": "raw", "dvault.provider": "vendor"})
+    assert (r.kind, r.provider, r.dtype, r.alias) == ("raw", "vendor", DataType.QUOTE, None)
     c = decode_table(("binance_perp", "candles_1m"), {"dvault.kind": "feature"})
     assert (c.dtype, c.timeframe) == (DataType.OHLC, "1m")
 
 
 def test_decode_skips_a_table_without_kind():
-    """Every lake table carries dvault.kind (census 2026-09-22); one without it is not the lake's."""
-    assert decode_table(("binance_perp", "orderbook_updates_l2"), {}) is None
-    assert decode_table(("binance_perp", "trade_flow_1m"), {"dvault.agg.x": "sum"}) is None
+    """Every lake table carries dvault.kind; one without it is not the lake's."""
+    assert decode_table(("binance_perp", "book_updates"), {}) is None
+    assert decode_table(("binance_perp", "bar_stats_1m"), {"dvault.agg.x": "sum"}) is None
 
 
 def test_decode_reads_a_rollup_as_derived():
-    t = decode_table(("binance_perp", "trade_flow_1h"), {"dvault.kind": "rollup", "dvault.rollup_of": "x"})
-    assert (t.kind, t.alias, t.timeframe, t.time_column) == ("rollup", "trade_flow", "1h", "timestamp")
+    t = decode_table(("binance_perp", "bar_stats_1h"), {"dvault.kind": "rollup", "dvault.rollup_of": "x"})
+    assert (t.kind, t.alias, t.timeframe, t.time_column) == ("rollup", "bar_stats", "1h", "timestamp")
 
 
 def test_decode_skips_scratch_and_ops_and_every_other_arity():
@@ -224,7 +220,7 @@ def test_decode_skips_scratch_and_ops_and_every_other_arity():
     assert decode_table(("scratch", "rg20k"), kind) is None
     assert decode_table(("ops", "parity"), kind) is None
     assert decode_table(("binance_perp",), kind) is None
-    assert decode_table(("features", "binance", "perp", "trade_flow_1m"), kind) is None
+    assert decode_table(("features", "binance", "perp", "bar_stats_1m"), kind) is None
     assert decode_table(("binance", "perp", "trades"), kind) is None
 
 
@@ -232,7 +228,7 @@ def test_exchanges_and_readers(lake):
     assert lake.get_exchanges() == ["BINANCE.UM"]
     assert lake.get_market_types("BINANCE.UM") == ["SWAP"]
     reader = lake["BINANCE.UM", "SWAP"]
-    assert set(reader.get_data_id("trade_flow")) == {"BTCUSDT", "ETHUSDT"}
+    assert set(reader.get_data_id("bar_stats")) == {"BTCUSDT", "ETHUSDT"}
     assert reader.get_data_id("quotes") == ["BTCUSDT"]
 
 
@@ -246,13 +242,13 @@ def test_get_reader_defers_discovery(lake, monkeypatch):
     reader = lake["BINANCE.UM", "SWAP"]
     monkeypatch.undo()
 
-    assert set(reader.get_data_id("trade_flow")) == {"BTCUSDT", "ETHUSDT"}
-    assert reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").data.num_rows == 120
+    assert set(reader.get_data_id("bar_stats")) == {"BTCUSDT", "ETHUSDT"}
+    assert reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11").data.num_rows == 120
 
 
 def test_discovery_runs_once_and_publishes_resolved_last():
     tables = [
-        decode_table(("binance_perp", "trade_flow_1m"), {"dvault.kind": "feature"}),
+        decode_table(("binance_perp", "bar_stats_1m"), {"dvault.kind": "feature"}),
         decode_table(("binance_perp", "quotes"), {"dvault.kind": "raw"}),
     ]
     calls, published = [], []
@@ -277,16 +273,16 @@ def test_discovery_runs_once_and_publishes_resolved_last():
 
 
 def test_read_single_symbol_feature(lake):
-    raw = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11")
+    raw = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11")
     assert isinstance(raw, RawData)
     df = raw.to_pd()
     assert len(df) == 120
     assert "symbol" not in df.columns
-    assert "taker_buy_volume" in df.columns
+    assert "buy_volume" in df.columns
 
 
 def test_read_all_symbols_and_resample(lake):
-    multi = lake["BINANCE.UM", "SWAP"].read([], "trade_flow(1h)", "2026-08-10", "2026-08-12")
+    multi = lake["BINANCE.UM", "SWAP"].read([], "bar_stats(1h)", "2026-08-10", "2026-08-12")
     assert isinstance(multi, RawMultiData)
     df = multi.to_pd(id_in_index=True)
     assert len(df) == 2 * 2 * 2  # 2 symbols x 2 days x 2 hours of 120 minutes
@@ -294,21 +290,22 @@ def test_read_all_symbols_and_resample(lake):
 
 
 def test_resample_applies_the_table_aggregations(lake):
-    df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow(1h)", "2026-08-10", "2026-08-11").to_pd()
+    df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats(1h)", "2026-08-10", "2026-08-11").to_pd()
     first_hour = df.iloc[0]
-    assert first_hour["taker_buy_volume"] == sum(range(60))  # sum
-    assert first_hour["flow_toxicity_score"] == pytest.approx(sum(range(60)) / 60)  # avg
+    assert first_hour["buy_volume"] == sum(range(60))  # sum
+    assert first_hour["mean_score"] == pytest.approx(sum(range(60)) / 60)  # avg
 
 
-def test_read_raw_quotes_renames_ts_event(lake):
+def test_read_raw_quotes_presents_ts_event_as_timestamp_and_keeps_ts_recv(lake):
     df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "quotes", "2026-08-10", "2026-08-11").to_pd()
     assert len(df) == 10
-    assert list(df.columns)[:4] == ["bid_price", "bid_amount", "ask_price", "ask_amount"]
+    assert list(df.columns) == ["ts_recv", "bid_price", "bid_amount", "ask_price", "ask_amount"]
     assert df.index.name == "timestamp"
+    assert (df["ts_recv"].to_numpy() == df.index.to_numpy()).all()
 
 
 def test_time_range(lake):
-    s, e = lake["BINANCE.UM", "SWAP"].get_time_range("BTCUSDT", "trade_flow")
+    s, e = lake["BINANCE.UM", "SWAP"].get_time_range("BTCUSDT", "bar_stats")
     assert str(s)[:10] == "2026-08-10" and str(e)[:10] == "2026-08-11"
 
 
@@ -324,7 +321,7 @@ def test_prefixed_table_hidden_without_the_prefix(scratch_lake):
 def test_prefixed_table_discovered_with_the_prefix(scratch_lake):
     store = IcebergLakeStorage.from_catalog(scratch_lake, namespace_prefix="scratch__")
     assert store.get_exchanges() == ["BINANCE.UM"]
-    assert store["BINANCE.UM", "SWAP"].get_data_id("trade_flow") == ["BTCUSDT"]
+    assert store["BINANCE.UM", "SWAP"].get_data_id("bar_stats") == ["BTCUSDT"]
 
 
 def test_namespace_prefix_env_fallback_is_honoured(monkeypatch):
@@ -357,7 +354,7 @@ def test_from_catalog_explicit_kwarg_overrides_the_env_var(scratch_lake, monkeyp
 
 def test_chunked_read_yields_one_block_per_window(lake):
     reader = lake["BINANCE.UM", "SWAP"]
-    chunks = list(reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-10T04:00", chunksize=60))
+    chunks = list(reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-10T04:00", chunksize=60))
     assert [len(c) for c in chunks] == [60, 60, 0, 0]
 
 
@@ -419,19 +416,19 @@ def test_chunked_raw_read_of_an_empty_range_yields_nothing(raw_lake):
 def test_rollup_table_answers_the_coarse_request(catalog, lake):
     _rollup(catalog, "binance_perp", "1h")
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
-    assert set(reader.get_data_types("BTCUSDT")) == {"trade_flow(1m)", "quote"}
-    multi = reader.read([], "trade_flow(1h)", "2026-08-10", "2026-08-12")
+    assert set(reader.get_data_types("BTCUSDT")) == {"bar_stats(1m)", "quote"}
+    multi = reader.read([], "bar_stats(1h)", "2026-08-10", "2026-08-12")
     assert {s: len(r) for s, r in multi.raws.items()} == {"BTCUSDT": 4, "ETHUSDT": 4}
 
 
 def test_unsupported_timeframe_is_rejected(lake):
     with pytest.raises(ValueError, match="15m"):
-        lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow(15m)", "2026-08-10", "2026-08-11")
+        lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats(15m)", "2026-08-10", "2026-08-11")
 
 
 def test_read_venues_concatenates_in_the_given_order(two_venue_lake):
     df = two_venue_lake.read_venues(
-        ["bybit.f", "BINANCE.UM"], "SWAP", "BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11"
+        ["bybit.f", "BINANCE.UM"], "SWAP", "BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11"
     )
     assert list(df.columns)[0] == "venue"
     assert list(df["venue"].unique()) == ["BYBIT.F", "BINANCE.UM"]
@@ -439,14 +436,14 @@ def test_read_venues_concatenates_in_the_given_order(two_venue_lake):
 
 
 def test_read_venues_over_all_symbols_keeps_the_symbol_index(two_venue_lake):
-    df = two_venue_lake.read_venues(["BINANCE.UM", "BYBIT.F"], "SWAP", [], "trade_flow", "2026-08-10", "2026-08-11")
+    df = two_venue_lake.read_venues(["BINANCE.UM", "BYBIT.F"], "SWAP", [], "bar_stats", "2026-08-10", "2026-08-11")
     assert list(df.index.names) == ["timestamp", "symbol"]
     assert df.groupby("venue").size().to_dict() == {"BINANCE.UM": 240, "BYBIT.F": 120}
 
 
 def test_read_venues_skips_a_venue_with_no_rows(two_venue_lake):
     df = two_venue_lake.read_venues(
-        ["BINANCE.UM", "BYBIT.F"], "SWAP", "ETHUSDT", "trade_flow", "2026-08-10", "2026-08-11"
+        ["BINANCE.UM", "BYBIT.F"], "SWAP", "ETHUSDT", "bar_stats", "2026-08-10", "2026-08-11"
     )
     assert list(df["venue"].unique()) == ["BINANCE.UM"]
     assert len(df) == 120
@@ -454,7 +451,7 @@ def test_read_venues_skips_a_venue_with_no_rows(two_venue_lake):
 
 def test_read_venues_with_no_rows_anywhere_is_an_empty_frame(two_venue_lake):
     df = two_venue_lake.read_venues(
-        ["BINANCE.UM", "BYBIT.F"], "SWAP", "SOLUSDT", "trade_flow", "2026-08-10", "2026-08-11"
+        ["BINANCE.UM", "BYBIT.F"], "SWAP", "SOLUSDT", "bar_stats", "2026-08-10", "2026-08-11"
     )
     assert df.empty
     assert list(df.columns) == ["venue"]
@@ -474,16 +471,16 @@ def _scan_spy(monkeypatch) -> list[tuple[str, ...]]:
 
 def test_feature_discovery_comes_from_the_daily_rollup(daily_lake):
     reader = daily_lake["BINANCE.UM", "SWAP"]
-    assert reader.get_data_id("trade_flow") == ["BTCUSDT", "ETHUSDT"]
-    s, e = reader.get_time_range("BTCUSDT", "trade_flow")
+    assert reader.get_data_id("bar_stats") == ["BTCUSDT", "ETHUSDT"]
+    s, e = reader.get_time_range("BTCUSDT", "bar_stats")
     assert (str(s), str(e)) == ("2026-08-10T00:00:00.000000", "2026-08-11T23:59:00.000000")
 
 
 def test_coarse_requests_discover_through_the_same_daily_rollup(daily_lake, monkeypatch):
     reader = daily_lake["BINANCE.UM", "SWAP"]
-    expected = reader.get_time_range("BTCUSDT", "trade_flow")
+    expected = reader.get_time_range("BTCUSDT", "bar_stats")
     seen = _scan_spy(monkeypatch)
-    for request in ("trade_flow(1h)", "trade_flow(1d)"):
+    for request in ("bar_stats(1h)", "bar_stats(1d)"):
         assert reader.get_data_id(request) == ["BTCUSDT", "ETHUSDT"]
         assert reader.get_time_range("ETHUSDT", request) == expected
     assert seen == []
@@ -492,52 +489,52 @@ def test_coarse_requests_discover_through_the_same_daily_rollup(daily_lake, monk
 def test_feature_discovery_never_scans_the_minute_table(daily_lake, monkeypatch):
     reader = daily_lake["BINANCE.UM", "SWAP"]
     seen = _scan_spy(monkeypatch)
-    assert reader.get_data_id("trade_flow") == ["BTCUSDT", "ETHUSDT"]
-    reader.get_time_range("BTCUSDT", "trade_flow")
-    reader.get_time_range("ETHUSDT", "trade_flow")
-    assert set(reader.get_data_types("BTCUSDT")) == {"trade_flow(1m)", "quote"}
-    assert seen == [("binance_perp", "trade_flow_1d")]
+    assert reader.get_data_id("bar_stats") == ["BTCUSDT", "ETHUSDT"]
+    reader.get_time_range("BTCUSDT", "bar_stats")
+    reader.get_time_range("ETHUSDT", "bar_stats")
+    assert set(reader.get_data_types("BTCUSDT")) == {"bar_stats(1m)", "quote"}
+    assert seen == [("binance_perp", "bar_stats_1d")]
 
 
 def test_a_symbol_absent_from_the_daily_rollup_is_an_error(daily_lake):
-    with pytest.raises(ValueError, match="trade_flow_1d has no data for SOLUSDT"):
-        daily_lake["BINANCE.UM", "SWAP"].get_time_range("SOLUSDT", "trade_flow")
+    with pytest.raises(ValueError, match="bar_stats_1d has no data for SOLUSDT"):
+        daily_lake["BINANCE.UM", "SWAP"].get_time_range("SOLUSDT", "bar_stats")
 
 
 def test_feature_discovery_falls_back_to_a_data_scan_without_a_daily_rollup(lake, monkeypatch):
     reader = lake["BINANCE.UM", "SWAP"]
     seen = _scan_spy(monkeypatch)
-    assert reader.get_data_id("trade_flow") == ["BTCUSDT", "ETHUSDT"]
-    s, e = reader.get_time_range("BTCUSDT", "trade_flow")
+    assert reader.get_data_id("bar_stats") == ["BTCUSDT", "ETHUSDT"]
+    s, e = reader.get_time_range("BTCUSDT", "bar_stats")
     assert (str(s), str(e)) == ("2026-08-10T00:00:00.000000", "2026-08-11T01:59:00.000000")
-    assert seen == [("binance_perp", "trade_flow_1m")] * 2
+    assert seen == [("binance_perp", "bar_stats_1m")] * 2
 
 
 def test_columns_project_a_direct_read(lake):
     df = (
         lake["BINANCE.UM", "SWAP"]
-        .read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11", columns=["taker_buy_volume"])
+        .read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11", columns=["buy_volume"])
         .to_pd()
     )
-    assert list(df.columns) == ["taker_buy_volume"]
+    assert list(df.columns) == ["buy_volume"]
     assert len(df) == 120
 
 
 def test_columns_project_a_rollup_read(catalog, lake):
     _rollup(catalog, "binance_perp", "1d")
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
-    df = reader.read("BTCUSDT", "trade_flow(1d)", "2026-08-10", "2026-08-12", columns=["flow_toxicity_score"]).to_pd()
-    assert list(df.columns) == ["flow_toxicity_score"]
+    df = reader.read("BTCUSDT", "bar_stats(1d)", "2026-08-10", "2026-08-12", columns=["mean_score"]).to_pd()
+    assert list(df.columns) == ["mean_score"]
     assert len(df) == 2
 
 
 def test_columns_project_a_resample_and_aggregate_only_what_was_read(lake):
     df = (
         lake["BINANCE.UM", "SWAP"]
-        .read([], "trade_flow(1h)", "2026-08-10", "2026-08-12", columns=["taker_sell_volume"])
+        .read([], "bar_stats(1h)", "2026-08-10", "2026-08-12", columns=["sell_volume"])
         .to_pd(id_in_index=True)
     )
-    assert list(df.columns) == ["taker_sell_volume"]
+    assert list(df.columns) == ["sell_volume"]
     assert len(df) == 8
 
 
@@ -556,21 +553,21 @@ def test_columns_project_a_streamed_raw_read(raw_lake):
 def test_a_single_column_name_projects_like_a_one_item_list(lake):
     df = (
         lake["BINANCE.UM", "SWAP"]
-        .read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11", columns="taker_buy_volume")
+        .read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11", columns="buy_volume")
         .to_pd()
     )
-    assert list(df.columns) == ["taker_buy_volume"]
+    assert list(df.columns) == ["buy_volume"]
     assert len(df) == 120
 
 
 def test_an_unknown_column_is_named_in_the_error(lake):
-    with pytest.raises(ValueError, match=r"binance_perp.trade_flow_1m has no column\(s\) \['nope'\]"):
-        lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11", columns=["nope"])
+    with pytest.raises(ValueError, match=r"binance_perp.bar_stats_1m has no column\(s\) \['nope'\]"):
+        lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11", columns=["nope"])
 
 
 def test_no_columns_argument_reads_every_data_column(lake):
-    df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").to_pd()
-    assert list(df.columns) == list(FLOW_AGGS)
+    df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11").to_pd()
+    assert list(df.columns) == list(STATS_AGGS)
 
 
 FUNDAMENTAL_SCHEMA = pa.schema(
@@ -628,19 +625,19 @@ def test_fundamental_time_range_crosses_a_month_partition(coingecko_lake):
 
 
 def test_two_tables_answering_one_request_are_refused(catalog):
-    props = {"dvault.kind": "feature", "dvault.kernel": "open_interest", "dvault.interval": "1m"}
-    oi_schema = pa.schema(
+    props = {"dvault.kind": "feature", "dvault.kernel": "spread", "dvault.interval": "1m"}
+    spread_schema = pa.schema(
         [
             pa.field("timestamp", pa.timestamp("us"), nullable=False),
             pa.field("symbol", pa.string(), nullable=False),
-            pa.field("open_interest", pa.float64()),
+            pa.field("spread", pa.float64()),
         ]
     )
-    _create(catalog, ("binance_perp", "open_interest"), oi_schema, props)
-    _create(catalog, ("binance_perp", "open_interest_1m"), oi_schema, props)
+    _create(catalog, ("binance_perp", "spread"), spread_schema, props)
+    _create(catalog, ("binance_perp", "spread_1m"), spread_schema, props)
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
-    with pytest.raises(ValueError, match=r"both answer open_interest\(1m\)"):
-        reader.get_data_id("open_interest")
+    with pytest.raises(ValueError, match=r"both answer spread\(1m\)"):
+        reader.get_data_id("spread")
 
 
 def test_exchanges_come_from_namespace_names_without_loading_tables(lake, monkeypatch):
@@ -666,7 +663,7 @@ def test_a_reader_loads_only_its_own_namespace(two_venue_lake, monkeypatch):
         return original(self, identifier)
 
     monkeypatch.setattr(SqlCatalog, "load_table", spy)
-    assert two_venue_lake["BYBIT.F", "SWAP"].get_data_id("trade_flow") == ["BTCUSDT"]
+    assert two_venue_lake["BYBIT.F", "SWAP"].get_data_id("bar_stats") == ["BTCUSDT"]
     assert loaded and {i[0] for i in loaded} == {"bybit_perp"}
 
 
@@ -684,14 +681,14 @@ def test_discovery_loads_a_namespace_concurrently(lake, monkeypatch):
     monkeypatch.setattr(SqlCatalog, "load_table", gated)
     tables = lake._tables_for("BINANCE.UM", "SWAP")
     in_discovery["on"] = False
-    assert {t.identifier[1] for t in tables} == {"trade_flow_1m", "quotes"}
+    assert {t.identifier[1] for t in tables} == {"bar_stats_1m", "quotes"}
 
 
 def test_a_namespace_without_lake_tables_raises(catalog):
-    _create(catalog, ("okx_perp", "trade_flow_1m"), FLOW_SCHEMA, {"dvault.agg.taker_buy_volume": "sum"})
+    _create(catalog, ("okx_perp", "bar_stats_1m"), STATS_SCHEMA, {"dvault.agg.buy_volume": "sum"})
     reader = IcebergLakeStorage.from_catalog(catalog)["OKX.F", "SWAP"]
     with pytest.raises(ValueError, match="no lake tables for exchange 'OKX.F' and market type 'SWAP'"):
-        reader.get_data_id("trade_flow")
+        reader.get_data_id("bar_stats")
 
 
 def _load_spy(monkeypatch) -> list[tuple[str, ...]]:
@@ -709,15 +706,15 @@ def _load_spy(monkeypatch) -> list[tuple[str, ...]]:
 def test_a_read_loads_only_the_table_it_reads(daily_lake, monkeypatch):
     loaded = _load_spy(monkeypatch)
     reader = daily_lake["BINANCE.UM", "SWAP"]
-    df = reader.read("BTCUSDT", "trade_flow(1d)", "2026-08-10", "2026-08-12", columns=["taker_buy_volume"]).to_pd()
+    df = reader.read("BTCUSDT", "bar_stats(1d)", "2026-08-10", "2026-08-12", columns=["buy_volume"]).to_pd()
     assert len(df) == 2
-    assert set(loaded) == {("binance_perp", "trade_flow_1d")}
+    assert set(loaded) == {("binance_perp", "bar_stats_1d")}
 
 
 def test_a_minute_read_never_touches_rollups_or_raw_tables(daily_lake, monkeypatch):
     loaded = _load_spy(monkeypatch)
-    daily_lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11")
-    assert set(loaded) == {("binance_perp", "trade_flow_1m")}
+    daily_lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11")
+    assert set(loaded) == {("binance_perp", "bar_stats_1m")}
 
 
 def test_a_data_type_request_resolves_through_its_stem_alias(lake, monkeypatch):
@@ -736,19 +733,19 @@ def test_fundamental_loads_one_table(coingecko_lake, monkeypatch):
 
 
 def test_a_bare_and_a_suffixed_table_with_one_timeframe_still_clash(catalog):
-    props = {"dvault.kind": "feature", "dvault.kernel": "open_interest", "dvault.interval": "1m"}
-    oi_schema = pa.schema(
+    props = {"dvault.kind": "feature", "dvault.kernel": "spread", "dvault.interval": "1m"}
+    spread_schema = pa.schema(
         [
             pa.field("timestamp", pa.timestamp("us"), nullable=False),
             pa.field("symbol", pa.string(), nullable=False),
-            pa.field("open_interest", pa.float64()),
+            pa.field("spread", pa.float64()),
         ]
     )
-    _create(catalog, ("binance_perp", "open_interest"), oi_schema, props)
-    _create(catalog, ("binance_perp", "open_interest_1m"), oi_schema, props)
+    _create(catalog, ("binance_perp", "spread"), spread_schema, props)
+    _create(catalog, ("binance_perp", "spread_1m"), spread_schema, props)
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
-    with pytest.raises(ValueError, match=r"both answer open_interest\(1m\)"):
-        reader.read("BTCUSDT", "open_interest(1m)", "2026-08-10", "2026-08-11")
+    with pytest.raises(ValueError, match=r"both answer spread\(1m\)"):
+        reader.read("BTCUSDT", "spread(1m)", "2026-08-10", "2026-08-11")
 
 
 def test_two_stems_answering_one_alias_request_clash(catalog):
@@ -768,11 +765,11 @@ def test_two_stems_answering_one_alias_request_clash(catalog):
 
 def test_a_raw_table_never_borrows_a_same_stem_feature_familys_rollups(catalog, lake):
     """Raw quotes hold BTCUSDT on 2026-08-10; the `quotes` kernel family holds both symbols on 2026-07-01 only."""
-    _create(catalog, ("binance_perp", "quotes_1m"), FLOW_SCHEMA, _feature_props("quotes", "1m"))
+    _create(catalog, ("binance_perp", "quotes_1m"), STATS_SCHEMA, _feature_props("quotes", "1m"))
     rollup = _create(
         catalog,
         ("binance_perp", "quotes_1d"),
-        FLOW_SCHEMA,
+        STATS_SCHEMA,
         _feature_props("quotes", "1d", kind="rollup", rollup_of="binance_perp.quotes_1m"),
     )
     rollup.append(_feature_day(dt.date(2026, 7, 1), ["BTCUSDT", "ETHUSDT"], minutes=1))
@@ -786,31 +783,31 @@ def test_a_resample_aggregates_the_base_table_not_a_finer_rollup(catalog, lake):
     """With `_1m` and `_1h` present and no `_1d`, half an hour of minutes sums to 0..29, the 00:00 hour to 0..59."""
     _rollup(catalog, "binance_perp", "1h")
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
-    df = reader.read("BTCUSDT", "trade_flow(1d)", "2026-08-10", "2026-08-10T00:30", columns=["taker_buy_volume"])
-    assert df.to_pd()["taker_buy_volume"].tolist() == [sum(range(30))]
+    df = reader.read("BTCUSDT", "bar_stats(1d)", "2026-08-10", "2026-08-10T00:30", columns=["buy_volume"])
+    assert df.to_pd()["buy_volume"].tolist() == [sum(range(30))]
 
 
 def test_a_read_after_enumeration_decodes_nothing_again(lake, monkeypatch):
     reader = lake["BINANCE.UM", "SWAP"]
     reader.tables
     loaded = _load_spy(monkeypatch)
-    reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11")
-    assert loaded == [("binance_perp", "trade_flow_1m")]  # _plan's own read-time load only
+    reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11")
+    assert loaded == [("binance_perp", "bar_stats_1m")]  # _plan's own read-time load only
 
 
 def test_table_names_refill_after_a_concurrent_close(lake):
     reader = lake["BINANCE.UM", "SWAP"]
     lake._lake_namespaces()
     lake._names.clear()
-    assert reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").data.num_rows == 120
+    assert reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11").data.num_rows == 120
 
 
 def test_symbol_and_range_discovery_load_only_the_table_and_its_daily_rollup(daily_lake, monkeypatch):
     loaded = _load_spy(monkeypatch)
     reader = daily_lake["BINANCE.UM", "SWAP"]
-    assert reader.get_data_id("trade_flow") == ["BTCUSDT", "ETHUSDT"]
-    reader.get_time_range("BTCUSDT", "trade_flow")
-    assert set(loaded) == {("binance_perp", "trade_flow_1m"), ("binance_perp", "trade_flow_1d")}
+    assert reader.get_data_id("bar_stats") == ["BTCUSDT", "ETHUSDT"]
+    reader.get_time_range("BTCUSDT", "bar_stats")
+    assert set(loaded) == {("binance_perp", "bar_stats_1m"), ("binance_perp", "bar_stats_1d")}
 
 
 def _list_spy(monkeypatch) -> list[str]:
@@ -827,7 +824,7 @@ def _list_spy(monkeypatch) -> list[str]:
 
 def test_a_readers_first_read_lists_only_its_own_namespace(two_venue_lake, monkeypatch):
     listed = _list_spy(monkeypatch)
-    df = two_venue_lake["BYBIT.F", "SWAP"].read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").to_pd()
+    df = two_venue_lake["BYBIT.F", "SWAP"].read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11").to_pd()
     assert len(df) == 120
     assert listed == ["bybit_perp"]
 
@@ -849,26 +846,26 @@ def test_an_empty_namespace_reader_raises_the_storages_own_error(catalog):
     catalog.create_namespace("okx_perp")
     reader = IcebergLakeStorage.from_catalog(catalog)["OKX.F", "SWAP"]
     with pytest.raises(ValueError, match="no lake tables for exchange 'OKX.F' and market type 'SWAP'"):
-        reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11")
+        reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11")
 
 
 def test_a_suffix_that_is_not_an_interval_is_no_timeframe(catalog, lake):
-    """`trade_flow_20lvl` is a name of its own, not a `20lvl` timeframe of `trade_flow`."""
-    _create(catalog, ("binance_perp", "trade_flow_20lvl"), FLOW_SCHEMA, {"dvault.kind": "event"})
-    _create(catalog, ("binance_perp", "depth_1mo"), FLOW_SCHEMA, {"dvault.kind": "event"})
+    """`bar_stats_20lvl` is a name of its own, not a `20lvl` timeframe of `bar_stats`."""
+    _create(catalog, ("binance_perp", "bar_stats_20lvl"), STATS_SCHEMA, {"dvault.kind": "event"})
+    _create(catalog, ("binance_perp", "depth_1mo"), STATS_SCHEMA, {"dvault.kind": "event"})
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
-    assert reader.read("BTCUSDT", "trade_flow", "2026-08-10", "2026-08-11").data.num_rows == 120
-    assert reader.read("BTCUSDT", "trade_flow(1h)", "2026-08-10", "2026-08-11").data.num_rows == 2
+    assert reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11").data.num_rows == 120
+    assert reader.read("BTCUSDT", "bar_stats(1h)", "2026-08-10", "2026-08-11").data.num_rows == 2
     with pytest.raises(ValueError, match=r"no lake table for 'depth' in BINANCE.UM/SWAP"):
         reader.read("BTCUSDT", "depth", "2026-08-10", "2026-08-11")
 
 
 def test_a_feature_table_with_a_non_interval_suffix_reads_under_its_own_name(catalog):
-    """Without `dvault.interval`, `flow_20lvl` is a kernel of its own, never a `20lvl` timeframe."""
-    table = _create(catalog, ("binance_perp", "flow_20lvl"), FLOW_SCHEMA, {"dvault.kind": "feature"})
+    """Without `dvault.interval`, `stats_20lvl` is a kernel of its own, never a `20lvl` timeframe."""
+    table = _create(catalog, ("binance_perp", "stats_20lvl"), STATS_SCHEMA, {"dvault.kind": "feature"})
     table.append(_feature_day(dt.date(2026, 8, 10), ["BTCUSDT"]))
     reader = IcebergLakeStorage.from_catalog(catalog)["BINANCE.UM", "SWAP"]
-    assert reader.read("BTCUSDT", "flow_20lvl", "2026-08-10", "2026-08-11").data.num_rows == 120
+    assert reader.read("BTCUSDT", "stats_20lvl", "2026-08-10", "2026-08-11").data.num_rows == 120
 
 
 @pytest.fixture

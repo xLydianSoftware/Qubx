@@ -1,13 +1,14 @@
-"""Qubx `IStorage`/`IReader` over the datavault Iceberg lake (R2 Data Catalog).
+"""Qubx `IStorage`/`IReader` over an Iceberg data lake behind a REST catalog (e.g. R2 Data Catalog).
 
-Install with `qubx[iceberg]`. Read-only: datavault writes the lake.
+Install with `qubx[iceberg]`. Read-only: the lake is written elsewhere.
 
 A lake table is `<venue>_<market>.<name>`, where the name is either a canonical
 raw data type or `<kernel>_<interval>`; provider and lineage are table
 properties (`dvault.*`), not name segments. Namespace and properties together
 decode into a Qubx `DataType` plus the exchange/market pair Qubx addresses
-readers by. "All data columns" is every column except the ingest provenance
-ones, with `ts_event` presented as `timestamp`.
+readers by. "All data columns" is every column of the table; a raw table's
+`ts_event` (exchange time) is presented as `timestamp`, and its `ts_recv`
+(receive time) is kept as a column.
 """
 
 import datetime as dt
@@ -39,12 +40,10 @@ from qubx.data.storage import IReader, IStorage, Transformable
 from qubx.data.storages.utils import calculate_time_windows_for_chunking
 from qubx.utils.time import handle_start_stop
 
-# - column names the lake speaks in (datavault storage/iceberg/tables.py writes them)
+# - column names the lake speaks in
 TIME_COLUMN = "timestamp"
 SYMBOL_COLUMN = "symbol"
 RAW_TIME_COLUMN = "ts_event"
-RAW_RECV_COLUMN = "ts_recv"
-PROVENANCE_COLUMNS = frozenset({RAW_RECV_COLUMN, "src_month"})
 
 # - namespaces the lake owns nothing in: scratch runs and operational tables
 SKIP_ROOTS = frozenset({"scratch", "ops"})
@@ -88,7 +87,7 @@ def build_catalog(cfg: IcebergConfig, name: str = "r2") -> Catalog:
 
 def aggregate(data: pa.Table, aggs: dict[str, str], interval: str) -> pa.Table:
     """Resample (timestamp, symbol, ...) rows to `interval` with one aggregation per column —
-    the same SQL datavault's rollup builder writes the `_1h`/`_1d` tables with."""
+    the same SQL the lake's `_1h`/`_1d` rollup tables are built with."""
     selects = ", ".join(f'{_OP_SQL[op].format(c=c)} AS "{c}"' for c, op in aggs.items())
     sql = (
         f"SELECT time_bucket({_INTERVAL_SQL[interval]}, timestamp) AS timestamp, symbol, {selects} "
@@ -125,7 +124,7 @@ VENUE_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("deribit", "options"): ("DERIBIT", "OPTION"),
     ("deribit", "perp"): ("DERIBIT", "SWAP"),
     ("lighter", "perp"): ("LIGHTER", "SWAP"),
-    # - venue-less provider data: the pair Qubx's QuestDB storage decodes `coingecko.fundamental` to
+    # - venue-less provider data, addressed as Qubx's QuestDB storage addresses it
     ("global", "crypto"): ("COINGECKO", "FUNDAMENTAL"),
 }
 
@@ -436,7 +435,7 @@ class IcebergLakeReader(IReader):
     ) -> tuple[Table, DataScan]:
         source = self._catalog.load_table(table.identifier)
         time_column = table.time_column
-        names = [n for n in source.schema().column_names if n not in PROVENANCE_COLUMNS]
+        names = source.schema().column_names
         if columns is None:
             projection = tuple(names)
         else:
