@@ -1,9 +1,12 @@
 import configparser
+import contextlib
 import dataclasses
 import glob
 import json
 import os
 import re
+import shutil
+import tempfile
 from datetime import datetime
 from pathlib import Path
 
@@ -28,7 +31,6 @@ _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"
 
 _PACKAGED_FEES_FILE = "crypto-fees.ini"
-
 
 
 class _InstrumentEncoder(json.JSONEncoder):
@@ -89,8 +91,26 @@ class FileInstrumentsLookupWithCCXT(InstrumentsLookup):
     ) -> None:
         self._path = path
         if not self.load():
-            self.refresh(query_exchanges)
+            self._build_cache(query_exchanges)
         self.load()
+
+    def _build_cache(self, query_exchanges: bool) -> None:
+        """Build a cold cache in a sibling temp folder and publish it with one rename: processes
+        sharing the folder (xdist workers, bots) see either no cache or all of it, never a
+        half-written one. A process that loses the publish race drops its copy and uses the winner's."""
+        parent = os.path.dirname(os.path.abspath(self._path))
+        staging = tempfile.mkdtemp(prefix=f".{os.path.basename(self._path)}-", dir=parent)
+        try:
+            self.refresh(query_exchanges, path=staging)
+            try:
+                # - an empty folder may stand in the way (it is created up front); a filled one is the winner's
+                with contextlib.suppress(FileNotFoundError):
+                    os.rmdir(self._path)
+                os.rename(staging, self._path)
+            except OSError:
+                pass
+        finally:
+            shutil.rmtree(staging, ignore_errors=True)
 
     def load(self) -> bool:
         self._lookup = {}
@@ -111,14 +131,22 @@ class FileInstrumentsLookupWithCCXT(InstrumentsLookup):
         return self._lookup
 
     def _save_to_json(self, path, instruments: list[Instrument]):
-        with open(path, "w") as f:
-            json.dump(instruments, f, cls=_InstrumentEncoder, indent=4)
+        # - written aside and swapped in, so a concurrent reader never sees a truncated file
+        fd, staging = tempfile.mkstemp(prefix=f".{os.path.basename(path)}-", dir=os.path.dirname(path))
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(instruments, f, cls=_InstrumentEncoder, indent=4)
+            os.replace(staging, path)
+        except BaseException:
+            with contextlib.suppress(FileNotFoundError):
+                os.remove(staging)
+            raise
         logger.info(f"Saved {len(instruments)} to {path}")
 
-    def refresh(self, query_exchanges: bool = False):
+    def refresh(self, query_exchanges: bool = False, path: str | None = None):
         for mn in dir(self):
             if mn.startswith("_update_"):
-                getattr(self, mn)(self._path, query_exchanges)
+                getattr(self, mn)(path or self._path, query_exchanges)
 
     def _copy_instruments_and_update_from_ccxt(
         self,
