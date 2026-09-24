@@ -357,7 +357,7 @@ def bands_signals(
     exit,
     stop: float | None = np.inf,
     entry_method="cross-out",  # 'cross-in', 'revert-to-band'
-    position_sizes_fn=lambda time, score, prices, side: np.zeros(len(p)),
+    position_sizes_fn=lambda time, score, prices, side: np.zeros(len(prices)),
 ) -> pd.DataFrame:
     """
     Generate trading signals using score and entry / exit thresholds
@@ -365,7 +365,7 @@ def bands_signals(
     if not isinstance(prices, pd.DataFrame):
         raise ValueError("Prices must be a pandas DataFrame")
 
-    _as_series = lambda xs, index, name: pd.Series(xs, index=index, name=name) if isscalar(xs) else xs
+    _as_series = lambda xs, index, name: pd.Series(xs, index=index, name=name) if np.isscalar(xs) else xs
 
     # - entry function
     ent_fn: Callable[[float, float, float, float], int] = lambda t, s2, s1, s0: 0
