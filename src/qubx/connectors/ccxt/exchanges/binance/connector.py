@@ -29,6 +29,7 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   margin wallet.
 """
 
+import math
 import uuid
 from decimal import Decimal
 from typing import Any
@@ -225,8 +226,8 @@ class BinancePmCcxtConnector(CcxtConnector):
     def repay_debt(self, currency: str, amount: float | None = None) -> str:
         if not currency:
             raise ValueError(f"[{self.exchange_name}] repay_debt needs a currency")
-        if amount is not None and not amount > 0:
-            raise ValueError(f"[{self.exchange_name}] repay amount must be positive, got {amount}")
+        if amount is not None and not (math.isfinite(amount) and amount > 0):
+            raise ValueError(f"[{self.exchange_name}] repay amount must be positive and finite, got {amount}")
         repay_id = f"rp-{uuid.uuid4().hex[:12]}"
         self._spawn(self._repay_debt(repay_id, currency, amount))
         return repay_id
@@ -235,6 +236,7 @@ class BinancePmCcxtConnector(CcxtConnector):
         ex = self._em.exchange
         asset = currency.upper()
         venue_ref = None
+        requested = amount
         try:
             if amount is None:
                 owed = await self._owed(asset)
@@ -243,6 +245,7 @@ class BinancePmCcxtConnector(CcxtConnector):
             if owed is None:
                 status, reason = "FAILED", "nothing to repay"
             else:
+                requested = float(owed)
                 resp = await ex.papiPostRepayLoan({"asset": asset, "amount": owed})
                 tran_id = resp.get("tranId") if isinstance(resp, dict) else None
                 if tran_id is not None:
@@ -255,7 +258,7 @@ class BinancePmCcxtConnector(CcxtConnector):
             repay_id=repay_id,
             exchange=self.exchange_name,
             currency=currency,
-            requested=amount,
+            requested=requested,
             status=status,
             venue_ref=venue_ref,
             failure_reason=reason,
@@ -269,5 +272,5 @@ class BinancePmCcxtConnector(CcxtConnector):
         rows = await self._em.exchange.papiGetBalance()
         row = next((r for r in rows or [] if isinstance(r, dict) and r.get("asset") == asset), {})
         # Decimal keeps the venue's digits exact — a float round trip could over- or under-pay
-        owed = Decimal(row.get("crossMarginBorrowed") or "0") + Decimal(row.get("crossMarginInterest") or "0")
+        owed = Decimal(str(row.get("crossMarginBorrowed") or "0")) + Decimal(str(row.get("crossMarginInterest") or "0"))
         return format(owed.normalize(), "f") if owed > 0 else None

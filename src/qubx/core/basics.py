@@ -1133,7 +1133,8 @@ class DebtRepaid:
     repay_id: str  # the id repay_debt returned
     exchange: str
     currency: str
-    requested: float | None  # None: everything owed in the kinds debt_repayments() declares
+    # the amount sent to the venue (resolved from the balance when repay_debt got None); None: nothing resolved
+    requested: float | None
     status: Literal["DONE", "FAILED"]
     venue_ref: str | None = None
     failure_reason: str | None = None  # populated when status is FAILED

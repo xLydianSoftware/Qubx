@@ -65,7 +65,10 @@ def test_declares_borrowed_and_interest():
     assert conn.debt_repayments() == ["borrowed", "interest"]
 
 
-@pytest.mark.parametrize("currency,amount", [("", None), ("USDT", 0.0), ("USDT", -1.0)])
+@pytest.mark.parametrize(
+    "currency,amount",
+    [("", None), ("USDT", 0.0), ("USDT", -1.0), ("USDT", float("inf")), ("USDT", float("nan"))],
+)
 def test_bad_arguments_raise_and_emit_nothing(currency, amount):
     conn, sent, _ = _pm_connector()
     with pytest.raises(ValueError):
@@ -83,7 +86,7 @@ async def test_everything_owed_reads_the_balance_and_repays_the_venue_string():
     ex.papiPostRepayLoan.assert_awaited_once_with({"asset": "USDT", "amount": "3.38935086"})
     repaid = _repaid(sent)
     assert repaid.repay_id == repay_id and repaid.status == "DONE"
-    assert (repaid.exchange, repaid.currency, repaid.requested) == ("BINANCE.PM", "usdt", None)
+    assert (repaid.exchange, repaid.currency, repaid.requested) == ("BINANCE.PM", "usdt", 3.38935086)
     assert repaid.venue_ref == "415031841643" and repaid.failure_reason is None
     conn.request_snapshot.assert_called_once_with(include_orders=False)
 
@@ -96,6 +99,17 @@ async def test_borrowed_and_interest_are_summed_exactly():
     conn.repay_debt("USDT")
     await _drive(conn)
     ex.papiPostRepayLoan.assert_awaited_once_with({"asset": "USDT", "amount": "100.3"})
+
+
+async def test_float_balance_fields_do_not_expand():
+    conn, sent, ex = _pm_connector()
+    row = {**FRAB_USDT_ROW, "crossMarginBorrowed": 0.1, "crossMarginInterest": 0.2}
+    ex.papiGetBalance = AsyncMock(return_value=[row])
+    ex.papiPostRepayLoan = AsyncMock(return_value={"tranId": 1})
+    conn.repay_debt("USDT")
+    await _drive(conn)
+    ex.papiPostRepayLoan.assert_awaited_once_with({"asset": "USDT", "amount": "0.3"})
+    assert _repaid(sent).requested == 0.3
 
 
 async def test_explicit_amount_passes_through_without_a_balance_read():
@@ -120,6 +134,7 @@ async def test_nothing_owed_fails_without_a_repay_call():
     ex.papiPostRepayLoan.assert_not_awaited()
     repaid = _repaid(sent)
     assert repaid.status == "FAILED" and repaid.failure_reason == "nothing to repay"
+    assert repaid.requested is None
     conn.request_snapshot.assert_called_once_with(include_orders=False)
 
 

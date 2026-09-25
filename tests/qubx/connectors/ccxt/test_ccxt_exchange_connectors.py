@@ -422,6 +422,14 @@ def test_okx_liabilities_split_borrowed_and_interest() -> None:
     assert usdt.debt == 50.2
 
 
+def test_okx_negatively_signed_interest_is_still_owed() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "-50", "frozenBal": "0", "liab": "-50", "interest": "-0.2"}], funding=None
+    )
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 50.0, "interest": 0.2}
+
+
 def test_okx_nothing_owed_has_no_liabilities() -> None:
     raw = _okx_balance_payload(details=[{"ccy": "USDT", "cashBal": "465.5", "frozenBal": "0"}], funding=None)
     (usdt,) = _okx_connector()._convert_balances(raw)

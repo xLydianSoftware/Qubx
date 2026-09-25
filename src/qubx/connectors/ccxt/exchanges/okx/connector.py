@@ -448,7 +448,9 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
                 total=cash_bal,
             )
             set_liabilities(
-                bal, borrowed=abs(info_float(detail, "liab") or 0.0), interest=info_float(detail, "interest")
+                bal,
+                borrowed=abs(info_float(detail, "liab") or 0.0),
+                interest=abs(info_float(detail, "interest") or 0.0),
             )
             balances.append(bal)
         info = raw_balance.get("info")
