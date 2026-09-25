@@ -9,8 +9,12 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   account-level figures, so ``BinancePortfolioMargin.fetch_balance`` grafts
   ``GET /papi/v1/account`` into ``info`` — see ``_extract_venue_figures``. Equity is
   ``actualEquity`` (NAV, no collateral haircut); the haircut ``accountEquity`` is
-  reported as ``collateral_equity``. The papi figures are USD-denominated (vs USDT on fapi); the difference is treated as
-  negligible, same as the base class treats fapi's USDT figures.
+  reported as ``collateral_equity``. The papi figures are USD-denominated (vs USDT on
+  fapi); the difference is treated as negligible, same as the base class treats fapi's
+  USDT figures.
+- **Wallet breakdown**: PM money sits in the cross-margin wallet plus the UM/CM futures
+  wallets; ``total`` is their sum (``totalWalletBalance``), ``Balance.wallets`` carries
+  the split.
 - **WS balance push**: disabled (``_wants_ws_balance_push``). The papi user-data
   ACCOUNT_UPDATE carries the UM sub-wallet in ``wb``, not the account wallet — see
   the class attribute. Balance refresh rides the papi snapshot instead.
@@ -23,10 +27,22 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
 
 from typing import Any
 
-from qubx.core.basics import Instrument, Position
+from qubx.core.basics import Balance, Instrument, Position
 
 from ...connector import CcxtConnector, VenueFigures
 from ...utils import info_float, instrument_to_ccxt_symbol
+
+_PM_WALLET_FIELDS = (
+    ("margin", "crossMarginAsset"),
+    ("futures_um", "umWalletBalance"),
+    ("futures_cm", "cmWalletBalance"),
+)
+
+
+def _pm_rows(raw_balance: dict[str, Any]) -> dict[str, dict[str, Any]]:
+    info = raw_balance.get("info")
+    rows = info.get("balance") if isinstance(info, dict) else None
+    return {r["asset"]: r for r in rows if isinstance(r, dict) and "asset" in r} if isinstance(rows, list) else {}
 
 
 def _account_figures(raw_balance: dict[str, Any]) -> dict[str, Any]:
@@ -71,6 +87,23 @@ class BinancePmCcxtConnector(CcxtConnector):
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
         self._adl_levels = {}
+
+    def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
+        balances = super()._convert_balances(raw_balance)
+        rows = _pm_rows(raw_balance)
+        for bal in balances:
+            row = rows.get(bal.currency)
+            if row is None:
+                continue
+            legs = {key: v for key, field in _PM_WALLET_FIELDS if (v := info_float(row, field))}
+            bal.wallets = legs if set(legs) - {"margin"} else None
+            # negativeBalance sign is undocumented
+            bal.debt = (
+                (info_float(row, "crossMarginBorrowed") or 0.0)
+                + (info_float(row, "crossMarginInterest") or 0.0)
+                + abs(info_float(row, "negativeBalance") or 0.0)
+            )
+        return balances
 
     def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
         """Venue figures from ``papiGetAccount``.

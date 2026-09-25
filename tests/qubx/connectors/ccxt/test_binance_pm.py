@@ -340,6 +340,81 @@ def _pm_exchange_with_markets():
     return ex, calls
 
 
+class TestBinancePmWallets:
+    @staticmethod
+    def _connector() -> BinancePmCcxtConnector:
+        return TestBinancePmVenueFigures._connector()
+
+    @staticmethod
+    def _raw(rows: list[dict]) -> dict:
+        total = {r["asset"]: float(r["totalWalletBalance"]) for r in rows}
+        used = {r["asset"]: float(r.get("crossMarginLocked", 0)) for r in rows}
+        return {"info": {"balance": rows, "account": {}}, "total": total, "used": used}
+
+    def test_usdt_split_between_margin_and_um(self):
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "5055.48548376",
+            "crossMarginAsset": "144168.84518903",
+            "crossMarginFree": "144168.84518903",
+            "crossMarginLocked": "0.0",
+            "crossMarginBorrowed": "0.0",
+            "crossMarginInterest": "3.38935086",
+            "umWalletBalance": "-139113.35970527",
+            "umUnrealizedPNL": "125630.64",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "0.0",
+        }
+        (usdt,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdt.total == 5055.48548376
+        assert usdt.wallets == {"margin": 144168.84518903, "futures_um": -139113.35970527}
+        assert usdt.debt == 3.38935086
+
+    def test_margin_only_asset_has_no_breakdown(self):
+        row = {
+            "asset": "USDC",
+            "totalWalletBalance": "155149.762357",
+            "crossMarginAsset": "155149.762357",
+            "crossMarginFree": "155149.762357",
+            "crossMarginLocked": "0.0",
+            "umWalletBalance": "0.0",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "0.0",
+        }
+        (usdc,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdc.wallets is None
+        assert usdc.debt == 0.0
+
+    def test_negative_balance_counts_as_debt(self):
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "-20.0",
+            "crossMarginAsset": "0.0",
+            "umWalletBalance": "-20.0",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "-20.0",
+        }
+        (usdt,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdt.debt == 20.0
+
+    def test_positive_negative_balance_counts_as_debt(self):
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "-20.0",
+            "crossMarginAsset": "0.0",
+            "umWalletBalance": "-20.0",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "20.0",
+        }
+        (usdt,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdt.debt == 20.0
+
+    def test_raw_without_graft_falls_back_to_plain_balances(self):
+        raw = {"info": [{"asset": "USDT"}], "total": {"USDT": 10.0}, "used": {"USDT": 0.0}}
+        (usdt,) = self._connector()._convert_balances(raw)
+        assert usdt.total == 10.0 and usdt.wallets is None
+
+
 class TestPmAlgoOrders:
     """PM conditional orders migrated to the papi Algo Service on 2026-04-28 (old
     um/conditional/* endpoints 404). Live-verified 2026-07-22: trigger param is
