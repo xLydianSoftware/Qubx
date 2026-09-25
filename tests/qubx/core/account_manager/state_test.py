@@ -446,6 +446,12 @@ def test_balance_push_keeps_snapshot_wallets():
     assert bal.wallets == {"margin": 150.0, "futures_um": -50.0}
 
 
+def test_apply_balance_breakdown_is_noop_for_currency_not_held():
+    state = AccountState("binance", "USDT")
+    state.apply_balance_breakdown(Balance(exchange="binance", currency="BNB", wallets={"margin": 1.0}, debt=0.5))
+    assert state.get_balance("BNB") is None
+
+
 def test_balance_push_as_of_accessor_defaults_none_then_tracks_marks():
     state = AccountState("binance", "USDT")
     assert state.get_balance_push_as_of("USDT") is None

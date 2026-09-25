@@ -780,6 +780,30 @@ def test_original_balance_missing_applied_from_snapshot():
     D_OFF()
 
 
+def test_wallets_and_debt_refresh_without_a_balance_diff():
+    # a PM collect reshuffles wallets and interest accrues debt with total/free/locked unchanged:
+    # no BalanceMismatch, yet the breakdown must still land
+    rec = _reconciler()
+    st = _local()
+    local = _balance("USDT", free=100.0)
+    local.wallets = {"margin": 150.0, "futures_um": -50.0}
+    st.update_balance("USDT", local)
+    snap_bal = _balance("USDT", free=100.0)
+    snap_bal.wallets = {"margin": 100.0}
+    snap_bal.debt = 2.0
+    snap = _origin(balances=[snap_bal])
+
+    assert Differ(grace="5s").diff(st, snap) == []  # no BalanceMismatch
+
+    a = rec.on_snapshot(st, snap, T0)
+
+    bal = st.get_balance("USDT")
+    assert bal.wallets == {"margin": 100.0}  # type: ignore
+    assert bal.debt == 2.0  # type: ignore
+    assert bal.total == 100.0  # type: ignore
+    assert a == []
+
+
 def test_position_decrease_the_deals_arrived_with_small_latency():
     # The missed CLOSING deal (traded BEFORE the snapshot, venue ts <= watermark) is DELIVERED late
     # by WS but still within the confirm window. AM0 routes every DealEvent to BOTH reducer.apply
