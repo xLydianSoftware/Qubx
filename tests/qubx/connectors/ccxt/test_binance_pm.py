@@ -25,7 +25,7 @@ import io
 from unittest.mock import AsyncMock, MagicMock
 
 from qubx import logger
-from qubx.connectors.ccxt.connector import CcxtConnector
+from qubx.connectors.ccxt.connector import CcxtConnector, VenueFigures
 from qubx.connectors.ccxt.exchanges import CUSTOM_CONNECTORS
 from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
 from qubx.connectors.ccxt.exchanges.binance.exchange import BinancePortfolioMargin
@@ -214,7 +214,14 @@ class TestBinancePmVenueFigures:
                 }
             }
         )
-        assert figures == (404.51, 359.52, 731.2, 358.0, 0.55, 44.99)
+        assert figures == VenueFigures(
+            equity=404.51,
+            available_margin=359.52,
+            margin_ratio=731.2,
+            withdrawable=358.0,
+            total_maint_margin=0.55,
+            total_initial_margin=44.99,
+        )
 
     def test_unimmr_sentinel_maps_to_none(self):
         # no positions: accountMaintMargin 0 and uniMMR is a 99999999 sentinel
@@ -234,11 +241,18 @@ class TestBinancePmVenueFigures:
             }
         )
         # the 0.0 margin totals are real venue values (no positions), not "unreported"
-        assert figures == (404.51, 404.51, None, 404.51, 0.0, 0.0)
+        assert figures == VenueFigures(
+            equity=404.51,
+            available_margin=404.51,
+            margin_ratio=None,
+            withdrawable=404.51,
+            total_maint_margin=0.0,
+            total_initial_margin=0.0,
+        )
 
     def test_missing_graft_degrades_to_none(self):
         # raw papiGetBalance list info (graft failed) must not sink the snapshot
-        assert self._connector()._extract_venue_figures({"info": [{"asset": "USDT"}]}) == (None,) * 6
+        assert self._connector()._extract_venue_figures({"info": [{"asset": "USDT"}]}) == VenueFigures()
 
 
 DOGE_MARKET = {

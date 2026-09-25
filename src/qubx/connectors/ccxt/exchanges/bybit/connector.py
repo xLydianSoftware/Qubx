@@ -11,6 +11,7 @@ from typing import Any, Literal
 from qubx import logger
 from qubx.core.basics import Instrument, Position, RejectCause
 
+from ...connector import VenueFigures
 from ...utils import info_float, instrument_to_ccxt_symbol, normalize_margin_mode
 from .._two_stream import _TwoStreamCcxtConnector
 from .bybit import _POST_ONLY_REFUSAL
@@ -98,9 +99,7 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
     def get_margin_mode(self, instrument: Instrument) -> str | None:
         return self._margin_mode
 
-    def _extract_venue_figures(
-        self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
         """(equity, available_margin, margin_ratio, withdrawable, maint_margin, initial_margin)
         from ``info.result.list[0]``.
 
@@ -115,13 +114,13 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
         """
         acct = _account_block(raw_balance)
         mm_rate = info_float(acct, "accountMMRate")
-        return (
-            info_float(acct, "totalEquity"),
-            info_float(acct, "totalAvailableBalance"),
-            1.0 / mm_rate if mm_rate is not None and mm_rate > 0 else None,
-            None,
-            info_float(acct, "totalMaintenanceMargin"),
-            info_float(acct, "totalInitialMargin"),
+        return VenueFigures(
+            equity=info_float(acct, "totalEquity"),
+            available_margin=info_float(acct, "totalAvailableBalance"),
+            margin_ratio=1.0 / mm_rate if mm_rate is not None and mm_rate > 0 else None,
+            withdrawable=None,
+            total_maint_margin=info_float(acct, "totalMaintenanceMargin"),
+            total_initial_margin=info_float(acct, "totalInitialMargin"),
         )
 
     def _reject_details(self, raw: dict[str, Any]) -> tuple[str | None, RejectCause]:

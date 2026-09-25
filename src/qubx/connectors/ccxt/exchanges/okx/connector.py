@@ -39,7 +39,7 @@ from qubx.core.basics import (
     create_venue_settings_event,
 )
 
-from ...connector import _LeverageInfo
+from ...connector import VenueFigures, _LeverageInfo
 from ...utils import info_float, instrument_to_ccxt_symbol
 from .._two_stream import _TwoStreamCcxtConnector
 
@@ -449,9 +449,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             )
         return balances
 
-    def _extract_venue_figures(
-        self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
         """OKX account-level figures from ``info.data[0]`` of the trading-balance payload.
 
         - equity: ``totalEq`` — total account equity. USD-denominated; reported as-is
@@ -475,7 +473,14 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         adj_eq = info_float(acct, "adjEq")
         imr = info_float(acct, "imr")
         available_margin = adj_eq - imr if adj_eq is not None and imr is not None else None
-        return equity, available_margin, margin_ratio, None, info_float(acct, "mmr"), imr
+        return VenueFigures(
+            equity=equity,
+            available_margin=available_margin,
+            margin_ratio=margin_ratio,
+            withdrawable=None,
+            total_maint_margin=info_float(acct, "mmr"),
+            total_initial_margin=imr,
+        )
 
     def make_client_id(self, suggested: str) -> str:
         """OKX clOrdId: case-sensitive alphanumeric only, 1-32 chars.

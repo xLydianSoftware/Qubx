@@ -8,15 +8,14 @@ is the documented all-None venue-figures override below.
 
 from typing import Any
 
+from ...connector import VenueFigures
 from .._two_stream import _TwoStreamCcxtConnector
 
 
 class BitfinexCcxtConnector(_TwoStreamCcxtConnector):
     """Bitfinex connector: split orders/fills streams, base behavior otherwise."""
 
-    def _extract_venue_figures(
-        self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
         """Deliberately all-None: Bitfinex's ``fetch_balance`` carries no account figures.
 
         Its raw ``info`` is the bare wallets *list* from ``auth/r/wallets`` (the
@@ -25,4 +24,4 @@ class BitfinexCcxtConnector(_TwoStreamCcxtConnector):
         snapshot seam's reach. All-None → AM derives every metric from balances +
         positions.
         """
-        return None, None, None, None, None, None
+        return VenueFigures()

@@ -24,7 +24,7 @@ from typing import Any
 
 from qubx.core.basics import Instrument, Position
 
-from ...connector import CcxtConnector
+from ...connector import CcxtConnector, VenueFigures
 from ...utils import info_float, instrument_to_ccxt_symbol
 
 
@@ -71,9 +71,7 @@ class BinancePmCcxtConnector(CcxtConnector):
         super().__init__(**kwargs)
         self._adl_levels = {}
 
-    def _extract_venue_figures(
-        self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
         """(equity, available_margin, margin_ratio, withdrawable, total_maint_margin,
         total_initial_margin) from ``papiGetAccount``:
         ``accountEquity`` (collateral + uPnL across um/cm/margin, USD),
@@ -86,13 +84,13 @@ class BinancePmCcxtConnector(CcxtConnector):
         account = _account_figures(raw_balance)
         maint = info_float(account, "accountMaintMargin")
         margin_ratio = info_float(account, "uniMMR") if maint is not None and maint > 0 else None
-        return (
-            info_float(account, "accountEquity"),
-            info_float(account, "totalAvailableBalance"),
-            margin_ratio,
-            info_float(account, "virtualMaxWithdrawAmount"),
-            maint,
-            info_float(account, "accountInitialMargin"),
+        return VenueFigures(
+            equity=info_float(account, "accountEquity"),
+            available_margin=info_float(account, "totalAvailableBalance"),
+            margin_ratio=margin_ratio,
+            withdrawable=info_float(account, "virtualMaxWithdrawAmount"),
+            total_maint_margin=maint,
+            total_initial_margin=info_float(account, "accountInitialMargin"),
         )
 
     async def _fill_leverage_settings(self, positions: list[Position]) -> None:

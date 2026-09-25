@@ -160,6 +160,20 @@ _ORDER_RATE_LIMIT_ERRORS: tuple[type[Exception], ...] = (ccxt.RateLimitExceeded,
 # the order is left inflight for AM to reconcile, never terminal-rejected.
 
 
+@dataclass(frozen=True)
+class VenueFigures:
+    """Account-level figures a connector reads off its raw balance payload. None = the
+    venue did not report it (AM derives that metric)."""
+
+    equity: float | None = None
+    available_margin: float | None = None
+    margin_ratio: float | None = None
+    withdrawable: float | None = None
+    total_maint_margin: float | None = None
+    total_initial_margin: float | None = None
+    collateral_equity: float | None = None
+
+
 class CcxtConnector(ChannelEmitter):
     """IConnector implementation backed by a CCXT exchange (write side).
 
@@ -1994,9 +2008,7 @@ class CcxtConnector(ChannelEmitter):
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
             balances = self._convert_balances(raw_balance)
-            equity, available_margin, margin_ratio, withdrawable, total_maint_margin, total_initial_margin = (
-                self._extract_venue_figures(raw_balance)
-            )
+            figures = self._extract_venue_figures(raw_balance)
         except Exception as e:  # noqa: BLE001 — AM retries on its next snapshot tick
             # Venue exception text goes in as a positional arg (may contain HTML/markup that
             # loguru's colorizer rejects when it appears in the format string).
@@ -2017,12 +2029,13 @@ class CcxtConnector(ChannelEmitter):
                     open_orders=open_orders,
                     positions=positions,
                     balances=balances,
-                    equity=equity,
-                    available_margin=available_margin,
-                    margin_ratio=margin_ratio,
-                    withdrawable=withdrawable,
-                    total_maint_margin=total_maint_margin,
-                    total_initial_margin=total_initial_margin,
+                    equity=figures.equity,
+                    available_margin=figures.available_margin,
+                    margin_ratio=figures.margin_ratio,
+                    withdrawable=figures.withdrawable,
+                    total_maint_margin=figures.total_maint_margin,
+                    total_initial_margin=figures.total_initial_margin,
+                    collateral_equity=figures.collateral_equity,
                 ),
             )
         )
@@ -2035,12 +2048,8 @@ class CcxtConnector(ChannelEmitter):
         """
         return ccxt_convert_balance(raw_balance, self.exchange_name)
 
-    def _extract_venue_figures(
-        self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
-        """Venue account figures from the raw account payload, as the positional 6-tuple
-        ``(equity, available_margin, margin_ratio, withdrawable, total_maint_margin,
-        total_initial_margin)`` — overrides must keep exactly this order.
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
+        """Venue account figures from the raw account payload, as a ``VenueFigures``.
 
         ccxt has no unified account-figures schema, so the base impl reads the
         Binance-futures account fields carried through in ``info`` (both fapi v2 and
@@ -2056,14 +2065,13 @@ class CcxtConnector(ChannelEmitter):
         """
         info = raw_balance.get("info")
         if not isinstance(info, dict):
-            return None, None, None, None, None, None
-        return (
-            info_float(info, "totalMarginBalance"),
-            info_float(info, "availableBalance"),
-            None,
-            info_float(info, "maxWithdrawAmount"),
-            info_float(info, "totalMaintMargin"),
-            info_float(info, "totalInitialMargin"),
+            return VenueFigures()
+        return VenueFigures(
+            equity=info_float(info, "totalMarginBalance"),
+            available_margin=info_float(info, "availableBalance"),
+            withdrawable=info_float(info, "maxWithdrawAmount"),
+            total_maint_margin=info_float(info, "totalMaintMargin"),
+            total_initial_margin=info_float(info, "totalInitialMargin"),
         )
 
     # ------------------------------------------------------------------ #
