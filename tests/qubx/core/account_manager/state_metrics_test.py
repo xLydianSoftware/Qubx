@@ -305,3 +305,9 @@ def test_collateral_equity_falls_back_to_total_capital():
 def test_collateral_equity_without_any_venue_figures_is_derived_capital():
     state = _state()
     assert state.collateral_equity() == state.total_capital()
+
+
+def test_margin_ratio_derived_uses_collateral_equity():
+    state = _state()
+    state.set_venue_figures(_venue(equity=1180.0, collateral_equity=1000.0, total_maint_margin=100.0))
+    assert state.margin_ratio() == 10.0

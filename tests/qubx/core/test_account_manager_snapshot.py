@@ -897,3 +897,16 @@ def test_external_order_with_no_client_id_gets_synthesized_cid():
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
     assert state.get_order_by_venue_id("VY").client_order_id == "ext:VY"
+
+
+def test_cross_exchange_margin_ratio_uses_collateral_equity():
+    am = AccountManager(
+        connectors={"binance": MagicMock(), "okx": MagicMock()},
+        base_currencies={"binance": "USDT", "okx": "USDT"},
+        time=_T(),
+        cfg=AccountManagerConfig(snapshot_grace_ms=5_000),
+        account_id="test",
+    )
+    am.apply(_snap_event(equity=1180.0, collateral_equity=1000.0, total_maint_margin=100.0))
+    am.apply(_snap_event(exchange="okx", equity=500.0, total_maint_margin=100.0))
+    assert am.get_margin_ratio() == (1000.0 + 500.0) / 200.0

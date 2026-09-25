@@ -296,7 +296,7 @@ class AccountState:
         if venue is not None and venue.margin_ratio is not None:
             return venue.margin_ratio
         maint = self.total_maint_margin()
-        return 100.0 if maint == 0 else min(100.0, self.total_capital() / maint)
+        return 100.0 if maint == 0 else min(100.0, self.collateral_equity() / maint)
 
     def leverage(self, instrument: Instrument) -> float:
         pos = self._positions.get(instrument)

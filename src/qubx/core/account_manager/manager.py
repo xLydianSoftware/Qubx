@@ -534,12 +534,12 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         if len(states) == 1:
             # single state: state.margin_ratio() so the venue-reported ratio is preferred
             return states[0].margin_ratio()
-        # cross-exchange: no venue reports a combined ratio — derive from the sums
-        # (total_capital still prefers venue equity per state)
+        # cross-exchange: no venue reports a combined ratio — derive from the sums;
+        # maintenance margin is measured against haircut (collateral) equity, not NAV
         maint = sum(s.total_maint_margin() for s in states)
         if maint == 0:
             return 100.0
-        return min(100.0, sum(s.total_capital() for s in states) / maint)
+        return min(100.0, sum(s.collateral_equity() for s in states) / maint)
 
     def get_base_currency(self, exchange: str | None = None) -> str:
         state = self._states[exchange] if exchange is not None else next(iter(self._states.values()))
