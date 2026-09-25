@@ -545,6 +545,37 @@ def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[Balance]:
     return balances
 
 
+def merge_funding_wallets(
+    balances: list[Balance],
+    funding_rows: Any,
+    exchange: str,
+    *,
+    main_wallet: str,
+    ccy_field: str,
+    amount_field: str,
+) -> list[Balance]:
+    """Split each balance into ``{main_wallet: total, "funding": x}`` from the venue's funding-account rows.
+
+    The funding leg is outside ``total``: a currency held only there gets a zero-total row
+    carrying just ``wallets``. Malformed rows are skipped — this runs outside the snapshot's
+    per-leg isolation.
+    """
+    if not isinstance(funding_rows, list):
+        return balances
+    by_ccy = {b.currency: b for b in balances}
+    for row in funding_rows:
+        if not isinstance(row, dict) or not isinstance(ccy := row.get(ccy_field), str):
+            continue
+        if not (amount := info_float(row, amount_field)):
+            continue
+        bal = by_ccy.get(ccy)
+        if bal is None:
+            bal = by_ccy[ccy] = Balance(exchange=exchange, currency=ccy)
+            balances.append(bal)
+        bal.wallets = {**({main_wallet: bal.total} if bal.total else {}), **(bal.wallets or {}), "funding": amount}
+    return balances
+
+
 def ccxt_convert_open_interest(symbol: str, info: dict[str, Any]) -> OpenInterest:
     # Extract open interest amount (base asset amount)
     open_interest_amount = info.get("openInterestAmount", 0.0)

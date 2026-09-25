@@ -9,10 +9,10 @@ figures from Bybit surfaces ccxt's unified shapes do not reach.
 from typing import Any, Literal
 
 from qubx import logger
-from qubx.core.basics import Instrument, Position, RejectCause
+from qubx.core.basics import Balance, Instrument, Position, RejectCause
 
 from ...connector import VenueFigures
-from ...utils import info_float, instrument_to_ccxt_symbol, normalize_margin_mode
+from ...utils import info_float, instrument_to_ccxt_symbol, merge_funding_wallets, normalize_margin_mode
 from .._two_stream import _TwoStreamCcxtConnector
 from .bybit import _POST_ONLY_REFUSAL
 
@@ -98,6 +98,21 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
 
     def get_margin_mode(self, instrument: Instrument) -> str | None:
         return self._margin_mode
+
+    def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
+        """Base rows plus ``borrowAmount`` as debt and the FUND wallet rows grafted by
+        ``BybitF.fetch_balance`` as the ``funding`` wallet, outside ``total``."""
+        balances = super()._convert_balances(raw_balance)
+        coins = _account_block(raw_balance).get("coin")
+        rows = {c["coin"]: c for c in coins if isinstance(c, dict) and "coin" in c} if isinstance(coins, list) else {}
+        for bal in balances:
+            if (row := rows.get(bal.currency)) is not None:
+                bal.debt = info_float(row, "borrowAmount") or 0.0
+        info = raw_balance.get("info")
+        funding = info.get("funding") if isinstance(info, dict) else None
+        return merge_funding_wallets(
+            balances, funding, self.exchange_name, main_wallet="unified", ccy_field="coin", amount_field="walletBalance"
+        )
 
     def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
         """Venue figures from ``info.result.list[0]``.

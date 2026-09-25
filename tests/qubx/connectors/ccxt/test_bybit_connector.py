@@ -119,6 +119,42 @@ def test_bybit_collateral_equity_absent_is_none():
     assert conn._extract_venue_figures(_wallet_balance(totalMarginBalance="")).collateral_equity is None
 
 
+def _wallet_balance_with_coins(coins: list[dict], funding: list[dict] | None) -> dict:
+    raw = _wallet_balance(coin=coins)
+    raw["info"]["funding"] = funding
+    raw["total"] = {c["coin"]: float(c["walletBalance"]) for c in coins}
+    raw["used"] = {c["coin"]: 0.0 for c in coins}
+    return raw
+
+
+def test_fund_leg_is_a_wallet_not_part_of_total():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins(
+        [{"coin": "USDT", "walletBalance": "54220.7", "borrowAmount": "0"}],
+        funding=[{"coin": "USDT", "walletBalance": "100"}, {"coin": "ETH", "walletBalance": "0.5"}],
+    )
+    balances = {b.currency: b for b in conn._convert_balances(raw)}
+    assert balances["USDT"].total == 54220.7
+    assert balances["USDT"].wallets == {"unified": 54220.7, "funding": 100.0}
+    eth = balances["ETH"]
+    assert (eth.total, eth.free, eth.locked) == (0.0, 0.0, 0.0)
+    assert eth.wallets == {"funding": 0.5}
+
+
+def test_without_the_fund_graft_there_are_no_wallets():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "54220.7", "borrowAmount": "0"}], None)
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.wallets is None
+
+
+def test_debt_is_the_borrowed_amount():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "900", "borrowAmount": "12.5"}], None)
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.debt == 12.5
+
+
 @pytest.mark.parametrize("missing", ["accountMMRate", "totalMaintenanceMargin", "totalInitialMargin"])
 def test_venue_figures_survive_a_missing_field(missing: str):
     conn, _, _ = _make_connector()

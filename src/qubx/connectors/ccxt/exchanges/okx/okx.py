@@ -6,6 +6,8 @@ import sys
 import aiohttp
 import ccxt.pro as cxp
 
+from qubx import logger
+
 from ..base import CcxtFuturePatchMixin
 
 
@@ -82,6 +84,20 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
         for ord_type in ("trigger", "conditional"):
             orders.extend(await super().fetch_open_orders(symbol, since, limit, {**params, "ordType": ord_type}))
         return orders
+
+    async def fetch_balance(self, params={}):
+        """Trading-account balance with the funding-account rows (``GET /api/v5/asset/balances``)
+        grafted onto ``info["funding"]``; None when that read fails."""
+        balances = await super().fetch_balance(params)
+        funding = None
+        try:
+            funding = (await self.privateGetAssetBalances()).get("data")
+        except Exception as e:  # noqa: BLE001 — the funding leg is decoration; never sink the snapshot
+            logger.debug(f"[okx] funding balance read failed: {e}")
+        info = balances.get("info")
+        if isinstance(info, dict):
+            info["funding"] = funding
+        return balances
 
     def parse_order(self, order: dict, market=None) -> dict:
         """

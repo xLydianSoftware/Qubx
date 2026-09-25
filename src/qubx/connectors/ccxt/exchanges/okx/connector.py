@@ -40,7 +40,7 @@ from qubx.core.basics import (
 )
 
 from ...connector import VenueFigures, _LeverageInfo
-from ...utils import info_float, instrument_to_ccxt_symbol
+from ...utils import info_float, instrument_to_ccxt_symbol, merge_funding_wallets
 from .._two_stream import _TwoStreamCcxtConnector
 
 _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
@@ -429,7 +429,8 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         ccxt maps OKX's ``eq`` (equity = cashBal + unrealizedPnL) to balance ``total``;
         we want the cash leg, so we read ``cashBal`` (total) and ``frozenBal`` (locked)
         straight from ``info.data[0].details``. Currencies with a zero cash balance are
-        skipped.
+        skipped. ``liab`` (negative on OKX) is the debt; the funding-account rows grafted
+        by ``OkxFutures.fetch_balance`` become the ``funding`` wallet, outside ``total``.
         """
         details = _account_data(raw_balance).get("details") or []
         balances: list[Balance] = []
@@ -445,9 +446,14 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
                     free=cash_bal - frozen_bal,
                     locked=frozen_bal,
                     total=cash_bal,
+                    debt=abs(info_float(detail, "liab") or 0.0),
                 )
             )
-        return balances
+        info = raw_balance.get("info")
+        funding = info.get("funding") if isinstance(info, dict) else None
+        return merge_funding_wallets(
+            balances, funding, self.exchange_name, main_wallet="trading", ccy_field="ccy", amount_field="bal"
+        )
 
     def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
         """OKX account-level figures from ``info.data[0]`` of the trading-balance payload.

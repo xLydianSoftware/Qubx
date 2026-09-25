@@ -375,6 +375,52 @@ async def test_okx_snapshot_extracts_cashbal_balances() -> None:
     assert bal.free == 900.0
 
 
+def _okx_balance_payload(details: list[dict], funding: list[dict] | None) -> dict:
+    return {"info": {"data": [{"details": details, "totalEq": "1"}], "funding": funding}}
+
+
+def _okx_connector() -> OkxCcxtConnector:
+    conn, _sent, _ = _make_connector(OkxCcxtConnector)
+    return conn  # type: ignore[return-value]
+
+
+def test_okx_funding_leg_is_a_wallet_not_equity() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "11402.5", "frozenBal": "0", "liab": "0"}],
+        funding=[{"ccy": "USDT", "bal": "250"}, {"ccy": "ETH", "bal": "1.5"}, {"ccy": "BTC", "bal": "0"}],
+    )
+    balances = {b.currency: b for b in _okx_connector()._convert_balances(raw)}
+    assert set(balances) == {"USDT", "ETH"}
+    assert balances["USDT"].total == 11402.5
+    assert balances["USDT"].wallets == {"trading": 11402.5, "funding": 250.0}
+    eth = balances["ETH"]
+    assert (eth.total, eth.free, eth.locked) == (0.0, 0.0, 0.0)
+    assert eth.wallets == {"funding": 1.5}
+
+
+def test_okx_without_funding_graft_has_no_wallets() -> None:
+    raw = _okx_balance_payload(details=[{"ccy": "USDT", "cashBal": "465.5", "frozenBal": "0"}], funding=None)
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.wallets is None
+
+
+def test_okx_debt_is_the_liability_magnitude() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "-120.5", "frozenBal": "0", "liab": "-120.5"}], funding=None
+    )
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.debt == 120.5
+
+
+def test_okx_malformed_funding_rows_are_skipped() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "100", "frozenBal": "0"}],
+        funding=[None, {"bal": "5"}, {"ccy": "USDT", "bal": "x"}, {"ccy": "USDT", "bal": "7"}],
+    )
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.wallets == {"trading": 100.0, "funding": 7.0}
+
+
 # --------------------------------------------------------------------------- #
 # OKX venue account figures (totalEq / mgnRatio / adjEq − imr / mmr / imr from info.data[0])
 # --------------------------------------------------------------------------- #
