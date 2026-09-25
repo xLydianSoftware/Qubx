@@ -464,6 +464,8 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         - total_maint_margin / total_initial_margin: ``mmr`` / ``imr`` — account-level
           maintenance / initial margin requirements (cross positions + pending orders),
           populated only in multi-currency/portfolio margin modes like ``adjEq``.
+        - collateral_equity: ``adjEq`` — discount-adjusted (haircut) equity; None outside
+          multi-currency/portfolio margin modes.
 
         Not-applicable fields arrive as ``""`` → None → AM derives that metric.
         """
@@ -480,6 +482,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             withdrawable=None,
             total_maint_margin=info_float(acct, "mmr"),
             total_initial_margin=imr,
+            collateral_equity=adj_eq,
         )
 
     def make_client_id(self, suggested: str) -> str:

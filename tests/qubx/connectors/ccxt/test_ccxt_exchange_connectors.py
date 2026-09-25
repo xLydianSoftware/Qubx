@@ -411,6 +411,7 @@ async def test_okx_snapshot_extracts_venue_figures_multi_ccy() -> None:
     assert snap.withdrawable is None  # max-withdrawal lives on a separate OKX endpoint
     assert snap.total_maint_margin == 600.0  # mmr
     assert snap.total_initial_margin == 1200.0  # imr
+    assert snap.collateral_equity == 49000.0  # adjEq
 
     # End-to-end: the snapshot lands in AM and the venue figures win over derived metrics.
     am = SimulatedAccountManager(
@@ -459,6 +460,7 @@ async def test_okx_snapshot_single_ccy_empty_fields_yield_none() -> None:
     assert snap.withdrawable is None
     assert snap.total_maint_margin is None
     assert snap.total_initial_margin is None
+    assert snap.collateral_equity is None
 
 
 @pytest.mark.asyncio

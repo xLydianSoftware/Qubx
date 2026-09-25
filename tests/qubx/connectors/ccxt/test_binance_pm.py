@@ -198,30 +198,35 @@ class TestBinancePmVenueFigures:
             data_provider=MagicMock(),
         )
 
-    def test_reads_grafted_papi_account(self):
+    def test_equity_is_nav_and_haircut_is_collateral_equity(self):
         figures = self._connector()._extract_venue_figures(
             {
                 "info": {
                     "balance": [{"asset": "USDT"}],
                     "account": {
-                        "accountEquity": "404.51",
-                        "totalAvailableBalance": "359.52",
-                        "uniMMR": "731.2",
-                        "accountMaintMargin": "0.55",
-                        "accountInitialMargin": "44.99",
-                        "virtualMaxWithdrawAmount": "358.0",
+                        "uniMMR": "15.14062087",
+                        "accountEquity": "4948442.06857979",
+                        "actualEquity": "5830167.11424156",
+                        "accountInitialMargin": "3517762.15303205",
+                        "accountMaintMargin": "317235.26352938",
+                        "virtualMaxWithdrawAmount": "1284600.81392757",
+                        "totalAvailableBalance": "1284600.81392757",
                     },
                 }
             }
         )
-        assert figures == VenueFigures(
-            equity=404.51,
-            available_margin=359.52,
-            margin_ratio=731.2,
-            withdrawable=358.0,
-            total_maint_margin=0.55,
-            total_initial_margin=44.99,
+        assert figures.equity == 5830167.11424156
+        assert figures.collateral_equity == 4948442.06857979
+        assert figures.margin_ratio == 15.14062087
+        assert figures.available_margin == 1284600.81392757
+
+    def test_missing_actual_equity_leaves_equity_unreported(self):
+        # an older papi payload without actualEquity must not fall back to the haircut figure
+        figures = self._connector()._extract_venue_figures(
+            {"info": {"balance": [], "account": {"accountEquity": "100.0", "accountMaintMargin": "0.0"}}}
         )
+        assert figures.equity is None
+        assert figures.collateral_equity == 100.0
 
     def test_unimmr_sentinel_maps_to_none(self):
         # no positions: accountMaintMargin 0 and uniMMR is a 99999999 sentinel
@@ -231,6 +236,7 @@ class TestBinancePmVenueFigures:
                     "balance": [],
                     "account": {
                         "accountEquity": "404.51",
+                        "actualEquity": "404.51",
                         "totalAvailableBalance": "404.51",
                         "uniMMR": "99999999",
                         "accountMaintMargin": "0.0",
@@ -248,6 +254,7 @@ class TestBinancePmVenueFigures:
             withdrawable=404.51,
             total_maint_margin=0.0,
             total_initial_margin=0.0,
+            collateral_equity=404.51,
         )
 
     def test_missing_graft_degrades_to_none(self):

@@ -100,17 +100,16 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
         return self._margin_mode
 
     def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
-        """(equity, available_margin, margin_ratio, withdrawable, maint_margin, initial_margin)
-        from ``info.result.list[0]``.
+        """Venue figures from ``info.result.list[0]``.
 
         ``accountMMRate`` is maintenance margin OVER equity — the reciprocal of the framework's
         ratio — and ``""``/``"0"`` map to None, as does withdrawable (per coin only), so that AM
         derives those metrics.
 
-        Equity is ``totalEquity``, not ``totalMarginBalance``: the latter is
-        ``totalWalletBalance + totalPerpUPL`` where the wallet total already has the collateral
-        discount on non-USDT holdings folded in, which understates NAV. available_margin and
-        margin_ratio come from the venue separately, so they keep the discount the venue applies.
+        Equity is ``totalEquity`` (NAV). ``totalMarginBalance`` is ``totalWalletBalance +
+        totalPerpUPL`` with the collateral discount on non-USDT holdings folded in — the haircut
+        figure, reported as collateral_equity. available_margin and margin_ratio come from the
+        venue separately, so they keep the discount the venue applies.
         """
         acct = _account_block(raw_balance)
         mm_rate = info_float(acct, "accountMMRate")
@@ -121,6 +120,7 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
             withdrawable=None,
             total_maint_margin=info_float(acct, "totalMaintenanceMargin"),
             total_initial_margin=info_float(acct, "totalInitialMargin"),
+            collateral_equity=info_float(acct, "totalMarginBalance"),
         )
 
     def _reject_details(self, raw: dict[str, Any]) -> tuple[str | None, RejectCause]:

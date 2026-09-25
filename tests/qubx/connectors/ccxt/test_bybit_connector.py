@@ -111,6 +111,12 @@ def test_venue_figures_read_the_unified_account_block():
     assert f.withdrawable is None
     assert f.total_maint_margin == 542.10
     assert f.total_initial_margin == 182.60183684
+    assert f.collateral_equity == 18070.32797922
+
+
+def test_bybit_collateral_equity_absent_is_none():
+    conn, _, _ = _make_connector()
+    assert conn._extract_venue_figures(_wallet_balance(totalMarginBalance="")).collateral_equity is None
 
 
 @pytest.mark.parametrize("missing", ["accountMMRate", "totalMaintenanceMargin", "totalInitialMargin"])

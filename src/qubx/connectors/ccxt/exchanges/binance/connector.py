@@ -7,8 +7,9 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
 
 - **Venue account figures**: PM's ``papiGetBalance`` is a per-asset list with no
   account-level figures, so ``BinancePortfolioMargin.fetch_balance`` grafts
-  ``GET /papi/v1/account`` into ``info`` — see ``_extract_venue_figures``. The papi
-  figures are USD-denominated (vs USDT on fapi); the difference is treated as
+  ``GET /papi/v1/account`` into ``info`` — see ``_extract_venue_figures``. Equity is
+  ``actualEquity`` (NAV, no collateral haircut); the haircut ``accountEquity`` is
+  reported as ``collateral_equity``. The papi figures are USD-denominated (vs USDT on fapi); the difference is treated as
   negligible, same as the base class treats fapi's USDT figures.
 - **WS balance push**: disabled (``_wants_ws_balance_push``). The papi user-data
   ACCOUNT_UPDATE carries the UM sub-wallet in ``wb``, not the account wallet — see
@@ -72,25 +73,32 @@ class BinancePmCcxtConnector(CcxtConnector):
         self._adl_levels = {}
 
     def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
-        """(equity, available_margin, margin_ratio, withdrawable, total_maint_margin,
-        total_initial_margin) from ``papiGetAccount``:
-        ``accountEquity`` (collateral + uPnL across um/cm/margin, USD),
-        ``totalAvailableBalance`` (margin available for new positions),
-        ``uniMMR`` (accountEquity / accountMaintMargin — same shape as AM's derived
-        ratio; reported as a 99999999 sentinel when maint margin is 0, mapped to None
-        so AM applies its own no-positions handling), ``virtualMaxWithdrawAmount``,
-        ``accountMaintMargin`` and ``accountInitialMargin`` (account-wide margin
-        requirements across um/cm/margin — the same scope as ``accountEquity``)."""
+        """Venue figures from ``papiGetAccount``.
+
+        - equity: ``actualEquity`` — account equity without collateral rate (NAV), the
+          same basis as Bybit ``totalEquity`` / OKX ``totalEq``. Absent → None; never
+          falls back to the haircut figure.
+        - collateral_equity: ``accountEquity`` — collateral-rate (haircut) equity plus
+          uPnL across um/cm/margin, USD; what ``uniMMR`` is computed from.
+        - available_margin: ``totalAvailableBalance`` (margin available for new positions).
+        - margin_ratio: ``uniMMR`` (accountEquity / accountMaintMargin); reported as a
+          99999999 sentinel when maint margin is 0, mapped to None so AM applies its own
+          no-positions handling.
+        - withdrawable: ``virtualMaxWithdrawAmount``.
+        - total_maint_margin / total_initial_margin: ``accountMaintMargin`` /
+          ``accountInitialMargin`` — account-wide across um/cm/margin.
+        """
         account = _account_figures(raw_balance)
         maint = info_float(account, "accountMaintMargin")
         margin_ratio = info_float(account, "uniMMR") if maint is not None and maint > 0 else None
         return VenueFigures(
-            equity=info_float(account, "accountEquity"),
+            equity=info_float(account, "actualEquity"),
             available_margin=info_float(account, "totalAvailableBalance"),
             margin_ratio=margin_ratio,
             withdrawable=info_float(account, "virtualMaxWithdrawAmount"),
             total_maint_margin=maint,
             total_initial_margin=info_float(account, "accountInitialMargin"),
+            collateral_equity=info_float(account, "accountEquity"),
         )
 
     async def _fill_leverage_settings(self, positions: list[Position]) -> None:
