@@ -1070,7 +1070,9 @@ class ITradingManager:
         record per accepted call (DONE / FAILED). ``currency=None`` moves every eligible currency.
         A move not listed by ``wallet_moves`` or bad arguments (``amount`` missing where
         required, given where the venue takes none) raise ValueError here; venues without
-        wallets (simulation included) raise NotImplementedError.
+        wallets (simulation included) raise NotImplementedError. Collection without a currency
+        (Binance PM auto-collection) is venue-weight-heavy (750, ≤500/h) and shares the
+        order-placement weight budget — don't call it per bar.
         """
         ...
 
