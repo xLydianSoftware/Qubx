@@ -21,6 +21,10 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
     typically only covers IPv4 addresses.
     """
 
+    def __init__(self, config=None):
+        super().__init__(config or {})
+        self._funding_read_warned = False
+
     def describe(self):
         return self.deep_extend(
             super().describe(),
@@ -93,7 +97,11 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
         try:
             funding = (await self.privateGetAssetBalances()).get("data")
         except Exception as e:  # noqa: BLE001 — the funding leg is decoration; never sink the snapshot
-            logger.debug(f"[okx] funding balance read failed: {e}")
+            if self._funding_read_warned:
+                logger.debug(f"[okx] funding balance read failed: {e}")
+            else:
+                self._funding_read_warned = True
+                logger.warning(f"[okx] funding balance read failed, funding wallet unreported: {e}")
         info = balances.get("info")
         if isinstance(info, dict):
             info["funding"] = funding

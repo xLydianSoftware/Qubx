@@ -56,6 +56,7 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
         super().__init__(config or {})
         self._funding_rate_adapter: PollingToWebSocketAdapter | None = None
         self._fund_read_denied = False
+        self._fund_read_warned = False
 
     def describe(self):
         return self.deep_extend(
@@ -112,7 +113,11 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
                 self._fund_read_denied = True
                 logger.warning(f"[bybit] FUND wallet not readable with this key, skipping it: {e}")
             except Exception as e:  # noqa: BLE001 — the funding leg is decoration; never sink the snapshot
-                logger.debug(f"[bybit] FUND wallet read failed: {e}")
+                if self._fund_read_warned:
+                    logger.debug(f"[bybit] FUND wallet read failed: {e}")
+                else:
+                    self._fund_read_warned = True
+                    logger.warning(f"[bybit] FUND wallet read failed, funding wallet unreported: {e}")
         info = balances.get("info")
         if isinstance(info, dict):
             info["funding"] = funding

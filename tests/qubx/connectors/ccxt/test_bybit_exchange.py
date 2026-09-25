@@ -1255,3 +1255,14 @@ async def test_a_transient_fund_read_failure_retries_next_poll(bybit, unified_ba
     second = await bybit.fetch_balance()
     assert first["info"]["funding"] is None
     assert second["info"]["funding"] == [{"coin": "USDT", "walletBalance": "5"}]
+
+
+@pytest.mark.asyncio
+async def test_only_the_first_fund_read_failure_warns(bybit, unified_balance):
+    bybit.privateGetV5AssetTransferQueryAccountCoinsBalance = AsyncMock(side_effect=ccxt.ExchangeError("boom"))
+    with patch("qubx.connectors.ccxt.exchanges.bybit.bybit.logger") as log:
+        await bybit.fetch_balance()
+        await bybit.fetch_balance()
+    assert log.warning.call_count == 1
+    assert "boom" in log.warning.call_args.args[0]
+    assert log.debug.call_count == 1

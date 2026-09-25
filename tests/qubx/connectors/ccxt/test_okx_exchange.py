@@ -252,6 +252,16 @@ class TestFundingBalanceGraft:
         assert balances["info"]["funding"] is None
         assert balances["info"]["data"] == [{"details": []}]
 
+    def test_only_the_first_failed_funding_read_warns(self, offline_okx, monkeypatch):
+        self._stub_trading(monkeypatch)
+        offline_okx.privateGetAssetBalances = AsyncMock(side_effect=ccxt.ExchangeError("boom"))
+        with patch("qubx.connectors.ccxt.exchanges.okx.okx.logger") as log:
+            run(offline_okx.fetch_balance())
+            run(offline_okx.fetch_balance())
+        assert log.warning.call_count == 1
+        assert "boom" in log.warning.call_args.args[0]
+        assert log.debug.call_count == 1
+
 
 class TestOrderStatusMapping:
     """
