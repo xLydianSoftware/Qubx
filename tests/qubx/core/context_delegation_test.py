@@ -54,3 +54,37 @@ def test_convert_currency_is_barred_from_the_fit_thread(mocker: MockerFixture):
         ctx.convert_currency("BINANCE.UM", "USDC", "USDT", 100.0)
 
     ctx._trading_manager.convert_currency.assert_not_called()
+
+
+def test_move_funds_delegates_to_trading_manager(mocker: MockerFixture):
+    ctx = StrategyContext.__new__(StrategyContext)  # bypass heavy __init__
+    tm = mocker.Mock()
+    tm.move_funds.return_value = "mv-1"
+    ctx._trading_manager = tm
+    ctx._fit_state = mocker.Mock()
+    ctx._fit_state.is_fit_thread.return_value = False
+
+    assert ctx.move_funds("BINANCE.PM", "USDT", "futures_um", "margin", 100.0) == "mv-1"
+    tm.move_funds.assert_called_once_with("BINANCE.PM", "USDT", "futures_um", "margin", 100.0)
+
+
+def test_move_funds_is_barred_from_the_fit_thread(mocker: MockerFixture):
+    ctx = StrategyContext.__new__(StrategyContext)
+    ctx._trading_manager = mocker.Mock()
+    ctx._fit_state = mocker.Mock()
+    ctx._fit_state.is_fit_thread.return_value = True
+
+    with pytest.raises(RuntimeError, match="fit thread"):
+        ctx.move_funds("BINANCE.PM", None, "futures_um", "margin")
+
+    ctx._trading_manager.move_funds.assert_not_called()
+
+
+def test_wallet_moves_delegates_to_trading_manager(mocker: MockerFixture):
+    ctx = StrategyContext.__new__(StrategyContext)
+    tm = mocker.Mock()
+    tm.wallet_moves.return_value = []
+    ctx._trading_manager = tm
+
+    assert ctx.wallet_moves("BINANCE.PM") == []
+    tm.wallet_moves.assert_called_once_with("BINANCE.PM")

@@ -38,6 +38,7 @@ from qubx.core.events import (
     ChannelMessage,
     CurrencyConversionEvent,
     DealEvent,
+    FundsMovedEvent,
     OrderCancelRejectedEvent,
     OrderEvent,
     OrderUpdateRejectedEvent,
@@ -1690,10 +1691,13 @@ class ProcessingManager(IProcessingManager):
         if isinstance(event, AccountMessage):
             self._dispatch_account(event)
             return
-        # Cash, not exposure: it must not reach the AM (there it would become an order and a
-        # position), so it routes straight to the strategy.
+        # Cash, not exposure: conversions and wallet moves must not reach the AM (there they
+        # would become orders and positions), so they route straight to the strategy.
         if isinstance(event, CurrencyConversionEvent):
             self._safe_call(self._strategy.on_currency_conversion, event.conversion)
+            return
+        if isinstance(event, FundsMovedEvent):
+            self._safe_call(self._strategy.on_funds_moved, event.moved)
             return
         logger.warning(f"unknown event type: {type(event)}")
 

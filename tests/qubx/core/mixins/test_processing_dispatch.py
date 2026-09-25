@@ -6,7 +6,15 @@ import pytest
 
 from qubx import logger
 from qubx.core.account_manager.reducer import ApplyResult
-from qubx.core.basics import CurrencyConversion, DataType, Deal, FundingPayment, MarketEvent, OrderChange
+from qubx.core.basics import (
+    CurrencyConversion,
+    DataType,
+    Deal,
+    FundingPayment,
+    FundsMoved,
+    MarketEvent,
+    OrderChange,
+)
 from qubx.core.events import (
     AccountSnapshot,
     AccountSnapshotEvent,
@@ -14,6 +22,7 @@ from qubx.core.events import (
     CurrencyConversionEvent,
     DealEvent,
     FundingPaymentEvent,
+    FundsMovedEvent,
     OrderAcceptedEvent,
     OrderCancelRejectedEvent,
     OrderFilledEvent,
@@ -822,3 +831,22 @@ def test_strategy_raising_in_on_currency_conversion_is_isolated():
     pm._strategy.on_currency_conversion.side_effect = RuntimeError("boom")
 
     pm.process_event(CurrencyConversionEvent(instrument=None, conversion=_conversion()))  # must not raise
+
+
+def test_funds_moved_routes_to_the_strategy_and_never_to_the_account_manager():
+    pm = make_pm()
+    record = FundsMoved(
+        move_id="mv1",
+        exchange="BINANCE.PM",
+        currency=None,
+        src="futures_um",
+        dst="margin",
+        requested=None,
+        status="DONE",
+    )
+
+    pm.process_event(FundsMovedEvent(instrument=None, moved=record))
+
+    pm._account_manager.apply.assert_not_called()
+    pm._strategy.on_funds_moved.assert_called_once()
+    assert pm._strategy.on_funds_moved.call_args.args[1] is record

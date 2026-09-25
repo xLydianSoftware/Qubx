@@ -12,6 +12,7 @@ from qubx.core.basics import (
     OrderSide,
     OrderStatus,
     OrderType,
+    WalletMove,
     resolve_reduce_only,
 )
 from qubx.core.connector import IConnector
@@ -570,6 +571,13 @@ class TradingManager(ITradingManager):
         return self._get_connector(exchange).convert_currency(
             from_currency, to_currency, amount, limit_price=limit_price, max_slippage_bps=max_slippage_bps
         )
+
+    def wallet_moves(self, exchange: str) -> list[WalletMove]:
+        return self._get_connector(exchange).wallet_moves()
+
+    def move_funds(self, exchange: str, currency: str | None, src: str, dst: str, amount: float | None = None) -> str:
+        self._ensure_writable()
+        return self._get_connector(exchange).move_funds(currency, src, dst, amount)
 
     def _get_connector(self, exchange: str) -> IConnector:
         # Connectors are keyed by the canonical exchange (the runner canonicalizes

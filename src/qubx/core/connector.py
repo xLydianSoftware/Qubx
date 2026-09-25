@@ -1,6 +1,6 @@
 from typing import Protocol, runtime_checkable
 
-from qubx.core.basics import CtrlChannel, Instrument, Order, OrderRequest, Timestamped, dt_64
+from qubx.core.basics import CtrlChannel, Instrument, Order, OrderRequest, Timestamped, WalletMove, dt_64
 from qubx.core.events import ChannelMessage
 
 
@@ -31,6 +31,13 @@ class ChannelEmitter:
         max_slippage_bps: float = 10.0,
     ) -> str:
         raise NotImplementedError(f"{type(self).__name__} does not support currency conversion")
+
+    # Default for every venue with a single wallet per account (simulation included).
+    def wallet_moves(self) -> list[WalletMove]:
+        return []
+
+    def move_funds(self, currency: str | None, src: str, dst: str, amount: float | None = None) -> str:
+        raise NotImplementedError(f"{type(self).__name__} does not support moving funds between wallets")
 
 
 @runtime_checkable
@@ -126,3 +133,15 @@ class IConnector(Protocol):
         limit_price: float | None = None,
         max_slippage_bps: float = 10.0,
     ) -> str: ...
+
+    # The wallet-to-wallet moves this connector's venue supports; empty on single-wallet venues.
+    def wallet_moves(self) -> list[WalletMove]: ...
+
+    # Cash moved between wallets of ONE account (keys from the Balance.wallets vocabulary),
+    # never registered with the AccountManager — the only trace is the balances of the next
+    # snapshot. Returns the move's id immediately (the venue round trip runs off-thread) and
+    # emits EXACTLY ONE FundsMovedEvent per accepted call, failures included. A move not in
+    # wallet_moves() or bad arguments (``amount`` missing where required, given where the venue
+    # takes none) raise ValueError synchronously; ``currency=None`` means every eligible
+    # currency. Venues without wallets raise NotImplementedError.
+    def move_funds(self, currency: str | None, src: str, dst: str, amount: float | None = None) -> str: ...

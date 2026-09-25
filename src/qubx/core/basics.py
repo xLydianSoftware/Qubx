@@ -960,8 +960,9 @@ class Balance:
     # the REST balance snapshot carries none on Binance UM (account updateTime=0). See the
     # reconciliation design doc.
     last_update_time: dt_64 | None = None
-    # per-sub-wallet split of `total` where the venue has several (Binance PM margin/futures,
-    # OKX trading/funding); None on single-wallet venues. Snapshot-only: pushes don't carry it.
+    # per-sub-wallet split where the venue has several (Binance PM margin/futures, OKX/Bybit
+    # trading|unified/funding); None on single-wallet venues. Sums to `total` except the
+    # OKX/Bybit funding leg, shown here but excluded from `total`. Snapshot-only: pushes don't carry it.
     wallets: dict[str, float] | None = None
     # borrowed + accrued interest owed in this currency
     debt: float = 0.0
@@ -1071,6 +1072,48 @@ class CurrencyConversion:
             "status": self.status,
             "avg_price": self.avg_price,
             "venue_order_id": self.venue_order_id,
+            "failure_reason": self.failure_reason,
+        }
+
+
+@dataclass(frozen=True)
+class WalletMove:
+    """One wallet-to-wallet move a connector supports (keys from the ``Balance.wallets`` vocabulary)."""
+
+    src: str
+    dst: str
+    amount_required: bool  # False: the venue moves everything eligible and takes no amount
+
+
+@dataclass(frozen=True)
+class FundsMoved:
+    """The outcome of one ``IConnector.move_funds`` call: cash moved between wallets of one account.
+
+    Delivered to ``IStrategy.on_funds_moved`` — exactly one record per accepted ``move_funds``
+    call, FAILED included. Never registered with the AccountManager: the only trace it leaves
+    in the framework is the balances of the next account snapshot.
+    """
+
+    move_id: str  # the id move_funds returned
+    exchange: str
+    currency: str | None  # None: every eligible currency (e.g. Binance PM auto-collection)
+    src: str
+    dst: str
+    requested: float | None
+    status: Literal["DONE", "FAILED"]
+    venue_ref: str | None = None
+    failure_reason: str | None = None  # populated when status is FAILED
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "move_id": self.move_id,
+            "exchange": self.exchange,
+            "currency": self.currency,
+            "src": self.src,
+            "dst": self.dst,
+            "requested": self.requested,
+            "status": self.status,
+            "venue_ref": self.venue_ref,
             "failure_reason": self.failure_reason,
         }
 

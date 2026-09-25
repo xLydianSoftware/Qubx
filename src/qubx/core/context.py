@@ -29,6 +29,7 @@ from qubx.core.basics import (
     TargetPosition,
     TransactionCostsCalculator,
     Transfer,
+    WalletMove,
     dt_64,
     td_64,
 )
@@ -891,6 +892,13 @@ class StrategyContext(IStrategyContext):
         return self._trading_manager.convert_currency(
             exchange, from_currency, to_currency, amount, limit_price=limit_price, max_slippage_bps=max_slippage_bps
         )
+
+    def wallet_moves(self, exchange: str) -> list[WalletMove]:
+        return self._trading_manager.wallet_moves(exchange)
+
+    def move_funds(self, exchange: str, currency: str | None, src: str, dst: str, amount: float | None = None) -> str:
+        self._assert_not_fit_thread("move_funds")
+        return self._trading_manager.move_funds(exchange, currency, src, dst, amount)
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         self._assert_not_fit_thread("submit_orders")

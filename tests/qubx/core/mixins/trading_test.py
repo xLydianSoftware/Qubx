@@ -12,6 +12,7 @@ from qubx.core.basics import (
     OrderOrigin,
     OrderStatus,
     Position,
+    WalletMove,
 )
 from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
 from qubx.core.exceptions import (
@@ -1174,3 +1175,30 @@ class TestConvertCurrency:
             read_only_trading_manager.convert_currency("BINANCE.UM", "USDC", "USDT", 100.0)
 
         mock_connector.convert_currency.assert_not_called()
+
+
+class TestMoveFunds:
+    """Wallet moves route to the named venue's connector and return its id."""
+
+    def test_move_funds_delegates_to_the_exchange_connector(self, trading_manager, mock_connector):
+        mock_connector.move_funds = Mock(return_value="mv-1")
+
+        assert trading_manager.move_funds("BINANCE.UM", "USDT", "futures_um", "margin") == "mv-1"
+        mock_connector.move_funds.assert_called_once_with("USDT", "futures_um", "margin", None)
+
+    def test_wallet_moves_delegates(self, trading_manager, mock_connector):
+        mock_connector.wallet_moves = Mock(return_value=[WalletMove("futures_um", "margin", False)])
+
+        assert trading_manager.wallet_moves("BINANCE.UM") == [WalletMove("futures_um", "margin", False)]
+
+    def test_unknown_exchange_raises(self, trading_manager):
+        with pytest.raises(ValueError, match="KRAKEN"):
+            trading_manager.move_funds("KRAKEN", "USDT", "futures_um", "margin")
+
+    def test_blocked_when_read_only(self, read_only_trading_manager, mock_connector):
+        mock_connector.move_funds = Mock()
+
+        with pytest.raises(ReadOnlyConnector):
+            read_only_trading_manager.move_funds("BINANCE.UM", "USDT", "futures_um", "margin")
+
+        mock_connector.move_funds.assert_not_called()
