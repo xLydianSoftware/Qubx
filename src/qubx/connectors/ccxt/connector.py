@@ -119,8 +119,7 @@ LEVERAGE_REFRESH_INTERVAL_S = 3600.0
 # Default bound for the synchronous venue calls below. An unbounded wait on the exchange
 # loop from the strategy/account thread is the deadlock this connector must never allow.
 DEFAULT_VENUE_CALL_TIMEOUT_SECONDS = 15.0
-# Binance's newClientOrderId rule — the strictest charset/length among the venues on the
-# base connector; ids already inside it pass through untouched.
+# Enforces Binance's newClientOrderId rule; ids already inside it pass through untouched.
 _CID_ILLEGAL_RE = re.compile(r"[^.A-Za-z0-9:/_-]")
 _CID_MAX_LEN = 36
 _CID_DIGEST_LEN = 8
