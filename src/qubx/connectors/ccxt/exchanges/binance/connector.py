@@ -23,11 +23,16 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   stamps ``Position.adl_level`` (so ``ctx.get_adl_level`` — an AccountManager dict
   read — works on PM) and refreshes a local cache that ``get_adl_level`` serves
   without any network call.
+- **Wallet moves**: futures→margin collection (``asset-collection`` / ``auto-collection``)
+  and margin→futures negative-balance repay; both amount-less on the venue side.
 """
 
+import uuid
 from typing import Any
 
-from qubx.core.basics import Balance, Instrument, Position
+from qubx import logger
+from qubx.core.basics import Balance, FundsMoved, Instrument, Position, WalletMove
+from qubx.core.events import FundsMovedEvent
 
 from ...connector import CcxtConnector, VenueFigures
 from ...utils import info_float, instrument_to_ccxt_symbol
@@ -83,6 +88,9 @@ class BinancePmCcxtConnector(CcxtConnector):
     _wants_ws_balance_push = False
 
     _adl_levels: dict[str, int]
+
+    _COLLECT = WalletMove("futures_um", "margin", False)
+    _REPAY = WalletMove("margin", "futures_um", False)
 
     def __init__(self, **kwargs: Any):
         super().__init__(**kwargs)
@@ -166,3 +174,43 @@ class BinancePmCcxtConnector(CcxtConnector):
         # local cache read (refreshed each snapshot) — never a blocking venue call;
         # strategies normally read ctx.get_adl_level -> Position.adl_level anyway
         return self._adl_levels.get(self._market_id(instrument))
+
+    def wallet_moves(self) -> list[WalletMove]:
+        return [self._COLLECT, self._REPAY]
+
+    def move_funds(self, currency: str | None, src: str, dst: str, amount: float | None = None) -> str:
+        if (src, dst) not in {(m.src, m.dst) for m in self.wallet_moves()}:
+            raise ValueError(f"[{self.exchange_name}] unsupported wallet move {src} -> {dst}")
+        if amount is not None:
+            raise ValueError(f"[{self.exchange_name}] Binance PM wallet moves take no amount")
+        move_id = f"mv-{uuid.uuid4().hex[:12]}"
+        self._spawn(self._move_funds(move_id, currency, src, dst))
+        return move_id
+
+    async def _move_funds(self, move_id: str, currency: str | None, src: str, dst: str) -> None:
+        ex = self._em.exchange
+        try:
+            if (src, dst) == (self._REPAY.src, self._REPAY.dst):
+                # repays every negative futures balance; currency is recorded, not sent
+                resp = await ex.papiPostRepayFuturesNegativeBalance()
+            elif currency is None:
+                resp = await ex.papiPostAutoCollection()
+            else:
+                resp = await ex.papiPostAssetCollection({"asset": currency.upper()})
+            msg = (resp or {}).get("msg")
+            status, reason = ("DONE", None) if msg == "success" else ("FAILED", str(msg))
+        except Exception as e:  # noqa: BLE001 — every failure is reported, not raised
+            status, reason = "FAILED", f"{type(e).__name__}: {e}"
+        record = FundsMoved(
+            move_id=move_id,
+            exchange=self.exchange_name,
+            currency=currency,
+            src=src,
+            dst=dst,
+            requested=None,
+            status=status,
+            failure_reason=reason,
+        )
+        (logger.info if status == "DONE" else logger.error)(f"[{self.exchange_name}] funds move {record.to_dict()}")
+        self.send(FundsMovedEvent(instrument=None, moved=record))
+        self.request_snapshot(include_orders=False)
