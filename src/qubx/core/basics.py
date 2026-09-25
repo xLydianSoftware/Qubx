@@ -960,6 +960,11 @@ class Balance:
     # the REST balance snapshot carries none on Binance UM (account updateTime=0). See the
     # reconciliation design doc.
     last_update_time: dt_64 | None = None
+    # per-sub-wallet split of `total` where the venue has several (Binance PM margin/futures,
+    # OKX trading/funding); None on single-wallet venues. Snapshot-only: pushes don't carry it.
+    wallets: dict[str, float] | None = None
+    # borrowed + accrued interest owed in this currency
+    debt: float = 0.0
 
     def __str__(self) -> str:
         return f"{self.exchange}:{self.currency} free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
@@ -971,6 +976,8 @@ class Balance:
         self.locked = balance.locked
         self.total = balance.total
         self.last_update_time = balance.last_update_time
+        self.wallets = balance.wallets
+        self.debt = balance.debt
 
 
 class TransferStatus(StrEnum):
