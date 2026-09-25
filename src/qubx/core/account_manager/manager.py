@@ -514,6 +514,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
     def get_total_capital(self, exchange: str | None = None) -> float:
         return self._sum(AccountState.total_capital, exchange)
 
+    def get_collateral_equity(self, exchange: str | None = None) -> float:
+        return self._sum(AccountState.collateral_equity, exchange)
+
     def get_available_margin(self, exchange: str | None = None) -> float:
         return self._sum(AccountState.available_margin, exchange)
 

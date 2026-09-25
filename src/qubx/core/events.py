@@ -197,6 +197,7 @@ class AccountSnapshot:
     withdrawable: float | None = None
     total_maint_margin: float | None = None
     total_initial_margin: float | None = None
+    collateral_equity: float | None = None
 
 
 @msg

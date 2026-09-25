@@ -248,6 +248,16 @@ class IAccountViewer:
         """
         ...
 
+    def get_collateral_equity(self, exchange: str | None = None) -> float:
+        """Equity after the venue's collateral discount (haircut) — what margin and
+        liquidation are measured against. Equals ``get_total_capital`` where the venue
+        reports no such figure (no haircut, simulation, backtests).
+
+        Returns:
+            float: Collateral equity in the account's base currency
+        """
+        ...
+
     ########################################################
     # Balance and position information
     ########################################################

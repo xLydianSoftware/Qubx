@@ -824,6 +824,9 @@ class StrategyContext(IStrategyContext):
     def get_withdrawable_balance(self, exchange: str | None = None) -> float:
         return self.account.get_withdrawable_balance(exchange)
 
+    def get_collateral_equity(self, exchange: str | None = None) -> float:
+        return self.account.get_collateral_equity(exchange)
+
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         return self.account.get_margin_ratio(exchange)
 

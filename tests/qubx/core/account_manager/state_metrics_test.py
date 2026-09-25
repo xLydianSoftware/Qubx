@@ -287,3 +287,21 @@ def test_venue_equity_still_wins_over_summed_cash():
     state.update_balance("USDC", Balance(exchange="binance", currency="USDC", free=250.0, locked=0.0, total=250.0))
     state.set_venue_figures(_venue(equity=5000.0))
     assert state.total_capital() == 5000.0
+
+
+def test_collateral_equity_prefers_venue_figure():
+    state = _state()
+    state.set_venue_figures(_venue(equity=5000.0, collateral_equity=4200.0))
+    assert state.collateral_equity() == 4200.0
+    assert state.total_capital() == 5000.0
+
+
+def test_collateral_equity_falls_back_to_total_capital():
+    state = _state()
+    state.set_venue_figures(_venue(equity=5000.0))
+    assert state.collateral_equity() == 5000.0
+
+
+def test_collateral_equity_without_any_venue_figures_is_derived_capital():
+    state = _state()
+    assert state.collateral_equity() == state.total_capital()

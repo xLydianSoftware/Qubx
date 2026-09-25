@@ -34,6 +34,15 @@ def test_convert_currency_delegates_to_trading_manager(mocker: MockerFixture):
     )
 
 
+def test_get_collateral_equity_delegates_to_account(mocker: MockerFixture):
+    ctx = StrategyContext.__new__(StrategyContext)  # bypass heavy __init__
+    ctx.account = mocker.Mock()
+    ctx.account.get_collateral_equity.return_value = 4200.0
+
+    assert ctx.get_collateral_equity("BINANCE.UM") == 4200.0
+    ctx.account.get_collateral_equity.assert_called_once_with("BINANCE.UM")
+
+
 def test_convert_currency_is_barred_from_the_fit_thread(mocker: MockerFixture):
     """A blocking venue write from a threaded on_fit would mutate ProcessorThread state."""
     ctx = StrategyContext.__new__(StrategyContext)

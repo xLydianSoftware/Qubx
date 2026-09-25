@@ -43,6 +43,8 @@ class VenueAccountFigures:
     withdrawable: float | None = None
     total_maint_margin: float | None = None
     total_initial_margin: float | None = None
+    # equity after the venue's collateral discount (haircut); None where the venue has none
+    collateral_equity: float | None = None
 
 
 def _notional(position: Position) -> float:
@@ -250,6 +252,12 @@ class AccountState:
             0.0,
         )
         return cash + sum(p.market_value_funds for p in list(self._positions.values()))
+
+    def collateral_equity(self) -> float:
+        venue = self._venue_figures
+        if venue is not None and venue.collateral_equity is not None:
+            return venue.collateral_equity
+        return self.total_capital()
 
     def total_initial_margin(self) -> float:
         """Venue total when reported — it may be scoped differently from a position sum

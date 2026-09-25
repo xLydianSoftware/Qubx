@@ -528,6 +528,7 @@ class Reconciler:
                 snap.withdrawable,
                 snap.total_maint_margin,
                 snap.total_initial_margin,
+                snap.collateral_equity,
             )
         ):
             state.set_venue_figures(
@@ -539,6 +540,7 @@ class Reconciler:
                     withdrawable=snap.withdrawable,
                     total_maint_margin=snap.total_maint_margin,
                     total_initial_margin=snap.total_initial_margin,
+                    collateral_equity=snap.collateral_equity,
                 )
             )
         # - diagnostic only, changes no value: a venue claiming zero maintenance margin on a

@@ -86,6 +86,7 @@ def _snap_event(
     withdrawable=None,
     total_maint_margin=None,
     total_initial_margin=None,
+    collateral_equity=None,
 ):
     return AccountSnapshotEvent(
         instrument=None,
@@ -101,6 +102,7 @@ def _snap_event(
             withdrawable=withdrawable,
             total_maint_margin=total_maint_margin,
             total_initial_margin=total_initial_margin,
+            collateral_equity=collateral_equity,
         ),
     )
 
@@ -739,6 +741,19 @@ def test_snapshot_sets_venue_figures_and_metrics_prefer_them():
     assert am.get_available_margin("binance") == 4000.0
     assert am.get_margin_ratio("binance") == 42.0
     assert am.get_withdrawable_balance("binance") == 3500.0
+
+
+def test_snapshot_collateral_equity_reaches_the_manager():
+    am = _am()
+    am.apply(_snap_event(equity=5000.0, collateral_equity=4200.0))
+    assert am.get_total_capital("binance") == 5000.0
+    assert am.get_collateral_equity("binance") == 4200.0
+
+
+def test_snapshot_with_only_collateral_equity_still_sets_figures():
+    am = _am()
+    am.apply(_snap_event(collateral_equity=4200.0))
+    assert am.get_collateral_equity("binance") == 4200.0
 
 
 def test_snapshot_margin_totals_round_trip_and_prefer_venue():

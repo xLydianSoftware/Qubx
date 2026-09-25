@@ -443,6 +443,7 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     # (get_position and its four derivatives are explicit non-materializing
     # methods above — the real get_position writes into the live positions dict)
     "get_total_capital",
+    "get_collateral_equity",
     "get_base_currency",
     "get_balance",
     "find_order_by_id",
