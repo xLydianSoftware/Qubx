@@ -39,7 +39,7 @@ from qubx.core.basics import (
     create_venue_settings_event,
 )
 
-from ...connector import VenueFigures, _LeverageInfo
+from ...connector import VenueFigures, _LeverageInfo, with_framework_prefix
 from ...utils import info_float, instrument_to_ccxt_symbol, merge_funding_wallets
 from .._two_stream import _TwoStreamCcxtConnector
 
@@ -499,7 +499,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         survives the strip (alphanumeric), and origin classification keys on that
         sanitized form via ``cid_framework_prefix``.
         """
-        prefixed = super().make_client_id(suggested)
+        prefixed = with_framework_prefix(suggested)
         sanitized = _OKX_CLIENT_ID_RE.sub("", prefixed)
         sanitized = sanitized[:_OKX_CLIENT_ID_MAX_LEN]
         return sanitized if sanitized else prefixed[:_OKX_CLIENT_ID_MAX_LEN]

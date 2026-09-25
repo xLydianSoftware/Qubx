@@ -27,7 +27,9 @@ and its "Rejection boundary" subsection):
 """
 
 import asyncio
+import hashlib
 import math
+import re
 import threading
 import time
 import uuid
@@ -117,6 +119,39 @@ LEVERAGE_REFRESH_INTERVAL_S = 3600.0
 # Default bound for the synchronous venue calls below. An unbounded wait on the exchange
 # loop from the strategy/account thread is the deadlock this connector must never allow.
 DEFAULT_VENUE_CALL_TIMEOUT_SECONDS = 15.0
+# Binance's newClientOrderId rule — the strictest charset/length among the venues on the
+# base connector; ids already inside it pass through untouched.
+_CID_ILLEGAL_RE = re.compile(r"[^.A-Za-z0-9:/_-]")
+_CID_MAX_LEN = 36
+_CID_DIGEST_LEN = 8
+
+
+def with_framework_prefix(suggested: str) -> str:
+    return suggested if suggested.startswith(FRAMEWORK_CID_PREFIX) else FRAMEWORK_CID_PREFIX + suggested
+
+
+def conforming_client_id(cid: str) -> str:
+    """Map a prefixed cid into ``[.A-Za-z0-9:/_-]{1,36}``, deterministically.
+
+    The symbol part is stripped of illegal chars, trimmed and suffixed with a digest of the
+    original (distinct symbols stay distinct); the ``_<counter>`` tail is kept whole.
+    """
+    if len(cid) <= _CID_MAX_LEN and not _CID_ILLEGAL_RE.search(cid):
+        return cid
+    body = cid[len(FRAMEWORK_CID_PREFIX) :]
+    symbol, sep, tail = body.rpartition("_")
+    if not sep or _CID_ILLEGAL_RE.search(tail):
+        symbol, tail = body, ""
+    else:
+        tail = sep + tail
+    room = _CID_MAX_LEN - len(FRAMEWORK_CID_PREFIX) - len(tail) - _CID_DIGEST_LEN
+    if room < 0:
+        return FRAMEWORK_CID_PREFIX + _digest(body)[: _CID_MAX_LEN - len(FRAMEWORK_CID_PREFIX)]
+    return f"{FRAMEWORK_CID_PREFIX}{_CID_ILLEGAL_RE.sub('', symbol)[:room]}{_digest(symbol)[:_CID_DIGEST_LEN]}{tail}"
+
+
+def _digest(text: str) -> str:
+    return hashlib.sha1(text.encode()).hexdigest()
 
 
 @dataclass(frozen=True, slots=True)
@@ -825,16 +860,13 @@ class CcxtConnector(ChannelEmitter):
     # Client id
     # ------------------------------------------------------------------ #
     def make_client_id(self, suggested: str) -> str:
-        """Return the framework client id, ensuring the ``FRAMEWORK_CID_PREFIX``.
+        """Return the framework client id: ``FRAMEWORK_CID_PREFIX`` enforced, then mapped into
+        Binance's charset/length (``conforming_client_id``).
 
-        ``classify_origin`` keys order-origin detection on the prefix, so the
-        connector guarantees it. The generic base impl only enforces the prefix;
-        venue-specific sanitization (OKX char set / length) is overridden in the
-        subclass.
+        ``classify_origin`` keys order-origin detection on the prefix, so the connector
+        guarantees it. Venues with stricter rules (OKX) override this.
         """
-        if suggested.startswith(FRAMEWORK_CID_PREFIX):
-            return suggested
-        return FRAMEWORK_CID_PREFIX + suggested
+        return conforming_client_id(with_framework_prefix(suggested))
 
     # ------------------------------------------------------------------ #
     # Leverage / margin
@@ -1115,8 +1147,8 @@ class CcxtConnector(ChannelEmitter):
             raise ValueError(f"[{self.exchange_name}] conversion amount must be positive, got {amount}")
         if from_currency.upper() == to_currency.upper():
             raise ValueError(f"[{self.exchange_name}] cannot convert {from_currency} into itself")
-        # unique per call: make_client_id only enforces the framework prefix (order ids get
-        # their uniqueness from the TradingManager's store), and this one is the venue's
+        # unique per call: make_client_id adds no uniqueness (order ids get it from the
+        # TradingManager's store), and this one is the venue's
         # clientOrderId — a constant would be rejected as a duplicate on the second call
         suffix = uuid.uuid4().hex[:8]
         conversion_id = self.make_client_id(f"conv{from_currency.upper()[:6]}{to_currency.upper()[:6]}{suffix}")
