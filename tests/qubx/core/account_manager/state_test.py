@@ -427,6 +427,31 @@ def test_apply_balance_push_mutates_held_reference_in_place():
     assert held.total == 200.0
 
 
+def test_balance_push_keeps_snapshot_wallets():
+    # pushes carry no wallet split: the last snapshot's breakdown survives a total-only push
+    state = AccountState("binance", "USDT")
+    state.apply_balance_snapshot(
+        Balance(
+            exchange="binance",
+            currency="USDT",
+            free=100.0,
+            locked=0.0,
+            total=100.0,
+            wallets={"margin": 150.0, "futures_um": -50.0},
+        )
+    )
+    state.apply_balance_push("USDT", 120.0, T1)
+    bal = _present(state.get_balance("USDT"))
+    assert bal.total == 120.0
+    assert bal.wallets == {"margin": 150.0, "futures_um": -50.0}
+
+
+def test_apply_balance_breakdown_is_noop_for_currency_not_held():
+    state = AccountState("binance", "USDT")
+    state.apply_balance_breakdown(Balance(exchange="binance", currency="BNB", wallets={"margin": 1.0}, debt=0.5))
+    assert state.get_balance("BNB") is None
+
+
 def test_balance_push_as_of_accessor_defaults_none_then_tracks_marks():
     state = AccountState("binance", "USDT")
     assert state.get_balance_push_as_of("USDT") is None

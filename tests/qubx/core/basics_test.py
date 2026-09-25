@@ -7,6 +7,7 @@ from pytest import approx
 
 from qubx import logger
 from qubx.core.basics import (
+    Balance,
     Instrument,
     InstrumentsLookup,
     MarketType,
@@ -575,3 +576,21 @@ class TestFindInstrumentsByCoinName:
             assert sink == []
         finally:
             logger.remove(handler)
+
+
+def test_reset_by_balance_copies_wallets_and_debt():
+    held = Balance("BINANCE.UM", "USDT", free=1.0, locked=0.0, total=1.0)
+    snap = Balance(
+        "BINANCE.UM",
+        "USDT",
+        free=5055.0,
+        locked=0.0,
+        total=5055.0,
+        wallets={"margin": 144168.8, "futures_um": -139113.4},
+        liabilities={"interest": 3.39},
+        debt=3.39,
+    )
+    held.reset_by_balance(snap)
+    assert held.wallets == {"margin": 144168.8, "futures_um": -139113.4}
+    assert held.liabilities == {"interest": 3.39}
+    assert held.debt == 3.39

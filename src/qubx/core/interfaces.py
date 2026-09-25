@@ -27,6 +27,8 @@ from qubx.core.basics import (
     CtrlChannel,
     CurrencyConversion,
     Deal,
+    DebtRepaid,
+    FundsMoved,
     Instrument,
     ITimeProvider,
     MarketEvent,
@@ -43,6 +45,7 @@ from qubx.core.basics import (
     TransactionCostsCalculator,
     Transfer,
     TriggerEvent,
+    WalletMove,
     dt_64,
     td_64,
 )
@@ -245,6 +248,16 @@ class IAccountViewer:
 
         Returns:
             float: Total account capital
+        """
+        ...
+
+    def get_collateral_equity(self, exchange: str | None = None) -> float:
+        """Equity after the venue's collateral discount (haircut) — what margin and
+        liquidation are measured against. Equals ``get_total_capital`` where the venue
+        reports no such figure (no haircut, simulation, backtests).
+
+        Returns:
+            float: Collateral equity in the account's base currency
         """
         ...
 
@@ -1042,6 +1055,41 @@ class ITradingManager:
         pair's own quote terms, bounds the fill absolutely; ``max_slippage_bps`` only bounds
         it relative to the book, which a depeg moves. Venues with no cash market (simulation
         included) raise NotImplementedError.
+        """
+        ...
+
+    def wallet_moves(self, exchange: str) -> list[WalletMove]:
+        """The wallet-to-wallet moves ``exchange`` supports; empty on single-wallet venues."""
+        ...
+
+    def move_funds(self, exchange: str, currency: str | None, src: str, dst: str, amount: float | None = None) -> str:
+        """Move cash between two wallets of ONE account on ``exchange`` (``Balance.wallets`` keys).
+
+        Never registered with the AccountManager — the change shows up in the balances of the
+        next account snapshot. Returns the move's id immediately; the venue round trip runs off
+        the caller's thread and the outcome arrives at ``IStrategy.on_funds_moved``, exactly one
+        record per accepted call (DONE / FAILED). ``currency=None`` moves every eligible currency.
+        A move not listed by ``wallet_moves`` or bad arguments (``amount`` missing where
+        required, given where the venue takes none) raise ValueError here; venues without
+        wallets (simulation included) raise NotImplementedError. Collection without a currency
+        (Binance PM auto-collection) is venue-weight-heavy (750, ≤500/h) and shares the
+        order-placement weight budget — don't call it per bar.
+        """
+        ...
+
+    def debt_repayments(self, exchange: str) -> list[str]:
+        """The ``Balance.liabilities`` kinds ``repay_debt`` pays down on ``exchange``; empty where it can't."""
+        ...
+
+    def repay_debt(self, exchange: str, currency: str, amount: float | None = None) -> str:
+        """Pay down debt in ``currency`` on ``exchange`` from the account's own cash.
+
+        Never registered with the AccountManager — the change shows up in the balances of the
+        next account snapshot. Returns the repayment's id immediately; the venue round trip runs
+        off the caller's thread and the outcome arrives at ``IStrategy.on_debt_repaid``, exactly
+        one record per accepted call (DONE / FAILED). ``amount=None`` repays everything owed in
+        the kinds ``debt_repayments`` declares. Bad arguments raise ValueError here; venues that
+        can't repay (simulation included) raise NotImplementedError.
         """
         ...
 
@@ -2772,6 +2820,28 @@ class IStrategy(metaclass=Mixable):
         Args:
             ctx: Strategy context.
             conversion: What the venue did, keyed by the id convert_currency returned.
+        """
+        pass
+
+    def on_funds_moved(self, ctx: IStrategyContext, moved: FundsMoved) -> None:
+        """
+        Called with the outcome of a ``ctx.move_funds`` request — exactly one record per
+        accepted call, whatever happened (DONE / FAILED).
+
+        Args:
+            ctx: Strategy context.
+            moved: What the venue did, keyed by the id move_funds returned.
+        """
+        pass
+
+    def on_debt_repaid(self, ctx: IStrategyContext, repaid: DebtRepaid) -> None:
+        """
+        Called with the outcome of a ``ctx.repay_debt`` request — exactly one record per
+        accepted call, whatever happened (DONE / FAILED).
+
+        Args:
+            ctx: Strategy context.
+            repaid: What the venue did, keyed by the id repay_debt returned.
         """
         pass
 

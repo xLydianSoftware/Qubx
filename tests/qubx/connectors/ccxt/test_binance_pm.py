@@ -25,7 +25,7 @@ import io
 from unittest.mock import AsyncMock, MagicMock
 
 from qubx import logger
-from qubx.connectors.ccxt.connector import CcxtConnector
+from qubx.connectors.ccxt.connector import CcxtConnector, VenueFigures
 from qubx.connectors.ccxt.exchanges import CUSTOM_CONNECTORS
 from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
 from qubx.connectors.ccxt.exchanges.binance.exchange import BinancePortfolioMargin
@@ -198,23 +198,35 @@ class TestBinancePmVenueFigures:
             data_provider=MagicMock(),
         )
 
-    def test_reads_grafted_papi_account(self):
+    def test_equity_is_nav_and_haircut_is_collateral_equity(self):
         figures = self._connector()._extract_venue_figures(
             {
                 "info": {
                     "balance": [{"asset": "USDT"}],
                     "account": {
-                        "accountEquity": "404.51",
-                        "totalAvailableBalance": "359.52",
-                        "uniMMR": "731.2",
-                        "accountMaintMargin": "0.55",
-                        "accountInitialMargin": "44.99",
-                        "virtualMaxWithdrawAmount": "358.0",
+                        "uniMMR": "15.14062087",
+                        "accountEquity": "4948442.06857979",
+                        "actualEquity": "5830167.11424156",
+                        "accountInitialMargin": "3517762.15303205",
+                        "accountMaintMargin": "317235.26352938",
+                        "virtualMaxWithdrawAmount": "1284600.81392757",
+                        "totalAvailableBalance": "1284600.81392757",
                     },
                 }
             }
         )
-        assert figures == (404.51, 359.52, 731.2, 358.0, 0.55, 44.99)
+        assert figures.equity == 5830167.11424156
+        assert figures.collateral_equity == 4948442.06857979
+        assert figures.margin_ratio == 15.14062087
+        assert figures.available_margin == 1284600.81392757
+
+    def test_missing_actual_equity_leaves_equity_unreported(self):
+        # an older papi payload without actualEquity must not fall back to the haircut figure
+        figures = self._connector()._extract_venue_figures(
+            {"info": {"balance": [], "account": {"accountEquity": "100.0", "accountMaintMargin": "0.0"}}}
+        )
+        assert figures.equity is None
+        assert figures.collateral_equity == 100.0
 
     def test_unimmr_sentinel_maps_to_none(self):
         # no positions: accountMaintMargin 0 and uniMMR is a 99999999 sentinel
@@ -224,6 +236,7 @@ class TestBinancePmVenueFigures:
                     "balance": [],
                     "account": {
                         "accountEquity": "404.51",
+                        "actualEquity": "404.51",
                         "totalAvailableBalance": "404.51",
                         "uniMMR": "99999999",
                         "accountMaintMargin": "0.0",
@@ -234,11 +247,19 @@ class TestBinancePmVenueFigures:
             }
         )
         # the 0.0 margin totals are real venue values (no positions), not "unreported"
-        assert figures == (404.51, 404.51, None, 404.51, 0.0, 0.0)
+        assert figures == VenueFigures(
+            equity=404.51,
+            available_margin=404.51,
+            margin_ratio=None,
+            withdrawable=404.51,
+            total_maint_margin=0.0,
+            total_initial_margin=0.0,
+            collateral_equity=404.51,
+        )
 
     def test_missing_graft_degrades_to_none(self):
         # raw papiGetBalance list info (graft failed) must not sink the snapshot
-        assert self._connector()._extract_venue_figures({"info": [{"asset": "USDT"}]}) == (None,) * 6
+        assert self._connector()._extract_venue_figures({"info": [{"asset": "USDT"}]}) == VenueFigures()
 
 
 DOGE_MARKET = {
@@ -317,6 +338,98 @@ def _pm_exchange_with_markets():
 
     ex.request = fake_request
     return ex, calls
+
+
+class TestBinancePmWallets:
+    @staticmethod
+    def _connector() -> BinancePmCcxtConnector:
+        return TestBinancePmVenueFigures._connector()
+
+    @staticmethod
+    def _raw(rows: list[dict]) -> dict:
+        total = {r["asset"]: float(r["totalWalletBalance"]) for r in rows}
+        used = {r["asset"]: float(r.get("crossMarginLocked", 0)) for r in rows}
+        return {"info": {"balance": rows, "account": {}}, "total": total, "used": used}
+
+    def test_usdt_split_between_margin_and_um(self):
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "5055.48548376",
+            "crossMarginAsset": "144168.84518903",
+            "crossMarginFree": "144168.84518903",
+            "crossMarginLocked": "0.0",
+            "crossMarginBorrowed": "0.0",
+            "crossMarginInterest": "3.38935086",
+            "umWalletBalance": "-139113.35970527",
+            "umUnrealizedPNL": "125630.64",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "0.0",
+        }
+        (usdt,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdt.total == 5055.48548376
+        assert usdt.wallets == {"margin": 144168.84518903, "futures_um": -139113.35970527}
+        assert usdt.liabilities == {"interest": 3.38935086}
+        assert usdt.debt == 3.38935086
+
+    def test_liabilities_break_down_by_kind(self):
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "-20.0",
+            "crossMarginAsset": "0.0",
+            "crossMarginBorrowed": "100",
+            "crossMarginInterest": "0.5",
+            "umWalletBalance": "-20.0",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "-20",
+        }
+        (usdt,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdt.liabilities == {"borrowed": 100.0, "interest": 0.5, "negative": 20.0}
+        assert usdt.debt == 120.5
+
+    def test_margin_only_asset_has_no_breakdown(self):
+        row = {
+            "asset": "USDC",
+            "totalWalletBalance": "155149.762357",
+            "crossMarginAsset": "155149.762357",
+            "crossMarginFree": "155149.762357",
+            "crossMarginLocked": "0.0",
+            "umWalletBalance": "0.0",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "0.0",
+        }
+        (usdc,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdc.wallets is None
+        assert usdc.liabilities is None
+        assert usdc.debt == 0.0
+
+    def test_negative_balance_counts_as_debt(self):
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "-20.0",
+            "crossMarginAsset": "0.0",
+            "umWalletBalance": "-20.0",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "-20.0",
+        }
+        (usdt,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdt.debt == 20.0
+
+    def test_positive_negative_balance_counts_as_debt(self):
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "-20.0",
+            "crossMarginAsset": "0.0",
+            "umWalletBalance": "-20.0",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "20.0",
+        }
+        (usdt,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdt.debt == 20.0
+
+    def test_raw_without_graft_falls_back_to_plain_balances(self):
+        raw = {"info": [{"asset": "USDT"}], "total": {"USDT": 10.0}, "used": {"USDT": 0.0}}
+        (usdt,) = self._connector()._convert_balances(raw)
+        assert usdt.total == 10.0 and usdt.wallets is None
 
 
 class TestPmAlgoOrders:

@@ -39,8 +39,8 @@ from qubx.core.basics import (
     create_venue_settings_event,
 )
 
-from ...connector import _LeverageInfo
-from ...utils import info_float, instrument_to_ccxt_symbol
+from ...connector import VenueFigures, _LeverageInfo, with_framework_prefix
+from ...utils import info_float, instrument_to_ccxt_symbol, merge_funding_wallets, set_liabilities
 from .._two_stream import _TwoStreamCcxtConnector
 
 _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
@@ -429,7 +429,9 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         ccxt maps OKX's ``eq`` (equity = cashBal + unrealizedPnL) to balance ``total``;
         we want the cash leg, so we read ``cashBal`` (total) and ``frozenBal`` (locked)
         straight from ``info.data[0].details``. Currencies with a zero cash balance are
-        skipped.
+        skipped. ``liab`` (negative on OKX) is the borrowed debt and ``interest`` the accrued
+        interest; the funding-account rows grafted by ``OkxFutures.fetch_balance`` become the
+        ``funding`` wallet, outside ``total``.
         """
         details = _account_data(raw_balance).get("details") or []
         balances: list[Balance] = []
@@ -438,20 +440,26 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             if not cash_bal:
                 continue
             frozen_bal = float(detail.get("frozenBal", 0) or 0)
-            balances.append(
-                Balance(
-                    exchange=self.exchange_name,
-                    currency=detail["ccy"],
-                    free=cash_bal - frozen_bal,
-                    locked=frozen_bal,
-                    total=cash_bal,
-                )
+            bal = Balance(
+                exchange=self.exchange_name,
+                currency=detail["ccy"],
+                free=cash_bal - frozen_bal,
+                locked=frozen_bal,
+                total=cash_bal,
             )
-        return balances
+            set_liabilities(
+                bal,
+                borrowed=abs(info_float(detail, "liab") or 0.0),
+                interest=abs(info_float(detail, "interest") or 0.0),
+            )
+            balances.append(bal)
+        info = raw_balance.get("info")
+        funding = info.get("funding") if isinstance(info, dict) else None
+        return merge_funding_wallets(
+            balances, funding, self.exchange_name, main_wallet="trading", ccy_field="ccy", amount_field="bal"
+        )
 
-    def _extract_venue_figures(
-        self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
         """OKX account-level figures from ``info.data[0]`` of the trading-balance payload.
 
         - equity: ``totalEq`` — total account equity. USD-denominated; reported as-is
@@ -466,6 +474,8 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         - total_maint_margin / total_initial_margin: ``mmr`` / ``imr`` — account-level
           maintenance / initial margin requirements (cross positions + pending orders),
           populated only in multi-currency/portfolio margin modes like ``adjEq``.
+        - collateral_equity: ``adjEq`` — discount-adjusted (haircut) equity; None outside
+          multi-currency/portfolio margin modes.
 
         Not-applicable fields arrive as ``""`` → None → AM derives that metric.
         """
@@ -475,7 +485,15 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         adj_eq = info_float(acct, "adjEq")
         imr = info_float(acct, "imr")
         available_margin = adj_eq - imr if adj_eq is not None and imr is not None else None
-        return equity, available_margin, margin_ratio, None, info_float(acct, "mmr"), imr
+        return VenueFigures(
+            equity=equity,
+            available_margin=available_margin,
+            margin_ratio=margin_ratio,
+            withdrawable=None,
+            total_maint_margin=info_float(acct, "mmr"),
+            total_initial_margin=imr,
+            collateral_equity=adj_eq,
+        )
 
     def make_client_id(self, suggested: str) -> str:
         """OKX clOrdId: case-sensitive alphanumeric only, 1-32 chars.
@@ -485,7 +503,7 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         survives the strip (alphanumeric), and origin classification keys on that
         sanitized form via ``cid_framework_prefix``.
         """
-        prefixed = super().make_client_id(suggested)
+        prefixed = with_framework_prefix(suggested)
         sanitized = _OKX_CLIENT_ID_RE.sub("", prefixed)
         sanitized = sanitized[:_OKX_CLIENT_ID_MAX_LEN]
         return sanitized if sanitized else prefixed[:_OKX_CLIENT_ID_MAX_LEN]

@@ -43,6 +43,8 @@ class VenueAccountFigures:
     withdrawable: float | None = None
     total_maint_margin: float | None = None
     total_initial_margin: float | None = None
+    # equity after the venue's collateral discount (haircut); None where the venue has none
+    collateral_equity: float | None = None
 
 
 def _notional(position: Position) -> float:
@@ -251,6 +253,12 @@ class AccountState:
         )
         return cash + sum(p.market_value_funds for p in list(self._positions.values()))
 
+    def collateral_equity(self) -> float:
+        venue = self._venue_figures
+        if venue is not None and venue.collateral_equity is not None:
+            return venue.collateral_equity
+        return self.total_capital()
+
     def total_initial_margin(self) -> float:
         """Venue total when reported — it may be scoped differently from a position sum
         (cross-only on some venues, or including open-order margin), so it is the venue's
@@ -288,7 +296,7 @@ class AccountState:
         if venue is not None and venue.margin_ratio is not None:
             return venue.margin_ratio
         maint = self.total_maint_margin()
-        return 100.0 if maint == 0 else min(100.0, self.total_capital() / maint)
+        return 100.0 if maint == 0 else min(100.0, self.collateral_equity() / maint)
 
     def leverage(self, instrument: Instrument) -> float:
         pos = self._positions.get(instrument)
@@ -552,6 +560,16 @@ class AccountState:
             existing.max_notional = snapshot.max_notional
         if snapshot.adl_level is not None:
             existing.adl_level = snapshot.adl_level
+
+    def apply_balance_breakdown(self, snapshot: Balance) -> None:
+        """Copy the snapshot-only wallet split and debt breakdown onto the held balance. No-op
+        for a currency not held."""
+        existing = self._balances.get(snapshot.currency)
+        if existing is None:
+            return
+        existing.wallets = snapshot.wallets
+        existing.liabilities = snapshot.liabilities
+        existing.debt = snapshot.debt
 
     def mark_position_reconcile(self, instrument: Instrument, as_of: np.datetime64) -> None:
         """Set the position reconcile watermark (venue time). Dumb setter — the skip-re-book

@@ -4,13 +4,12 @@ Offline, mocked ccxt — no credentials or network.
 """
 
 import asyncio
-import inspect
 from unittest.mock import AsyncMock, Mock, patch
 
 import ccxt
 import pytest
 
-from qubx.connectors.ccxt.connector import CcxtConnector, _LeverageInfo
+from qubx.connectors.ccxt.connector import CcxtConnector, VenueFigures, _LeverageInfo
 from qubx.connectors.ccxt.exchanges.bybit.connector import BybitCcxtConnector
 from qubx.core.basics import CtrlChannel, Instrument, MarketType, Position, RejectCause
 from tests.qubx.core.utils_test import DummyTimeProvider
@@ -101,26 +100,78 @@ def _wallet_balance(**overrides) -> dict:
     return {"info": {"retCode": 0, "retMsg": "OK", "result": {"list": [account]}, "time": 1672125441042}}
 
 
-def test_venue_figures_match_the_base_arity():
-    """The snapshot unpacks this tuple positionally, and a short one sinks it inside
-    ``_do_request_snapshot``'s except — no snapshot is ever emitted."""
-    conn, _, _ = _make_connector()
-    expected = len(inspect.signature(CcxtConnector._extract_venue_figures).return_annotation.__args__)
-
-    assert len(conn._extract_venue_figures(_wallet_balance())) == expected
-
-
 def test_venue_figures_read_the_unified_account_block():
     conn, _, _ = _make_connector()
 
-    equity, available, ratio, withdrawable, maint, initial = conn._extract_venue_figures(_wallet_balance())
+    f = conn._extract_venue_figures(_wallet_balance())
 
-    assert equity == 19250.5  # totalEquity, not the discounted totalMarginBalance
-    assert available == 17887.72614237
-    assert ratio == pytest.approx(1.0 / 0.03)  # accountMMRate is the reciprocal
-    assert withdrawable is None
-    assert maint == 542.10
-    assert initial == 182.60183684
+    assert f.equity == 19250.5  # totalEquity, not the discounted totalMarginBalance
+    assert f.available_margin == 17887.72614237
+    assert f.margin_ratio == pytest.approx(1.0 / 0.03)  # accountMMRate is the reciprocal
+    assert f.withdrawable is None
+    assert f.total_maint_margin == 542.10
+    assert f.total_initial_margin == 182.60183684
+    assert f.collateral_equity == 18070.32797922
+
+
+def test_bybit_collateral_equity_absent_is_none():
+    conn, _, _ = _make_connector()
+    assert conn._extract_venue_figures(_wallet_balance(totalMarginBalance="")).collateral_equity is None
+
+
+def _wallet_balance_with_coins(coins: list[dict], funding: list[dict] | None) -> dict:
+    raw = _wallet_balance(coin=coins)
+    raw["info"]["funding"] = funding
+    raw["total"] = {c["coin"]: float(c["walletBalance"]) for c in coins}
+    raw["used"] = {c["coin"]: 0.0 for c in coins}
+    return raw
+
+
+def test_fund_leg_is_a_wallet_not_part_of_total():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins(
+        [{"coin": "USDT", "walletBalance": "54220.7", "borrowAmount": "0"}],
+        funding=[{"coin": "USDT", "walletBalance": "100"}, {"coin": "ETH", "walletBalance": "0.5"}],
+    )
+    balances = {b.currency: b for b in conn._convert_balances(raw)}
+    assert balances["USDT"].total == 54220.7
+    assert balances["USDT"].wallets == {"unified": 54220.7, "funding": 100.0}
+    eth = balances["ETH"]
+    assert (eth.total, eth.free, eth.locked) == (0.0, 0.0, 0.0)
+    assert eth.wallets == {"funding": 0.5}
+
+
+def test_without_the_fund_graft_there_are_no_wallets():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "54220.7", "borrowAmount": "0"}], None)
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.wallets is None
+
+
+def test_debt_is_the_borrowed_amount():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "900", "borrowAmount": "12.5"}], None)
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 12.5}
+    assert usdt.debt == 12.5
+
+
+def test_liabilities_split_borrowed_and_interest():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins(
+        [{"coin": "USDT", "walletBalance": "900", "borrowAmount": "30", "accruedInterest": "0.1"}], None
+    )
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 30.0, "interest": 0.1}
+    assert usdt.debt == 30.1
+
+
+def test_nothing_owed_has_no_liabilities():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "900"}], None)
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.liabilities is None
+    assert usdt.debt == 0.0
 
 
 @pytest.mark.parametrize("missing", ["accountMMRate", "totalMaintenanceMargin", "totalInitialMargin"])
@@ -128,7 +179,7 @@ def test_venue_figures_survive_a_missing_field(missing: str):
     conn, _, _ = _make_connector()
     balance = _wallet_balance(**{missing: ""})
 
-    assert len(conn._extract_venue_figures(balance)) == 6
+    assert isinstance(conn._extract_venue_figures(balance), VenueFigures)
 
 
 def test_get_adl_level_reads_the_rank_off_the_venue_row():

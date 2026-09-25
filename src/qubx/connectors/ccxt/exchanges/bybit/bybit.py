@@ -4,8 +4,10 @@ from functools import partial
 from typing import Any
 
 import ccxt.pro as cxp
-from ccxt.base.errors import ArgumentsRequired, BadRequest, OrderNotFound
+from ccxt.base.errors import ArgumentsRequired, BadRequest, OrderNotFound, PermissionDenied
 from ccxt.base.types import Liquidation, Num, Order, OrderSide, OrderType, Position, Str, Strings
+
+from qubx import logger
 
 from ...adapters.polling_adapter import PollingConfig, PollingToWebSocketAdapter
 from ...utils import info_float
@@ -53,6 +55,8 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
     def __init__(self, config=None):
         super().__init__(config or {})
         self._funding_rate_adapter: PollingToWebSocketAdapter | None = None
+        self._fund_read_denied = False
+        self._fund_read_warned = False
 
     def describe(self):
         return self.deep_extend(
@@ -94,6 +98,30 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
         if symbols or self._settle_filtered(params):
             return await super().fetch_positions(symbols, params)
         return await self._per_settle_coin(partial(super(BybitF, self).fetch_positions, symbols), params)
+
+    async def fetch_balance(self, params={}):
+        """Unified-account balance with the FUND wallet rows grafted onto ``info["funding"]``;
+        None when that read fails or the key may not read it."""
+        balances = await super().fetch_balance(params)
+        funding = None
+        if not self._fund_read_denied:
+            try:
+                resp = await self.privateGetV5AssetTransferQueryAccountCoinsBalance({"accountType": "FUND"})
+                funding = (resp.get("result") or {}).get("balance")
+            except PermissionDenied as e:
+                # the read needs a transfer/withdrawal permission; a key without one never gains it
+                self._fund_read_denied = True
+                logger.warning(f"[bybit] FUND wallet not readable with this key, skipping it: {e}")
+            except Exception as e:  # noqa: BLE001 — the funding leg is decoration; never sink the snapshot
+                if self._fund_read_warned:
+                    logger.debug(f"[bybit] FUND wallet read failed: {e}")
+                else:
+                    self._fund_read_warned = True
+                    logger.warning(f"[bybit] FUND wallet read failed, funding wallet unreported: {e}")
+        info = balances.get("info")
+        if isinstance(info, dict):
+            info["funding"] = funding
+        return balances
 
     def parse_position(self, position, market=None) -> Position:
         """Keep the venue's own maintenance margin and put the ADL rank on the unified key.

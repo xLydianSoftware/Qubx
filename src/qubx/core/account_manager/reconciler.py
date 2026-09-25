@@ -517,6 +517,11 @@ class Reconciler:
         for snap_pos in snap.positions or ():
             state.apply_position_settings(snap_pos)
 
+        # - wallet split/debt move without total/free/locked (collect, interest) so the differ
+        #   can't see them; same unconditional refresh as the settings
+        for snap_bal in snap.balances or ():
+            state.apply_balance_breakdown(snap_bal)
+
         # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
         #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.
         if any(
@@ -528,6 +533,7 @@ class Reconciler:
                 snap.withdrawable,
                 snap.total_maint_margin,
                 snap.total_initial_margin,
+                snap.collateral_equity,
             )
         ):
             state.set_venue_figures(
@@ -539,6 +545,7 @@ class Reconciler:
                     withdrawable=snap.withdrawable,
                     total_maint_margin=snap.total_maint_margin,
                     total_initial_margin=snap.total_initial_margin,
+                    collateral_equity=snap.collateral_equity,
                 )
             )
         # - diagnostic only, changes no value: a venue claiming zero maintenance margin on a

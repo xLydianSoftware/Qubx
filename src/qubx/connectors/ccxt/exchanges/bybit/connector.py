@@ -9,9 +9,16 @@ figures from Bybit surfaces ccxt's unified shapes do not reach.
 from typing import Any, Literal
 
 from qubx import logger
-from qubx.core.basics import Instrument, Position, RejectCause
+from qubx.core.basics import Balance, Instrument, Position, RejectCause
 
-from ...utils import info_float, instrument_to_ccxt_symbol, normalize_margin_mode
+from ...connector import VenueFigures
+from ...utils import (
+    info_float,
+    instrument_to_ccxt_symbol,
+    merge_funding_wallets,
+    normalize_margin_mode,
+    set_liabilities,
+)
 from .._two_stream import _TwoStreamCcxtConnector
 from .bybit import _POST_ONLY_REFUSAL
 
@@ -98,30 +105,45 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
     def get_margin_mode(self, instrument: Instrument) -> str | None:
         return self._margin_mode
 
-    def _extract_venue_figures(
-        self, raw_balance: dict[str, Any]
-    ) -> tuple[float | None, float | None, float | None, float | None, float | None, float | None]:
-        """(equity, available_margin, margin_ratio, withdrawable, maint_margin, initial_margin)
-        from ``info.result.list[0]``.
+    def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
+        """Base rows plus ``borrowAmount``/``accruedInterest`` as liabilities and the FUND wallet rows grafted by
+        ``BybitF.fetch_balance`` as the ``funding`` wallet, outside ``total``."""
+        balances = super()._convert_balances(raw_balance)
+        coins = _account_block(raw_balance).get("coin")
+        rows = {c["coin"]: c for c in coins if isinstance(c, dict) and "coin" in c} if isinstance(coins, list) else {}
+        for bal in balances:
+            if (row := rows.get(bal.currency)) is not None:
+                set_liabilities(
+                    bal, borrowed=info_float(row, "borrowAmount"), interest=info_float(row, "accruedInterest")
+                )
+        info = raw_balance.get("info")
+        funding = info.get("funding") if isinstance(info, dict) else None
+        return merge_funding_wallets(
+            balances, funding, self.exchange_name, main_wallet="unified", ccy_field="coin", amount_field="walletBalance"
+        )
+
+    def _extract_venue_figures(self, raw_balance: dict[str, Any]) -> VenueFigures:
+        """Venue figures from ``info.result.list[0]``.
 
         ``accountMMRate`` is maintenance margin OVER equity — the reciprocal of the framework's
         ratio — and ``""``/``"0"`` map to None, as does withdrawable (per coin only), so that AM
         derives those metrics.
 
-        Equity is ``totalEquity``, not ``totalMarginBalance``: the latter is
-        ``totalWalletBalance + totalPerpUPL`` where the wallet total already has the collateral
-        discount on non-USDT holdings folded in, which understates NAV. available_margin and
-        margin_ratio come from the venue separately, so they keep the discount the venue applies.
+        Equity is ``totalEquity`` (NAV). ``totalMarginBalance`` is ``totalWalletBalance +
+        totalPerpUPL`` with the collateral discount on non-USDT holdings folded in — the haircut
+        figure, reported as collateral_equity. available_margin and margin_ratio come from the
+        venue separately, so they keep the discount the venue applies.
         """
         acct = _account_block(raw_balance)
         mm_rate = info_float(acct, "accountMMRate")
-        return (
-            info_float(acct, "totalEquity"),
-            info_float(acct, "totalAvailableBalance"),
-            1.0 / mm_rate if mm_rate is not None and mm_rate > 0 else None,
-            None,
-            info_float(acct, "totalMaintenanceMargin"),
-            info_float(acct, "totalInitialMargin"),
+        return VenueFigures(
+            equity=info_float(acct, "totalEquity"),
+            available_margin=info_float(acct, "totalAvailableBalance"),
+            margin_ratio=1.0 / mm_rate if mm_rate is not None and mm_rate > 0 else None,
+            withdrawable=None,
+            total_maint_margin=info_float(acct, "totalMaintenanceMargin"),
+            total_initial_margin=info_float(acct, "totalInitialMargin"),
+            collateral_equity=info_float(acct, "totalMarginBalance"),
         )
 
     def _reject_details(self, raw: dict[str, Any]) -> tuple[str | None, RejectCause]:

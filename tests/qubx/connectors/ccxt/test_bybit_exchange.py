@@ -1211,3 +1211,58 @@ async def test_a_non_bad_request_failure_still_raises(bybit):
     ):
         with pytest.raises(ccxt.ExchangeError):
             await bybit.set_leverage(3, "BTC/USDT:USDT")
+
+
+def _fund_payload(*rows: dict) -> dict:
+    return {"retCode": 0, "result": {"accountType": "FUND", "balance": list(rows)}}
+
+
+@pytest.fixture
+def unified_balance():
+    with patch.object(cxp.bybit, "fetch_balance", AsyncMock(side_effect=lambda params={}: {"info": {"result": {}}})):
+        yield
+
+
+@pytest.mark.asyncio
+async def test_fund_rows_are_grafted_into_info(bybit, unified_balance):
+    bybit.privateGetV5AssetTransferQueryAccountCoinsBalance = AsyncMock(
+        return_value=_fund_payload({"coin": "USDT", "walletBalance": "100"})
+    )
+    balances = await bybit.fetch_balance()
+    assert balances["info"]["funding"] == [{"coin": "USDT", "walletBalance": "100"}]
+    bybit.privateGetV5AssetTransferQueryAccountCoinsBalance.assert_awaited_once_with({"accountType": "FUND"})
+
+
+@pytest.mark.asyncio
+async def test_a_key_without_transfer_permission_stops_asking(bybit, unified_balance):
+    bybit.privateGetV5AssetTransferQueryAccountCoinsBalance = AsyncMock(
+        side_effect=ccxt.PermissionDenied("must own one of permissions: Account Transfer")
+    )
+    with patch("qubx.connectors.ccxt.exchanges.bybit.bybit.logger") as log:
+        first = await bybit.fetch_balance()
+        second = await bybit.fetch_balance()
+    assert first["info"]["funding"] is None and second["info"]["funding"] is None
+    assert bybit.privateGetV5AssetTransferQueryAccountCoinsBalance.call_count == 1
+    assert log.warning.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_a_transient_fund_read_failure_retries_next_poll(bybit, unified_balance):
+    bybit.privateGetV5AssetTransferQueryAccountCoinsBalance = AsyncMock(
+        side_effect=[ccxt.NetworkError("timeout"), _fund_payload({"coin": "USDT", "walletBalance": "5"})]
+    )
+    first = await bybit.fetch_balance()
+    second = await bybit.fetch_balance()
+    assert first["info"]["funding"] is None
+    assert second["info"]["funding"] == [{"coin": "USDT", "walletBalance": "5"}]
+
+
+@pytest.mark.asyncio
+async def test_only_the_first_fund_read_failure_warns(bybit, unified_balance):
+    bybit.privateGetV5AssetTransferQueryAccountCoinsBalance = AsyncMock(side_effect=ccxt.ExchangeError("boom"))
+    with patch("qubx.connectors.ccxt.exchanges.bybit.bybit.logger") as log:
+        await bybit.fetch_balance()
+        await bybit.fetch_balance()
+    assert log.warning.call_count == 1
+    assert "boom" in log.warning.call_args.args[0]
+    assert log.debug.call_count == 1

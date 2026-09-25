@@ -226,6 +226,43 @@ class TestTriggerOrderListing:
         assert calls == [{}]
 
 
+class TestFundingBalanceGraft:
+    """``fetch_balance`` carries the funding-account rows next to the trading payload."""
+
+    @staticmethod
+    def _stub_trading(monkeypatch) -> None:
+        async def stub(self, params={}):
+            return {"info": {"code": "0", "data": [{"details": []}]}}
+
+        monkeypatch.setattr(cxp.okx, "fetch_balance", stub)
+
+    def test_funding_rows_are_grafted_into_info(self, offline_okx, monkeypatch):
+        self._stub_trading(monkeypatch)
+        offline_okx.privateGetAssetBalances = AsyncMock(
+            return_value={"code": "0", "data": [{"ccy": "USDT", "bal": "250"}]}
+        )
+        balances = run(offline_okx.fetch_balance())
+        assert balances["info"]["funding"] == [{"ccy": "USDT", "bal": "250"}]
+        assert balances["info"]["data"] == [{"details": []}]
+
+    def test_a_failed_funding_read_still_returns_the_trading_balance(self, offline_okx, monkeypatch):
+        self._stub_trading(monkeypatch)
+        offline_okx.privateGetAssetBalances = AsyncMock(side_effect=ccxt.ExchangeError("boom"))
+        balances = run(offline_okx.fetch_balance())
+        assert balances["info"]["funding"] is None
+        assert balances["info"]["data"] == [{"details": []}]
+
+    def test_only_the_first_failed_funding_read_warns(self, offline_okx, monkeypatch):
+        self._stub_trading(monkeypatch)
+        offline_okx.privateGetAssetBalances = AsyncMock(side_effect=ccxt.ExchangeError("boom"))
+        with patch("qubx.connectors.ccxt.exchanges.okx.okx.logger") as log:
+            run(offline_okx.fetch_balance())
+            run(offline_okx.fetch_balance())
+        assert log.warning.call_count == 1
+        assert "boom" in log.warning.call_args.args[0]
+        assert log.debug.call_count == 1
+
+
 class TestOrderStatusMapping:
     """
     OKX's submit ack is `{ordId, clOrdId, tag, sCode, sMsg}` — no state — so every order
