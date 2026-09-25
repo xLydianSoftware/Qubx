@@ -964,7 +964,9 @@ class Balance:
     # trading|unified/funding); None on single-wallet venues. Sums to `total` except the
     # OKX/Bybit funding leg, shown here but excluded from `total`. Snapshot-only: pushes don't carry it.
     wallets: dict[str, float] | None = None
-    # borrowed + accrued interest owed in this currency
+    # owed in this currency by kind: `borrowed`, `interest`, `negative`; zero kinds omitted, None when nothing owed
+    liabilities: dict[str, float] | None = None
+    # sum of liabilities
     debt: float = 0.0
 
     def __str__(self) -> str:
@@ -978,6 +980,7 @@ class Balance:
         self.total = balance.total
         self.last_update_time = balance.last_update_time
         self.wallets = balance.wallets
+        self.liabilities = balance.liabilities
         self.debt = balance.debt
 
 

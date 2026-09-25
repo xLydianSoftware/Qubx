@@ -545,6 +545,13 @@ def ccxt_convert_balance(d: dict[str, Any], exchange: str) -> list[Balance]:
     return balances
 
 
+def set_liabilities(balance: Balance, **kinds: float | None) -> None:
+    """Set ``liabilities`` from the non-zero kinds and ``debt`` as their sum."""
+    owed = {kind: v for kind, v in kinds.items() if v}
+    balance.liabilities = owed or None
+    balance.debt = sum(owed.values())
+
+
 def merge_funding_wallets(
     balances: list[Balance],
     funding_rows: Any,

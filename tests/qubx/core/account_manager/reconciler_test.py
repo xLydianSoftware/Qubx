@@ -790,6 +790,7 @@ def test_wallets_and_debt_refresh_without_a_balance_diff():
     st.update_balance("USDT", local)
     snap_bal = _balance("USDT", free=100.0)
     snap_bal.wallets = {"margin": 100.0}
+    snap_bal.liabilities = {"borrowed": 1.5, "interest": 0.5}
     snap_bal.debt = 2.0
     snap = _origin(balances=[snap_bal])
 
@@ -799,6 +800,7 @@ def test_wallets_and_debt_refresh_without_a_balance_diff():
 
     bal = st.get_balance("USDT")
     assert bal.wallets == {"margin": 100.0}  # type: ignore
+    assert bal.liabilities == {"borrowed": 1.5, "interest": 0.5}  # type: ignore
     assert bal.debt == 2.0  # type: ignore
     assert bal.total == 100.0  # type: ignore
     assert a == []

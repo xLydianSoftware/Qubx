@@ -152,7 +152,26 @@ def test_debt_is_the_borrowed_amount():
     conn, _, _ = _make_connector()
     raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "900", "borrowAmount": "12.5"}], None)
     (usdt,) = conn._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 12.5}
     assert usdt.debt == 12.5
+
+
+def test_liabilities_split_borrowed_and_interest():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins(
+        [{"coin": "USDT", "walletBalance": "900", "borrowAmount": "30", "accruedInterest": "0.1"}], None
+    )
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 30.0, "interest": 0.1}
+    assert usdt.debt == 30.1
+
+
+def test_nothing_owed_has_no_liabilities():
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "900"}], None)
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.liabilities is None
+    assert usdt.debt == 0.0
 
 
 @pytest.mark.parametrize("missing", ["accountMMRate", "totalMaintenanceMargin", "totalInitialMargin"])

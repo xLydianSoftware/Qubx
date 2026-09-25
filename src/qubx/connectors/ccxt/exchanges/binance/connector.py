@@ -35,7 +35,7 @@ from qubx.core.basics import Balance, FundsMoved, Instrument, Position, WalletMo
 from qubx.core.events import FundsMovedEvent
 
 from ...connector import CcxtConnector, VenueFigures
-from ...utils import info_float, instrument_to_ccxt_symbol
+from ...utils import info_float, instrument_to_ccxt_symbol, set_liabilities
 
 _PM_WALLET_FIELDS = (
     ("margin", "crossMarginAsset"),
@@ -106,10 +106,11 @@ class BinancePmCcxtConnector(CcxtConnector):
             legs = {key: v for key, field in _PM_WALLET_FIELDS if (v := info_float(row, field))}
             bal.wallets = legs if set(legs) - {"margin"} else None
             # negativeBalance sign is undocumented
-            bal.debt = (
-                (info_float(row, "crossMarginBorrowed") or 0.0)
-                + (info_float(row, "crossMarginInterest") or 0.0)
-                + abs(info_float(row, "negativeBalance") or 0.0)
+            set_liabilities(
+                bal,
+                borrowed=info_float(row, "crossMarginBorrowed"),
+                interest=info_float(row, "crossMarginInterest"),
+                negative=abs(info_float(row, "negativeBalance") or 0.0),
             )
         return balances
 

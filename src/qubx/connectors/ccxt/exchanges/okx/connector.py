@@ -40,7 +40,7 @@ from qubx.core.basics import (
 )
 
 from ...connector import VenueFigures, _LeverageInfo, with_framework_prefix
-from ...utils import info_float, instrument_to_ccxt_symbol, merge_funding_wallets
+from ...utils import info_float, instrument_to_ccxt_symbol, merge_funding_wallets, set_liabilities
 from .._two_stream import _TwoStreamCcxtConnector
 
 _OKX_CLIENT_ID_RE = re.compile(r"[^a-zA-Z0-9]")
@@ -429,8 +429,9 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
         ccxt maps OKX's ``eq`` (equity = cashBal + unrealizedPnL) to balance ``total``;
         we want the cash leg, so we read ``cashBal`` (total) and ``frozenBal`` (locked)
         straight from ``info.data[0].details``. Currencies with a zero cash balance are
-        skipped. ``liab`` (negative on OKX) is the debt; the funding-account rows grafted
-        by ``OkxFutures.fetch_balance`` become the ``funding`` wallet, outside ``total``.
+        skipped. ``liab`` (negative on OKX) is the borrowed debt and ``interest`` the accrued
+        interest; the funding-account rows grafted by ``OkxFutures.fetch_balance`` become the
+        ``funding`` wallet, outside ``total``.
         """
         details = _account_data(raw_balance).get("details") or []
         balances: list[Balance] = []
@@ -439,16 +440,17 @@ class OkxCcxtConnector(_TwoStreamCcxtConnector):
             if not cash_bal:
                 continue
             frozen_bal = float(detail.get("frozenBal", 0) or 0)
-            balances.append(
-                Balance(
-                    exchange=self.exchange_name,
-                    currency=detail["ccy"],
-                    free=cash_bal - frozen_bal,
-                    locked=frozen_bal,
-                    total=cash_bal,
-                    debt=abs(info_float(detail, "liab") or 0.0),
-                )
+            bal = Balance(
+                exchange=self.exchange_name,
+                currency=detail["ccy"],
+                free=cash_bal - frozen_bal,
+                locked=frozen_bal,
+                total=cash_bal,
             )
+            set_liabilities(
+                bal, borrowed=abs(info_float(detail, "liab") or 0.0), interest=info_float(detail, "interest")
+            )
+            balances.append(bal)
         info = raw_balance.get("info")
         funding = info.get("funding") if isinstance(info, dict) else None
         return merge_funding_wallets(

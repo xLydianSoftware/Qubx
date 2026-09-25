@@ -368,7 +368,23 @@ class TestBinancePmWallets:
         (usdt,) = self._connector()._convert_balances(self._raw([row]))
         assert usdt.total == 5055.48548376
         assert usdt.wallets == {"margin": 144168.84518903, "futures_um": -139113.35970527}
+        assert usdt.liabilities == {"interest": 3.38935086}
         assert usdt.debt == 3.38935086
+
+    def test_liabilities_break_down_by_kind(self):
+        row = {
+            "asset": "USDT",
+            "totalWalletBalance": "-20.0",
+            "crossMarginAsset": "0.0",
+            "crossMarginBorrowed": "100",
+            "crossMarginInterest": "0.5",
+            "umWalletBalance": "-20.0",
+            "cmWalletBalance": "0.0",
+            "negativeBalance": "-20",
+        }
+        (usdt,) = self._connector()._convert_balances(self._raw([row]))
+        assert usdt.liabilities == {"borrowed": 100.0, "interest": 0.5, "negative": 20.0}
+        assert usdt.debt == 120.5
 
     def test_margin_only_asset_has_no_breakdown(self):
         row = {
@@ -383,6 +399,7 @@ class TestBinancePmWallets:
         }
         (usdc,) = self._connector()._convert_balances(self._raw([row]))
         assert usdc.wallets is None
+        assert usdc.liabilities is None
         assert usdc.debt == 0.0
 
     def test_negative_balance_counts_as_debt(self):

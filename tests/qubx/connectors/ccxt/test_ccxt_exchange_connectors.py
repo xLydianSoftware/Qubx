@@ -409,7 +409,24 @@ def test_okx_debt_is_the_liability_magnitude() -> None:
         details=[{"ccy": "USDT", "cashBal": "-120.5", "frozenBal": "0", "liab": "-120.5"}], funding=None
     )
     (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 120.5}
     assert usdt.debt == 120.5
+
+
+def test_okx_liabilities_split_borrowed_and_interest() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "-50", "frozenBal": "0", "liab": "-50", "interest": "0.2"}], funding=None
+    )
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 50.0, "interest": 0.2}
+    assert usdt.debt == 50.2
+
+
+def test_okx_nothing_owed_has_no_liabilities() -> None:
+    raw = _okx_balance_payload(details=[{"ccy": "USDT", "cashBal": "465.5", "frozenBal": "0"}], funding=None)
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.liabilities is None
+    assert usdt.debt == 0.0
 
 
 def test_okx_malformed_funding_rows_are_skipped() -> None:

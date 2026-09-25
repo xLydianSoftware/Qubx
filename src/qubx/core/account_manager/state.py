@@ -562,12 +562,13 @@ class AccountState:
             existing.adl_level = snapshot.adl_level
 
     def apply_balance_breakdown(self, snapshot: Balance) -> None:
-        """Copy the snapshot-only wallet split and debt onto the held balance. No-op for a
-        currency not held."""
+        """Copy the snapshot-only wallet split and debt breakdown onto the held balance. No-op
+        for a currency not held."""
         existing = self._balances.get(snapshot.currency)
         if existing is None:
             return
         existing.wallets = snapshot.wallets
+        existing.liabilities = snapshot.liabilities
         existing.debt = snapshot.debt
 
     def mark_position_reconcile(self, instrument: Instrument, as_of: np.datetime64) -> None:

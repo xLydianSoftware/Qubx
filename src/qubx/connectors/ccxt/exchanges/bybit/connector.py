@@ -12,7 +12,13 @@ from qubx import logger
 from qubx.core.basics import Balance, Instrument, Position, RejectCause
 
 from ...connector import VenueFigures
-from ...utils import info_float, instrument_to_ccxt_symbol, merge_funding_wallets, normalize_margin_mode
+from ...utils import (
+    info_float,
+    instrument_to_ccxt_symbol,
+    merge_funding_wallets,
+    normalize_margin_mode,
+    set_liabilities,
+)
 from .._two_stream import _TwoStreamCcxtConnector
 from .bybit import _POST_ONLY_REFUSAL
 
@@ -100,14 +106,16 @@ class BybitCcxtConnector(_TwoStreamCcxtConnector):
         return self._margin_mode
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
-        """Base rows plus ``borrowAmount`` as debt and the FUND wallet rows grafted by
+        """Base rows plus ``borrowAmount``/``accruedInterest`` as liabilities and the FUND wallet rows grafted by
         ``BybitF.fetch_balance`` as the ``funding`` wallet, outside ``total``."""
         balances = super()._convert_balances(raw_balance)
         coins = _account_block(raw_balance).get("coin")
         rows = {c["coin"]: c for c in coins if isinstance(c, dict) and "coin" in c} if isinstance(coins, list) else {}
         for bal in balances:
             if (row := rows.get(bal.currency)) is not None:
-                bal.debt = info_float(row, "borrowAmount") or 0.0
+                set_liabilities(
+                    bal, borrowed=info_float(row, "borrowAmount"), interest=info_float(row, "accruedInterest")
+                )
         info = raw_balance.get("info")
         funding = info.get("funding") if isinstance(info, dict) else None
         return merge_funding_wallets(
