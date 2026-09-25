@@ -14,12 +14,14 @@ from qubx.connectors.ccxt.utils import (
     ccxt_convert_position,
     ccxt_convert_positions,
     prepare_ccxt_order_payload,
+    set_liabilities,
 )
 from qubx.core.basics import (
     OPTION_AVOID_STOP_ORDER_PRICE_VALIDATION,
     OPTION_FILL_AT_SIGNAL_PRICE,
     OPTION_SIGNAL_PRICE,
     OPTION_SKIP_PRICE_CROSS_CONTROL,
+    Balance,
 )
 from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.lookups import lookup
@@ -376,3 +378,25 @@ class TestCcxtOrderReadBackFlags:
         assert ccxt_convert_order_info(_instrument(), _raw_order(reduceOnly=True)).reduce_only is True
         assert ccxt_convert_order_info(_instrument(), _raw_order(reduceOnly=False)).reduce_only is False
         assert ccxt_convert_order_info(_instrument(), _raw_order()).reduce_only is False
+
+
+class TestSetLiabilities:
+    def test_keeps_only_positive_kinds_and_sums_them_into_debt(self):
+        bal = Balance(exchange="BINANCE.PM", currency="USDT")
+        set_liabilities(bal, borrowed=10.0, interest=float("nan"), negative=-2.0)
+        assert bal.liabilities == {"borrowed": 10.0}
+        assert bal.debt == 10.0
+
+    def test_nothing_positive_owed_clears_liabilities(self):
+        bal = Balance(exchange="BINANCE.PM", currency="USDT", liabilities={"borrowed": 1.0}, debt=1.0)
+        set_liabilities(bal, borrowed=0.0, interest=None, negative=float("nan"))
+        assert bal.liabilities is None
+        assert bal.debt == 0.0
+
+    def test_kinds_are_keyword_only(self):
+        with pytest.raises(TypeError):
+            set_liabilities(Balance(exchange="BINANCE.PM", currency="USDT"), 1.0, 0.0, 0.0)  # type: ignore[misc]
+
+    def test_unknown_kinds_are_rejected(self):
+        with pytest.raises(TypeError):
+            set_liabilities(Balance(exchange="BINANCE.PM", currency="USDT"), borrowed=1.0, owed=2.0)  # type: ignore[call-arg]

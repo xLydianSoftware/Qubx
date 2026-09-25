@@ -25,14 +25,17 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   without any network call.
 - **Wallet moves**: futures→margin collection (``asset-collection`` / ``auto-collection``)
   and margin→futures negative-balance repay; both amount-less on the venue side.
+- **Debt repayment**: ``repayLoan`` pays cross-margin ``borrowed`` + ``interest`` from the
+  margin wallet.
 """
 
 import uuid
+from decimal import Decimal
 from typing import Any
 
 from qubx import logger
-from qubx.core.basics import Balance, FundsMoved, Instrument, Position, WalletMove
-from qubx.core.events import FundsMovedEvent
+from qubx.core.basics import Balance, DebtRepaid, FundsMoved, Instrument, Position, WalletMove
+from qubx.core.events import DebtRepaidEvent, FundsMovedEvent
 
 from ...connector import CcxtConnector, VenueFigures
 from ...utils import info_float, instrument_to_ccxt_symbol, set_liabilities
@@ -215,3 +218,56 @@ class BinancePmCcxtConnector(CcxtConnector):
         (logger.info if status == "DONE" else logger.error)(f"[{self.exchange_name}] funds move {record.to_dict()}")
         self.send(FundsMovedEvent(instrument=None, moved=record))
         self.request_snapshot(include_orders=False)
+
+    def debt_repayments(self) -> list[str]:
+        return ["borrowed", "interest"]
+
+    def repay_debt(self, currency: str, amount: float | None = None) -> str:
+        if not currency:
+            raise ValueError(f"[{self.exchange_name}] repay_debt needs a currency")
+        if amount is not None and not amount > 0:
+            raise ValueError(f"[{self.exchange_name}] repay amount must be positive, got {amount}")
+        repay_id = f"rp-{uuid.uuid4().hex[:12]}"
+        self._spawn(self._repay_debt(repay_id, currency, amount))
+        return repay_id
+
+    async def _repay_debt(self, repay_id: str, currency: str, amount: float | None) -> None:
+        ex = self._em.exchange
+        asset = currency.upper()
+        venue_ref = None
+        try:
+            if amount is None:
+                owed = await self._owed(asset)
+            else:
+                owed = format(Decimal(str(amount)), "f")
+            if owed is None:
+                status, reason = "FAILED", "nothing to repay"
+            else:
+                resp = await ex.papiPostRepayLoan({"asset": asset, "amount": owed})
+                tran_id = resp.get("tranId") if isinstance(resp, dict) else None
+                if tran_id is not None:
+                    status, reason, venue_ref = "DONE", None, str(tran_id)
+                else:
+                    status, reason = "FAILED", str(resp)
+        except Exception as e:  # noqa: BLE001 — every failure is reported, not raised
+            status, reason = "FAILED", f"{type(e).__name__}: {e}"
+        record = DebtRepaid(
+            repay_id=repay_id,
+            exchange=self.exchange_name,
+            currency=currency,
+            requested=amount,
+            status=status,
+            venue_ref=venue_ref,
+            failure_reason=reason,
+        )
+        (logger.info if status == "DONE" else logger.error)(f"[{self.exchange_name}] debt repay {record.to_dict()}")
+        self.send(DebtRepaidEvent(instrument=None, repaid=record))
+        self.request_snapshot(include_orders=False)
+
+    async def _owed(self, asset: str) -> str | None:
+        """Borrowed + interest owed in ``asset`` as the venue's decimal string; None when nothing is owed."""
+        rows = await self._em.exchange.papiGetBalance()
+        row = next((r for r in rows or [] if isinstance(r, dict) and r.get("asset") == asset), {})
+        # Decimal keeps the venue's digits exact — a float round trip could over- or under-pay
+        owed = Decimal(row.get("crossMarginBorrowed") or "0") + Decimal(row.get("crossMarginInterest") or "0")
+        return format(owed.normalize(), "f") if owed > 0 else None

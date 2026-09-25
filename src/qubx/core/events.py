@@ -8,6 +8,7 @@ from qubx.core.basics import (
     Bar,
     CurrencyConversion,
     Deal,
+    DebtRepaid,
     FundingRate,
     FundsMoved,
     Instrument,
@@ -228,6 +229,13 @@ class FundsMovedEvent(ChannelMessage):
     """
 
     moved: FundsMoved
+
+
+@msg
+class DebtRepaidEvent(ChannelMessage):
+    """Outcome of one ``IConnector.repay_debt``; routed like FundsMovedEvent, never to the AM."""
+
+    repaid: DebtRepaid
 
 
 @msg

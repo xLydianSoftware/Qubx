@@ -579,6 +579,13 @@ class TradingManager(ITradingManager):
         self._ensure_writable()
         return self._get_connector(exchange).move_funds(currency, src, dst, amount)
 
+    def debt_repayments(self, exchange: str) -> list[str]:
+        return self._get_connector(exchange).debt_repayments()
+
+    def repay_debt(self, exchange: str, currency: str, amount: float | None = None) -> str:
+        self._ensure_writable()
+        return self._get_connector(exchange).repay_debt(currency, amount)
+
     def _get_connector(self, exchange: str) -> IConnector:
         # Connectors are keyed by the canonical exchange (the runner canonicalizes
         # venue names like BINANCE.PM at the config boundary), so instrument.exchange

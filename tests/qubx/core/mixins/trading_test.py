@@ -1202,3 +1202,30 @@ class TestMoveFunds:
             read_only_trading_manager.move_funds("BINANCE.UM", "USDT", "futures_um", "margin")
 
         mock_connector.move_funds.assert_not_called()
+
+
+class TestRepayDebt:
+    """Debt repayments route to the named venue's connector and return its id."""
+
+    def test_repay_debt_delegates_to_the_exchange_connector(self, trading_manager, mock_connector):
+        mock_connector.repay_debt = Mock(return_value="rp-1")
+
+        assert trading_manager.repay_debt("BINANCE.UM", "USDT") == "rp-1"
+        mock_connector.repay_debt.assert_called_once_with("USDT", None)
+
+    def test_debt_repayments_delegates(self, trading_manager, mock_connector):
+        mock_connector.debt_repayments = Mock(return_value=["borrowed", "interest"])
+
+        assert trading_manager.debt_repayments("BINANCE.UM") == ["borrowed", "interest"]
+
+    def test_unknown_exchange_raises(self, trading_manager):
+        with pytest.raises(ValueError, match="KRAKEN"):
+            trading_manager.repay_debt("KRAKEN", "USDT")
+
+    def test_blocked_when_read_only(self, read_only_trading_manager, mock_connector):
+        mock_connector.repay_debt = Mock()
+
+        with pytest.raises(ReadOnlyConnector):
+            read_only_trading_manager.repay_debt("BINANCE.UM", "USDT", 1.0)
+
+        mock_connector.repay_debt.assert_not_called()

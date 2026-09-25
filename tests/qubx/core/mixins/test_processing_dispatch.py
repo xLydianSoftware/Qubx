@@ -10,6 +10,7 @@ from qubx.core.basics import (
     CurrencyConversion,
     DataType,
     Deal,
+    DebtRepaid,
     FundingPayment,
     FundsMoved,
     MarketEvent,
@@ -21,6 +22,7 @@ from qubx.core.events import (
     BalanceUpdateEvent,
     CurrencyConversionEvent,
     DealEvent,
+    DebtRepaidEvent,
     FundingPaymentEvent,
     FundsMovedEvent,
     OrderAcceptedEvent,
@@ -850,3 +852,14 @@ def test_funds_moved_routes_to_the_strategy_and_never_to_the_account_manager():
     pm._account_manager.apply.assert_not_called()
     pm._strategy.on_funds_moved.assert_called_once()
     assert pm._strategy.on_funds_moved.call_args.args[1] is record
+
+
+def test_debt_repaid_routes_to_the_strategy_and_never_to_the_account_manager():
+    pm = make_pm()
+    record = DebtRepaid(repay_id="rp1", exchange="BINANCE.PM", currency="USDT", requested=None, status="DONE")
+
+    pm.process_event(DebtRepaidEvent(instrument=None, repaid=record))
+
+    pm._account_manager.apply.assert_not_called()
+    pm._strategy.on_debt_repaid.assert_called_once()
+    assert pm._strategy.on_debt_repaid.call_args.args[1] is record

@@ -900,6 +900,13 @@ class StrategyContext(IStrategyContext):
         self._assert_not_fit_thread("move_funds")
         return self._trading_manager.move_funds(exchange, currency, src, dst, amount)
 
+    def debt_repayments(self, exchange: str) -> list[str]:
+        return self._trading_manager.debt_repayments(exchange)
+
+    def repay_debt(self, exchange: str, currency: str, amount: float | None = None) -> str:
+        self._assert_not_fit_thread("repay_debt")
+        return self._trading_manager.repay_debt(exchange, currency, amount)
+
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         self._assert_not_fit_thread("submit_orders")
         return self._trading_manager.submit_orders(order_requests)

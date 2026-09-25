@@ -27,6 +27,7 @@ from qubx.core.basics import (
     CtrlChannel,
     CurrencyConversion,
     Deal,
+    DebtRepaid,
     FundsMoved,
     Instrument,
     ITimeProvider,
@@ -1073,6 +1074,22 @@ class ITradingManager:
         wallets (simulation included) raise NotImplementedError. Collection without a currency
         (Binance PM auto-collection) is venue-weight-heavy (750, ≤500/h) and shares the
         order-placement weight budget — don't call it per bar.
+        """
+        ...
+
+    def debt_repayments(self, exchange: str) -> list[str]:
+        """The ``Balance.liabilities`` kinds ``repay_debt`` pays down on ``exchange``; empty where it can't."""
+        ...
+
+    def repay_debt(self, exchange: str, currency: str, amount: float | None = None) -> str:
+        """Pay down debt in ``currency`` on ``exchange`` from the account's own cash.
+
+        Never registered with the AccountManager — the change shows up in the balances of the
+        next account snapshot. Returns the repayment's id immediately; the venue round trip runs
+        off the caller's thread and the outcome arrives at ``IStrategy.on_debt_repaid``, exactly
+        one record per accepted call (DONE / FAILED). ``amount=None`` repays everything owed in
+        the kinds ``debt_repayments`` declares. Bad arguments raise ValueError here; venues that
+        can't repay (simulation included) raise NotImplementedError.
         """
         ...
 
@@ -2814,6 +2831,17 @@ class IStrategy(metaclass=Mixable):
         Args:
             ctx: Strategy context.
             moved: What the venue did, keyed by the id move_funds returned.
+        """
+        pass
+
+    def on_debt_repaid(self, ctx: IStrategyContext, repaid: DebtRepaid) -> None:
+        """
+        Called with the outcome of a ``ctx.repay_debt`` request — exactly one record per
+        accepted call, whatever happened (DONE / FAILED).
+
+        Args:
+            ctx: Strategy context.
+            repaid: What the venue did, keyed by the id repay_debt returned.
         """
         pass
 

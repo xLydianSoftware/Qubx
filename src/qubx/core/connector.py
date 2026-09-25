@@ -39,6 +39,12 @@ class ChannelEmitter:
     def move_funds(self, currency: str | None, src: str, dst: str, amount: float | None = None) -> str:
         raise NotImplementedError(f"{type(self).__name__} does not support moving funds between wallets")
 
+    def debt_repayments(self) -> list[str]:
+        return []
+
+    def repay_debt(self, currency: str, amount: float | None = None) -> str:
+        raise NotImplementedError(f"{type(self).__name__} does not support repaying debt")
+
 
 @runtime_checkable
 class IMarketDataSink(Protocol):
@@ -145,3 +151,13 @@ class IConnector(Protocol):
     # takes none) raise ValueError synchronously; ``currency=None`` means every eligible
     # currency. Venues without wallets raise NotImplementedError.
     def move_funds(self, currency: str | None, src: str, dst: str, amount: float | None = None) -> str: ...
+
+    # The Balance.liabilities kinds repay_debt pays down; empty where the venue can't repay.
+    def debt_repayments(self) -> list[str]: ...
+
+    # Pays down debt in ``currency`` from the account's own cash, never registered with the
+    # AccountManager — the only trace is the balances of the next snapshot. Returns the
+    # repayment's id immediately and emits EXACTLY ONE DebtRepaidEvent per accepted call,
+    # failures included. ``amount=None`` repays everything owed in the declared kinds. Bad
+    # arguments raise ValueError synchronously; venues that can't repay raise NotImplementedError.
+    def repay_debt(self, currency: str, amount: float | None = None) -> str: ...

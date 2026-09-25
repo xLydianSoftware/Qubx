@@ -1121,6 +1121,35 @@ class FundsMoved:
         }
 
 
+@dataclass(frozen=True)
+class DebtRepaid:
+    """The outcome of one ``IConnector.repay_debt`` call: debt in one currency paid down.
+
+    Delivered to ``IStrategy.on_debt_repaid`` — exactly one record per accepted ``repay_debt``
+    call, FAILED included. Never registered with the AccountManager: the only trace it leaves
+    in the framework is the balances of the next account snapshot.
+    """
+
+    repay_id: str  # the id repay_debt returned
+    exchange: str
+    currency: str
+    requested: float | None  # None: everything owed in the kinds debt_repayments() declares
+    status: Literal["DONE", "FAILED"]
+    venue_ref: str | None = None
+    failure_reason: str | None = None  # populated when status is FAILED
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "repay_id": self.repay_id,
+            "exchange": self.exchange,
+            "currency": self.currency,
+            "requested": self.requested,
+            "status": self.status,
+            "venue_ref": self.venue_ref,
+            "failure_reason": self.failure_reason,
+        }
+
+
 DEFAULT_MAINTENANCE_MARGIN = 0.05
 
 # - venue leverage applied to every perp on universe add unless the config or the strategy says

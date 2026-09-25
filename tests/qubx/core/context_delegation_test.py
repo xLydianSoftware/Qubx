@@ -88,3 +88,37 @@ def test_wallet_moves_delegates_to_trading_manager(mocker: MockerFixture):
 
     assert ctx.wallet_moves("BINANCE.PM") == []
     tm.wallet_moves.assert_called_once_with("BINANCE.PM")
+
+
+def test_repay_debt_delegates_to_trading_manager(mocker: MockerFixture):
+    ctx = StrategyContext.__new__(StrategyContext)  # bypass heavy __init__
+    tm = mocker.Mock()
+    tm.repay_debt.return_value = "rp-1"
+    ctx._trading_manager = tm
+    ctx._fit_state = mocker.Mock()
+    ctx._fit_state.is_fit_thread.return_value = False
+
+    assert ctx.repay_debt("BINANCE.PM", "USDT", 3.5) == "rp-1"
+    tm.repay_debt.assert_called_once_with("BINANCE.PM", "USDT", 3.5)
+
+
+def test_repay_debt_is_barred_from_the_fit_thread(mocker: MockerFixture):
+    ctx = StrategyContext.__new__(StrategyContext)
+    ctx._trading_manager = mocker.Mock()
+    ctx._fit_state = mocker.Mock()
+    ctx._fit_state.is_fit_thread.return_value = True
+
+    with pytest.raises(RuntimeError, match="fit thread"):
+        ctx.repay_debt("BINANCE.PM", "USDT")
+
+    ctx._trading_manager.repay_debt.assert_not_called()
+
+
+def test_debt_repayments_delegates_to_trading_manager(mocker: MockerFixture):
+    ctx = StrategyContext.__new__(StrategyContext)
+    tm = mocker.Mock()
+    tm.debt_repayments.return_value = ["borrowed", "interest"]
+    ctx._trading_manager = tm
+
+    assert ctx.debt_repayments("BINANCE.PM") == ["borrowed", "interest"]
+    tm.debt_repayments.assert_called_once_with("BINANCE.PM")
