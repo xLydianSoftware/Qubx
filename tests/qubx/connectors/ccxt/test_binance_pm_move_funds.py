@@ -122,6 +122,15 @@ async def test_non_success_msg_is_failed():
     conn.request_snapshot.assert_called_once_with(include_orders=False)
 
 
+async def test_response_without_msg_reports_the_response():
+    conn, sent, ex = _pm_connector()
+    ex.papiPostAssetCollection = AsyncMock(return_value={"code": -1})
+    conn.move_funds("USDT", "futures_um", "margin")
+    await _drive(conn)
+    moved = _moved(sent)
+    assert moved.status == "FAILED" and moved.failure_reason == str({"code": -1})
+
+
 async def test_move_ids_are_unique():
     conn, _, _ = _pm_connector()
     first = conn.move_funds("USDT", "futures_um", "margin")

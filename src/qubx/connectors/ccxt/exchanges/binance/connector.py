@@ -198,7 +198,7 @@ class BinancePmCcxtConnector(CcxtConnector):
             else:
                 resp = await ex.papiPostAssetCollection({"asset": currency.upper()})
             msg = (resp or {}).get("msg")
-            status, reason = ("DONE", None) if msg == "success" else ("FAILED", str(msg))
+            status, reason = ("DONE", None) if msg == "success" else ("FAILED", str(resp if msg is None else msg))
         except Exception as e:  # noqa: BLE001 — every failure is reported, not raised
             status, reason = "FAILED", f"{type(e).__name__}: {e}"
         record = FundsMoved(
