@@ -238,6 +238,22 @@ class TestYahooStorage:
         reader.read("SPY", "ohlc(1d)", "2024-01-01", "2024-01-10", adjusted=False)
         assert len(stub.calls) == 1
 
+    def test_adjusting_a_multi_symbol_read(self, tmp_path, frame):
+        """
+        A list of symbols comes back as RawMultiData, whose members live in `.raws`. Reaching for
+        a `.data` attribute it does not have made every adjusted multi-symbol read raise.
+        """
+        st, _ = self._storage(tmp_path, frame)
+        got = st["YAHOO", "STOCK"].read(["SPY", "QQQ"], "ohlc(1d)", "2024-01-01", "2024-01-10", adjusted=True)
+        df = got.to_pd(id_in_index=True)
+
+        assert set(df.index.get_level_values("symbol")) == {"SPY", "QQQ"}
+        assert "adjclose" not in df.columns
+        # - the split is removed for each symbol independently
+        for symbol in ("SPY", "QQQ"):
+            one = df.xs(symbol, level="symbol")
+            assert one["close"].nunique() == 1
+
     def test_uri_resolves_through_the_registry(self, tmp_path):
         assert isinstance(StorageRegistry.get(f"yahoo::{tmp_path}"), YahooStorage)
 
