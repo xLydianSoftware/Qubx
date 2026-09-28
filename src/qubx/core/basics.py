@@ -961,8 +961,9 @@ class Balance:
     # reconciliation design doc.
     last_update_time: dt_64 | None = None
     # per-sub-wallet split where the venue has several (Binance PM margin/futures, OKX/Bybit
-    # trading|unified/funding); None on single-wallet venues. Sums to `total` except the
-    # OKX/Bybit funding leg, shown here but excluded from `total`. Snapshot-only: pushes don't carry it.
+    # trading|unified/funding); every leg is listed, zeros included. None on single-wallet venues
+    # or when the split wasn't observed. Sums to `total` except the OKX/Bybit funding leg, shown
+    # here but excluded from `total`. Snapshot-only: pushes don't carry it.
     wallets: dict[str, float] | None = None
     # owed in this currency by kind: `borrowed`, `interest`, `negative`; zero kinds omitted, None when nothing owed.
     # Informational, not additive to `total`: per venue `borrowed` / `negative` may already be reflected

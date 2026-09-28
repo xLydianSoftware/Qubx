@@ -121,8 +121,7 @@ class BinancePmCcxtConnector(CcxtConnector):
             row = rows.get(bal.currency)
             if row is None:
                 continue
-            legs = {key: v for key, field in _PM_WALLET_FIELDS if (v := info_float(row, field))}
-            bal.wallets = legs if set(legs) - {"margin"} else None
+            bal.wallets = {key: info_float(row, field) or 0.0 for key, field in _PM_WALLET_FIELDS}
             # negativeBalance sign is undocumented
             set_liabilities(
                 bal,

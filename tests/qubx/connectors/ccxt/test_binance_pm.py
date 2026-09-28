@@ -367,7 +367,7 @@ class TestBinancePmWallets:
         }
         (usdt,) = self._connector()._convert_balances(self._raw([row]))
         assert usdt.total == 99.75
-        assert usdt.wallets == {"margin": 1500.25, "futures_um": -1400.5}
+        assert usdt.wallets == {"margin": 1500.25, "futures_um": -1400.5, "futures_cm": 0.0}
         assert usdt.liabilities == {"interest": 0.75}
         assert usdt.debt == 0.75
 
@@ -386,21 +386,26 @@ class TestBinancePmWallets:
         assert usdt.liabilities == {"borrowed": 100.0, "interest": 0.5, "negative": 20.0}
         assert usdt.debt == 120.5
 
-    def test_margin_only_asset_has_no_breakdown(self):
+    def test_margin_only_asset_lists_zero_futures_legs(self):
         row = {
             "asset": "USDC",
-            "totalWalletBalance": "155149.762357",
-            "crossMarginAsset": "155149.762357",
-            "crossMarginFree": "155149.762357",
+            "totalWalletBalance": "2500.5",
+            "crossMarginAsset": "2500.5",
+            "crossMarginFree": "2500.5",
             "crossMarginLocked": "0.0",
             "umWalletBalance": "0.0",
             "cmWalletBalance": "0.0",
             "negativeBalance": "0.0",
         }
         (usdc,) = self._connector()._convert_balances(self._raw([row]))
-        assert usdc.wallets is None
+        assert usdc.wallets == {"margin": 2500.5, "futures_um": 0.0, "futures_cm": 0.0}
         assert usdc.liabilities is None
         assert usdc.debt == 0.0
+
+    def test_missing_wallet_fields_are_zero_legs(self):
+        row = {"asset": "BNB", "totalWalletBalance": "3.0", "crossMarginAsset": "3.0"}
+        (bnb,) = self._connector()._convert_balances(self._raw([row]))
+        assert bnb.wallets == {"margin": 3.0, "futures_um": 0.0, "futures_cm": 0.0}
 
     def test_negative_balance_counts_as_debt(self):
         row = {
