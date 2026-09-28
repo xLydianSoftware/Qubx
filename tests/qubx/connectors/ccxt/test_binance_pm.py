@@ -204,21 +204,21 @@ class TestBinancePmVenueFigures:
                 "info": {
                     "balance": [{"asset": "USDT"}],
                     "account": {
-                        "uniMMR": "15.14062087",
-                        "accountEquity": "4948442.06857979",
-                        "actualEquity": "5830167.11424156",
-                        "accountInitialMargin": "3517762.15303205",
-                        "accountMaintMargin": "317235.26352938",
-                        "virtualMaxWithdrawAmount": "1284600.81392757",
-                        "totalAvailableBalance": "1284600.81392757",
+                        "uniMMR": "12.5",
+                        "accountEquity": "8500.0",
+                        "actualEquity": "10000.0",
+                        "accountInitialMargin": "4000.0",
+                        "accountMaintMargin": "680.0",
+                        "virtualMaxWithdrawAmount": "4500.0",
+                        "totalAvailableBalance": "4500.0",
                     },
                 }
             }
         )
-        assert figures.equity == 5830167.11424156
-        assert figures.collateral_equity == 4948442.06857979
-        assert figures.margin_ratio == 15.14062087
-        assert figures.available_margin == 1284600.81392757
+        assert figures.equity == 10000.0
+        assert figures.collateral_equity == 8500.0
+        assert figures.margin_ratio == 12.5
+        assert figures.available_margin == 4500.0
 
     def test_missing_actual_equity_leaves_equity_unreported(self):
         # an older papi payload without actualEquity must not fall back to the haircut figure
@@ -354,22 +354,22 @@ class TestBinancePmWallets:
     def test_usdt_split_between_margin_and_um(self):
         row = {
             "asset": "USDT",
-            "totalWalletBalance": "5055.48548376",
-            "crossMarginAsset": "144168.84518903",
-            "crossMarginFree": "144168.84518903",
+            "totalWalletBalance": "99.75",
+            "crossMarginAsset": "1500.25",
+            "crossMarginFree": "1500.25",
             "crossMarginLocked": "0.0",
             "crossMarginBorrowed": "0.0",
-            "crossMarginInterest": "3.38935086",
-            "umWalletBalance": "-139113.35970527",
-            "umUnrealizedPNL": "125630.64",
+            "crossMarginInterest": "0.75",
+            "umWalletBalance": "-1400.5",
+            "umUnrealizedPNL": "1200.0",
             "cmWalletBalance": "0.0",
             "negativeBalance": "0.0",
         }
         (usdt,) = self._connector()._convert_balances(self._raw([row]))
-        assert usdt.total == 5055.48548376
-        assert usdt.wallets == {"margin": 144168.84518903, "futures_um": -139113.35970527}
-        assert usdt.liabilities == {"interest": 3.38935086}
-        assert usdt.debt == 3.38935086
+        assert usdt.total == 99.75
+        assert usdt.wallets == {"margin": 1500.25, "futures_um": -1400.5}
+        assert usdt.liabilities == {"interest": 0.75}
+        assert usdt.debt == 0.75
 
     def test_liabilities_break_down_by_kind(self):
         row = {

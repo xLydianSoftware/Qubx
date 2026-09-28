@@ -583,14 +583,14 @@ def test_reset_by_balance_copies_wallets_and_debt():
     snap = Balance(
         "BINANCE.UM",
         "USDT",
-        free=5055.0,
+        free=99.75,
         locked=0.0,
-        total=5055.0,
-        wallets={"margin": 144168.8, "futures_um": -139113.4},
-        liabilities={"interest": 3.39},
-        debt=3.39,
+        total=99.75,
+        wallets={"margin": 1500.25, "futures_um": -1400.5},
+        liabilities={"interest": 0.75},
+        debt=0.75,
     )
     held.reset_by_balance(snap)
-    assert held.wallets == {"margin": 144168.8, "futures_um": -139113.4}
-    assert held.liabilities == {"interest": 3.39}
-    assert held.debt == 3.39
+    assert held.wallets == {"margin": 1500.25, "futures_um": -1400.5}
+    assert held.liabilities == {"interest": 0.75}
+    assert held.debt == 0.75

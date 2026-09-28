@@ -13,13 +13,13 @@ from qubx.core.basics import CtrlChannel
 from qubx.core.events import DebtRepaidEvent
 from tests.qubx.core.utils_test import DummyTimeProvider
 
-FRAB_USDT_ROW = {
+USDT_ROW = {
     "asset": "USDT",
-    "totalWalletBalance": "5055.48548376",
-    "crossMarginAsset": "144168.84518903",
+    "totalWalletBalance": "99.75",
+    "crossMarginAsset": "1500.25",
     "crossMarginBorrowed": "0.0",
-    "crossMarginInterest": "3.38935086",
-    "umWalletBalance": "-139113.35970527",
+    "crossMarginInterest": "0.75",
+    "umWalletBalance": "-1400.5",
     "negativeBalance": "0.0",
 }
 
@@ -79,21 +79,21 @@ def test_bad_arguments_raise_and_emit_nothing(currency, amount):
 
 async def test_everything_owed_reads_the_balance_and_repays_the_venue_string():
     conn, sent, ex = _pm_connector()
-    ex.papiGetBalance = AsyncMock(return_value=[{"asset": "BTC", "crossMarginInterest": "1"}, FRAB_USDT_ROW])
-    ex.papiPostRepayLoan = AsyncMock(return_value={"tranId": 415031841643})
+    ex.papiGetBalance = AsyncMock(return_value=[{"asset": "BTC", "crossMarginInterest": "1"}, USDT_ROW])
+    ex.papiPostRepayLoan = AsyncMock(return_value={"tranId": 123456789})
     repay_id = conn.repay_debt("usdt")
     await _drive(conn)
-    ex.papiPostRepayLoan.assert_awaited_once_with({"asset": "USDT", "amount": "3.38935086"})
+    ex.papiPostRepayLoan.assert_awaited_once_with({"asset": "USDT", "amount": "0.75"})
     repaid = _repaid(sent)
     assert repaid.repay_id == repay_id and repaid.status == "DONE"
-    assert (repaid.exchange, repaid.currency, repaid.requested) == ("BINANCE.PM", "usdt", 3.38935086)
-    assert repaid.venue_ref == "415031841643" and repaid.failure_reason is None
+    assert (repaid.exchange, repaid.currency, repaid.requested) == ("BINANCE.PM", "usdt", 0.75)
+    assert repaid.venue_ref == "123456789" and repaid.failure_reason is None
     conn.request_snapshot.assert_called_once_with(include_orders=False)
 
 
 async def test_borrowed_and_interest_are_summed_exactly():
     conn, _, ex = _pm_connector()
-    row = {**FRAB_USDT_ROW, "crossMarginBorrowed": "100.1", "crossMarginInterest": "0.2"}
+    row = {**USDT_ROW, "crossMarginBorrowed": "100.1", "crossMarginInterest": "0.2"}
     ex.papiGetBalance = AsyncMock(return_value=[row])
     ex.papiPostRepayLoan = AsyncMock(return_value={"tranId": 1})
     conn.repay_debt("USDT")
@@ -103,7 +103,7 @@ async def test_borrowed_and_interest_are_summed_exactly():
 
 async def test_float_balance_fields_do_not_expand():
     conn, sent, ex = _pm_connector()
-    row = {**FRAB_USDT_ROW, "crossMarginBorrowed": 0.1, "crossMarginInterest": 0.2}
+    row = {**USDT_ROW, "crossMarginBorrowed": 0.1, "crossMarginInterest": 0.2}
     ex.papiGetBalance = AsyncMock(return_value=[row])
     ex.papiPostRepayLoan = AsyncMock(return_value={"tranId": 1})
     conn.repay_debt("USDT")
@@ -126,7 +126,7 @@ async def test_explicit_amount_passes_through_without_a_balance_read():
 
 async def test_nothing_owed_fails_without_a_repay_call():
     conn, sent, ex = _pm_connector()
-    row = {**FRAB_USDT_ROW, "crossMarginInterest": "0.0"}
+    row = {**USDT_ROW, "crossMarginInterest": "0.0"}
     ex.papiGetBalance = AsyncMock(return_value=[row])
     ex.papiPostRepayLoan = AsyncMock()
     conn.repay_debt("USDT")
@@ -140,7 +140,7 @@ async def test_nothing_owed_fails_without_a_repay_call():
 
 async def test_currency_missing_from_the_balance_is_nothing_to_repay():
     conn, sent, ex = _pm_connector()
-    ex.papiGetBalance = AsyncMock(return_value=[FRAB_USDT_ROW])
+    ex.papiGetBalance = AsyncMock(return_value=[USDT_ROW])
     ex.papiPostRepayLoan = AsyncMock()
     conn.repay_debt("BNB")
     await _drive(conn)
