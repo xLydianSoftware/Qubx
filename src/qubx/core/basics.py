@@ -964,9 +964,11 @@ class Balance:
     # trading|unified/funding); None on single-wallet venues. Sums to `total` except the
     # OKX/Bybit funding leg, shown here but excluded from `total`. Snapshot-only: pushes don't carry it.
     wallets: dict[str, float] | None = None
-    # owed in this currency by kind: `borrowed`, `interest`, `negative`; zero kinds omitted, None when nothing owed
+    # owed in this currency by kind: `borrowed`, `interest`, `negative`; zero kinds omitted, None when nothing owed.
+    # Informational, not additive to `total`: per venue `borrowed` / `negative` may already be reflected
+    # in `total`, so never compute `total - debt`.
     liabilities: dict[str, float] | None = None
-    # sum of liabilities
+    # sum of liabilities; same caveat — never `total - debt`
     debt: float = 0.0
 
     def __str__(self) -> str:
