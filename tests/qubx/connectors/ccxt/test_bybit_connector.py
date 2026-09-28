@@ -130,20 +130,28 @@ def _wallet_balance_with_coins(coins: list[dict], funding: list[dict] | None) ->
 def test_fund_leg_is_a_wallet_not_part_of_total():
     conn, _, _ = _make_connector()
     raw = _wallet_balance_with_coins(
-        [{"coin": "USDT", "walletBalance": "54220.7", "borrowAmount": "0"}],
+        [{"coin": "USDT", "walletBalance": "1000.0", "borrowAmount": "0"}],
         funding=[{"coin": "USDT", "walletBalance": "100"}, {"coin": "ETH", "walletBalance": "0.5"}],
     )
     balances = {b.currency: b for b in conn._convert_balances(raw)}
-    assert balances["USDT"].total == 54220.7
-    assert balances["USDT"].wallets == {"unified": 54220.7, "funding": 100.0}
+    assert balances["USDT"].total == 1000.0
+    assert balances["USDT"].wallets == {"unified": 1000.0, "funding": 100.0}
     eth = balances["ETH"]
     assert (eth.total, eth.free, eth.locked) == (0.0, 0.0, 0.0)
-    assert eth.wallets == {"funding": 0.5}
+    assert eth.wallets == {"unified": 0.0, "funding": 0.5}
 
 
-def test_without_the_fund_graft_there_are_no_wallets():
+def test_empty_fund_read_lists_a_zero_funding_leg():
     conn, _, _ = _make_connector()
-    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "54220.7", "borrowAmount": "0"}], None)
+    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "1000.0", "borrowAmount": "0"}], [])
+    (usdt,) = conn._convert_balances(raw)
+    assert usdt.wallets == {"unified": 1000.0, "funding": 0.0}
+
+
+def test_latched_or_failed_fund_read_leaves_no_wallets():
+    # funding=None: the permission latch or a failed read — a zero funding leg was not observed
+    conn, _, _ = _make_connector()
+    raw = _wallet_balance_with_coins([{"coin": "USDT", "walletBalance": "1000.0", "borrowAmount": "0"}], None)
     (usdt,) = conn._convert_balances(raw)
     assert usdt.wallets is None
 

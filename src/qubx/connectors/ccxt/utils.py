@@ -570,12 +570,15 @@ def merge_funding_wallets(
 ) -> list[Balance]:
     """Split each balance into ``{main_wallet: total, "funding": x}`` from the venue's funding-account rows.
 
-    The funding leg is outside ``total``: a currency held only there gets a zero-total row
-    carrying just ``wallets``. Malformed rows are skipped — this runs outside the snapshot's
-    per-leg isolation.
+    Both legs are always listed, zeros included; ``funding_rows`` not a list (read skipped or
+    failed) leaves ``wallets`` untouched, as a zero funding leg was not observed. The funding leg
+    is outside ``total``: a currency held only there gets a zero-total row carrying just
+    ``wallets``. Malformed rows are skipped — this runs outside the snapshot's per-leg isolation.
     """
     if not isinstance(funding_rows, list):
         return balances
+    for bal in balances:
+        bal.wallets = {main_wallet: bal.total, "funding": 0.0}
     by_ccy = {b.currency: b for b in balances}
     for row in funding_rows:
         if not isinstance(row, dict) or not isinstance(ccy := row.get(ccy_field), str):
@@ -586,7 +589,7 @@ def merge_funding_wallets(
         if bal is None:
             bal = by_ccy[ccy] = Balance(exchange=exchange, currency=ccy)
             balances.append(bal)
-        bal.wallets = {**({main_wallet: bal.total} if bal.total else {}), **(bal.wallets or {}), "funding": amount}
+        bal.wallets = {main_wallet: bal.total, "funding": amount}
     return balances
 
 

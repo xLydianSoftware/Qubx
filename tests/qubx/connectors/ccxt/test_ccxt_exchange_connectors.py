@@ -395,7 +395,26 @@ def test_okx_funding_leg_is_a_wallet_not_equity() -> None:
     assert balances["USDT"].wallets == {"trading": 11402.5, "funding": 250.0}
     eth = balances["ETH"]
     assert (eth.total, eth.free, eth.locked) == (0.0, 0.0, 0.0)
-    assert eth.wallets == {"funding": 1.5}
+    assert eth.wallets == {"trading": 0.0, "funding": 1.5}
+
+
+def test_okx_empty_funding_read_lists_a_zero_funding_leg() -> None:
+    raw = _okx_balance_payload(details=[{"ccy": "USDT", "cashBal": "465.5", "frozenBal": "0"}], funding=[])
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.wallets == {"trading": 465.5, "funding": 0.0}
+
+
+def test_okx_currency_absent_from_funding_gets_a_zero_funding_leg() -> None:
+    raw = _okx_balance_payload(
+        details=[
+            {"ccy": "USDT", "cashBal": "100", "frozenBal": "0"},
+            {"ccy": "BTC", "cashBal": "0.25", "frozenBal": "0"},
+        ],
+        funding=[{"ccy": "USDT", "bal": "5"}],
+    )
+    balances = {b.currency: b for b in _okx_connector()._convert_balances(raw)}
+    assert balances["USDT"].wallets == {"trading": 100.0, "funding": 5.0}
+    assert balances["BTC"].wallets == {"trading": 0.25, "funding": 0.0}
 
 
 def test_okx_without_funding_graft_has_no_wallets() -> None:
