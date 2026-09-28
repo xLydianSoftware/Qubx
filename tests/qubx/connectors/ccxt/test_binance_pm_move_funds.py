@@ -158,3 +158,24 @@ async def test_exchange_access_error_is_one_failed_event():
     moved = _moved(sent)
     assert moved.status == "FAILED" and "exchange not ready" in moved.failure_reason
     conn.request_snapshot.assert_called_once_with(include_orders=False)
+
+
+@pytest.mark.parametrize(
+    "error,status",
+    [
+        (ccxt.RequestTimeout, "UNKNOWN"),
+        (ccxt.ExchangeNotAvailable, "UNKNOWN"),
+        (ccxt.NetworkError, "UNKNOWN"),
+        (ccxt.RateLimitExceeded, "FAILED"),
+        (ccxt.InvalidNonce, "FAILED"),
+        (ccxt.InsufficientFunds, "FAILED"),
+    ],
+)
+async def test_transport_errors_that_may_have_reached_the_venue_are_unknown(error, status):
+    conn, sent, ex = _pm_connector()
+    ex.papiPostAssetCollection = AsyncMock(side_effect=error("binance request lost"))
+    conn.move_funds("USDT", "futures_um", "margin")
+    await _drive(conn)
+    moved = _moved(sent)
+    assert moved.status == status and "request lost" in moved.failure_reason
+    conn.request_snapshot.assert_called_once_with(include_orders=False)

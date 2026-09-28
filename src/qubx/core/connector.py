@@ -146,10 +146,11 @@ class IConnector(Protocol):
     # Cash moved between wallets of ONE account (keys from the Balance.wallets vocabulary),
     # never registered with the AccountManager — the only trace is the balances of the next
     # snapshot. Returns the move's id immediately (the venue round trip runs off-thread) and
-    # emits EXACTLY ONE FundsMovedEvent per accepted call, failures included. A move not in
-    # wallet_moves() or bad arguments (``amount`` missing where required, given where the venue
-    # takes none) raise ValueError synchronously; ``currency=None`` means every eligible
-    # currency. Venues without wallets raise NotImplementedError.
+    # emits EXACTLY ONE FundsMovedEvent per accepted call, failures included. Status UNKNOWN
+    # means the request may have been applied: confirm from the next snapshot's wallets before
+    # retrying. A move not in wallet_moves() or bad arguments (``amount`` missing where required,
+    # given where the venue takes none) raise ValueError synchronously; ``currency=None`` means
+    # every eligible currency. Venues without wallets raise NotImplementedError.
     def move_funds(self, currency: str | None, src: str, dst: str, amount: float | None = None) -> str: ...
 
     # The Balance.liabilities kinds repay_debt pays down; empty where the venue can't repay.
@@ -158,6 +159,8 @@ class IConnector(Protocol):
     # Pays down debt in ``currency`` from the account's own cash, never registered with the
     # AccountManager — the only trace is the balances of the next snapshot. Returns the
     # repayment's id immediately and emits EXACTLY ONE DebtRepaidEvent per accepted call,
-    # failures included. ``amount=None`` repays everything owed in the declared kinds. Bad
-    # arguments raise ValueError synchronously; venues that can't repay raise NotImplementedError.
+    # failures included. Status UNKNOWN means the request may have been applied: confirm from the
+    # next snapshot's liabilities before retrying. ``amount=None`` repays everything owed in the
+    # declared kinds. Bad arguments raise ValueError synchronously; venues that can't repay raise
+    # NotImplementedError.
     def repay_debt(self, currency: str, amount: float | None = None) -> str: ...

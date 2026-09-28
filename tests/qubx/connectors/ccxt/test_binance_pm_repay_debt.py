@@ -207,3 +207,25 @@ async def test_exchange_access_error_is_one_failed_event():
     repaid = _repaid(sent)
     assert repaid.status == "FAILED" and "exchange not ready" in repaid.failure_reason
     conn.request_snapshot.assert_called_once_with(include_orders=False)
+
+
+@pytest.mark.parametrize(
+    "error,status",
+    [
+        (ccxt.RequestTimeout, "UNKNOWN"),
+        (ccxt.ExchangeNotAvailable, "UNKNOWN"),
+        (ccxt.NetworkError, "UNKNOWN"),
+        (ccxt.RateLimitExceeded, "FAILED"),
+        (ccxt.InvalidNonce, "FAILED"),
+        (ccxt.InsufficientFunds, "FAILED"),
+    ],
+)
+async def test_transport_errors_that_may_have_reached_the_venue_are_unknown(error, status):
+    conn, sent, ex = _pm_connector()
+    ex.papiPostRepayLoan = AsyncMock(side_effect=error("binance request lost"))
+    conn.repay_debt("USDT", 1.0)
+    await _drive(conn)
+    repaid = _repaid(sent)
+    assert repaid.status == status and "request lost" in repaid.failure_reason
+    assert repaid.requested == 1.0
+    conn.request_snapshot.assert_called_once_with(include_orders=False)

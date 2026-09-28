@@ -1095,7 +1095,7 @@ class FundsMoved:
     """The outcome of one ``IConnector.move_funds`` call: cash moved between wallets of one account.
 
     Delivered to ``IStrategy.on_funds_moved`` — exactly one record per accepted ``move_funds``
-    call, FAILED included. Never registered with the AccountManager: the only trace it leaves
+    call, FAILED / UNKNOWN included. Never registered with the AccountManager: the only trace it leaves
     in the framework is the balances of the next account snapshot.
     """
 
@@ -1105,9 +1105,11 @@ class FundsMoved:
     src: str
     dst: str
     requested: float | None
-    status: Literal["DONE", "FAILED"]
+    # UNKNOWN: the request may have been applied (timeout, dropped connection, 5xx) — confirm
+    # from the next snapshot's wallets/liabilities before retrying
+    status: Literal["DONE", "FAILED", "UNKNOWN"]
     venue_ref: str | None = None
-    failure_reason: str | None = None  # populated when status is FAILED
+    failure_reason: str | None = None  # populated when status is FAILED or UNKNOWN
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -1128,7 +1130,7 @@ class DebtRepaid:
     """The outcome of one ``IConnector.repay_debt`` call: debt in one currency paid down.
 
     Delivered to ``IStrategy.on_debt_repaid`` — exactly one record per accepted ``repay_debt``
-    call, FAILED included. Never registered with the AccountManager: the only trace it leaves
+    call, FAILED / UNKNOWN included. Never registered with the AccountManager: the only trace it leaves
     in the framework is the balances of the next account snapshot.
     """
 
@@ -1137,9 +1139,11 @@ class DebtRepaid:
     currency: str
     # the amount sent to the venue (resolved from the balance when repay_debt got None); None: nothing resolved
     requested: float | None
-    status: Literal["DONE", "FAILED"]
+    # UNKNOWN: the request may have been applied (timeout, dropped connection, 5xx) — confirm
+    # from the next snapshot's wallets/liabilities before retrying
+    status: Literal["DONE", "FAILED", "UNKNOWN"]
     venue_ref: str | None = None
-    failure_reason: str | None = None  # populated when status is FAILED
+    failure_reason: str | None = None  # populated when status is FAILED or UNKNOWN
 
     def to_dict(self) -> dict[str, Any]:
         return {

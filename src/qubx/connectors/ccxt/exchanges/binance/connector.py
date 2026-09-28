@@ -34,6 +34,8 @@ import uuid
 from decimal import Decimal
 from typing import Any
 
+import ccxt
+
 from qubx import logger
 from qubx.core.basics import Balance, DebtRepaid, FundsMoved, Instrument, Position, WalletMove
 from qubx.core.events import DebtRepaidEvent, FundsMovedEvent
@@ -63,6 +65,17 @@ def _account_figures(raw_balance: dict[str, Any]) -> dict[str, Any]:
         return {}
     account = info.get("account")
     return account if isinstance(account, dict) else {}
+
+
+def _failure(e: Exception, sent: bool) -> tuple[str, str]:
+    """(status, reason) for an exception from a wallet move / repayment. UNKNOWN when the
+    request may have reached the venue: timeouts, dropped connections and 5xx. Rate-limit and
+    timestamp rejections are refused before execution, so they stay FAILED."""
+    reason = f"{type(e).__name__}: {e}"
+    maybe_applied = isinstance(e, ccxt.NetworkError) and not isinstance(
+        e, (ccxt.RateLimitExceeded, ccxt.DDoSProtection, ccxt.InvalidNonce)
+    )
+    return ("UNKNOWN" if sent and maybe_applied else "FAILED"), reason
 
 
 def _parse_adl_quantiles(rows: Any) -> dict[str, int]:
@@ -205,7 +218,7 @@ class BinancePmCcxtConnector(CcxtConnector):
             msg = (resp or {}).get("msg")
             status, reason = ("DONE", None) if msg == "success" else ("FAILED", str(resp if msg is None else msg))
         except Exception as e:  # noqa: BLE001 — every failure is reported, not raised
-            status, reason = "FAILED", f"{type(e).__name__}: {e}"
+            status, reason = _failure(e, sent=True)
         record = FundsMoved(
             move_id=move_id,
             exchange=self.exchange_name,
@@ -240,6 +253,7 @@ class BinancePmCcxtConnector(CcxtConnector):
         asset = currency.upper()
         venue_ref = None
         requested = amount
+        sent = False
         try:
             ex = self._em.exchange
             if amount is None:
@@ -250,6 +264,7 @@ class BinancePmCcxtConnector(CcxtConnector):
                 status, reason = "FAILED", "nothing to repay"
             else:
                 requested = float(owed)
+                sent = True
                 resp = await ex.papiPostRepayLoan({"asset": asset, "amount": owed})
                 tran_id = resp.get("tranId") if isinstance(resp, dict) else None
                 if tran_id is not None:
@@ -257,7 +272,7 @@ class BinancePmCcxtConnector(CcxtConnector):
                 else:
                     status, reason = "FAILED", str(resp)
         except Exception as e:  # noqa: BLE001 — every failure is reported, not raised
-            status, reason = "FAILED", f"{type(e).__name__}: {e}"
+            status, reason = _failure(e, sent)
         record = DebtRepaid(
             repay_id=repay_id,
             exchange=self.exchange_name,

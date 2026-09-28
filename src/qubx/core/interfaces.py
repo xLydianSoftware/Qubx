@@ -1068,7 +1068,9 @@ class ITradingManager:
         Never registered with the AccountManager — the change shows up in the balances of the
         next account snapshot. Returns the move's id immediately; the venue round trip runs off
         the caller's thread and the outcome arrives at ``IStrategy.on_funds_moved``, exactly one
-        record per accepted call (DONE / FAILED). ``currency=None`` moves every eligible currency.
+        record per accepted call (DONE / FAILED / UNKNOWN). UNKNOWN means the request may have
+        been applied (timeout, dropped connection): confirm from the next snapshot's
+        ``Balance.wallets`` before retrying. ``currency=None`` moves every eligible currency.
         A move not listed by ``wallet_moves`` or bad arguments (``amount`` missing where
         required, given where the venue takes none) raise ValueError here; venues without
         wallets (simulation included) raise NotImplementedError. Collection without a currency
@@ -1087,7 +1089,9 @@ class ITradingManager:
         Never registered with the AccountManager — the change shows up in the balances of the
         next account snapshot. Returns the repayment's id immediately; the venue round trip runs
         off the caller's thread and the outcome arrives at ``IStrategy.on_debt_repaid``, exactly
-        one record per accepted call (DONE / FAILED). ``amount=None`` repays everything owed in
+        one record per accepted call (DONE / FAILED / UNKNOWN). UNKNOWN means the request may
+        have been applied (timeout, dropped connection): confirm from the next snapshot's
+        ``Balance.liabilities`` before retrying. ``amount=None`` repays everything owed in
         the kinds ``debt_repayments`` declares. Bad arguments raise ValueError here; venues that
         can't repay (simulation included) raise NotImplementedError.
         """
@@ -2826,7 +2830,8 @@ class IStrategy(metaclass=Mixable):
     def on_funds_moved(self, ctx: IStrategyContext, moved: FundsMoved) -> None:
         """
         Called with the outcome of a ``ctx.move_funds`` request — exactly one record per
-        accepted call, whatever happened (DONE / FAILED).
+        accepted call, whatever happened (DONE / FAILED / UNKNOWN). UNKNOWN means the request
+        may have been applied: confirm from the next snapshot's ``Balance.wallets`` before retrying.
 
         Args:
             ctx: Strategy context.
@@ -2837,7 +2842,8 @@ class IStrategy(metaclass=Mixable):
     def on_debt_repaid(self, ctx: IStrategyContext, repaid: DebtRepaid) -> None:
         """
         Called with the outcome of a ``ctx.repay_debt`` request — exactly one record per
-        accepted call, whatever happened (DONE / FAILED).
+        accepted call, whatever happened (DONE / FAILED / UNKNOWN). UNKNOWN means the request
+        may have been applied: confirm from the next snapshot's ``Balance.liabilities`` before retrying.
 
         Args:
             ctx: Strategy context.
