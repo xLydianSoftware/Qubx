@@ -3,7 +3,7 @@ negative-balance repay. Offline: the exchange is a MagicMock, ``_spawn`` capture
 coroutine and the test awaits it itself.
 """
 
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, PropertyMock
 
 import ccxt
 import pytest
@@ -138,3 +138,23 @@ async def test_move_ids_are_unique():
     for coro in conn._captured:  # type: ignore[attr-defined]
         coro.close()
     assert first.startswith("mv-") and first != second
+
+
+async def test_markup_in_venue_error_still_emits_one_failed_event():
+    conn, sent, ex = _pm_connector()
+    ex.papiPostAssetCollection = AsyncMock(side_effect=ccxt.ExchangeError("binance <html><body>502</body></html>"))
+    conn.move_funds("USDT", "futures_um", "margin")
+    await _drive(conn)
+    moved = _moved(sent)
+    assert moved.status == "FAILED" and "<html>" in moved.failure_reason
+    conn.request_snapshot.assert_called_once_with(include_orders=False)
+
+
+async def test_exchange_access_error_is_one_failed_event():
+    conn, sent, _ = _pm_connector()
+    type(conn._em).exchange = PropertyMock(side_effect=RuntimeError("exchange not ready"))
+    conn.move_funds("USDT", "futures_um", "margin")
+    await _drive(conn)
+    moved = _moved(sent)
+    assert moved.status == "FAILED" and "exchange not ready" in moved.failure_reason
+    conn.request_snapshot.assert_called_once_with(include_orders=False)

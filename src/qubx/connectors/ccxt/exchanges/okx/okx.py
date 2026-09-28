@@ -98,10 +98,10 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
             funding = (await self.privateGetAssetBalances()).get("data")
         except Exception as e:  # noqa: BLE001 — the funding leg is decoration; never sink the snapshot
             if self._funding_read_warned:
-                logger.debug(f"[okx] funding balance read failed: {e}")
+                logger.debug("[okx] funding balance read failed: {}", e)
             else:
                 self._funding_read_warned = True
-                logger.warning(f"[okx] funding balance read failed, funding wallet unreported: {e}")
+                logger.warning("[okx] funding balance read failed, funding wallet unreported: {}", e)
         info = balances.get("info")
         if isinstance(info, dict):
             info["funding"] = funding

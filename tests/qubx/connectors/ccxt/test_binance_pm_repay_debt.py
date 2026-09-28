@@ -3,7 +3,7 @@
 the test awaits it itself.
 """
 
-from unittest.mock import AsyncMock, MagicMock, Mock
+from unittest.mock import AsyncMock, MagicMock, Mock, PropertyMock
 
 import ccxt
 import pytest
@@ -187,3 +187,23 @@ async def test_repay_ids_are_unique():
     for coro in conn._captured:  # type: ignore[attr-defined]
         coro.close()
     assert first.startswith("rp-") and first != second
+
+
+async def test_markup_in_venue_error_still_emits_one_failed_event():
+    conn, sent, ex = _pm_connector()
+    ex.papiPostRepayLoan = AsyncMock(side_effect=ccxt.ExchangeError("binance <html><body>502</body></html>"))
+    conn.repay_debt("USDT", 1.0)
+    await _drive(conn)
+    repaid = _repaid(sent)
+    assert repaid.status == "FAILED" and "<html>" in repaid.failure_reason
+    conn.request_snapshot.assert_called_once_with(include_orders=False)
+
+
+async def test_exchange_access_error_is_one_failed_event():
+    conn, sent, _ = _pm_connector()
+    type(conn._em).exchange = PropertyMock(side_effect=RuntimeError("exchange not ready"))
+    conn.repay_debt("USDT", 1.0)
+    await _drive(conn)
+    repaid = _repaid(sent)
+    assert repaid.status == "FAILED" and "exchange not ready" in repaid.failure_reason
+    conn.request_snapshot.assert_called_once_with(include_orders=False)

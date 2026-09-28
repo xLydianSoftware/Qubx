@@ -1264,5 +1264,16 @@ async def test_only_the_first_fund_read_failure_warns(bybit, unified_balance):
         await bybit.fetch_balance()
         await bybit.fetch_balance()
     assert log.warning.call_count == 1
-    assert "boom" in log.warning.call_args.args[0]
+    assert "boom" in str(log.warning.call_args.args)
     assert log.debug.call_count == 1
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("error", [ccxt.PermissionDenied, ccxt.ExchangeNotAvailable])
+async def test_markup_in_a_fund_read_failure_still_returns_the_balance(bybit, unified_balance, error):
+    bybit.privateGetV5AssetTransferQueryAccountCoinsBalance = AsyncMock(
+        side_effect=error("bybit <html><body>502</body></html>")
+    )
+    first = await bybit.fetch_balance()
+    second = await bybit.fetch_balance()
+    assert first["info"]["funding"] is None and second["info"]["funding"] is None

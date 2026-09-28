@@ -259,8 +259,17 @@ class TestFundingBalanceGraft:
             run(offline_okx.fetch_balance())
             run(offline_okx.fetch_balance())
         assert log.warning.call_count == 1
-        assert "boom" in log.warning.call_args.args[0]
+        assert "boom" in str(log.warning.call_args.args)
         assert log.debug.call_count == 1
+
+    def test_markup_in_a_failed_funding_read_still_returns_the_trading_balance(self, offline_okx, monkeypatch):
+        self._stub_trading(monkeypatch)
+        offline_okx.privateGetAssetBalances = AsyncMock(
+            side_effect=ccxt.ExchangeNotAvailable("okx <html><body>502</body></html>")
+        )
+        first = run(offline_okx.fetch_balance())
+        second = run(offline_okx.fetch_balance())
+        assert first["info"]["funding"] is None and second["info"]["funding"] is None
 
 
 class TestOrderStatusMapping:

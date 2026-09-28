@@ -193,8 +193,8 @@ class BinancePmCcxtConnector(CcxtConnector):
         return move_id
 
     async def _move_funds(self, move_id: str, currency: str | None, src: str, dst: str) -> None:
-        ex = self._em.exchange
         try:
+            ex = self._em.exchange
             if (src, dst) == (self._REPAY.src, self._REPAY.dst):
                 # repays every negative futures balance; currency is recorded, not sent
                 resp = await ex.papiPostRepayFuturesNegativeBalance()
@@ -216,9 +216,13 @@ class BinancePmCcxtConnector(CcxtConnector):
             status=status,
             failure_reason=reason,
         )
-        (logger.info if status == "DONE" else logger.error)(f"[{self.exchange_name}] funds move {record.to_dict()}")
-        self.send(FundsMovedEvent(instrument=None, moved=record))
-        self.request_snapshot(include_orders=False)
+        try:
+            (logger.info if status == "DONE" else logger.error)(
+                "[{}] funds move {}", self.exchange_name, record.to_dict()
+            )
+        finally:
+            self.send(FundsMovedEvent(instrument=None, moved=record))
+            self.request_snapshot(include_orders=False)
 
     def debt_repayments(self) -> list[str]:
         return ["borrowed", "interest"]
@@ -233,11 +237,11 @@ class BinancePmCcxtConnector(CcxtConnector):
         return repay_id
 
     async def _repay_debt(self, repay_id: str, currency: str, amount: float | None) -> None:
-        ex = self._em.exchange
         asset = currency.upper()
         venue_ref = None
         requested = amount
         try:
+            ex = self._em.exchange
             if amount is None:
                 owed = await self._owed(asset)
             else:
@@ -263,9 +267,13 @@ class BinancePmCcxtConnector(CcxtConnector):
             venue_ref=venue_ref,
             failure_reason=reason,
         )
-        (logger.info if status == "DONE" else logger.error)(f"[{self.exchange_name}] debt repay {record.to_dict()}")
-        self.send(DebtRepaidEvent(instrument=None, repaid=record))
-        self.request_snapshot(include_orders=False)
+        try:
+            (logger.info if status == "DONE" else logger.error)(
+                "[{}] debt repay {}", self.exchange_name, record.to_dict()
+            )
+        finally:
+            self.send(DebtRepaidEvent(instrument=None, repaid=record))
+            self.request_snapshot(include_orders=False)
 
     async def _owed(self, asset: str) -> str | None:
         """Borrowed + interest owed in ``asset`` as the venue's decimal string; None when nothing is owed."""

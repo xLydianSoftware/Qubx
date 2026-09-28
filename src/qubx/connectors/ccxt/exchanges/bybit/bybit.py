@@ -111,13 +111,13 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
             except PermissionDenied as e:
                 # the read needs a transfer/withdrawal permission; a key without one never gains it
                 self._fund_read_denied = True
-                logger.warning(f"[bybit] FUND wallet not readable with this key, skipping it: {e}")
+                logger.warning("[bybit] FUND wallet not readable with this key, skipping it: {}", e)
             except Exception as e:  # noqa: BLE001 — the funding leg is decoration; never sink the snapshot
                 if self._fund_read_warned:
-                    logger.debug(f"[bybit] FUND wallet read failed: {e}")
+                    logger.debug("[bybit] FUND wallet read failed: {}", e)
                 else:
                     self._fund_read_warned = True
-                    logger.warning(f"[bybit] FUND wallet read failed, funding wallet unreported: {e}")
+                    logger.warning("[bybit] FUND wallet read failed, funding wallet unreported: {}", e)
         info = balances.get("info")
         if isinstance(info, dict):
             info["funding"] = funding
