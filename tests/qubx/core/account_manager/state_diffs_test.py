@@ -451,6 +451,12 @@ def test_zero_local_balance_absent_from_snapshot_emits_nothing():
     assert _differ().diff(local, _snap(balances=[])) == []
 
 
+def test_funding_only_snapshot_balance_emits_nothing():
+    funding_only = _bal(currency="ETH", free=0.0, locked=0.0, total=0.0)
+    funding_only.wallets = {"funding": 1.5}
+    assert _differ().diff(_state(balances=[]), _snap(balances=[funding_only])) == []
+
+
 def test_snapshot_balance_absent_locally_emits_original_missing():
     origin = _snap(balances=[_bal(currency="USDT", free=990.0, total=990.0)])
     diffs = _differ().diff(_state(balances=[]), origin)

@@ -375,6 +375,77 @@ async def test_okx_snapshot_extracts_cashbal_balances() -> None:
     assert bal.free == 900.0
 
 
+def _okx_balance_payload(details: list[dict], funding: list[dict] | None) -> dict:
+    return {"info": {"data": [{"details": details, "totalEq": "1"}], "funding": funding}}
+
+
+def _okx_connector() -> OkxCcxtConnector:
+    conn, _sent, _ = _make_connector(OkxCcxtConnector)
+    return conn  # type: ignore[return-value]
+
+
+def test_okx_funding_leg_is_a_wallet_not_equity() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "11402.5", "frozenBal": "0", "liab": "0"}],
+        funding=[{"ccy": "USDT", "bal": "250"}, {"ccy": "ETH", "bal": "1.5"}, {"ccy": "BTC", "bal": "0"}],
+    )
+    balances = {b.currency: b for b in _okx_connector()._convert_balances(raw)}
+    assert set(balances) == {"USDT", "ETH"}
+    assert balances["USDT"].total == 11402.5
+    assert balances["USDT"].wallets == {"trading": 11402.5, "funding": 250.0}
+    eth = balances["ETH"]
+    assert (eth.total, eth.free, eth.locked) == (0.0, 0.0, 0.0)
+    assert eth.wallets == {"funding": 1.5}
+
+
+def test_okx_without_funding_graft_has_no_wallets() -> None:
+    raw = _okx_balance_payload(details=[{"ccy": "USDT", "cashBal": "465.5", "frozenBal": "0"}], funding=None)
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.wallets is None
+
+
+def test_okx_debt_is_the_liability_magnitude() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "-120.5", "frozenBal": "0", "liab": "-120.5"}], funding=None
+    )
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 120.5}
+    assert usdt.debt == 120.5
+
+
+def test_okx_liabilities_split_borrowed_and_interest() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "-50", "frozenBal": "0", "liab": "-50", "interest": "0.2"}], funding=None
+    )
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 50.0, "interest": 0.2}
+    assert usdt.debt == 50.2
+
+
+def test_okx_negatively_signed_interest_is_still_owed() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "-50", "frozenBal": "0", "liab": "-50", "interest": "-0.2"}], funding=None
+    )
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.liabilities == {"borrowed": 50.0, "interest": 0.2}
+
+
+def test_okx_nothing_owed_has_no_liabilities() -> None:
+    raw = _okx_balance_payload(details=[{"ccy": "USDT", "cashBal": "465.5", "frozenBal": "0"}], funding=None)
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.liabilities is None
+    assert usdt.debt == 0.0
+
+
+def test_okx_malformed_funding_rows_are_skipped() -> None:
+    raw = _okx_balance_payload(
+        details=[{"ccy": "USDT", "cashBal": "100", "frozenBal": "0"}],
+        funding=[None, {"bal": "5"}, {"ccy": "USDT", "bal": "x"}, {"ccy": "USDT", "bal": "7"}],
+    )
+    (usdt,) = _okx_connector()._convert_balances(raw)
+    assert usdt.wallets == {"trading": 100.0, "funding": 7.0}
+
+
 # --------------------------------------------------------------------------- #
 # OKX venue account figures (totalEq / mgnRatio / adjEq − imr / mmr / imr from info.data[0])
 # --------------------------------------------------------------------------- #
@@ -411,6 +482,7 @@ async def test_okx_snapshot_extracts_venue_figures_multi_ccy() -> None:
     assert snap.withdrawable is None  # max-withdrawal lives on a separate OKX endpoint
     assert snap.total_maint_margin == 600.0  # mmr
     assert snap.total_initial_margin == 1200.0  # imr
+    assert snap.collateral_equity == 49000.0  # adjEq
 
     # End-to-end: the snapshot lands in AM and the venue figures win over derived metrics.
     am = SimulatedAccountManager(
@@ -459,6 +531,7 @@ async def test_okx_snapshot_single_ccy_empty_fields_yield_none() -> None:
     assert snap.withdrawable is None
     assert snap.total_maint_margin is None
     assert snap.total_initial_margin is None
+    assert snap.collateral_equity is None
 
 
 @pytest.mark.asyncio

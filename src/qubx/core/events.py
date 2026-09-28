@@ -8,7 +8,9 @@ from qubx.core.basics import (
     Bar,
     CurrencyConversion,
     Deal,
+    DebtRepaid,
     FundingRate,
+    FundsMoved,
     Instrument,
     Liquidation,
     OpenInterest,
@@ -197,6 +199,7 @@ class AccountSnapshot:
     withdrawable: float | None = None
     total_maint_margin: float | None = None
     total_initial_margin: float | None = None
+    collateral_equity: float | None = None
 
 
 @msg
@@ -215,6 +218,24 @@ class CurrencyConversionEvent(ChannelMessage):
     """
 
     conversion: CurrencyConversion
+
+
+@msg
+class FundsMovedEvent(ChannelMessage):
+    """Outcome of one ``IConnector.move_funds`` — cash moved between wallets of one account.
+
+    NOT an AccountMessage for the same reason as CurrencyConversionEvent: ProcessingManager
+    routes it straight to ``IStrategy.on_funds_moved``, never to AccountManager.apply().
+    """
+
+    moved: FundsMoved
+
+
+@msg
+class DebtRepaidEvent(ChannelMessage):
+    """Outcome of one ``IConnector.repay_debt``; routed like FundsMovedEvent, never to the AM."""
+
+    repaid: DebtRepaid
 
 
 @msg

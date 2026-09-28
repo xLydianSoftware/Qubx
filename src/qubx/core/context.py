@@ -29,6 +29,7 @@ from qubx.core.basics import (
     TargetPosition,
     TransactionCostsCalculator,
     Transfer,
+    WalletMove,
     dt_64,
     td_64,
 )
@@ -824,6 +825,9 @@ class StrategyContext(IStrategyContext):
     def get_withdrawable_balance(self, exchange: str | None = None) -> float:
         return self.account.get_withdrawable_balance(exchange)
 
+    def get_collateral_equity(self, exchange: str | None = None) -> float:
+        return self.account.get_collateral_equity(exchange)
+
     def get_margin_ratio(self, exchange: str | None = None) -> float:
         return self.account.get_margin_ratio(exchange)
 
@@ -888,6 +892,20 @@ class StrategyContext(IStrategyContext):
         return self._trading_manager.convert_currency(
             exchange, from_currency, to_currency, amount, limit_price=limit_price, max_slippage_bps=max_slippage_bps
         )
+
+    def wallet_moves(self, exchange: str) -> list[WalletMove]:
+        return self._trading_manager.wallet_moves(exchange)
+
+    def move_funds(self, exchange: str, currency: str | None, src: str, dst: str, amount: float | None = None) -> str:
+        self._assert_not_fit_thread("move_funds")
+        return self._trading_manager.move_funds(exchange, currency, src, dst, amount)
+
+    def debt_repayments(self, exchange: str) -> list[str]:
+        return self._trading_manager.debt_repayments(exchange)
+
+    def repay_debt(self, exchange: str, currency: str, amount: float | None = None) -> str:
+        self._assert_not_fit_thread("repay_debt")
+        return self._trading_manager.repay_debt(exchange, currency, amount)
 
     def submit_orders(self, order_requests: list[OrderRequest]) -> list[Order]:
         self._assert_not_fit_thread("submit_orders")

@@ -86,6 +86,7 @@ def _snap_event(
     withdrawable=None,
     total_maint_margin=None,
     total_initial_margin=None,
+    collateral_equity=None,
 ):
     return AccountSnapshotEvent(
         instrument=None,
@@ -101,6 +102,7 @@ def _snap_event(
             withdrawable=withdrawable,
             total_maint_margin=total_maint_margin,
             total_initial_margin=total_initial_margin,
+            collateral_equity=collateral_equity,
         ),
     )
 
@@ -741,6 +743,19 @@ def test_snapshot_sets_venue_figures_and_metrics_prefer_them():
     assert am.get_withdrawable_balance("binance") == 3500.0
 
 
+def test_snapshot_collateral_equity_reaches_the_manager():
+    am = _am()
+    am.apply(_snap_event(equity=5000.0, collateral_equity=4200.0))
+    assert am.get_total_capital("binance") == 5000.0
+    assert am.get_collateral_equity("binance") == 4200.0
+
+
+def test_snapshot_with_only_collateral_equity_still_sets_figures():
+    am = _am()
+    am.apply(_snap_event(collateral_equity=4200.0))
+    assert am.get_collateral_equity("binance") == 4200.0
+
+
 def test_snapshot_margin_totals_round_trip_and_prefer_venue():
     # The venue's account-level margin totals ride the snapshot into VenueAccountFigures
     # (a snapshot carrying only them still sets the capture) and win over the position sums.
@@ -882,3 +897,16 @@ def test_external_order_with_no_client_id_gets_synthesized_cid():
     am._time.t = np.datetime64("2026-05-28T01:00:00")
     am.apply(_snap_event(as_of="2026-05-28T01:00:00", open_orders=[snap_order]))
     assert state.get_order_by_venue_id("VY").client_order_id == "ext:VY"
+
+
+def test_cross_exchange_margin_ratio_uses_collateral_equity():
+    am = AccountManager(
+        connectors={"binance": MagicMock(), "okx": MagicMock()},
+        base_currencies={"binance": "USDT", "okx": "USDT"},
+        time=_T(),
+        cfg=AccountManagerConfig(snapshot_grace_ms=5_000),
+        account_id="test",
+    )
+    am.apply(_snap_event(equity=1180.0, collateral_equity=1000.0, total_maint_margin=100.0))
+    am.apply(_snap_event(exchange="okx", equity=500.0, total_maint_margin=100.0))
+    assert am.get_margin_ratio() == (1000.0 + 500.0) / 200.0

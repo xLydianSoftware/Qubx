@@ -138,14 +138,21 @@ legality, runs no reconcile rules, fires no callbacks, depends on no clock.
 ### Venue-reported figures (option 2)
 
 `AccountState` holds an optional `VenueAccountFigures{equity, available_margin,
-margin_ratio, withdrawable, total_maint_margin, total_initial_margin, as_of}`. Each
-metric prefers its venue counterpart when present, else derives. The figures ride
-**flat on `AccountSnapshot`** (optional fields next to `as_of`/orders/positions/
-balances) and are set only by snapshot reconcile; the connector extracts them via the
-`_extract_venue_figures` seam — a positional 6-tuple in that field order (Binance and
-OKX wired; Bitfinex documented derive-only — `fetch_balance` carries no account
-figures; other venues return None and always derive — as does sim).
+margin_ratio, withdrawable, total_maint_margin, total_initial_margin,
+collateral_equity, as_of}`. Each metric prefers its venue counterpart when present,
+else derives. The figures ride **flat on `AccountSnapshot`** (optional fields next to
+`as_of`/orders/positions/balances) and are set only by snapshot reconcile; the
+connector extracts them via the `_extract_venue_figures` seam, which returns a named
+`VenueFigures` with None for unreported fields (Binance, Bybit and OKX wired; Bitfinex
+documented derive-only — `fetch_balance` carries no account figures; other venues
+return None and always derive — as does sim).
 
+- `equity` is the account's NAV: Binance fapi `totalMarginBalance`, PM `actualEquity`
+  (no collateral haircut), OKX `totalEq`.
+- `collateral_equity` is the haircut equity maintenance margin is measured against:
+  PM `accountEquity`, OKX `adjEq`, Bybit `totalMarginBalance`. It falls back to
+  `total_capital` when unreported, and the derived margin ratio (single state without a
+  venue ratio, and the cross-exchange aggregate) is `Σ collateral_equity / Σ maint`.
 - `withdrawable` maps Binance fapi `maxWithdrawAmount`; OKX exposes max-withdrawal only
   on a separate endpoint (outside the snapshot seam) so it stays None there. The derived
   fallback equals available margin (withdrawable ≤ available conceptually; equality is
@@ -158,9 +165,11 @@ figures; other venues return None and always derive — as does sim).
   cover the USDT asset only, so a non-USDT-margined position reads as zero there; the
   reconciler logs a WARNING when a venue reports zero maintenance margin on a book with
   open positions (a signal only — the reported 0.0 is still used). The derived fallback
-  sums the per-position margins. On PM the venue total is also what makes
-  `total_capital / total_maint_margin` equal `uniMMR` — `accountEquity` spans
-  um/cm/margin while the position sum is UM-only.
+  sums the per-position margins. On PM `uniMMR` = `accountEquity / accountMaintMargin`
+  is reported as the venue `margin_ratio` and used as-is; since `equity` is now NAV,
+  `total_capital / total_maint_margin` no longer equals it (`collateral_equity /
+  total_maint_margin` does — `accountEquity` spans um/cm/margin while the position sum
+  is UM-only).
 
 - **Freshness = WS liveness, not a TTL.** Venue figures arrive in lockstep with the
   events that would change them; the only staleness is a dead WS, which the liveness →

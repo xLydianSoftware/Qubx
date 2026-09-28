@@ -374,6 +374,8 @@ class FitContext(ITimeProvider):
     set_margin_mode = _denied("set_margin_mode")
     transfer_funds = _denied("transfer_funds")
     convert_currency = _denied("convert_currency")
+    move_funds = _denied("move_funds")
+    repay_debt = _denied("repay_debt")
     # subscription/schedule plumbing with no deferred story (on_init-time concerns)
     set_base_subscription = _denied("set_base_subscription", "an on_init-time setting")
     set_warmup = _denied("set_warmup", "an on_init-time setting")
@@ -439,10 +441,13 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "is_instrument_listed",
     "instruments",
     "get_min_size",
+    "wallet_moves",
+    "debt_repayments",
     # account views returning scalars / single objects / fresh reports
     # (get_position and its four derivatives are explicit non-materializing
     # methods above — the real get_position writes into the live positions dict)
     "get_total_capital",
+    "get_collateral_equity",
     "get_base_currency",
     "get_balance",
     "find_order_by_id",

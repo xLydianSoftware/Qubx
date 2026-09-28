@@ -780,6 +780,66 @@ def test_original_balance_missing_applied_from_snapshot():
     D_OFF()
 
 
+def test_wallets_and_debt_refresh_without_a_balance_diff():
+    # a PM collect reshuffles wallets and interest accrues debt with total/free/locked unchanged:
+    # no BalanceMismatch, yet the breakdown must still land
+    rec = _reconciler()
+    st = _local()
+    local = _balance("USDT", free=100.0)
+    local.wallets = {"margin": 150.0, "futures_um": -50.0}
+    st.update_balance("USDT", local)
+    snap_bal = _balance("USDT", free=100.0)
+    snap_bal.wallets = {"margin": 100.0}
+    snap_bal.liabilities = {"borrowed": 1.5, "interest": 0.5}
+    snap_bal.debt = 2.0
+    snap = _origin(balances=[snap_bal])
+
+    assert Differ(grace="5s").diff(st, snap) == []  # no BalanceMismatch
+
+    a = rec.on_snapshot(st, snap, T0)
+
+    bal = st.get_balance("USDT")
+    assert bal.wallets == {"margin": 100.0}  # type: ignore
+    assert bal.liabilities == {"borrowed": 1.5, "interest": 0.5}  # type: ignore
+    assert bal.debt == 2.0  # type: ignore
+    assert bal.total == 100.0  # type: ignore
+    assert a == []
+
+
+def _held_with_breakdown(st, currency: str, free: float) -> None:
+    local = _balance(currency, free=free)
+    local.wallets = {"margin": free + 50.0, "futures_um": -50.0}
+    local.liabilities = {"borrowed": 50.0}
+    local.debt = 50.0
+    st.update_balance(currency, local)
+
+
+def test_breakdown_clears_for_a_held_currency_missing_from_observed_balances():
+    # zero-total rows drop out of the snapshot; the held breakdown must not go stale
+    rec = _reconciler()
+    st = _local()
+    _held_with_breakdown(st, "USDT", 100.0)
+    _held_with_breakdown(st, "BNB", 3.0)
+
+    rec.on_snapshot(st, _origin(balances=[_balance("USDT", free=100.0)]), T0)
+
+    bnb = st.get_balance("BNB")
+    assert (bnb.wallets, bnb.liabilities, bnb.debt) == (None, None, 0.0)  # type: ignore
+    assert (bnb.total, bnb.free, bnb.locked) == (3.0, 3.0, 0.0)  # type: ignore
+
+
+def test_breakdown_kept_when_balances_not_observed():
+    rec = _reconciler()
+    st = _local()
+    _held_with_breakdown(st, "BNB", 3.0)
+
+    rec.on_snapshot(st, _origin(balances=None), T0)
+
+    bnb = st.get_balance("BNB")
+    assert bnb.wallets == {"margin": 53.0, "futures_um": -50.0}  # type: ignore
+    assert (bnb.liabilities, bnb.debt) == ({"borrowed": 50.0}, 50.0)  # type: ignore
+
+
 def test_position_decrease_the_deals_arrived_with_small_latency():
     # The missed CLOSING deal (traded BEFORE the snapshot, venue ts <= watermark) is DELIVERED late
     # by WS but still within the confirm window. AM0 routes every DealEvent to BOTH reducer.apply
