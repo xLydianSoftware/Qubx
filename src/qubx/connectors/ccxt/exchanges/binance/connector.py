@@ -69,11 +69,12 @@ def _account_figures(raw_balance: dict[str, Any]) -> dict[str, Any]:
 
 def _failure(e: Exception, sent: bool) -> tuple[str, str]:
     """(status, reason) for an exception from a wallet move / repayment. UNKNOWN when the
-    request may have reached the venue: timeouts, dropped connections and 5xx. Rate-limit and
-    timestamp rejections are refused before execution, so they stay FAILED."""
+    request may have reached the venue: timeouts, dropped connections, 5xx and the venue's own
+    "execution status unknown" replies (papi -1007 -> BadResponse, -1000 -> OperationFailed).
+    Rate-limit and timestamp rejections are refused before execution, so they stay FAILED."""
     reason = f"{type(e).__name__}: {e}"
-    maybe_applied = isinstance(e, ccxt.NetworkError) and not isinstance(
-        e, (ccxt.RateLimitExceeded, ccxt.DDoSProtection, ccxt.InvalidNonce)
+    maybe_applied = isinstance(e, ccxt.OperationFailed) and not isinstance(
+        e, (ccxt.ExchangeError, ccxt.RateLimitExceeded, ccxt.DDoSProtection, ccxt.InvalidNonce)
     )
     return ("UNKNOWN" if sent and maybe_applied else "FAILED"), reason
 

@@ -166,9 +166,14 @@ async def test_exchange_access_error_is_one_failed_event():
         (ccxt.RequestTimeout, "UNKNOWN"),
         (ccxt.ExchangeNotAvailable, "UNKNOWN"),
         (ccxt.NetworkError, "UNKNOWN"),
+        (ccxt.BadResponse, "UNKNOWN"),  # papi -1007: execution status unknown
+        (ccxt.NullResponse, "UNKNOWN"),
+        (ccxt.OperationFailed, "UNKNOWN"),  # papi -1000: unknown error while processing
         (ccxt.RateLimitExceeded, "FAILED"),
         (ccxt.InvalidNonce, "FAILED"),
         (ccxt.InsufficientFunds, "FAILED"),
+        (ccxt.DDoSProtection, "FAILED"),
+        (ccxt.ExchangeError, "FAILED"),
     ],
 )
 async def test_transport_errors_that_may_have_reached_the_venue_are_unknown(error, status):

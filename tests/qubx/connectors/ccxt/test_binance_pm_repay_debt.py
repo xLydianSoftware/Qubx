@@ -215,9 +215,14 @@ async def test_exchange_access_error_is_one_failed_event():
         (ccxt.RequestTimeout, "UNKNOWN"),
         (ccxt.ExchangeNotAvailable, "UNKNOWN"),
         (ccxt.NetworkError, "UNKNOWN"),
+        (ccxt.BadResponse, "UNKNOWN"),  # papi -1007: execution status unknown
+        (ccxt.NullResponse, "UNKNOWN"),
+        (ccxt.OperationFailed, "UNKNOWN"),  # papi -1000: unknown error while processing
         (ccxt.RateLimitExceeded, "FAILED"),
         (ccxt.InvalidNonce, "FAILED"),
         (ccxt.InsufficientFunds, "FAILED"),
+        (ccxt.DDoSProtection, "FAILED"),
+        (ccxt.ExchangeError, "FAILED"),
     ],
 )
 async def test_transport_errors_that_may_have_reached_the_venue_are_unknown(error, status):
@@ -229,3 +234,14 @@ async def test_transport_errors_that_may_have_reached_the_venue_are_unknown(erro
     assert repaid.status == status and "request lost" in repaid.failure_reason
     assert repaid.requested == 1.0
     conn.request_snapshot.assert_called_once_with(include_orders=False)
+
+
+@pytest.mark.parametrize("error", [ccxt.RequestTimeout, ccxt.BadResponse, ccxt.OperationFailed])
+async def test_a_failure_before_the_repay_is_sent_stays_failed(error):
+    conn, sent, ex = _pm_connector()
+    ex.papiGetBalance = AsyncMock(side_effect=error("binance balance read lost"))
+    ex.papiPostRepayLoan = AsyncMock()
+    conn.repay_debt("USDT")
+    await _drive(conn)
+    ex.papiPostRepayLoan.assert_not_awaited()
+    assert _repaid(sent).status == "FAILED"
