@@ -357,7 +357,7 @@ class YahooReader(IReader):
         if isinstance(result, RawData):
             return YahooReader._adjust_one(result, adjusted, names)
         if isinstance(result, RawMultiData):
-            return RawMultiData([YahooReader._adjust_one(r, adjusted, names) for r in result.data])
+            return RawMultiData([YahooReader._adjust_one(r, adjusted, names) for r in result.raws.values()])
         if isinstance(result, Iterator):
             return (YahooReader._adjust(chunk, adjusted, names) for chunk in result)
         return result
