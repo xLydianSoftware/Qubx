@@ -518,9 +518,15 @@ class Reconciler:
             state.apply_position_settings(snap_pos)
 
         # - wallet split/debt move without total/free/locked (collect, interest) so the differ
-        #   can't see them; same unconditional refresh as the settings
-        for snap_bal in snap.balances or ():
-            state.apply_balance_breakdown(snap_bal)
+        #   can't see them; same unconditional refresh as the settings. A held currency absent
+        #   from an observed list (zero-total rows are dropped) has no breakdown left.
+        if snap.balances is not None:
+            for snap_bal in snap.balances:
+                state.apply_balance_breakdown(snap_bal)
+            observed = {b.currency for b in snap.balances}
+            for held in state.get_balances():
+                if held.currency not in observed:
+                    state.clear_balance_breakdown(held.currency)
 
         # - venue-reported figures (equity/margins): prefer-venue-else-derive per metric in
         #   AccountState. Absence = "not observed" -> keep the previous capture, never clear.

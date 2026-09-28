@@ -571,6 +571,15 @@ class AccountState:
         existing.liabilities = snapshot.liabilities
         existing.debt = snapshot.debt
 
+    def clear_balance_breakdown(self, currency: str) -> None:
+        """Drop the wallet split and debt breakdown of a held balance; total/free/locked untouched."""
+        existing = self._balances.get(currency)
+        if existing is None:
+            return
+        existing.wallets = None
+        existing.liabilities = None
+        existing.debt = 0.0
+
     def mark_position_reconcile(self, instrument: Instrument, as_of: np.datetime64) -> None:
         """Set the position reconcile watermark (venue time). Dumb setter — the skip-re-book
         guard lives in the reducer."""
