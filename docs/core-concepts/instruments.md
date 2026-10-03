@@ -29,7 +29,7 @@ Identity is `(exchange, market_type, symbol)`: equality, hashing and `str(i)` (`
 
 Fields after `min_notional` are keyword-only.
 
-`i.asset` is the venue coin with any multiplier prefix or suffix stripped from `base`: `1000PEPE`, `10000SATS` and `SHIB1000` answer `PEPE`, `SATS` and `SHIB`, and the bStock `NVDAB` answers `NVDAB`. It depends only on the listing, so an instrument a connector builds itself and the same instrument from the lookup always agree. Economic exposure is `i.underlying` (it can be `None`); `i.exposure_code` is `i.underlying.code`, or `i.asset` when there is no underlying.
+`i.asset` is the venue coin with any multiplier prefix or suffix stripped from `base`: `1000PEPE`, `10000SATS` and `SHIB1000` answer `PEPE`, `SATS` and `SHIB`, and the bStock `NVDAB` answers `NVDAB`. It depends only on the listing, so an instrument a connector builds itself and the same instrument from the lookup always agree. Economic exposure is `i.underlying` (it can be `None`); `i.exposure_code` is `i.underlying.code`, or `i.asset` when there is no underlying. Group or match by `exposure_code` across venues (`NVDA.XNAS` for a bStock, `XAU` for PAXG); keep `asset` for venue-coin keys such as blacklists. These are the platform's settled asset semantics (design decision D23).
 
 Instruments carry no margin rates. Live positions use the margin the venue reports. In simulation the maintenance margin is `AccountManagerConfig.maint_margin_rate` (default 5% of notional) and the initial margin is 0.
 
