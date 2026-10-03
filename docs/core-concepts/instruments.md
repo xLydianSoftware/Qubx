@@ -6,7 +6,7 @@ An `Instrument` is one tradable listing on one venue. Strategies get them from t
 from qubx.core.lookups import lookup
 
 btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
-pepe = lookup.find_instruments("BINANCE.UM", base="PEPE")  # matches 1000PEPEUSDT through its underlying
+pepe = lookup.find_instruments("BINANCE.UM", base="PEPE")  # also matches 1000PEPEUSDT
 ```
 
 ## The `Instrument`
@@ -29,7 +29,7 @@ Identity is `(exchange, market_type, symbol)`: equality, hashing and `str(i)` (`
 
 Fields after `min_notional` are keyword-only.
 
-`i.asset` is `i.underlying.code`. Instruments built without an underlying (the `file` lookup, ccxt) fall back to stripping a multiplier prefix or suffix from `base`: `1000PEPE`, `10000SATS` and `SHIB1000` answer `PEPE`, `SATS` and `SHIB`.
+`i.asset` is the venue coin with any multiplier prefix or suffix stripped from `base`: `1000PEPE`, `10000SATS` and `SHIB1000` answer `PEPE`, `SATS` and `SHIB`, and the bStock `NVDAB` answers `NVDAB`. It depends only on the listing, so an instrument a connector builds itself and the same instrument from the lookup always agree. Economic exposure is `i.underlying` (it can be `None`); `i.exposure_code` is `i.underlying.code`, or `i.asset` when there is no underlying.
 
 Instruments carry no margin rates. Live positions use the margin the venue reports. In simulation the maintenance margin is `AccountManagerConfig.maint_margin_rate` (default 5% of notional) and the initial margin is 0.
 
@@ -49,13 +49,14 @@ The instrument lookup is configured by `instrument_lookup` in the Qubx settings 
 | `url` | `QUBX_INSTRUMENT_LOOKUP__URL` | Service base including its route prefix: `http://control-api.platform.svc/internal/instrument-service` in-cluster, `https://api-dev.xlydian.com/instrument-service` off-cluster |
 | `token` | `QUBX_INSTRUMENT_LOOKUP__TOKEN` | `xl` API token, sent as `Authorization: Bearer …`; not needed in-cluster |
 | `reload_interval` | `QUBX_INSTRUMENT_LOOKUP__RELOAD_INTERVAL` | How often to re-read the snapshot, e.g. `1h`; unset means never |
+| `exchanges` | `QUBX_INSTRUMENT_LOOKUP__EXCHANGES` | Load only these exchanges, e.g. `BINANCE.UM,OKX.F` (or a JSON list); unset loads all |
 
 ```json
 {"instrument_lookup": {"type": "service", "url": "https://api-dev.xlydian.com/instrument-service", "token": "…", "reload_interval": "1h"}}
 ```
 
-- The lookup reads `GET {url}/snapshot` on startup and builds every instrument from its listing's current version. If that first read fails, startup fails; there is no fallback to another lookup.
-- Every `reload_interval` it re-reads the snapshot with `If-None-Match`. A `304` keeps the current copy. A failed refresh logs a warning and keeps the copy.
+- The lookup reads `GET {url}/snapshot` on startup and builds every instrument from its listing's current version. It tries three times; if all fail, startup fails. There is no fallback to another lookup.
+- With a `reload_interval`, a background thread re-reads the snapshot with `If-None-Match` and swaps the result in; lookups never wait on the network. A `304` keeps the current copy. A failed refresh logs a warning, keeps the copy and is retried after a full interval.
 - `find_symbol(exchange, old_symbol)` resolves a renamed listing's former symbols to its current `Instrument`. A listing whose current symbol is the same string wins over an alias.
 - Delisted listings are included, with `delisted_at` set.
 

@@ -525,11 +525,11 @@ class TestMultiplierCoin:
 
 
 class TestInstrumentShape:
-    def test_asset_is_the_underlying_code_when_known(self):
+    def test_asset_is_the_venue_coin_and_exposure_the_underlying(self):
         i = _named_instrument("NVDABUSDT", "NVDAB", exchange="BINANCE")
-        assert i.asset == "NVDAB"
+        assert (i.asset, i.exposure_code) == ("NVDAB", "NVDAB")
         i.underlying = Underlying(AssetKind.EQUITY, "NVDA.XNAS")
-        assert i.asset == "NVDA.XNAS"
+        assert (i.asset, i.exposure_code) == ("NVDAB", "NVDA.XNAS")
 
     def test_identity_ignores_metadata(self):
         a = _named_instrument("BTCUSDT", "BTC")

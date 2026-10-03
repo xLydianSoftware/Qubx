@@ -442,10 +442,14 @@ class Instrument:
 
     @property
     def asset(self) -> str:
-        """The underlying's code; without one (file/ccxt-built instruments) the coin under a multiplier base."""
-        if self.underlying is not None:
-            return self.underlying.code
+        """The venue coin, multiplier stripped (1000PEPE -> PEPE): a function of the listing alone, so
+        connector-built and lookup-built instruments agree. Economic exposure is `exposure_code`."""
         return multiplier_coin(self.base)
+
+    @property
+    def exposure_code(self) -> str:
+        """What the listing is a contract on (NVDA.XNAS for a bStock, XAU for PAXG); `asset` when the underlying is unknown."""
+        return self.underlying.code if self.underlying is not None else self.asset
 
     def is_futures(self) -> bool:
         return self.market_type in [MarketType.FUTURE, MarketType.SWAP]
@@ -2152,8 +2156,8 @@ class InstrumentsLookup:
             aliases = sorted({i.base for i in matched} - {base})
             if aliases and any(i.base == base for i in matched):
                 logger.warning(
-                    f"[lookup] {exchange} base <y>{base}</y> also matches {aliases} through a contract "
-                    f"multiplier; the exact base is listed first — pass the venue base to disambiguate"
+                    f"[lookup] {exchange} <y>{base}</y> is ambiguous: it also names the multiplier contracts "
+                    f"{aliases}; exact-base matches come first, pass a venue base (e.g. 1000{base}) to select one"
                 )
                 matched.sort(key=lambda i: i.base != base)
         return matched

@@ -8,6 +8,7 @@ import re
 import shutil
 import tempfile
 import threading
+import time
 from datetime import datetime
 
 import httpx
@@ -471,7 +472,7 @@ def listing_to_instrument(listing: dict) -> Instrument:
         underlying=Underlying(AssetKind(u["kind"]), u["code"]),
         calendar=listing.get("calendar"),
         expiry=_ts(listing.get("expiry")),
-        strike=listing.get("strike"),
+        strike=float(listing["strike"]) if listing.get("strike") is not None else None,
         option_right=listing.get("option_right"),
         listed_at=_ts(listing.get("listed_at")),
         delisted_at=_ts(listing.get("delisted_at")),
@@ -483,13 +484,18 @@ def listing_to_instrument(listing: dict) -> Instrument:
 class InstrumentsLookupService(InstrumentsLookup):
     """Instruments from the platform instrument service ({url}/snapshot).
 
-    The first load must succeed. Afterwards the snapshot is re-read every reload_interval
-    with If-None-Match; a failed refresh keeps the in-memory copy. There is no fallback lookup.
+    The first load must succeed (after a few attempts). With a reload_interval, a daemon thread
+    re-reads the snapshot with If-None-Match and swaps the indexes in; accessors never do I/O.
+    A failed refresh keeps the in-memory copy and is retried only after a full interval.
+    There is no fallback lookup.
     """
 
-    _lookup: dict[str, Instrument]
-    _by_symbol: dict[tuple[str, str], list[Instrument]]
-    _by_alias: dict[tuple[str, str], list[Instrument]]
+    FIRST_LOAD_ATTEMPTS = 3
+
+    # - (lookup, by_symbol, by_alias), replaced as one object so readers never see a mix
+    _index: tuple[
+        dict[str, Instrument], dict[tuple[str, str], list[Instrument]], dict[tuple[str, str], list[Instrument]]
+    ]
 
     def __init__(
         self,
@@ -497,31 +503,52 @@ class InstrumentsLookupService(InstrumentsLookup):
         token: str | None = None,
         reload_interval: str | None = None,
         exchanges: list[str] | None = None,
-        timeout: float = 60.0,
+        timeout: httpx.Timeout | float = httpx.Timeout(connect=5.0, read=30.0, write=5.0, pool=5.0),
+        deadline: float = 60.0,
+        retry_backoff: float = 1.0,
     ):
         self._url = url.rstrip("/")
-        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
         self._params = [("exchange", e) for e in exchanges or []]
         self._reload_interval = to_timedelta(reload_interval) if reload_interval else None
-        self._timeout = timeout
+        self._deadline = deadline
+        self._client = httpx.Client(headers={"Authorization": f"Bearer {token}"} if token else {}, timeout=timeout)
         self._etag: str | None = None
+        self._index = ({}, {}, {})
         self._refresh_lock = threading.Lock()
-        try:
-            self._fetch()
-        except Exception as e:
-            raise RuntimeError(f"[lookup] instrument service at {self._url} is unavailable: {e}") from e
-        self._last_refresh = pd.Timestamp.now()
+        self._stop = threading.Event()
+
+        for attempt in range(1, self.FIRST_LOAD_ATTEMPTS + 1):
+            try:
+                self._fetch()
+                break
+            except Exception as e:
+                if attempt == self.FIRST_LOAD_ATTEMPTS:
+                    self._client.close()
+                    raise RuntimeError(f"[lookup] instrument service at {self._url} is unavailable: {e}") from e
+                logger.warning(f"[lookup] instrument service load attempt {attempt} failed: {e}")
+                time.sleep(retry_backoff * attempt)
+
+        if self._reload_interval:
+            threading.Thread(target=self._refresh_loop, name="instrument-lookup-refresh", daemon=True).start()
 
     def _fetch(self) -> bool:
-        headers = dict(self._headers)
-        if self._etag:
-            headers["If-None-Match"] = self._etag
-        r = httpx.get(f"{self._url}/snapshot", params=self._params, headers=headers, timeout=self._timeout)
-        if r.status_code == 304:
-            return False
-        r.raise_for_status()
-        self._build(r.json()["listings"])
-        self._etag = r.headers.get("ETag")
+        headers = {"If-None-Match": self._etag} if self._etag else {}
+        until = time.monotonic() + self._deadline
+        with self._client.stream("GET", f"{self._url}/snapshot", params=self._params, headers=headers) as r:
+            if r.status_code == 304:
+                return False
+            r.raise_for_status()
+            chunks = []
+            for chunk in r.iter_bytes():
+                if time.monotonic() > until:
+                    raise TimeoutError(f"snapshot download exceeded {self._deadline}s")
+                chunks.append(chunk)
+            etag = r.headers.get("ETag")
+        body = json.loads(b"".join(chunks))
+        if not isinstance(body, dict) or not isinstance(body.get("listings"), list):
+            raise ValueError("snapshot body has no listings")
+        self._build(body["listings"])
+        self._etag = etag
         return True
 
     def _build(self, listings: list[dict]) -> None:
@@ -529,8 +556,8 @@ class InstrumentsLookupService(InstrumentsLookup):
         for listing in listings:
             try:
                 built.append((listing_to_instrument(listing), listing.get("aliases") or []))
-            except (ValueError, KeyError) as e:
-                logger.warning(f"[lookup] skipping listing {listing.get('id')} ({listing.get('exchange')}): {e}")
+            except (ValueError, KeyError, IndexError, TypeError) as e:
+                logger.warning(f"[lookup] skipping listing {listing.get('id')} ({listing.get('exchange')}): {e!r}")
 
         # - a relisted symbol is a new listing next to the delisted one: the active, then the newest, wins
         built.sort(key=lambda b: (b[0].delisted_at is not None, -(b[0].listed_at or _EPOCH).value))
@@ -541,32 +568,39 @@ class InstrumentsLookupService(InstrumentsLookup):
             for alias in aliases:
                 if alias != i.symbol:
                     by_alias.setdefault((i.exchange, alias), []).append(i)
-        self._lookup, self._by_symbol, self._by_alias = lookup, by_symbol, by_alias
+        self._index = (lookup, by_symbol, by_alias)
         logger.info(f"[lookup] loaded {len(lookup)} instruments from the instrument service")
 
-    def refresh(self) -> None:
-        if not self._refresh_lock.acquire(blocking=False):
-            return
-        try:
-            self._fetch()
-        except Exception as e:
-            logger.warning(f"[lookup] instrument service refresh failed, keeping {len(self._lookup)} instruments: {e}")
-        finally:
-            self._last_refresh = pd.Timestamp.now()
-            self._refresh_lock.release()
-
-    def _maybe_refresh(self) -> None:
-        if self._reload_interval and pd.Timestamp.now() - self._last_refresh > self._reload_interval:
+    def _refresh_loop(self) -> None:
+        assert self._reload_interval is not None
+        while not self._stop.wait(self._reload_interval.total_seconds()):
             self.refresh()
 
+    def refresh(self) -> bool:
+        """Re-read the snapshot now; False when another refresh is running, nothing changed or it failed."""
+        if not self._refresh_lock.acquire(blocking=False):
+            return False
+        try:
+            return self._fetch()
+        except Exception as e:
+            logger.warning(
+                f"[lookup] instrument service refresh failed, keeping {len(self._index[0])} instruments: {e}"
+            )
+            return False
+        finally:
+            self._refresh_lock.release()
+
+    def close(self) -> None:
+        self._stop.set()
+        self._client.close()
+
     def get_lookup(self) -> dict[str, Instrument]:
-        self._maybe_refresh()
-        return self._lookup
+        return self._index[0]
 
     def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
         """Current instrument for a symbol, resolving former symbols of renamed listings."""
-        self._maybe_refresh()
-        for index in (self._by_symbol, self._by_alias):
+        _, by_symbol, by_alias = self._index
+        for index in (by_symbol, by_alias):
             for i in index.get((exchange, symbol), ()):
                 if market_type is None or i.market_type == market_type:
                     return i
@@ -612,6 +646,8 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
                 i_kwargs["url"] = i_cfg.url
             if i_cfg.token:
                 i_kwargs["token"] = i_cfg.token
+            if i_cfg.exchanges:
+                i_kwargs["exchanges"] = i_cfg.exchanges
             if i_cfg.reload_interval:
                 i_kwargs["reload_interval"] = i_cfg.reload_interval
             if i_cfg.path:

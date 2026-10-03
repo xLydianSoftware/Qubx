@@ -1,0 +1,176 @@
+{
+ "listings": [
+  {
+   "id": "00000000-0000-5000-8000-000000000001",
+   "exchange": "BINANCE.UM",
+   "market_type": "FUTURE",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": "2026-12-25T08:00:00Z",
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2019-09-08T17:55:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSDT.20261225",
+     "exchange_symbol": "BTCUSDT_261225",
+     "base": "BTC",
+     "tick_size": 0.1,
+     "lot_size": 0.001,
+     "min_size": 0.001,
+     "min_notional": 50,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "00000000-0000-5000-8000-000000000002",
+   "exchange": "BINANCE.EO",
+   "market_type": "OPTION",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": "2026-12-25T08:00:00Z",
+   "strike": 85000,
+   "option_right": "CALL",
+   "calendar": null,
+   "listed_at": "2019-09-08T17:55:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTC-261225-85000-C",
+     "exchange_symbol": "BTC-261225-85000-C",
+     "base": "BTC",
+     "tick_size": 5,
+     "lot_size": 0.01,
+     "min_size": 0.01,
+     "min_notional": 50,
+     "contract_size": 0.1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "00000000-0000-5000-8000-000000000003",
+   "exchange": "BINANCE.CM",
+   "market_type": "SWAP",
+   "quote": "USD",
+   "settle": "BTC",
+   "inverse": true,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2019-09-08T17:55:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSD",
+     "exchange_symbol": "BTCUSD_PERP",
+     "base": "BTC",
+     "tick_size": 0.1,
+     "lot_size": 1,
+     "min_size": 1,
+     "min_notional": 50,
+     "contract_size": 100,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "00000000-0000-5000-8000-000000000004",
+   "exchange": "BINANCE.UM",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": "24/7",
+   "listed_at": "2019-09-08T17:55:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "00000000-0000-5000-8000-0000000000aa",
+    "kind": "EQUITY",
+    "code": "TSLA.XNAS"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "TSLAUSDT",
+     "exchange_symbol": "TSLAUSDT",
+     "base": "TSLA",
+     "tick_size": 0.1,
+     "lot_size": 0.001,
+     "min_size": 0.001,
+     "min_notional": 50,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "contractType": "TRADIFI_PERPETUAL"
+     }
+    }
+   ]
+  },
+  {
+   "id": "00000000-0000-5000-8000-000000000005",
+   "exchange": "BINANCE.UM",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2019-09-08T17:55:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": []
+  }
+ ]
+}
