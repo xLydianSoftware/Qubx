@@ -70,7 +70,7 @@ def episode_net_pnl(self) -> float:      # the "honest" number: costs included
 Episode fields ride the same channel as `cumulative_funding`:
 
 - **`core/loggers.py`** position record: add `episode_start_time`, `realized_pnl_at_open_quoted`, `commissions_at_open_quoted`, `funding_at_open_quoted` alongside the existing `realized_pnl_quoted` / `commissions_quoted` / `funding_pnl_quoted`.
-- **`restorers/position.py`** — all three `IPositionRestorer` implementations (Csv, MongoDB, Postgres) read them back. **Migration:** rows written by an older qubx lack the fields → restorer stamps episode-at-restore (current accumulators, `episode_start_time = restore time`) — identical to today's behavior, self-heals when the position next turns over.
+- **`restorers/position.py`** — both `IPositionRestorer` implementations (Csv, Postgres) read them back. **Migration:** rows written by an older qubx lack the fields → restorer stamps episode-at-restore (current accumulators, `episode_start_time = restore time`) — identical to today's behavior, self-heals when the position next turns over.
 
 ## What downstream gets (context, not in this PR)
 

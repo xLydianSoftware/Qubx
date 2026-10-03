@@ -388,16 +388,6 @@ def _infer_restorer_from_logger(logging_config: LoggingConfig, strategy_name: st
                 "table_prefix": args.get("table_prefix", "qubx_logs"),
             },
         )
-    elif logger_type == "MongoDBLogsWriter":
-        return RestorerConfig(
-            type="MongoDBStateRestorer",
-            parameters={
-                "strategy_name": strategy_name,
-                "mongo_uri": args.get("mongo_uri", "mongodb://localhost:27017/"),
-                "db_name": args.get("db_name", "default_logs_db"),
-                "collection_name_prefix": args.get("collection_name_prefix", "qubx_logs"),
-            },
-        )
     elif logger_type == "CsvFileLogsWriter":
         return RestorerConfig(
             type="CsvStateRestorer",

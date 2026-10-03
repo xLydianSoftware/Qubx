@@ -8,16 +8,15 @@ based on configuration.
 from typing import Type
 
 from qubx.core.lookups import LookupsManager
-from qubx.restorers.balance import CsvBalanceRestorer, MongoDBBalanceRestorer, PostgresBalanceRestorer
+from qubx.restorers.balance import CsvBalanceRestorer, PostgresBalanceRestorer
 from qubx.restorers.interfaces import IBalanceRestorer, IPositionRestorer, ISignalRestorer, IStateRestorer
-from qubx.restorers.position import CsvPositionRestorer, MongoDBPositionRestorer, PostgresPositionRestorer
-from qubx.restorers.signal import CsvSignalRestorer, MongoDBSignalRestorer, PostgresSignalRestorer
-from qubx.restorers.state import CsvStateRestorer, MongoDBStateRestorer, PostgresStateRestorer
+from qubx.restorers.position import CsvPositionRestorer, PostgresPositionRestorer
+from qubx.restorers.signal import CsvSignalRestorer, PostgresSignalRestorer
+from qubx.restorers.state import CsvStateRestorer, PostgresStateRestorer
 
 # Registry of position restorer types
 POSITION_RESTORER_REGISTRY: dict[str, Type[IPositionRestorer]] = {
     "CsvPositionRestorer": CsvPositionRestorer,
-    "MongoDBPositionRestorer": MongoDBPositionRestorer,
     "PostgresPositionRestorer": PostgresPositionRestorer,
 }
 
@@ -25,7 +24,6 @@ POSITION_RESTORER_REGISTRY: dict[str, Type[IPositionRestorer]] = {
 # Registry of signal restorer types
 SIGNAL_RESTORER_REGISTRY: dict[str, Type[ISignalRestorer]] = {
     "CsvSignalRestorer": CsvSignalRestorer,
-    "MongoDBSignalRestorer": MongoDBSignalRestorer,
     "PostgresSignalRestorer": PostgresSignalRestorer,
 }
 
@@ -33,7 +31,6 @@ SIGNAL_RESTORER_REGISTRY: dict[str, Type[ISignalRestorer]] = {
 # Registry of balance restorer types
 BALANCE_RESTORER_REGISTRY: dict[str, Type[IBalanceRestorer]] = {
     "CsvBalanceRestorer": CsvBalanceRestorer,
-    "MongoDBBalanceRestorer": MongoDBBalanceRestorer,
     "PostgresBalanceRestorer": PostgresBalanceRestorer,
 }
 
@@ -41,7 +38,6 @@ BALANCE_RESTORER_REGISTRY: dict[str, Type[IBalanceRestorer]] = {
 # Registry of state restorer types
 STATE_RESTORER_REGISTRY: dict[str, Type[IStateRestorer]] = {
     "CsvStateRestorer": CsvStateRestorer,
-    "MongoDBStateRestorer": MongoDBStateRestorer,
     "PostgresStateRestorer": PostgresStateRestorer,
 }
 

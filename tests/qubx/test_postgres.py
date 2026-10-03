@@ -2,7 +2,7 @@
 Tests for PostgreSQL logger and restorers.
 
 Uses unittest.mock to simulate psycopg connections since there is no
-psycopg equivalent of mongomock.
+in-memory psycopg stand-in.
 """
 
 from datetime import datetime, timedelta, timezone

@@ -101,7 +101,7 @@ Match the surrounding None/NaN handling style exactly (see how `last_funding_tim
 
 ## 3. Restorers (restorers/position.py)
 
-All three (`CsvPositionRestorer`, `MongoDBPositionRestorer`, `PostgresPositionRestorer`): read the four fields from the record with `.get(..., None)` and pass them to `Position(...)`. When absent (legacy rows) pass `None` for the baselines and the **restore time** as `episode_start_time` — `__init__`'s episode-at-init path then stamps baselines from the restored accumulators. When present, round-trip verbatim. Postgres: check whether the position log table schema is column-typed or JSONB — if columns, the write side (postgres logger under `src/qubx/loggers/postgres.py`) and any DDL/migration for the log table must gain the four columns too; investigate before editing.
+Both (`CsvPositionRestorer`, `PostgresPositionRestorer`): read the four fields from the record with `.get(..., None)` and pass them to `Position(...)`. When absent (legacy rows) pass `None` for the baselines and the **restore time** as `episode_start_time` — `__init__`'s episode-at-init path then stamps baselines from the restored accumulators. When present, round-trip verbatim. Postgres: check whether the position log table schema is column-typed or JSONB — if columns, the write side (postgres logger under `src/qubx/loggers/postgres.py`) and any DDL/migration for the log table must gain the four columns too; investigate before editing.
 
 ## 4. Tests (`tests/qubx/core/test_position_episodes.py`, new)
 

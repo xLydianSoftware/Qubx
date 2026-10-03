@@ -4,13 +4,11 @@ from typing import Type
 from qubx.core.loggers import LogsWriter
 from qubx.loggers.csv import CsvFileLogsWriter
 from qubx.loggers.inmemory import InMemoryLogsWriter
-from qubx.loggers.mongo import MongoDBLogsWriter
 from qubx.loggers.postgres import PostgresLogsWriter
 
 # Registry of logs writer types
 LOGS_WRITER_REGISTRY: dict[str, Type[LogsWriter]] = {
     "CsvFileLogsWriter": CsvFileLogsWriter,
-    "MongoDBLogsWriter": MongoDBLogsWriter,
     "InMemoryLogsWriter": InMemoryLogsWriter,
     "PostgresLogsWriter": PostgresLogsWriter,
 }

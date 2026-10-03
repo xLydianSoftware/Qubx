@@ -5,7 +5,6 @@ from qubx.utils.runner.runner import _infer_restorer_from_logger
 
 
 class TestInferRestorerFromLogger:
-
     def test_postgres_logger(self):
         logging_config = LoggingConfig(
             logger="PostgresLogsWriter",
@@ -35,25 +34,13 @@ class TestInferRestorerFromLogger:
         assert result.parameters["postgres_uri"] == "postgresql://localhost:5432/qubx_logs"
         assert result.parameters["table_prefix"] == "qubx_logs"
 
-    def test_mongo_logger(self):
+    def test_removed_mongo_logger_infers_nothing(self):
         logging_config = LoggingConfig(
             logger="MongoDBLogsWriter",
             position_interval="10Sec",
             portfolio_interval="5Min",
-            args={
-                "mongo_uri": "mongodb://mongo:27017/",
-                "db_name": "mydb",
-                "collection_name_prefix": "logs",
-            },
         )
-        result = _infer_restorer_from_logger(logging_config, "my_strategy")
-
-        assert result is not None
-        assert result.type == "MongoDBStateRestorer"
-        assert result.parameters["strategy_name"] == "my_strategy"
-        assert result.parameters["mongo_uri"] == "mongodb://mongo:27017/"
-        assert result.parameters["db_name"] == "mydb"
-        assert result.parameters["collection_name_prefix"] == "logs"
+        assert _infer_restorer_from_logger(logging_config, "my_strategy") is None
 
     def test_csv_logger(self):
         logging_config = LoggingConfig(

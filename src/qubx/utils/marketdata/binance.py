@@ -15,7 +15,6 @@ from qubx.utils.misc import get_local_qubx_folder, makedirs
 DEFALT_LOCAL_FILE_STORAGE = makedirs(get_local_qubx_folder(), "data/import/binance_history/")
 DEFALT_LOCAL_CSV_STORAGE = makedirs(get_local_qubx_folder(), "data/binance/")
 
-# _DEFAULT_MARKET_DATA_DB = 'md'
 BINANCE_DATA_STORAGE = "https://s3-ap-northeast-1.amazonaws.com"
 BINANCE_DATA_URL = "https://data.binance.vision/"
 
@@ -251,12 +250,8 @@ def update_binance_data_storage(coins=[], quoted_in=["USDT"], market="futures", 
                 data = load_binance_kl_history(
                     symbol, start.strftime("%Y-%m-%d"), instr_type="futures", instr_subtype="um"
                 )
-                # - update in mongo db
                 if data is not None and not data.empty:
                     data.to_csv(join(data_storage, "BINANCE.UM"))
-                    # path = f'm1/BINANCEF:{symbol}'
-                    # z_del(path, dbname=_DEFAULT_MARKET_DATA_DB)
-                    # z_save(path, data, dbname=_DEFAULT_MARKET_DATA_DB)
                     del data
 
     if market.lower() == "spot":
@@ -272,12 +267,8 @@ def update_binance_data_storage(coins=[], quoted_in=["USDT"], market="futures", 
                 )
                 start = pd.Timestamp(d[0][0], unit="ms")
                 data = load_binance_kl_history(symbol, start.strftime("%Y-%m-%d"), instr_type="spot", instr_subtype="-")
-                # - update in mongo db
                 if data is not None and not data.empty:
                     data.to_csv(join(data_storage, "BINANCE"))
-                    # path = f'm1/BINANCE:{symbol}'
-                    # z_del(path, dbname=_DEFAULT_MARKET_DATA_DB)
-                    # z_save(path, data, dbname=_DEFAULT_MARKET_DATA_DB)
                     del data
 
 
