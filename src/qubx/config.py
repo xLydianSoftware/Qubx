@@ -22,7 +22,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 from pydantic_settings import BaseSettings, PydanticBaseSettingsSource
 
 
@@ -47,8 +47,18 @@ class IcebergAccount(BaseModel):
 class LookupConfig(BaseModel):
     """Configuration for instrument/fees lookups."""
 
-    type: str = "file"
-    mongo_url: str | None = None
+    type: str = "file"  # "file" or "service"
+    url: str | None = None  # instrument-service base, e.g. http://control-api.platform.svc/internal/instrument-service
+    token: str | None = None  # bearer token for the gateway route
+    exchanges: list[str] | None = None  # service: snapshot only these exchanges (env: JSON list or comma-separated)
+
+    @field_validator("exchanges", mode="before")
+    @classmethod
+    def _split_exchanges(cls, v: Any) -> Any:
+        if isinstance(v, str):
+            return [e.strip() for e in v.split(",") if e.strip()]
+        return v
+
     reload_interval: str | None = None
     path: str | None = None
 

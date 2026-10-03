@@ -12,14 +12,13 @@ from typing import cast
 
 import pandas as pd
 from psycopg import Connection, sql
-from pymongo import MongoClient
 
 from qubx import logger
 from qubx.core.basics import Instrument, Position
 from qubx.core.lookups import lookup
 from qubx.core.utils import recognize_time
 from qubx.restorers.interfaces import IPositionRestorer
-from qubx.restorers.utils import find_latest_run_folder, latest_run_id, mongo_latest_run_id
+from qubx.restorers.utils import find_latest_run_folder, latest_run_id
 
 
 def _num_or_none(value) -> float | None:
@@ -176,124 +175,6 @@ class CsvPositionRestorer(IPositionRestorer):
             positions[instrument] = position
 
         return positions
-
-
-class MongoDBPositionRestorer(IPositionRestorer):
-    """
-    Position restorer that reads positions from a MongoDB collection.
-
-    This restorer queries the most recent position entries stored using MongoDBLogsWriter,
-    and restores only from the latest run_id for the provided identifiers.
-    """
-
-    def __init__(
-        self,
-        strategy_name: str,
-        mongo_client: MongoClient,
-        db_name: str = "default_logs_db",
-        collection_name: str = "qubx_logs",
-        run_id: str | None = None,
-    ):
-        self.mongo_client = mongo_client
-        self.db_name = db_name
-        self.collection_name = collection_name
-        self.strategy_name = strategy_name
-        self.run_id = run_id
-
-        self.collection = self.mongo_client[db_name][collection_name]
-
-    def restore_positions(self) -> dict[Instrument, Position]:
-        """
-        Restore the latest positions grouped by instrument from the most recent run.
-
-        Returns:
-            A dictionary mapping instruments to positions.
-        """
-        try:
-            now = datetime.utcnow()
-            lookup_range = now - timedelta(days=7)
-
-            base_match = {
-                "log_type": "positions",
-                "strategy_name": self.strategy_name,
-                "timestamp": {"$gte": lookup_range},
-            }
-
-            run_id = self.run_id or mongo_latest_run_id(self.collection, base_match)
-            if run_id is None:
-                logger.warning("No position logs found for given filters.")
-                return {}
-
-            logger.info(f"Restoring positions from MongoDB for run_id: {run_id}")
-
-            pipeline = [
-                {"$match": {**base_match, "run_id": run_id}},
-                {"$sort": {"timestamp": -1}},
-                {
-                    "$group": {
-                        "_id": {"symbol": "$symbol", "exchange": "$exchange", "market_type": "$market_type"},
-                        "doc": {"$first": "$$ROOT"},
-                    }
-                },
-            ]
-
-            cursor = self.collection.aggregate(pipeline)
-
-            positions: dict[Instrument, Position] = {}
-
-            for entry in cursor:
-                log = entry["doc"]
-
-                symbol = log.get("symbol")
-                exchange = log.get("exchange")
-                market_type = log.get("market_type")
-
-                if not (symbol and exchange and market_type):
-                    continue
-
-                instrument = lookup.find_symbol(exchange, symbol)
-                if instrument is None:
-                    logger.warning(f"Instrument not found for {symbol} on {exchange}")
-                    continue
-
-                quantity = log.get("quantity") or log.get("size", 0.0)
-                avg_price = log.get("avg_position_price") or log.get("avg_price", 0.0)
-                r_pnl = log.get("realized_pnl_quoted") or log.get("realized_pnl", 0.0)
-                current_price = log.get("current_price")
-                cumulative_funding = log.get("funding_pnl_quoted", 0.0)
-                commissions = log.get("commissions_quoted", 0.0)
-
-                # - episode baselines (absent on legacy rows -> episode-at-restore in Position.__init__)
-                r_pnl_at_open = _num_or_none(log.get("realized_pnl_at_open_quoted"))
-                commissions_at_open = _num_or_none(log.get("commissions_at_open_quoted"))
-                cumulative_funding_at_open = _num_or_none(log.get("funding_at_open_quoted"))
-                episode_start_time = _time_or_none(log.get("episode_start_time"))
-                if r_pnl_at_open is None or commissions_at_open is None or cumulative_funding_at_open is None:
-                    episode_start_time = log.get("timestamp")  # restore time
-
-                position = Position(
-                    instrument=instrument,
-                    quantity=cast(float, quantity),
-                    pos_average_price=cast(float, avg_price),
-                    r_pnl=cast(float, r_pnl),
-                    cumulative_funding=cast(float, cumulative_funding),
-                    commissions=cast(float, commissions),
-                    episode_start_time=episode_start_time,
-                    r_pnl_at_open=r_pnl_at_open,
-                    commissions_at_open=commissions_at_open,
-                    cumulative_funding_at_open=cumulative_funding_at_open,
-                )
-
-                if current_price is not None:
-                    timestamp = recognize_time(log.get("timestamp"))
-                    position.update_market_price(timestamp, current_price, 1.0)
-
-                positions[instrument] = position
-
-            return positions
-        except Exception as e:
-            logger.error(f"Error restoring positions from MongoDB: {e}")
-            return {}
 
 
 class PostgresPositionRestorer(IPositionRestorer):

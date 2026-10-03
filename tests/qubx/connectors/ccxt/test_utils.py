@@ -147,8 +147,7 @@ class TestCcxtOrderbookRelatedStuff:
         """Both margins must come from the venue, which knows the leverage tier.
 
         Regression: only maintenanceMargin was read, so initial_margin fell back to the internal
-        calc -> 0.0 whenever instrument.initial_margin metadata is absent (it is 0.0 for
-        BINANCE.UM), and get_total_initial_margin under-reported the whole ccxt side.
+        calc (0.0), and get_total_initial_margin under-reported the whole ccxt side.
         """
         info = POSITIONS_BINANCE_UM[0]
         pos = ccxt_convert_position(info, "BINANCE.UM", BINANCE_MARKETS)

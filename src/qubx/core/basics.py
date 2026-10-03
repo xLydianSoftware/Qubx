@@ -1,8 +1,8 @@
 import re
-from dataclasses import dataclass, field
+from dataclasses import KW_ONLY, dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from functools import cache
+from functools import cache, total_ordering
 from queue import Empty, Queue
 from threading import Event
 from typing import Any, Literal, TypeAlias
@@ -347,10 +347,47 @@ def multiplier_coin(base: str) -> str:
     return base
 
 
-@dataclass(order=True)
+class AssetKind(StrEnum):
+    CRYPTO = "CRYPTO"
+    EQUITY = "EQUITY"
+    ETF = "ETF"
+    INDEX = "INDEX"
+    COMMODITY = "COMMODITY"
+    FX = "FX"
+    EVENT = "EVENT"
+
+
+@dataclass(frozen=True)
+class Underlying:
+    """What a listing is a contract on: (kind, code) is its identity, e.g. (EQUITY, NVDA.XNAS), (CRYPTO, PEPE)."""
+
+    kind: AssetKind
+    code: str
+
+    def __post_init__(self):
+        object.__setattr__(self, "kind", AssetKind(self.kind))
+
+    def __str__(self) -> str:
+        return f"{self.kind}:{self.code}"
+
+
+class VenueAttributes(dict):
+    """Read-only venue labels (Binance contractType, HL dex, ...): filter on them, never branch."""
+
+    def _readonly(self, *args, **kwargs):
+        raise TypeError("venue_attributes is read-only")
+
+    __setitem__ = __delitem__ = clear = pop = popitem = setdefault = update = __ior__ = _readonly  # type: ignore
+
+    def __reduce__(self):
+        return (VenueAttributes, (dict(self),))
+
+
+@total_ordering
+@dataclass(eq=False)
 class Instrument:
     """
-    Instrument class.
+    A tradable listing: identity (eq/hash/str) is (exchange, market_type, symbol).
 
      - 2025-06-11: Important change for FUTURE type: now instrument's symbol contains delivery date in format YYYYMMDD.
         So now for let's say september's BTCUSDT future, symbol would be BTCUSD.20250914
@@ -368,24 +405,28 @@ class Instrument:
     lot_size: float  # minimal position size
     min_size: float  # minimal allowed position size
     min_notional: float = 0.0  # minimal notional value
-    initial_margin: float = 0.0  # initial margin
-    maint_margin: float = 0.0  # maintenance margin
-    liquidation_fee: float = 0.0  # liquidation fee
-    contract_size: float = 1.0  # contract size (tokens per contract)
-    contract_multiplier: float = 1.0  # contract multiplier (additional multiplier, always 1 for crypto)
-    onboard_date: datetime | None = None  # date when instrument was listed on the exchange
-    delivery_date: datetime | None = None  # date when instrument is delivered
-    delist_date: datetime | None = None  # date when instrument is delisted
-    inverse: bool = False  # if true, then the future is inverse
+    _: KW_ONLY
+    contract_size: float = 1.0  # quantity per contract: base units (linear) or quote units (inverse)
+    inverse: bool = False
+    listing_id: str | None = None  # instrument-service listing id, stable through renames
+    underlying: Underlying | None = None
+    calendar: str | None = None  # when this listing trades: "24/7", a MIC ("XNAS") or None
+    expiry: datetime | None = None
+    strike: float | None = None
+    option_right: str | None = None  # CALL / PUT
+    listed_at: datetime | None = None
+    delisted_at: datetime | None = None  # a future value is a scheduled delisting
+    margin_tradable: bool = False
+    venue_attributes: VenueAttributes = field(default_factory=VenueAttributes)
 
     def __post_init__(self):
-        # define how ordering works
-        object.__setattr__(self, "sort_index", f"{self.exchange}:{self.market_type}:{self.symbol}")
+        if not isinstance(self.venue_attributes, VenueAttributes):
+            self.venue_attributes = VenueAttributes(self.venue_attributes or {})
 
     @property
     def quantity_multiplier(self) -> float:
-        """Combined multiplier: contract_size * contract_multiplier. Multiply contracts by this to get token quantity."""
-        return self.contract_size * self.contract_multiplier
+        """Multiply contracts by this to get token quantity (alias of contract_size)."""
+        return self.contract_size
 
     @property
     def price_precision(self):
@@ -401,7 +442,14 @@ class Instrument:
 
     @property
     def asset(self) -> str:
+        """The venue coin, multiplier stripped (1000PEPE -> PEPE): a function of the listing alone, so
+        connector-built and lookup-built instruments agree. Economic exposure is `exposure_code`."""
         return multiplier_coin(self.base)
+
+    @property
+    def exposure_code(self) -> str:
+        """What the listing is a contract on (NVDA.XNAS for a bStock, XAU for PAXG); `asset` when the underlying is unknown."""
+        return self.underlying.code if self.underlying is not None else self.asset
 
     def is_futures(self) -> bool:
         return self.market_type in [MarketType.FUTURE, MarketType.SWAP]
@@ -521,6 +569,11 @@ class Instrument:
             return False
         return str(self) == str(other)
 
+    def __lt__(self, other: "Instrument") -> bool:
+        if not isinstance(other, Instrument):
+            return NotImplemented
+        return (self.symbol, self.market_type, self.exchange) < (other.symbol, other.market_type, other.exchange)
+
     def __str__(self) -> str:
         return ":".join([self.exchange, self.market_type, self.symbol])
 
@@ -574,11 +627,10 @@ class Instrument:
   Min Size:          {self.min_size}
   Min Notional:      {self.min_notional}
   Contract Size:     {self.contract_size}
-  Contract Mult:     {self.contract_multiplier}
-  Initial Margin:    {self.initial_margin}
-  Maint. Margin:     {self.maint_margin}
-  Onboard Date:      {self.onboard_date}
-  Delist Date:       {self.delist_date}
+  Underlying:        {self.underlying}
+  Calendar:          {self.calendar}
+  Listed At:         {self.listed_at}
+  Delisted At:       {self.delisted_at}
 """
         print(info_str)
 
@@ -1186,6 +1238,7 @@ class Position:
     _initial_margin_external: bool = False  # If True, initial_margin is managed by exchange (skip recalculation)
     maint_margin: float = 0.0
     _maint_margin_external: bool = False  # If True, maint_margin is managed by exchange (skip recalculation)
+    maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN  # fraction of notional, set from the account config
 
     # ADL queue position from the exchange (None if not reported).
     # Lower values = more likely to be auto-deleveraged.
@@ -1711,8 +1764,9 @@ class Position:
         # Only apply maintenance margin for leveraged instruments (futures/swaps)
         # Spot positions don't have margin requirements since you own the actual asset
         if self.instrument.is_futures():
-            maint_margin = self.instrument.maint_margin or DEFAULT_MAINTENANCE_MARGIN
-            self.maint_margin = maint_margin * abs(self.quantity) * self._qty_multiplier * self.last_update_price
+            self.maint_margin = (
+                self.maint_margin_rate * abs(self.quantity) * self._qty_multiplier * self.last_update_price
+            )
         else:
             self.maint_margin = 0.0
 
@@ -1727,17 +1781,9 @@ class Position:
         if self._initial_margin_external:
             return
 
-        # Only apply initial margin for leveraged instruments (futures/swaps).
-        # Use the per-asset initial_margin fraction from instrument metadata when
-        # populated; otherwise leave at 0.0 (the framework can't infer a sensible
-        # default without the per-instrument leverage setting, which lives on
-        # the account processor).
-        if self.instrument.is_futures() and self.instrument.initial_margin > 0:
-            self.initial_margin = (
-                self.instrument.initial_margin * abs(self.quantity) * self._qty_multiplier * self.last_update_price
-            )
-        else:
-            self.initial_margin = 0.0
+        # Without a venue-reported value the framework can't infer one: it depends on the
+        # per-instrument leverage setting, which lives on the account processor.
+        self.initial_margin = 0.0
 
 
 VENUE_SETTINGS_EVENT = "venue_settings"
@@ -2094,24 +2140,24 @@ class InstrumentsLookup:
             i
             for i in self.get_lookup().values()
             if i.exchange == exchange
-            and (base is None or i.base == base or multiplier_coin(i.base) == base)
+            and (base is None or i.base == base or i.asset == base)
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
             and (
                 _limit_time is None
-                or (i.onboard_date is None or pd.Timestamp(i.onboard_date).tz_localize(None) <= _limit_time)
+                or (i.listed_at is None or pd.Timestamp(i.listed_at).tz_localize(None) <= _limit_time)
             )
             and (
                 _limit_time is None
-                or (i.delist_date is None or pd.Timestamp(i.delist_date).tz_localize(None) >= _limit_time)
+                or (i.delisted_at is None or pd.Timestamp(i.delisted_at).tz_localize(None) >= _limit_time)
             )
         ]
         if base is not None:
             aliases = sorted({i.base for i in matched} - {base})
             if aliases and any(i.base == base for i in matched):
                 logger.warning(
-                    f"[lookup] {exchange} base <y>{base}</y> also matches {aliases} through a contract "
-                    f"multiplier; the exact base is listed first — pass the venue base to disambiguate"
+                    f"[lookup] {exchange} <y>{base}</y> is ambiguous: it also names the multiplier contracts "
+                    f"{aliases}; exact-base matches come first, pass a venue base (e.g. 1000{base}) to select one"
                 )
                 matched.sort(key=lambda i: i.base != base)
         return matched

@@ -12,15 +12,13 @@ from pathlib import Path
 
 import pandas as pd
 from psycopg import Connection, sql
-from pymongo import MongoClient
-from pymongo.command_cursor import CommandCursor
 
 from qubx import logger
 from qubx.core.basics import Instrument, Signal, TargetPosition
 from qubx.core.lookups import lookup
 from qubx.core.utils import recognize_time
 from qubx.restorers.interfaces import ISignalRestorer
-from qubx.restorers.utils import find_latest_run_folder, latest_run_id, mongo_latest_run_id
+from qubx.restorers.utils import find_latest_run_folder, latest_run_id
 
 
 def _parse_options_cell(value) -> dict:
@@ -266,156 +264,6 @@ class CsvSignalRestorer(ISignalRestorer):
             _signals_by_instrument[instrument] = signals
 
         return _signals_by_instrument
-
-
-class MongoDBSignalRestorer(ISignalRestorer):
-    """
-    Signal restorer that reads historical signals from MongoDB.
-
-    This restorer reads signals written by the MongoDBLogsWriter
-    for the most recent run_id associated with a given bot.
-    """
-
-    def __init__(
-        self,
-        strategy_name: str,
-        mongo_client: MongoClient,
-        db_name: str = "default_logs_db",
-        collection_name: str = "qubx_logs",
-        max_restored_records: int = 20,
-        run_id: str | None = None,
-    ):
-        self.mongo_client = mongo_client
-        self.db_name = db_name
-        self.collection_name = collection_name
-        self.strategy_name = strategy_name
-        self.max_restored_records = max_restored_records
-        self.run_id = run_id
-        self.collection = self.mongo_client[db_name][collection_name]
-
-    def restore_signals(self) -> dict[Instrument, list[Signal]]:
-        """
-        Restore signals from MongoDB for the latest run_id.
-
-        Returns:
-            A dictionary mapping instruments to lists of signals.
-        """
-
-        logger.info(f"Restoring latest {self.max_restored_records} signals per symbol from MongoDB")
-        result: dict[Instrument, list[Signal]] = {}
-
-        if (cursor := self._load_data_from_mongo("signals")) is None:
-            return result
-
-        for entry in cursor:
-            log = entry["data"]
-            try:
-                if (instrument := lookup.find_symbol(log["exchange"], log["symbol"])) is None:
-                    logger.warning(f"Instrument not found for {log['symbol']} on {log['exchange']}")
-                    continue
-
-                signal_value = log.get("signal")
-                if signal_value is None and "side" in log:
-                    signal_value = 1.0 if str(log["side"]).lower() == "buy" else -1.0
-
-                if signal_value is None:
-                    logger.warning(f"Missing signal or side for log: {log}")
-                    continue
-
-                price = log.get("price") or log.get("reference_price")
-                options = log.get("options", {})
-
-                signal = Signal(
-                    time=recognize_time(log["timestamp"]),
-                    instrument=instrument,
-                    signal=signal_value,
-                    price=price,
-                    stop=None,
-                    take=None,
-                    reference_price=log.get("reference_price"),
-                    group=log.get("group", ""),
-                    comment=log.get("comment", ""),
-                    options=options,
-                    is_service=log.get("service", log.get("is_service", False)),
-                )
-
-                result.setdefault(instrument, []).append(signal)
-            except Exception as e:
-                logger.exception(f"Failed to process signal document: {e}")
-
-        cursor.close()
-        return result
-
-    def restore_targets(self) -> dict[Instrument, list[TargetPosition]]:
-        logger.info(f"Restoring latest {self.max_restored_records} targets per symbol from MongoDB")
-        result: dict[Instrument, list[TargetPosition]] = {}
-
-        if (cursor := self._load_data_from_mongo("targets")) is None:
-            return result
-
-        for entry in cursor:
-            log = entry["data"]
-            try:
-                if (instrument := lookup.find_symbol(log["exchange"], log["symbol"])) is None:
-                    logger.warning(f"Instrument not found for {log['symbol']} on {log['exchange']}")
-                    continue
-
-                target_size = float(log["target_position"])
-                price = log.get("entry_price", None)
-                options = log.get("options", {})
-
-                target = TargetPosition(
-                    time=recognize_time(log["timestamp"]),
-                    instrument=instrument,
-                    target_position_size=target_size,
-                    entry_price=price,
-                    stop_price=log.get("stop_price", None),
-                    take_price=log.get("take_price", None),
-                    options=options,
-                )
-
-                result.setdefault(instrument, []).append(target)
-            except Exception as e:
-                logger.exception(f"Failed to process target document: {e}")
-
-        cursor.close()
-        return result
-
-    def _load_data_from_mongo(self, log_type: str) -> CommandCursor | None:
-        try:
-            since = datetime.utcnow() - timedelta(days=7)
-            base_match = {
-                "log_type": log_type,
-                "strategy_name": self.strategy_name,
-                "timestamp": {"$gte": since},
-            }
-            run_id = self.run_id or mongo_latest_run_id(self.collection, base_match)
-            if run_id is None:
-                return None
-
-            pipeline = [
-                {"$match": {**base_match, "run_id": run_id}},
-                {"$sort": {"timestamp": -1}},
-                {
-                    "$group": {
-                        "_id": {
-                            "symbol": "$symbol",
-                            "exchange": "$exchange",
-                            "market_type": "$market_type",
-                        },
-                        "data": {"$push": "$$ROOT"},
-                    }
-                },
-                {"$project": {"data": {"$slice": ["$data", self.max_restored_records]}}},
-                {"$unwind": "$data"},
-            ]
-
-            return self.collection.aggregate(pipeline)
-        except Exception as e:
-            logger.error(
-                f"Error restoring {log_type} data from MongoDB::{self.collection_name} for {self.strategy_name} : {e}"
-            )
-            return None
 
 
 class PostgresSignalRestorer(ISignalRestorer):

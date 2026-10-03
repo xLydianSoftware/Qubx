@@ -37,12 +37,35 @@ MAJOR=$(echo "$VERSION" | cut -d. -f1)
 MINOR=$(echo "$VERSION" | cut -d. -f2)
 PATCH=$(echo "$VERSION" | cut -d. -f3)
 
-if [ "$CHANNEL" = "dev" ]; then
-    # Dev: increment dev suffix on the NEXT version (stable + patch bump)
-    # Find the latest dev tag for this base or next base
-    NEXT_PATCH=$((PATCH + 1))
-    BASE="${MAJOR}.${MINOR}.${NEXT_PATCH}"
+# Next stable version from conventional commits since the last stable tag:
+# breaking → major, feat → minor, otherwise patch. Dev builds use the same base,
+# so a dev build of a breaking change is already versioned as the next major.
+HAS_BREAKING=false
+HAS_FEAT=false
+while IFS= read -r msg; do
+    if echo "$msg" | grep -qE '^[a-z]+(\(.+\))?!:'; then
+        HAS_BREAKING=true
+    fi
+    if echo "$msg" | grep -qi 'BREAKING CHANGE'; then
+        HAS_BREAKING=true
+    fi
+    if echo "$msg" | grep -qE '^feat(\(.+\))?:'; then
+        HAS_FEAT=true
+    fi
+    # tformat (not format) terminates every line — format omits the trailing
+    # newline, so `while read` drops the last commit (the whole range for a squash merge).
+done < <(git log "${LATEST_STABLE}..HEAD" --pretty=tformat:"%s" 2>/dev/null)
 
+if [ "$HAS_BREAKING" = true ]; then
+    MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
+elif [ "$HAS_FEAT" = true ]; then
+    MINOR=$((MINOR + 1)); PATCH=0
+else
+    PATCH=$((PATCH + 1))
+fi
+BASE="${MAJOR}.${MINOR}.${PATCH}"
+
+if [ "$CHANNEL" = "dev" ]; then
     LATEST_DEV=$(git tag -l "v${BASE}.dev*" | grep -oP '\.dev\K[0-9]+' | sort -n | tail -n1 || echo "")
     if [ -z "$LATEST_DEV" ]; then
         NEXT_DEV=1
@@ -52,34 +75,7 @@ if [ "$CHANNEL" = "dev" ]; then
     echo "v${BASE}.dev${NEXT_DEV}"
 
 elif [ "$CHANNEL" = "stable" ]; then
-    # Stable: determine bump type from conventional commits since last stable tag
-    HAS_BREAKING=false
-    HAS_FEAT=false
-
-    while IFS= read -r msg; do
-        # Check for breaking changes
-        if echo "$msg" | grep -qE '^[a-z]+(\(.+\))?!:'; then
-            HAS_BREAKING=true
-        fi
-        if echo "$msg" | grep -qi 'BREAKING CHANGE'; then
-            HAS_BREAKING=true
-        fi
-        # Check for features
-        if echo "$msg" | grep -qE '^feat(\(.+\))?:'; then
-            HAS_FEAT=true
-        fi
-        # tformat (not format) terminates every line — format omits the trailing
-        # newline, so `while read` drops the last commit (the whole range for a squash merge).
-    done < <(git log "${LATEST_STABLE}..HEAD" --pretty=tformat:"%s" 2>/dev/null)
-
-    if [ "$HAS_BREAKING" = true ]; then
-        MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
-    elif [ "$HAS_FEAT" = true ]; then
-        MINOR=$((MINOR + 1)); PATCH=0
-    else
-        PATCH=$((PATCH + 1))
-    fi
-    echo "v${MAJOR}.${MINOR}.${PATCH}"
+    echo "v${BASE}"
 else
     echo "Unknown channel: $CHANNEL" >&2
     exit 1
