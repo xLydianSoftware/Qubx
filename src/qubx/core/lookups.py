@@ -7,9 +7,10 @@ import os
 import re
 import shutil
 import tempfile
+import threading
 from datetime import datetime
-from pathlib import Path
 
+import httpx
 import pandas as pd
 import stackprinter
 
@@ -17,11 +18,13 @@ from qubx import logger
 from qubx.core.basics import (
     ZERO_COSTS,
     AccountsLookup,
+    AssetKind,
     FeesLookup,
     Instrument,
     InstrumentsLookup,
     MarketType,
     TransactionCostsCalculator,
+    Underlying,
 )
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
 from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, load_qubx_resources_as_text, makedirs
@@ -42,43 +45,53 @@ class _InstrumentEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
+def _ts(value) -> pd.Timestamp | None:
+    if value is None or value == "NaT":
+        return None
+    ts = pd.Timestamp(value)
+    if pd.isna(ts):
+        return None
+    return ts.tz_convert(None) if ts.tzinfo is not None else ts
+
+
+def _instrument_from_dict(obj: dict) -> Instrument:
+    """Reads both the current shape and files written before the Instrument redesign
+    (onboard_date/delist_date/delivery_date, contract_multiplier, margin fields)."""
+    _u = obj.get("underlying")
+    return Instrument(
+        symbol=obj["symbol"],
+        market_type=MarketType[obj["market_type"]],
+        exchange=obj["exchange"],
+        base=obj["base"],
+        quote=obj["quote"],
+        settle=obj["settle"],
+        exchange_symbol=obj.get("exchange_symbol") or obj["symbol"],
+        tick_size=float(obj["tick_size"]),
+        lot_size=float(obj["lot_size"]),
+        min_size=float(obj["min_size"]),
+        min_notional=float(obj.get("min_notional") or 0.0),
+        contract_size=float(obj.get("contract_size") or 1.0) * float(obj.get("contract_multiplier") or 1.0),
+        inverse=bool(obj.get("inverse") or False),
+        listing_id=obj.get("listing_id"),
+        underlying=Underlying(AssetKind(_u["kind"]), _u["code"]) if _u else None,
+        calendar=obj.get("calendar"),
+        expiry=_ts(obj.get("expiry", obj.get("delivery_date"))),
+        strike=obj.get("strike"),
+        option_right=obj.get("option_right"),
+        listed_at=_ts(obj.get("listed_at", obj.get("onboard_date"))),
+        delisted_at=_ts(obj.get("delisted_at", obj.get("delist_date"))),
+        margin_tradable=bool(obj.get("margin_tradable") or False),
+        venue_attributes=obj.get("venue_attributes") or {},
+    )
+
+
 class _InstrumentDecoder(json.JSONDecoder):
     def decode(self, json_string):
         obj = super(_InstrumentDecoder, self).decode(json_string)
         if isinstance(obj, dict):
-            # Convert delivery_date and onboard_date strings to datetime
-            if (delivery_date := obj.get("delivery_date")) and delivery_date != "NaT":
-                obj["delivery_date"] = pd.Timestamp(delivery_date)
-
-            if (onboard_date := obj.get("onboard_date")) and onboard_date != "NaT":
-                obj["onboard_date"] = pd.Timestamp(onboard_date)
-
-            if (delist_date := obj.get("delist_date")) and delist_date != "NaT":
-                obj["delist_date"] = pd.Timestamp(delist_date)
-
-            return Instrument(
-                symbol=obj["symbol"],
-                market_type=MarketType[obj["market_type"]],
-                exchange=obj["exchange"],
-                base=obj["base"],
-                quote=obj["quote"],
-                settle=obj["settle"],
-                exchange_symbol=obj.get("exchange_symbol", obj["symbol"]),
-                tick_size=float(obj["tick_size"]),
-                lot_size=float(obj["lot_size"]),
-                min_size=float(obj["min_size"]),
-                min_notional=float(obj.get("min_notional", 0.0)),
-                initial_margin=float(obj.get("initial_margin", 0.0)),
-                maint_margin=float(obj.get("maint_margin", 0.0)),
-                liquidation_fee=float(obj.get("liquidation_fee", 0.0)),
-                contract_size=float(obj.get("contract_size", 1.0)),
-                onboard_date=obj.get("onboard_date", None),
-                delivery_date=obj.get("delivery_date", None),
-                inverse=obj.get("inverse", False),
-                delist_date=obj.get("delist_date", None),
-            )
+            return _instrument_from_dict(obj)
         elif isinstance(obj, list):
-            return [self.decode(json.dumps(item)) for item in obj]
+            return [_instrument_from_dict(item) for item in obj]
         return obj
 
 
@@ -393,11 +406,8 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]) -> list[Instrument]:
     r = []
     for s in data:
         _pfx = ""
-        if _delist_date := s.get("availableTo", None):
-            _delist_date = pd.Timestamp(_delist_date)
-
-        if _delivery_date := s.get("expiry", None):
-            _delivery_date = pd.Timestamp(_delivery_date)
+        _delist_date = _ts(s.get("availableTo", None))
+        _delivery_date = _ts(s.get("expiry", None))
 
         match s["type"]:
             case "perpetual":
@@ -426,50 +436,141 @@ def _convert_instruments_metadata_to_qubx(data: list[dict]) -> list[Instrument]:
                 min_size=s["amountIncrement"],
                 min_notional=0,  # we don't have this info from tardis
                 contract_size=s.get("contractMultiplier", 1.0),
-                onboard_date=s.get("availableSince", None),
-                delivery_date=_delivery_date,
+                listed_at=_ts(s.get("availableSince", None)),
+                expiry=_delivery_date,
                 inverse=s.get("inverse", False),
-                delist_date=_delist_date,
+                delisted_at=_delist_date,
             )
         )
     return r
 
 
-class InstrumentsLookupMongo(InstrumentsLookup):
-    _MONGO_DB_BASE_NAME = "metadata"
-    _MONGO_DB_TABLE_NAME = "instruments"
+_EPOCH = pd.Timestamp(0)
+
+
+def listing_to_instrument(listing: dict) -> Instrument:
+    """Instrument from an instrument-service /snapshot listing, built from its current version."""
+    versions = listing["versions"]
+    v = next((x for x in reversed(versions) if x.get("valid_to") is None), versions[-1])
+    u = listing["underlying"]
+    return Instrument(
+        symbol=v["symbol"],
+        market_type=MarketType(listing["market_type"]),
+        exchange=listing["exchange"],
+        base=v["base"],
+        quote=listing["quote"],
+        settle=listing["settle"],
+        exchange_symbol=v["exchange_symbol"] or v["symbol"],
+        tick_size=float(v["tick_size"]),
+        lot_size=float(v["lot_size"]),
+        min_size=float(v["min_size"]),
+        min_notional=float(v["min_notional"] or 0.0),
+        contract_size=float(v["contract_size"] or 1.0),
+        inverse=bool(listing["inverse"]),
+        listing_id=listing["id"],
+        underlying=Underlying(AssetKind(u["kind"]), u["code"]),
+        calendar=listing.get("calendar"),
+        expiry=_ts(listing.get("expiry")),
+        strike=listing.get("strike"),
+        option_right=listing.get("option_right"),
+        listed_at=_ts(listing.get("listed_at")),
+        delisted_at=_ts(listing.get("delisted_at")),
+        margin_tradable=bool(v.get("margin_tradable")),
+        venue_attributes=v.get("venue_attributes") or {},
+    )
+
+
+class InstrumentsLookupService(InstrumentsLookup):
+    """Instruments from the platform instrument service ({url}/snapshot).
+
+    The first load must succeed. Afterwards the snapshot is re-read every reload_interval
+    with If-None-Match; a failed refresh keeps the in-memory copy. There is no fallback lookup.
+    """
 
     _lookup: dict[str, Instrument]
-    _mongo_url: str
-    _reload_interval: pd.Timedelta | None
-    _last_refresh: pd.Timestamp
+    _by_symbol: dict[tuple[str, str], list[Instrument]]
+    _by_alias: dict[tuple[str, str], list[Instrument]]
 
-    def __init__(self, mongo_url: str = "mongodb://localhost:27017/", reload_interval: str | None = None):
-        self._mongo_url = mongo_url
+    def __init__(
+        self,
+        url: str,
+        token: str | None = None,
+        reload_interval: str | None = None,
+        exchanges: list[str] | None = None,
+        timeout: float = 60.0,
+    ):
+        self._url = url.rstrip("/")
+        self._headers = {"Authorization": f"Bearer {token}"} if token else {}
+        self._params = [("exchange", e) for e in exchanges or []]
         self._reload_interval = to_timedelta(reload_interval) if reload_interval else None
-        self.load()
-
-    def load(self):
-        from pymongo import MongoClient
-
-        self._lookup = {}
-        with MongoClient(self._mongo_url) as client:
-            db = client[self._MONGO_DB_BASE_NAME]
-            collection = db[self._MONGO_DB_TABLE_NAME]
-            for i in collection.find():
-                i.pop("_id")
-                i.pop("asset_type", None)  # - remove old asset_type t be compatible with new Instrument format
-                instr = Instrument(**i)
-                self._lookup[f"{instr.exchange}:{instr.market_type}:{instr.symbol}"] = instr
-
+        self._timeout = timeout
+        self._etag: str | None = None
+        self._refresh_lock = threading.Lock()
+        try:
+            self._fetch()
+        except Exception as e:
+            raise RuntimeError(f"[lookup] instrument service at {self._url} is unavailable: {e}") from e
         self._last_refresh = pd.Timestamp.now()
 
-    def get_lookup(self) -> dict[str, Instrument]:
-        # - reload data if needed
-        if self._reload_interval and pd.Timestamp.now() - self._last_refresh > self._reload_interval:
-            self.load()
+    def _fetch(self) -> bool:
+        headers = dict(self._headers)
+        if self._etag:
+            headers["If-None-Match"] = self._etag
+        r = httpx.get(f"{self._url}/snapshot", params=self._params, headers=headers, timeout=self._timeout)
+        if r.status_code == 304:
+            return False
+        r.raise_for_status()
+        self._build(r.json()["listings"])
+        self._etag = r.headers.get("ETag")
+        return True
 
+    def _build(self, listings: list[dict]) -> None:
+        built: list[tuple[Instrument, list[str]]] = []
+        for listing in listings:
+            try:
+                built.append((listing_to_instrument(listing), listing.get("aliases") or []))
+            except (ValueError, KeyError) as e:
+                logger.warning(f"[lookup] skipping listing {listing.get('id')} ({listing.get('exchange')}): {e}")
+
+        # - a relisted symbol is a new listing next to the delisted one: the active, then the newest, wins
+        built.sort(key=lambda b: (b[0].delisted_at is not None, -(b[0].listed_at or _EPOCH).value))
+        lookup, by_symbol, by_alias = {}, {}, {}
+        for i, aliases in built:
+            lookup.setdefault(f"{i.exchange}:{i.market_type}:{i.symbol}", i)
+            by_symbol.setdefault((i.exchange, i.symbol), []).append(i)
+            for alias in aliases:
+                if alias != i.symbol:
+                    by_alias.setdefault((i.exchange, alias), []).append(i)
+        self._lookup, self._by_symbol, self._by_alias = lookup, by_symbol, by_alias
+        logger.info(f"[lookup] loaded {len(lookup)} instruments from the instrument service")
+
+    def refresh(self) -> None:
+        if not self._refresh_lock.acquire(blocking=False):
+            return
+        try:
+            self._fetch()
+        except Exception as e:
+            logger.warning(f"[lookup] instrument service refresh failed, keeping {len(self._lookup)} instruments: {e}")
+        finally:
+            self._last_refresh = pd.Timestamp.now()
+            self._refresh_lock.release()
+
+    def _maybe_refresh(self) -> None:
+        if self._reload_interval and pd.Timestamp.now() - self._last_refresh > self._reload_interval:
+            self.refresh()
+
+    def get_lookup(self) -> dict[str, Instrument]:
+        self._maybe_refresh()
         return self._lookup
+
+    def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
+        """Current instrument for a symbol, resolving former symbols of renamed listings."""
+        self._maybe_refresh()
+        for index in (self._by_symbol, self._by_alias):
+            for i in index.get((exchange, symbol), ()):
+                if market_type is None or i.market_type == market_type:
+                    return i
+        return None
 
 
 class AccountsLookupFromManager(AccountsLookup):
@@ -507,8 +608,10 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
             f_cfg = settings.fees_lookup
 
             i_kwargs = {}
-            if i_cfg.mongo_url:
-                i_kwargs["mongo_url"] = i_cfg.mongo_url
+            if i_cfg.url:
+                i_kwargs["url"] = i_cfg.url
+            if i_cfg.token:
+                i_kwargs["token"] = i_cfg.token
             if i_cfg.reload_interval:
                 i_kwargs["reload_interval"] = i_cfg.reload_interval
             if i_cfg.path:
@@ -527,9 +630,14 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
     def _get_instrument_lookup(type: str, **kwargs) -> InstrumentsLookup:
         match type.lower():
             case "file":
-                return FileInstrumentsLookupWithCCXT(**kwargs)
+                return FileInstrumentsLookupWithCCXT(**{k: v for k, v in kwargs.items() if k == "path"})
+            case "service":
+                if not kwargs.get("url"):
+                    raise ValueError("Instrument lookup type 'service' requires a url")
+                kwargs.pop("path", None)
+                return InstrumentsLookupService(**kwargs)
             case "mongo":
-                return InstrumentsLookupMongo(**kwargs)
+                raise ValueError("The mongo instrument lookup was removed: use type 'service' with a url")
             case _:
                 raise ValueError(f"Invalid lookup type: {type}")
 

@@ -1,3 +1,4 @@
+import json
 import multiprocessing as mp
 import os
 import random
@@ -6,9 +7,10 @@ import tempfile
 import time
 from unittest import mock
 
+import pandas as pd
 import pytest
 
-from qubx.core.basics import TransactionCostsCalculator
+from qubx.core.basics import AssetKind, Instrument, MarketType, TransactionCostsCalculator, Underlying
 from qubx.core.lookups import FeesLookupFile, FileInstrumentsLookupWithCCXT
 
 
@@ -122,6 +124,43 @@ class TestFileInstrumentsLookupCache:
         lookup = FileInstrumentsLookupWithCCXT(str(path))
         assert lookup.find_symbol("BINANCE", "BTCUSDT") is not None
         assert [p.name for p in tmp_path.iterdir()] == ["instruments"]
+
+
+class TestInstrumentFileFormat:
+    def test_reads_files_written_before_the_instrument_redesign(self, tmp_path):
+        legacy = {
+            "symbol": "BTCUSDT", "market_type": "SWAP", "exchange": "OKX.F", "base": "BTC", "quote": "USDT",
+            "settle": "USDT", "exchange_symbol": "BTC-USDT-SWAP", "tick_size": 0.1, "lot_size": 1.0, "min_size": 1.0,
+            "min_notional": 0.0, "initial_margin": 0.1, "maint_margin": 0.05, "liquidation_fee": 0.0,
+            "contract_size": 0.01, "contract_multiplier": 2.0, "onboard_date": "2020-01-01T00:00:00",
+            "delivery_date": "NaT", "delist_date": "2026-01-01T00:00:00+00:00", "inverse": False,
+        }  # fmt: skip
+        (tmp_path / "okx.json").write_text(json.dumps([legacy]))
+        i = FileInstrumentsLookupWithCCXT(str(tmp_path)).find_symbol("OKX.F", "BTCUSDT")
+        assert i is not None
+        assert i.contract_size == pytest.approx(0.02)
+        assert i.listed_at == pd.Timestamp("2020-01-01")
+        assert i.delisted_at == pd.Timestamp("2026-01-01")
+        assert i.expiry is None and i.underlying is None
+        assert i.asset == "BTC"
+
+    def test_round_trips_the_new_shape(self, tmp_path):
+        i = Instrument(
+            "NVDABUSDT", MarketType.SPOT, "BINANCE", "NVDAB", "USDT", "USDT", "nvdabusdt", 0.01, 0.001, 0.001,
+            listing_id="abc", underlying=Underlying(AssetKind.EQUITY, "NVDA.XNAS"), calendar="24/7",
+            listed_at=pd.Timestamp("2026-03-04 08:00"), margin_tradable=True,
+            venue_attributes={"permission_groups": ["TRD_GRP_261"]},
+        )  # fmt: skip
+        FileInstrumentsLookupWithCCXT.__new__(FileInstrumentsLookupWithCCXT)._save_to_json(
+            str(tmp_path / "x.json"), [i]
+        )
+        j = FileInstrumentsLookupWithCCXT(str(tmp_path)).find_symbol("BINANCE", "NVDABUSDT")
+        assert j is not None
+        assert (j.listing_id, j.underlying, j.calendar, j.margin_tradable) == (
+            "abc", Underlying(AssetKind.EQUITY, "NVDA.XNAS"), "24/7", True,
+        )  # fmt: skip
+        assert j.listed_at == pd.Timestamp("2026-03-04 08:00")
+        assert j.venue_attributes == {"permission_groups": ["TRD_GRP_261"]}
 
 
 def _binance_btc_known(start: tuple[str, float]) -> bool:

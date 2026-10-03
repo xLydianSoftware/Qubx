@@ -259,13 +259,13 @@ def _run_setup(
         # Adjust the start date for the simulation to the onboard date of the instrument with the minimum onboard date.
         # TODO: this can be removed once we add some artificial data stream to move the simulation
         if setup.setup_type in [SetupTypes.SIGNAL, SetupTypes.SIGNAL_AND_TRACKER]:
-            onboard_dates = [
-                to_utc_naive(to_timestamp(instrument.onboard_date))
+            listed_dates = [
+                to_utc_naive(to_timestamp(instrument.listed_at))
                 for instrument in setup.instruments
-                if instrument.onboard_date is not None
+                if instrument.listed_at is not None
             ]
-            if onboard_dates:
-                start = max(start, min(onboard_dates))
+            if listed_dates:
+                start = max(start, min(listed_dates))
 
         runner = SimulationRunner(
             setup=setup,

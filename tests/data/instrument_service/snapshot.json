@@ -1,0 +1,828 @@
+{
+ "listings": [
+  {
+   "id": "006ce083-dade-583d-b0e5-b3ed6bd5fd82",
+   "exchange": "BINANCE",
+   "market_type": "SPOT",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2021-12-14T00:00:00Z",
+   "delisted_at": "2025-12-18T00:00:00Z",
+   "predecessor_id": null,
+   "underlying": {
+    "id": "43735ca2-13db-572d-b6ad-4b0695b17f74",
+    "kind": "CRYPTO",
+    "code": "VOXEL"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "VOXELUSDT",
+     "exchange_symbol": "voxelusdt",
+     "base": "VOXEL",
+     "tick_size": 0.0001,
+     "lot_size": 0.1,
+     "min_size": 0.1,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "0109aad9-cdf5-56c6-8c63-8e2a48490759",
+   "exchange": "BINANCE",
+   "market_type": "SPOT",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2021-06-10T00:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "faf0a681-e881-5526-9c11-7251498a8b73",
+    "kind": "CRYPTO",
+    "code": "GTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": "2026-07-23T08:00:00Z",
+     "symbol": "GTCUSDT",
+     "exchange_symbol": "GTCUSDT",
+     "base": "GTC",
+     "tick_size": 0.001,
+     "lot_size": 0.1,
+     "min_size": 0.1,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": true,
+     "venue_attributes": {}
+    },
+    {
+     "valid_from": "2026-07-23T08:00:00Z",
+     "valid_to": null,
+     "symbol": "GTCUSDT",
+     "exchange_symbol": "GTCUSDT",
+     "base": "GTC",
+     "tick_size": 1e-05,
+     "lot_size": 0.1,
+     "min_size": 0.1,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": true,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "02c6f984-5afb-567c-b8b5-8715974de907",
+   "exchange": "BINANCE",
+   "market_type": "SPOT",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2026-06-11T00:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "640f2591-215f-5eb0-86d1-b2736a151230",
+    "kind": "EQUITY",
+    "code": "SNDK.XNAS"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "SNDKBUSDT",
+     "exchange_symbol": "SNDKBUSDT",
+     "base": "SNDKB",
+     "tick_size": 0.01,
+     "lot_size": 0.0001,
+     "min_size": 0.0001,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": true,
+     "venue_attributes": {
+      "permission_groups": [
+       "TRD_GRP_261"
+      ]
+     }
+    }
+   ]
+  },
+  {
+   "id": "09557b74-bdde-5e1c-82e0-ea53de4b9b80",
+   "exchange": "BINANCE",
+   "market_type": "SPOT",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2019-03-30T00:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSDT",
+     "exchange_symbol": "BTCUSDT",
+     "base": "BTC",
+     "tick_size": 0.01,
+     "lot_size": 1e-05,
+     "min_size": 1e-05,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": true,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "01eaa357-3521-5e6f-b371-57aa31feaac7",
+   "exchange": "BINANCE.UM",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2026-09-01T02:45:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "36e95a4a-9b5f-5ea4-9468-acb94d38f905",
+    "kind": "EQUITY",
+    "code": "0625.XHKG"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-09-01T08:00:00Z",
+     "valid_to": null,
+     "symbol": "HK0625USDT",
+     "exchange_symbol": "HK0625USDT",
+     "base": "HK0625",
+     "tick_size": 0.01,
+     "lot_size": 0.01,
+     "min_size": 0.01,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "contractType": "TRADIFI_PERPETUAL",
+      "underlyingSubType": [
+       "TradFi"
+      ],
+      "underlyingType": "HK_EQUITY"
+     }
+    }
+   ]
+  },
+  {
+   "id": "10786523-436c-57fb-a479-aa008e6e84e2",
+   "exchange": "BINANCE.UM",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2019-09-08T17:55:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSDT",
+     "exchange_symbol": "BTCUSDT",
+     "base": "BTC",
+     "tick_size": 0.1,
+     "lot_size": 0.001,
+     "min_size": 0.001,
+     "min_notional": 50,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "contractType": "PERPETUAL",
+      "underlyingSubType": [
+       "PoW",
+       "Crypto"
+      ],
+      "underlyingType": "COIN"
+     }
+    }
+   ]
+  },
+  {
+   "id": "6b420337-0ff6-5916-aebc-5206b382daff",
+   "exchange": "BINANCE.UM",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2023-05-05T00:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "72588ce9-a45a-5460-8554-d9fb306dac3d",
+    "kind": "CRYPTO",
+    "code": "PEPE"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "1000PEPEUSDT",
+     "exchange_symbol": "1000PEPEUSDT",
+     "base": "1000PEPE",
+     "tick_size": 1e-07,
+     "lot_size": 1,
+     "min_size": 1,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "contractType": "PERPETUAL",
+      "underlyingSubType": [
+       "Meme",
+       "Crypto"
+      ],
+      "underlyingType": "COIN"
+     }
+    }
+   ]
+  },
+  {
+   "id": "8712a9a7-c05d-5ad1-a9bf-3b6ba5fc7cbf",
+   "exchange": "BINANCE.UM",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2024-09-13T12:15:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "b2073d74-8ac7-522f-9377-267f8067cac5",
+    "kind": "CRYPTO",
+    "code": "POL"
+   },
+   "aliases": [
+    "MATICUSDT"
+   ],
+   "versions": [
+    {
+     "valid_from": "2026-06-01T08:00:00Z",
+     "valid_to": "2026-07-09T08:00:00Z",
+     "symbol": "MATICUSDT",
+     "exchange_symbol": "MATICUSDT",
+     "base": "MATIC",
+     "tick_size": 1e-05,
+     "lot_size": 1,
+     "min_size": 1,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "contractType": "PERPETUAL",
+      "underlyingSubType": [
+       "Layer-2",
+       "Crypto"
+      ],
+      "underlyingType": "COIN"
+     }
+    },
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "POLUSDT",
+     "exchange_symbol": "POLUSDT",
+     "base": "POL",
+     "tick_size": 1e-05,
+     "lot_size": 1,
+     "min_size": 1,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "contractType": "PERPETUAL",
+      "underlyingSubType": [
+       "Layer-2",
+       "Crypto"
+      ],
+      "underlyingType": "COIN"
+     }
+    }
+   ]
+  },
+  {
+   "id": "4baeb898-556a-540e-8412-27ea39d93d16",
+   "exchange": "BYBIT.F",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2023-05-03T10:04:31Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "72588ce9-a45a-5460-8554-d9fb306dac3d",
+    "kind": "CRYPTO",
+    "code": "PEPE"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "1000PEPEUSDT",
+     "exchange_symbol": "1000PEPEUSDT",
+     "base": "1000PEPE",
+     "tick_size": 1e-06,
+     "lot_size": 100,
+     "min_size": 100,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "e22a4b2f-9f82-5717-a098-f1199c4d3796",
+   "exchange": "BYBIT.F",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2020-03-15T00:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSDT",
+     "exchange_symbol": "BTCUSDT",
+     "base": "BTC",
+     "tick_size": 0.1,
+     "lot_size": 0.001,
+     "min_size": 0.001,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "90df357a-117d-5f31-8944-801efab4e632",
+   "exchange": "GATEIO.F",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2019-11-18T00:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSDT",
+     "exchange_symbol": "BTC_USDT",
+     "base": "BTC",
+     "tick_size": 0.1,
+     "lot_size": 1,
+     "min_size": 1,
+     "min_notional": 10,
+     "contract_size": 0.0001,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "003b87f7-d8f9-53e4-9594-12bee1be52ea",
+   "exchange": "HYPERLIQUID.F",
+   "market_type": "SWAP",
+   "quote": "USDC",
+   "settle": "USDC",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2025-12-02T00:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "02a22a7a-c828-5c06-be26-f3d4226fb483",
+    "kind": "EQUITY",
+    "code": "AMZN.XNAS"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "XYZ-AMZNUSDC",
+     "exchange_symbol": "xyz:AMZN",
+     "base": "AMZN",
+     "tick_size": 0.001,
+     "lot_size": 0.001,
+     "min_size": 0.001,
+     "min_notional": 10,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "dex": "xyz"
+     }
+    }
+   ]
+  },
+  {
+   "id": "2ed33f14-8183-5e1a-b9b8-50af63f39686",
+   "exchange": "HYPERLIQUID.F",
+   "market_type": "SWAP",
+   "quote": "USDC",
+   "settle": "USDC",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2024-10-29T00:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSDC",
+     "exchange_symbol": "BTC",
+     "base": "BTC",
+     "tick_size": 0.1,
+     "lot_size": 1e-05,
+     "min_size": 1e-05,
+     "min_notional": 10,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "41f2fb13-c05c-5e05-b564-57afc0983ffa",
+   "exchange": "KRAKEN.F",
+   "market_type": "SWAP",
+   "quote": "USD",
+   "settle": "USD",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2022-03-22T13:15:36Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSD",
+     "exchange_symbol": "PF_XBTUSD",
+     "base": "BTC",
+     "tick_size": 1,
+     "lot_size": 0.0001,
+     "min_size": 0.0001,
+     "min_notional": 10,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "category": "Layer 1",
+      "isin": "GB00BQ84JX13"
+     }
+    }
+   ]
+  },
+  {
+   "id": "553658e7-0d6b-5ec9-9c2c-cec60b53f5da",
+   "exchange": "LIGHTER",
+   "market_type": "SWAP",
+   "quote": "USDC",
+   "settle": "USDC",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2026-07-09T08:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "855c7aa1-6a85-5fca-8294-c7c3fb031f7e",
+    "kind": "CRYPTO",
+    "code": "ETH"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": "2026-09-18T08:00:00Z",
+     "symbol": "ETHUSDC",
+     "exchange_symbol": "0",
+     "base": "ETH",
+     "tick_size": 0.01,
+     "lot_size": 0.0001,
+     "min_size": 0.005,
+     "min_notional": 10,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    },
+    {
+     "valid_from": "2026-09-18T08:00:00Z",
+     "valid_to": null,
+     "symbol": "ETHUSDC",
+     "exchange_symbol": "0",
+     "base": "ETH",
+     "tick_size": 0.01,
+     "lot_size": 0.0001,
+     "min_size": 0.002,
+     "min_notional": 10,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "db11e72d-15ff-5425-96d9-c1f66ad0d6f4",
+   "exchange": "LIGHTER",
+   "market_type": "SWAP",
+   "quote": "USDC",
+   "settle": "USDC",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2026-07-09T08:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "72588ce9-a45a-5460-8554-d9fb306dac3d",
+    "kind": "CRYPTO",
+    "code": "PEPE"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": "2026-07-29T08:00:00Z",
+     "symbol": "1000PEPEUSDC",
+     "exchange_symbol": "4",
+     "base": "1000PEPE",
+     "tick_size": 1e-06,
+     "lot_size": 1,
+     "min_size": 500,
+     "min_notional": 10,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    },
+    {
+     "valid_from": "2026-07-29T08:00:00Z",
+     "valid_to": "2026-09-18T08:00:00Z",
+     "symbol": "1000PEPEUSDC",
+     "exchange_symbol": "4",
+     "base": "1000PEPE",
+     "tick_size": 1e-06,
+     "lot_size": 1,
+     "min_size": 3000,
+     "min_notional": 10,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    },
+    {
+     "valid_from": "2026-09-18T08:00:00Z",
+     "valid_to": null,
+     "symbol": "1000PEPEUSDC",
+     "exchange_symbol": "4",
+     "base": "1000PEPE",
+     "tick_size": 1e-06,
+     "lot_size": 1,
+     "min_size": 1500,
+     "min_notional": 10,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {}
+    }
+   ]
+  },
+  {
+   "id": "014e0b13-5b48-5f3b-89b2-b2dce8414267",
+   "exchange": "OKX.F",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2025-04-24T11:30:00.437Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "68775f21-570a-5841-8e84-e9c9a68f4413",
+    "kind": "CRYPTO",
+    "code": "INIT"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "INITUSDT",
+     "exchange_symbol": "INIT-USDT-SWAP",
+     "base": "INIT",
+     "tick_size": 1e-05,
+     "lot_size": 1,
+     "min_size": 1,
+     "min_notional": 10,
+     "contract_size": 10,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "instCategory": "1"
+     }
+    }
+   ]
+  },
+  {
+   "id": "0160e872-7dde-5329-8854-c264986e84ab",
+   "exchange": "OKX.F",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2020-12-22T07:00:00Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "1ae15c5c-6da1-5142-be9e-757510e80f0e",
+    "kind": "CRYPTO",
+    "code": "EGLD"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "EGLDUSDT",
+     "exchange_symbol": "EGLD-USDT-SWAP",
+     "base": "EGLD",
+     "tick_size": 0.001,
+     "lot_size": 1,
+     "min_size": 1,
+     "min_notional": 10,
+     "contract_size": 0.1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "instCategory": "1"
+     }
+    }
+   ]
+  },
+  {
+   "id": "cf5b0db9-9064-5b6e-aa10-742fd75b5e58",
+   "exchange": "OKX.F",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2019-11-12T11:16:48Z",
+   "delisted_at": null,
+   "predecessor_id": null,
+   "underlying": {
+    "id": "12069f59-53b5-5d3e-8de2-151522628af6",
+    "kind": "CRYPTO",
+    "code": "BTC"
+   },
+   "aliases": [],
+   "versions": [
+    {
+     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_to": null,
+     "symbol": "BTCUSDT",
+     "exchange_symbol": "BTC-USDT-SWAP",
+     "base": "BTC",
+     "tick_size": 0.1,
+     "lot_size": 0.01,
+     "min_size": 0.01,
+     "min_notional": 10,
+     "contract_size": 0.01,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "instCategory": "1"
+     }
+    }
+   ]
+  }
+ ]
+}

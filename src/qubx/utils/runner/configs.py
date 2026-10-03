@@ -210,6 +210,8 @@ class AccountManagerConfig(StrictBaseModel):
     terminal_order_retention_ms: int = 30_000
     terminal_order_history_size: int = 10_000
 
+    maint_margin_rate: float = 0.05
+
 
 class MarketCacheConfig(StrictBaseModel):
     """Retention caps for per-instrument market-data buffers (spec 2026-08-11)."""

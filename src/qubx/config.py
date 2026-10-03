@@ -47,8 +47,9 @@ class IcebergAccount(BaseModel):
 class LookupConfig(BaseModel):
     """Configuration for instrument/fees lookups."""
 
-    type: str = "file"
-    mongo_url: str | None = None
+    type: str = "file"  # "file" or "service"
+    url: str | None = None  # instrument-service base, e.g. http://control-api.platform.svc/internal/instrument-service
+    token: str | None = None  # bearer token for the gateway route
     reload_interval: str | None = None
     path: str | None = None
 

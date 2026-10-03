@@ -26,10 +26,10 @@ def test_detect_delistings_empty_list(detector):
     assert result == []
 
 
-def test_detect_delistings_no_delist_dates(detector, mocker: MockerFixture):
+def test_detect_delistings_no_delisted_ats(detector, mocker: MockerFixture):
     instruments = [
-        mocker.Mock(spec=Instrument, symbol="BTC", delist_date=None),
-        mocker.Mock(spec=Instrument, symbol="ETH", delist_date=None),
+        mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=None),
+        mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=None),
     ]
     result = detector.detect_delistings(instruments)
     assert result == []
@@ -37,9 +37,9 @@ def test_detect_delistings_no_delist_dates(detector, mocker: MockerFixture):
 
 def test_detect_delistings_within_check_period(detector, mocker: MockerFixture):
     # Current time: 2024-01-15, check_days=1, so check_ahead=2024-01-16
-    delisting_today = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=datetime(2024, 1, 15))
-    delisting_tomorrow = mocker.Mock(spec=Instrument, symbol="ETH", delist_date=datetime(2024, 1, 16))
-    safe_instrument = mocker.Mock(spec=Instrument, symbol="SOL", delist_date=datetime(2024, 1, 17))
+    delisting_today = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=datetime(2024, 1, 15))
+    delisting_tomorrow = mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=datetime(2024, 1, 16))
+    safe_instrument = mocker.Mock(spec=Instrument, symbol="SOL", delisted_at=datetime(2024, 1, 17))
 
     instruments = [delisting_today, delisting_tomorrow, safe_instrument]
     result = detector.detect_delistings(instruments)
@@ -53,7 +53,7 @@ def test_detect_delistings_within_check_period(detector, mocker: MockerFixture):
 def test_detect_delistings_exactly_at_boundary(detector, mocker: MockerFixture):
     # Current time: 2024-01-15, check_days=1, check_ahead=2024-01-16
     # Instrument delisting exactly at boundary should be detected
-    boundary_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=datetime(2024, 1, 16))
+    boundary_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=datetime(2024, 1, 16))
 
     result = detector.detect_delistings([boundary_instrument])
     assert len(result) == 1
@@ -64,9 +64,9 @@ def test_detect_delistings_with_different_check_days(mock_time_provider, mocker:
     detector = DelistingDetector(mock_time_provider, delisting_check_days=3)
 
     # Current time: 2024-01-15, check_days=3, check_ahead=2024-01-18
-    within_range = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=datetime(2024, 1, 17))
-    at_boundary = mocker.Mock(spec=Instrument, symbol="ETH", delist_date=datetime(2024, 1, 18))
-    beyond_range = mocker.Mock(spec=Instrument, symbol="SOL", delist_date=datetime(2024, 1, 19))
+    within_range = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=datetime(2024, 1, 17))
+    at_boundary = mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=datetime(2024, 1, 18))
+    beyond_range = mocker.Mock(spec=Instrument, symbol="SOL", delisted_at=datetime(2024, 1, 19))
 
     instruments = [within_range, at_boundary, beyond_range]
     result = detector.detect_delistings(instruments)
@@ -80,14 +80,14 @@ def test_detect_delistings_with_different_check_days(mock_time_provider, mocker:
 def test_detect_delistings_with_zero_check_days(mock_time_provider, mocker: MockerFixture):
     detector = DelistingDetector(mock_time_provider, delisting_check_days=0)
 
-    delisting_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=datetime(2024, 1, 15))
+    delisting_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=datetime(2024, 1, 15))
     result = detector.detect_delistings([delisting_instrument])
 
     assert result == []
 
 
 def test_detect_delistings_with_nat_timestamp(detector, mocker: MockerFixture):
-    nat_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=pd.NaT)
+    nat_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=pd.NaT)
     result = detector.detect_delistings([nat_instrument])
     assert result == []
 
@@ -95,7 +95,7 @@ def test_detect_delistings_with_nat_timestamp(detector, mocker: MockerFixture):
 def test_detect_delistings_with_timezone_aware_date(detector, mocker: MockerFixture):
     # Test with timezone-aware timestamp
     tz_aware_date = pd.Timestamp("2024-01-15", tz="UTC")
-    delisting_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=tz_aware_date)
+    delisting_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=tz_aware_date)
 
     result = detector.detect_delistings([delisting_instrument])
     assert len(result) == 1
@@ -107,10 +107,10 @@ def test_filter_delistings_empty_list(detector):
     assert result == []
 
 
-def test_filter_delistings_no_delist_dates(detector, mocker: MockerFixture):
+def test_filter_delistings_no_delisted_ats(detector, mocker: MockerFixture):
     instruments = [
-        mocker.Mock(spec=Instrument, symbol="BTC", delist_date=None),
-        mocker.Mock(spec=Instrument, symbol="ETH", delist_date=None),
+        mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=None),
+        mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=None),
     ]
     result = detector.filter_delistings(instruments)
     assert result == instruments
@@ -118,10 +118,10 @@ def test_filter_delistings_no_delist_dates(detector, mocker: MockerFixture):
 
 def test_filter_delistings_within_check_period(detector, mocker: MockerFixture):
     # Current time: 2024-01-15, check_days=1, check_ahead=2024-01-16
-    delisting_today = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=datetime(2024, 1, 15))
-    delisting_tomorrow = mocker.Mock(spec=Instrument, symbol="ETH", delist_date=datetime(2024, 1, 16))
-    safe_instrument = mocker.Mock(spec=Instrument, symbol="SOL", delist_date=datetime(2024, 1, 17))
-    no_delist = mocker.Mock(spec=Instrument, symbol="ADA", delist_date=None)
+    delisting_today = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=datetime(2024, 1, 15))
+    delisting_tomorrow = mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=datetime(2024, 1, 16))
+    safe_instrument = mocker.Mock(spec=Instrument, symbol="SOL", delisted_at=datetime(2024, 1, 17))
+    no_delist = mocker.Mock(spec=Instrument, symbol="ADA", delisted_at=None)
 
     instruments = [delisting_today, delisting_tomorrow, safe_instrument, no_delist]
     result = detector.filter_delistings(instruments)
@@ -135,10 +135,10 @@ def test_filter_delistings_within_check_period(detector, mocker: MockerFixture):
 
 def test_filter_delistings_is_inverse_of_detect(detector, mocker: MockerFixture):
     instruments = [
-        mocker.Mock(spec=Instrument, symbol="BTC", delist_date=datetime(2024, 1, 15)),
-        mocker.Mock(spec=Instrument, symbol="ETH", delist_date=datetime(2024, 1, 16)),
-        mocker.Mock(spec=Instrument, symbol="SOL", delist_date=datetime(2024, 1, 17)),
-        mocker.Mock(spec=Instrument, symbol="ADA", delist_date=None),
+        mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=datetime(2024, 1, 15)),
+        mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=datetime(2024, 1, 16)),
+        mocker.Mock(spec=Instrument, symbol="SOL", delisted_at=datetime(2024, 1, 17)),
+        mocker.Mock(spec=Instrument, symbol="ADA", delisted_at=None),
     ]
 
     detected = detector.detect_delistings(instruments)
@@ -154,8 +154,8 @@ def test_filter_delistings_with_zero_check_days(mock_time_provider, mocker: Mock
     detector = DelistingDetector(mock_time_provider, delisting_check_days=0)
 
     instruments = [
-        mocker.Mock(spec=Instrument, symbol="BTC", delist_date=datetime(2024, 1, 15)),
-        mocker.Mock(spec=Instrument, symbol="ETH", delist_date=datetime(2024, 1, 16)),
+        mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=datetime(2024, 1, 15)),
+        mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=datetime(2024, 1, 16)),
     ]
     result = detector.filter_delistings(instruments)
 
@@ -164,8 +164,8 @@ def test_filter_delistings_with_zero_check_days(mock_time_provider, mocker: Mock
 
 
 def test_filter_delistings_with_nat_timestamp(detector, mocker: MockerFixture):
-    nat_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=pd.NaT)
-    normal_instrument = mocker.Mock(spec=Instrument, symbol="ETH", delist_date=None)
+    nat_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=pd.NaT)
+    normal_instrument = mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=None)
 
     result = detector.filter_delistings([nat_instrument, normal_instrument])
 
@@ -178,8 +178,8 @@ def test_filter_delistings_with_nat_timestamp(detector, mocker: MockerFixture):
 def test_filter_delistings_with_timezone_aware_date(detector, mocker: MockerFixture):
     # Test with timezone-aware timestamp that should be filtered
     tz_aware_date = pd.Timestamp("2024-01-15", tz="UTC")
-    delisting_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delist_date=tz_aware_date)
-    safe_instrument = mocker.Mock(spec=Instrument, symbol="ETH", delist_date=None)
+    delisting_instrument = mocker.Mock(spec=Instrument, symbol="BTC", delisted_at=tz_aware_date)
+    safe_instrument = mocker.Mock(spec=Instrument, symbol="ETH", delisted_at=None)
 
     result = detector.filter_delistings([delisting_instrument, safe_instrument])
 
@@ -197,9 +197,9 @@ def test_delisting_check_days_property(mock_time_provider):
 
 
 def test_error_handling_in_detect_delistings(detector, mocker: MockerFixture):
-    # Create an instrument with an invalid delist_date that will cause an exception
-    bad_instrument = mocker.Mock(spec=Instrument, symbol="BAD", delist_date="invalid_date")
-    good_instrument = mocker.Mock(spec=Instrument, symbol="GOOD", delist_date=datetime(2024, 1, 15))
+    # Create an instrument with an invalid delisted_at that will cause an exception
+    bad_instrument = mocker.Mock(spec=Instrument, symbol="BAD", delisted_at="invalid_date")
+    good_instrument = mocker.Mock(spec=Instrument, symbol="GOOD", delisted_at=datetime(2024, 1, 15))
 
     result = detector.detect_delistings([bad_instrument, good_instrument])
 
@@ -210,9 +210,9 @@ def test_error_handling_in_detect_delistings(detector, mocker: MockerFixture):
 
 
 def test_error_handling_in_filter_delistings(detector, mocker: MockerFixture):
-    # Create an instrument with an invalid delist_date that will cause an exception
-    bad_instrument = mocker.Mock(spec=Instrument, symbol="BAD", delist_date="invalid_date")
-    good_instrument = mocker.Mock(spec=Instrument, symbol="GOOD", delist_date=None)
+    # Create an instrument with an invalid delisted_at that will cause an exception
+    bad_instrument = mocker.Mock(spec=Instrument, symbol="BAD", delisted_at="invalid_date")
+    good_instrument = mocker.Mock(spec=Instrument, symbol="GOOD", delisted_at=None)
 
     result = detector.filter_delistings([bad_instrument, good_instrument])
 

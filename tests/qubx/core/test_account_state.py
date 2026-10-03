@@ -71,3 +71,14 @@ def test_set_and_get_position():
     assert state.get_position(inst) is pos
     assert state.get_positions()[inst] is pos
     assert state.get_position(object()) is None
+
+
+def test_positions_take_the_account_maint_margin_rate():
+    from qubx.core.basics import Instrument, MarketType
+
+    i = Instrument("BTCUSDT", MarketType.SWAP, "BINANCE.UM", "BTC", "USDT", "USDT", "BTCUSDT", 0.1, 0.001, 0.001)
+    state = AccountState("BINANCE.UM", "USDT", maint_margin_rate=0.02)
+    assert state.ensure_position(i).maint_margin_rate == 0.02
+    other = Instrument("ETHUSDT", MarketType.SWAP, "BINANCE.UM", "ETH", "USDT", "USDT", "ETHUSDT", 0.01, 0.001, 0.001)
+    state.set_position(other, Position(other))
+    assert state.get_position(other).maint_margin_rate == 0.02

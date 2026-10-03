@@ -19,7 +19,16 @@ from dataclasses import dataclass
 import numpy as np
 
 from qubx import logger
-from qubx.core.basics import STABLE_CURRENCIES, Balance, Deal, Instrument, Order, OrderStatus, Position
+from qubx.core.basics import (
+    DEFAULT_MAINTENANCE_MARGIN,
+    STABLE_CURRENCIES,
+    Balance,
+    Deal,
+    Instrument,
+    Order,
+    OrderStatus,
+    Position,
+)
 
 # Bounded per-exchange funding-bucket dedup (insertion order ≈ funding-event time order):
 # old buckets evict once the cap is hit so the set can't grow unbounded over long-running
@@ -57,6 +66,7 @@ class AccountState:
     __slots__ = (
         "exchange",
         "base_currency",
+        "maint_margin_rate",
         "_active_orders",
         "_positions",
         "_balances",
@@ -77,9 +87,17 @@ class AccountState:
         "_position_deal_booked_at",
     )
 
-    def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
+    def __init__(
+        self,
+        exchange: str,
+        base_currency: str,
+        *,
+        terminal_history_size: int = 10_000,
+        maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN,
+    ):
         self.exchange: str = exchange
         self.base_currency: str = base_currency.upper()
+        self.maint_margin_rate: float = maint_margin_rate
 
         # ---- primary data ------------------------------------------------
         self._active_orders: dict[str, Order] = {}  # client_order_id -> Order
@@ -471,6 +489,7 @@ class AccountState:
         # the framework hold references to it), never swapped for a new object.
         existing = self._positions.get(instrument)
         if existing is None:
+            position.maint_margin_rate = self.maint_margin_rate
             self._positions[instrument] = position
         else:
             existing.reset_by_position(position)
@@ -645,6 +664,7 @@ class AccountState:
         pos = self._positions.get(instrument)
         if pos is None:
             pos = Position(instrument=instrument)
+            pos.maint_margin_rate = self.maint_margin_rate
             self._positions[instrument] = pos
         return pos
 
