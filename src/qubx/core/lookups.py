@@ -648,37 +648,45 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
     _t_lookup: FeesLookup
     _a_lookup: AccountsLookupFromManager
 
+    _build_lock = threading.Lock()
+
     def __new__(cls):
-        # - published only once fully built: a failure leaves no instance, so the next call retries
+        # - built once under the lock and published only when complete: a failure leaves
+        #   no instance (the next call retries), a racing caller never builds a second one
         if not hasattr(cls, "instance"):
-            from qubx.config import settings
-
-            i_cfg = settings.instrument_lookup
-            f_cfg = settings.fees_lookup
-
-            f_kwargs = {}
-            if f_cfg.path:
-                f_kwargs["path"] = f_cfg.path
-
-            i_kwargs = {}
-            if i_cfg.url:
-                i_kwargs["url"] = i_cfg.url
-            if i_cfg.token:
-                i_kwargs["token"] = i_cfg.token
-            if i_cfg.exchanges:
-                i_kwargs["exchanges"] = i_cfg.exchanges
-            if i_cfg.reload_interval:
-                i_kwargs["reload_interval"] = i_cfg.reload_interval
-            if i_cfg.path:
-                i_kwargs["path"] = i_cfg.path
-
-            instance = super(LookupsManager, cls).__new__(cls)
-            instance._t_lookup = LookupsManager._get_fees_lookup(type=f_cfg.type, **f_kwargs)
-            instance._i_lookup = LookupsManager._get_instrument_lookup(type=i_cfg.type, **i_kwargs)
-            instance._a_lookup = AccountsLookupFromManager()
-            cls.instance = instance
-
+            with cls._build_lock:
+                if not hasattr(cls, "instance"):
+                    cls.instance = cls._build()
         return cls.instance
+
+    @classmethod
+    def _build(cls) -> "LookupsManager":
+        from qubx.config import settings
+
+        i_cfg = settings.instrument_lookup
+        f_cfg = settings.fees_lookup
+
+        f_kwargs = {}
+        if f_cfg.path:
+            f_kwargs["path"] = f_cfg.path
+
+        i_kwargs = {}
+        if i_cfg.url:
+            i_kwargs["url"] = i_cfg.url
+        if i_cfg.token:
+            i_kwargs["token"] = i_cfg.token
+        if i_cfg.exchanges:
+            i_kwargs["exchanges"] = i_cfg.exchanges
+        if i_cfg.reload_interval:
+            i_kwargs["reload_interval"] = i_cfg.reload_interval
+        if i_cfg.path:
+            i_kwargs["path"] = i_cfg.path
+
+        instance = super(LookupsManager, cls).__new__(cls)
+        instance._t_lookup = LookupsManager._get_fees_lookup(type=f_cfg.type, **f_kwargs)
+        instance._i_lookup = LookupsManager._get_instrument_lookup(type=i_cfg.type, **i_kwargs)
+        instance._a_lookup = AccountsLookupFromManager()
+        return instance
 
     @staticmethod
     def _get_instrument_lookup(type: str, **kwargs) -> InstrumentsLookup:
@@ -743,22 +751,13 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
         return self._a_lookup.get_settings(exchange)
 
 
-# - global lookup helper (lazy-loaded to avoid slow import)
-_lookup = None
-
-
 def __getattr__(name):
-    global _lookup
+    # - lazy to avoid a slow import; LookupsManager() is the locked singleton
     if name == "lookup":
-        if _lookup is None:
-            _lookup = LookupsManager()
-        return _lookup
+        return LookupsManager()
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
 def register_accounts(manager) -> None:
     """Register account manager in the global lookup. Called once at startup by the runner."""
-    global _lookup
-    if _lookup is None:
-        _lookup = LookupsManager()
-    _lookup._a_lookup.register(manager)
+    LookupsManager()._a_lookup.register(manager)

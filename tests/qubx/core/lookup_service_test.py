@@ -450,3 +450,23 @@ class TestLookupsManagerSingleton:
         assert LookupsManager.instance is manager and manager._i_lookup is not None
         assert LookupsManager() is manager
         assert len(calls) == 2
+
+    def test_concurrent_first_calls_build_once(self, monkeypatch):
+        monkeypatch.delattr(LookupsManager, "instance", raising=False)
+        real = LookupsManager._get_instrument_lookup
+        calls = []
+
+        def slow(type: str, **kwargs):
+            calls.append(type)
+            time.sleep(0.2)
+            return real(type, **kwargs)
+
+        monkeypatch.setattr(LookupsManager, "_get_instrument_lookup", staticmethod(slow))
+        managers: list[LookupsManager] = []
+        threads = [threading.Thread(target=lambda: managers.append(LookupsManager())) for _ in range(8)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        assert len(calls) == 1
+        assert len(managers) == 8 and all(m is managers[0] for m in managers)
