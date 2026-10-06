@@ -1,6 +1,8 @@
 from dataclasses import dataclass
+from datetime import date
 from typing import List, Union
 
+import numpy as np
 import pandas as pd
 import pytest
 from pytest import approx
@@ -574,6 +576,17 @@ class TestFindInstrumentsByCoinName:
         data = {f"{i.exchange}:{i.market_type}:{i.symbol}": i for i in instruments}
         lk.get_lookup = lambda: data  # type: ignore[method-assign]
         return lk
+
+    def test_as_of_takes_any_time_the_context_hands_out(self):
+        i = Instrument(
+            "BTCUSDT", MarketType.SWAP, "BYBIT.F", "BTC", "USDT", "USDT", "BTCUSDT", 0.1, 0.001, 0.001,
+            listed_at=pd.Timestamp("2020-01-01"), delisted_at=pd.Timestamp("2022-01-01"),
+        )  # fmt: skip
+        lk = self._lookup(i)
+        for as_of in (np.datetime64("2021-01-01T00:00:00", "ns"), date(2021, 1, 1), pd.Timestamp("2021-01-01").value):
+            assert lk.find_instruments("BYBIT.F", base="BTC", as_of=as_of) == [i]  # type: ignore[arg-type]
+        assert lk.find_instruments("BYBIT.F", base="BTC", as_of=np.datetime64("2022-01-01")) == []
+        assert i.is_listed_at(np.datetime64("2020-01-01")) and not i.is_listed_at(np.datetime64("2019-12-31"))
 
     def test_a_trailing_multiplier_resolves(self):
         """bybit spells it SHIB1000, every other venue puts the multiplier in front."""

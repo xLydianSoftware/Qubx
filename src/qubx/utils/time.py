@@ -493,7 +493,7 @@ def to_utc(timestamp: pd.Timestamp | datetime | str | None) -> pd.Timestamp | No
     return timestamp.tz_convert("UTC")
 
 
-def to_utc_naive(timestamp: pd.Timestamp | datetime | str) -> pd.Timestamp:
+def to_utc_naive(timestamp: pd.Timestamp | datetime | np.datetime64 | str | int) -> pd.Timestamp:
     """
     Convert a timestamp to UTC and remove timezone info.
 
@@ -501,7 +501,7 @@ def to_utc_naive(timestamp: pd.Timestamp | datetime | str) -> pd.Timestamp:
     timezone-aware timestamps to UTC before removing the timezone info.
 
     Args:
-        timestamp: A pandas Timestamp (timezone-aware or naive) or datetime string
+        timestamp: Anything pd.Timestamp accepts (Timestamp, datetime, date, np.datetime64, string, int ns)
 
     Returns:
         pd.Timestamp: UTC timestamp without timezone info
@@ -512,7 +512,7 @@ def to_utc_naive(timestamp: pd.Timestamp | datetime | str) -> pd.Timestamp:
         >>> to_utc_naive(pd.Timestamp("2025-07-16T16:00:00Z"))
         Timestamp('2025-07-16 16:00:00')
     """
-    if isinstance(timestamp, (str, datetime)):
+    if not isinstance(timestamp, pd.Timestamp):
         timestamp = pd.Timestamp(timestamp)
 
     if timestamp.tzinfo is None:

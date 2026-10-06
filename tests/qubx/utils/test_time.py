@@ -2,10 +2,13 @@
 Tests for time utility functions, especially interval_to_cron with offset intervals
 """
 
+from datetime import date, datetime
+
+import numpy as np
 import pandas as pd
 import pytest
 
-from qubx.utils.time import find_minimal_timeframe, interval_to_cron
+from qubx.utils.time import find_minimal_timeframe, interval_to_cron, to_utc_naive
 
 
 def test_offset_interval_hour_based():
@@ -156,3 +159,18 @@ def test_find_minimal_timeframe():
         )
         == "4h"
     )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "2024-01-01 02:00:00+02:00",
+        pd.Timestamp("2024-01-01"),
+        datetime(2024, 1, 1),
+        date(2024, 1, 1),
+        np.datetime64("2024-01-01T00:00:00", "ns"),
+        1704067200000000000,
+    ],
+)
+def test_to_utc_naive_accepts_what_pd_timestamp_does(value):
+    assert to_utc_naive(value) == pd.Timestamp("2024-01-01")
