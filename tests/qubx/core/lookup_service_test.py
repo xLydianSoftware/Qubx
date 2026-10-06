@@ -95,6 +95,25 @@ def _listing(exchange: str, symbol: str) -> dict:
     return next(l for l in SNAPSHOT["listings"] if l["exchange"] == exchange and l["versions"][-1]["symbol"] == symbol)
 
 
+class TestInstrumentMapperTime:
+    @pytest.mark.parametrize("missing", [None, "NaT", "", float("nan"), pd.NaT])
+    def test_a_missing_date_is_none(self, missing):
+        assert _InstrumentMapper._time(missing) is None
+
+    def test_an_aware_date_becomes_utc_naive(self):
+        assert _InstrumentMapper._time("2024-01-01T02:00:00+02:00") == pd.Timestamp("2024-01-01")
+
+    def test_a_cache_file_with_nan_dates_loads_without_them(self):
+        i = _InstrumentMapper.from_dict(
+            {
+                "symbol": "BTCUSDT", "market_type": "SWAP", "exchange": "BINANCE.UM", "base": "BTC",
+                "quote": "USDT", "settle": "USDT", "tick_size": 0.1, "lot_size": 0.001, "min_size": 0.001,
+                "onboard_date": "NaT", "delist_date": float("nan"), "delivery_date": "",
+            }
+        )  # fmt: skip
+        assert (i.listed_at, i.delisted_at, i.expiry) == (None, None, None)
+
+
 class TestListingToInstrument:
     def test_maps_static_and_current_version_fields(self):
         i = _InstrumentMapper.from_listing(_listing("BINANCE.UM", "BTCUSDT"))

@@ -62,8 +62,9 @@ class _InstrumentMapper:
 
     @staticmethod
     def _time(value) -> pd.Timestamp | None:
-        # - older cache files carry NaT serialized as "NaT"
-        return None if value is None or value == "NaT" else to_utc_naive(value)
+        # - None, NaN, "" and the "NaT" older cache files carry all mean no date
+        ts = to_utc_naive(value)
+        return None if pd.isna(ts) else ts
 
     @classmethod
     def from_dict(cls, obj: dict) -> Instrument:
