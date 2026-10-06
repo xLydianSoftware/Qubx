@@ -494,8 +494,11 @@ class AccountState:
             existing.reset_by_position(position)
 
     def _adopt_position(self, instrument: Instrument, position: Position) -> Position:
-        # - every held position margins at the account's rate, however it got here
+        # - every held position margins at the account's rate, however it got here; a venue-reported
+        #   margin is kept, a framework one is recomputed now rather than on the next mark
         position.maint_margin_rate = self.maint_margin_rate
+        if not position._maint_margin_external and position.is_open() and not np.isnan(position.last_update_price):
+            position._update_maint_margin()
         self._positions[instrument] = position
         return position
 

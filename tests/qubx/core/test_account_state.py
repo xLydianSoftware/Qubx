@@ -97,5 +97,16 @@ def test_a_snapshot_materialized_position_takes_the_account_maint_margin_rate():
     assert state.reconcile_position_from_snapshot(snapshot) is True
     pos = state.get_position(i)
     assert pos.maint_margin_rate == 0.02
-    pos.update_market_price(np.datetime64("2026-01-01T00:01:00"), 110.0, 1.0)
-    assert pos.maint_margin == pytest.approx(0.02 * 2.0 * 110.0)
+    assert pos.maint_margin == pytest.approx(0.02 * 2.0 * 100.0)
+
+
+def test_a_venue_reported_maint_margin_survives_adoption():
+    from qubx.core.basics import Instrument, MarketType
+
+    i = Instrument("BTCUSDT", MarketType.SWAP, "BINANCE.UM", "BTC", "USDT", "USDT", "BTCUSDT", 0.1, 0.001, 0.001)
+    state = AccountState("BINANCE.UM", "USDT", maint_margin_rate=0.02)
+    snapshot = Position(i, quantity=2.0, pos_average_price=100.0)
+    snapshot.update_market_price(np.datetime64("2026-01-01T00:00:00"), 100.0, 1.0)
+    snapshot.set_external_maint_margin(7.5)
+    state.reconcile_position_from_snapshot(snapshot)
+    assert state.get_position(i).maint_margin == 7.5
