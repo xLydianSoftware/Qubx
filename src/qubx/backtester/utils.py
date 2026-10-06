@@ -472,7 +472,7 @@ def recognize_simulation_configuration(
             if run_separate_instruments:
                 # Create separate setups for each instrument
                 for instrument in setup_instruments:
-                    _s1 = c1[instrument.symbol] if isinstance(_s, pd.DataFrame) else _s
+                    _s1 = _s[instrument.symbol] if isinstance(_s, pd.DataFrame) else _s
                     r.append(
                         SimulationSetup(
                             _t, f"{name}/{instrument.symbol}", _s1, c1,   # type: ignore

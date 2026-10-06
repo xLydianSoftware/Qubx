@@ -4,8 +4,10 @@ Test for the run_separate_instruments parameter functionality.
 
 from typing import cast
 
+import pandas as pd
+
 from qubx.backtester.utils import SetupTypes, recognize_simulation_configuration
-from qubx.core.basics import Instrument
+from qubx.core.basics import Instrument, MarketType
 from qubx.core.interfaces import IStrategy
 from qubx.core.lookups import lookup
 from qubx.trackers.riskctrl import AtrRiskTracker
@@ -114,6 +116,29 @@ class TestRunSeparateInstruments:
             assert setup.tracker is not None, "Should have tracker"
             assert setup.instruments[0] == instruments[i], f"Should have correct instrument {instruments[i].symbol}"
             assert setup.name == f"TestWithTracker/{instruments[i].symbol}", "Should have instrument suffix"
+
+    def test_signals_with_tracker_split_the_signals_per_instrument(self):
+        instruments = [
+            Instrument(s, MarketType.SWAP, "BINANCE.UM", s[:-4], "USDT", "USDT", s, 0.1, 0.001, 0.001)
+            for s in ["BTCUSDT", "ETHUSDT"]
+        ]
+        signals = pd.DataFrame(
+            {"BTCUSDT": [1.0, 0.0], "ETHUSDT": [0.0, -1.0]}, index=pd.date_range("2024-01-01", periods=2, freq="1h")
+        )
+        tracker = AtrRiskTracker(None, None, "1h", 10)
+
+        setups = recognize_simulation_configuration(
+            "Signals", [signals, tracker], instruments, ["BINANCE.UM"], 10_000, "USDT", "vip0_usdt", "1Min", True,
+            run_separate_instruments=True,
+        )  # fmt: skip
+
+        assert len(setups) == 2
+        for setup in sorted(setups, key=lambda s: s.name):
+            symbol = setup.instruments[0].symbol
+            assert setup.setup_type == SetupTypes.SIGNAL_AND_TRACKER
+            assert setup.name == f"Signals/{symbol}"
+            assert setup.tracker is tracker
+            pd.testing.assert_series_equal(setup.generator, signals[symbol])  # type: ignore[arg-type]
 
     def test_dict_strategies_with_run_separate_instruments(self):
         """Test that dictionary of strategies works with run_separate_instruments=True."""
