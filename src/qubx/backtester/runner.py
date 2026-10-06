@@ -612,7 +612,7 @@ class SimulationRunner:
             connectors=self._connectors,
             base_currencies=self.setup.base_currencies,
             time=time_provider,
-            cfg=AccountManagerConfig(),
+            cfg=AccountManagerConfig(maint_margin_rate=self.setup.maint_margin_rate),
             account_id=self.account_id,
             tcc=_exchange_to_tcc,
         )

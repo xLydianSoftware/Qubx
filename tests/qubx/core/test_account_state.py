@@ -8,6 +8,7 @@ position map reads.
 """
 
 import numpy as np
+import pytest
 
 from qubx.core.account_manager import AccountState
 from qubx.core.basics import Order, OrderOrigin, OrderStatus, Position
@@ -64,9 +65,11 @@ def test_terminal_history_bounded_by_constructor_size():
 
 
 def test_set_and_get_position():
-    state = AccountState(exchange="binance", base_currency="USDT")
-    inst = object()
-    pos = Position.__new__(Position)
+    from qubx.core.basics import Instrument, MarketType
+
+    state = AccountState(exchange="BINANCE.UM", base_currency="USDT")
+    inst = Instrument("BTCUSDT", MarketType.SWAP, "BINANCE.UM", "BTC", "USDT", "USDT", "BTCUSDT", 0.1, 0.001, 0.001)
+    pos = Position(inst)
     state.set_position(inst, pos)
     assert state.get_position(inst) is pos
     assert state.get_positions()[inst] is pos
@@ -82,3 +85,17 @@ def test_positions_take_the_account_maint_margin_rate():
     other = Instrument("ETHUSDT", MarketType.SWAP, "BINANCE.UM", "ETH", "USDT", "USDT", "ETHUSDT", 0.01, 0.001, 0.001)
     state.set_position(other, Position(other))
     assert state.get_position(other).maint_margin_rate == 0.02
+
+
+def test_a_snapshot_materialized_position_takes_the_account_maint_margin_rate():
+    from qubx.core.basics import Instrument, MarketType
+
+    i = Instrument("BTCUSDT", MarketType.SWAP, "BINANCE.UM", "BTC", "USDT", "USDT", "BTCUSDT", 0.1, 0.001, 0.001)
+    state = AccountState("BINANCE.UM", "USDT", maint_margin_rate=0.02)
+    snapshot = Position(i, quantity=2.0, pos_average_price=100.0)
+    snapshot.update_market_price(np.datetime64("2026-01-01T00:00:00"), 100.0, 1.0)
+    assert state.reconcile_position_from_snapshot(snapshot) is True
+    pos = state.get_position(i)
+    assert pos.maint_margin_rate == 0.02
+    pos.update_market_price(np.datetime64("2026-01-01T00:01:00"), 110.0, 1.0)
+    assert pos.maint_margin == pytest.approx(0.02 * 2.0 * 110.0)

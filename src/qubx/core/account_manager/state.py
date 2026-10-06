@@ -489,10 +489,15 @@ class AccountState:
         # the framework hold references to it), never swapped for a new object.
         existing = self._positions.get(instrument)
         if existing is None:
-            position.maint_margin_rate = self.maint_margin_rate
-            self._positions[instrument] = position
+            self._adopt_position(instrument, position)
         else:
             existing.reset_by_position(position)
+
+    def _adopt_position(self, instrument: Instrument, position: Position) -> Position:
+        # - every held position margins at the account's rate, however it got here
+        position.maint_margin_rate = self.maint_margin_rate
+        self._positions[instrument] = position
+        return position
 
     def settle_position(self, instrument: Instrument) -> None:
         # Reconcile a delisted/gone position to flat WITHOUT trading: the exchange has
@@ -525,7 +530,7 @@ class AccountState:
         """
         existing = self._positions.get(snapshot.instrument)
         if existing is None:
-            self._positions[snapshot.instrument] = snapshot
+            self._adopt_position(snapshot.instrument, snapshot)
             logger.info(
                 f"[{self.exchange}] reconcile: materialized position <y>{snapshot.instrument}</y> from snapshot "
                 f"-> size=<g>{snapshot.quantity}</g> avg={snapshot.position_avg_price}"
@@ -663,9 +668,7 @@ class AccountState:
     def ensure_position(self, instrument: Instrument) -> Position:
         pos = self._positions.get(instrument)
         if pos is None:
-            pos = Position(instrument=instrument)
-            pos.maint_margin_rate = self.maint_margin_rate
-            self._positions[instrument] = pos
+            pos = self._adopt_position(instrument, Position(instrument=instrument))
         return pos
 
     def adjust_balance(self, currency: str, delta: float) -> None:

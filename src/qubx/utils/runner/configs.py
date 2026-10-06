@@ -283,6 +283,7 @@ class SimulationConfig(StrictBaseModel):
     run_separate_instruments: bool = False
     enable_funding: bool = False
     enable_inmemory_emitter: bool = False
+    maint_margin_rate: float | None = None
     prefetch: PrefetchConfig | None = None
     aux: list[StorageConfig] | StorageConfig | None = None
     portfolio_log_freq: str | None = None
