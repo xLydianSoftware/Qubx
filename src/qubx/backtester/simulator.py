@@ -7,6 +7,7 @@ from qubx import QubxLogConfig, file_formatter, logger
 from qubx.backtester.utils import SetupTypes
 from qubx.core.basics import Instrument
 from qubx.core.exceptions import SimulationError
+from qubx.core.lookups import lookup
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.storage import IStorage
 from qubx.emitters.inmemory import InMemoryMetricEmitter
@@ -259,10 +260,13 @@ def _run_setup(
         # Adjust the start date for the simulation to the onboard date of the instrument with the minimum onboard date.
         # TODO: this can be removed once we add some artificial data stream to move the simulation
         if setup.setup_type in [SetupTypes.SIGNAL, SetupTypes.SIGNAL_AND_TRACKER]:
+            # - a relisted symbol has data from its first listing on
             listed_dates = [
-                to_utc_naive(to_timestamp(instrument.listed_at))
+                to_utc_naive(to_timestamp(listing.listed_at))
                 for instrument in setup.instruments
-                if instrument.listed_at is not None
+                for listing in lookup.find_listings(instrument.exchange, instrument.symbol, instrument.market_type)
+                or [instrument]
+                if listing.listed_at is not None
             ]
             if listed_dates:
                 start = max(start, min(listed_dates))

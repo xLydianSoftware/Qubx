@@ -8,7 +8,7 @@ import pandas as pd
 import pytest
 
 from qubx.core.basics import AssetKind, MarketType, Underlying
-from qubx.core.lookups import InstrumentsLookupService, LookupsManager, listing_to_instrument
+from qubx.core.lookups import InstrumentsLookupService, LookupsManager, _InstrumentMapper
 
 # Recorded from the dev /internal/instrument-service/snapshot (2026-10-02) and trimmed. The
 # BINANCE.UM POLUSDT listing carries a synthesized MATICUSDT predecessor version + alias: dev
@@ -97,7 +97,7 @@ def _listing(exchange: str, symbol: str) -> dict:
 
 class TestListingToInstrument:
     def test_maps_static_and_current_version_fields(self):
-        i = listing_to_instrument(_listing("BINANCE.UM", "BTCUSDT"))
+        i = _InstrumentMapper.from_listing(_listing("BINANCE.UM", "BTCUSDT"))
         assert str(i) == "BINANCE.UM:SWAP:BTCUSDT"
         assert i.market_type == MarketType.SWAP
         assert (i.base, i.quote, i.settle) == ("BTC", "USDT", "USDT")
@@ -110,17 +110,17 @@ class TestListingToInstrument:
     def test_uses_the_current_version(self):
         raw = _listing("BINANCE", "GTCUSDT")
         assert len(raw["versions"]) > 1
-        i = listing_to_instrument(raw)
+        i = _InstrumentMapper.from_listing(raw)
         assert i.tick_size == raw["versions"][-1]["tick_size"]
         assert i.tick_size != raw["versions"][0]["tick_size"]
 
     def test_okx_contract_size_is_the_quantity_multiplier(self):
-        i = listing_to_instrument(_listing("OKX.F", "INITUSDT"))
+        i = _InstrumentMapper.from_listing(_listing("OKX.F", "INITUSDT"))
         assert i.contract_size == 10.0
         assert i.quantity_multiplier == 10.0
 
     def test_bstock_points_at_the_stock(self):
-        i = listing_to_instrument(_listing("BINANCE", "SNDKBUSDT"))
+        i = _InstrumentMapper.from_listing(_listing("BINANCE", "SNDKBUSDT"))
         assert i.market_type == MarketType.SPOT
         assert i.base == "SNDKB"
         assert i.underlying == Underlying(AssetKind.EQUITY, "SNDK.XNAS")
@@ -129,48 +129,48 @@ class TestListingToInstrument:
         assert i.margin_tradable is True
 
     def test_multiplier_contract_asset_strips_the_multiplier(self):
-        i = listing_to_instrument(_listing("BINANCE.UM", "1000PEPEUSDT"))
+        i = _InstrumentMapper.from_listing(_listing("BINANCE.UM", "1000PEPEUSDT"))
         assert i.base == "1000PEPE"
         assert i.asset == "PEPE"
 
     def test_delisted_listing_keeps_its_dates(self):
-        i = listing_to_instrument(_listing("BINANCE", "VOXELUSDT"))
+        i = _InstrumentMapper.from_listing(_listing("BINANCE", "VOXELUSDT"))
         assert i.delisted_at == pd.Timestamp("2025-12-18")
         assert i.listed_at == pd.Timestamp("2021-12-14")
         assert i.delisted_at.tzinfo is None
 
     def test_future_carries_its_expiry(self):
-        i = listing_to_instrument(_synthetic("000000000001"))
+        i = _InstrumentMapper.from_listing(_synthetic("000000000001"))
         assert i.market_type == MarketType.FUTURE
         assert i.symbol == "BTCUSDT.20261225"
         assert i.expiry == pd.Timestamp("2026-12-25 08:00")
         assert i.strike is None and i.option_right is None
 
     def test_option_carries_strike_and_right(self):
-        i = listing_to_instrument(_synthetic("000000000002"))
+        i = _InstrumentMapper.from_listing(_synthetic("000000000002"))
         assert i.market_type == MarketType.OPTION
         assert i.strike == 85000.0 and isinstance(i.strike, float)
         assert i.option_right == "CALL"
         assert i.contract_size == 0.1
 
     def test_coin_m_inverse_contract_size_is_in_quote_units(self):
-        i = listing_to_instrument(_synthetic("000000000003"))
+        i = _InstrumentMapper.from_listing(_synthetic("000000000003"))
         assert i.inverse is True
         assert (i.quote, i.settle) == ("USD", "BTC")
         assert i.contract_size == 100.0 and i.quantity_multiplier == 100.0
 
     def test_tradfi_perp_carries_its_calendar_and_underlying(self):
-        i = listing_to_instrument(_synthetic("000000000004"))
+        i = _InstrumentMapper.from_listing(_synthetic("000000000004"))
         assert i.calendar == "24/7"
         assert i.underlying == Underlying(AssetKind.EQUITY, "TSLA.XNAS")
         assert (i.asset, i.exposure_code) == ("TSLA", "TSLA.XNAS")
 
     def test_a_listing_without_versions_raises(self):
         with pytest.raises(IndexError):
-            listing_to_instrument(_synthetic("000000000005"))
+            _InstrumentMapper.from_listing(_synthetic("000000000005"))
 
     def test_venue_attributes_are_read_only(self):
-        i = listing_to_instrument(_listing("BINANCE.UM", "HK0625USDT"))
+        i = _InstrumentMapper.from_listing(_listing("BINANCE.UM", "HK0625USDT"))
         assert i.venue_attributes["contractType"] == "TRADIFI_PERPETUAL"
         with pytest.raises(TypeError):
             i.venue_attributes["contractType"] = "X"  # type: ignore[index]
@@ -225,6 +225,25 @@ class TestInstrumentsLookupService:
         assert current.listing_id == _listing("BINANCE.UM", "BTCUSDT")["id"]
         assert lookup.get_lookup()["BINANCE.UM:SWAP:BTCUSDT"] is current
         assert len(lookup.get_lookup()) == len(SNAPSHOT["listings"])
+
+    def test_a_relisted_symbol_keeps_every_listing_for_as_of_lookups(self, service, lookups):
+        current_id = _listing("BINANCE.UM", "BTCUSDT")["id"]
+        old = json.loads(json.dumps(_listing("BINANCE.UM", "BTCUSDT")))
+        old["id"] = "00000000-0000-0000-0000-000000000003"
+        old["listed_at"], old["delisted_at"] = "2015-01-01T00:00:00Z", "2016-01-01T00:00:00Z"
+        service.body["listings"].append(old)
+        lookup = lookups(service.url)
+
+        assert lookup.find_symbol("BINANCE.UM", "BTCUSDT").listing_id == current_id
+        assert [i.listing_id for i in lookup.find_listings("BINANCE.UM", "BTCUSDT")] == [current_id, old["id"]]
+        assert [i.listing_id for i in lookup.find_instruments("BINANCE.UM", base="BTC")] == [current_id]
+        during_old = lookup.find_instruments("BINANCE.UM", base="BTC", quote="USDT", as_of="2015-06-01")
+        assert [i.listing_id for i in during_old] == [old["id"]]
+        at_delisting = lookup.find_instruments("BINANCE.UM", base="BTC", quote="USDT", as_of="2016-01-01")
+        assert old["id"] not in [i.listing_id for i in at_delisting]
+        assert [i.listing_id for i in lookup.find_instruments("BINANCE.UM", base="BTC", as_of="2026-01-01")] == [
+            current_id
+        ]
 
     def test_find_instruments_matches_the_coin_under_a_multiplier(self, service, lookups):
         lookup = lookups(service.url)
@@ -309,6 +328,27 @@ class TestInstrumentsLookupService:
         with pytest.raises(RuntimeError, match="no listings"):
             lookups(service.url)
 
+    def test_startup_fails_on_an_empty_snapshot(self, service, lookups):
+        service.body["listings"] = []
+        with pytest.raises(RuntimeError, match="no usable listings"):
+            lookups(service.url)
+        assert len(service.requests) == InstrumentsLookupService.FIRST_LOAD_ATTEMPTS
+
+    def test_startup_fails_when_no_listing_maps(self, service, lookups):
+        service.body["listings"] = [_synthetic("000000000005")]
+        with pytest.raises(RuntimeError, match="no usable listings"):
+            lookups(service.url)
+
+    def test_an_empty_refresh_keeps_the_copy(self, service, lookups):
+        lookup = lookups(service.url)
+        before = lookup.get_lookup()
+        service.body["listings"] = []
+        assert lookup.refresh() is False
+        assert lookup.get_lookup() is before
+        assert "If-None-Match" in service.requests[-1]["headers"]
+        service.body = json.loads(json.dumps(SNAPSHOT))
+        assert lookup.refresh() is False  # - the kept copy's etag still matches
+
     def test_a_truncated_refresh_keeps_the_copy(self, service, lookups):
         lookup = lookups(service.url)
         service.raw = json.dumps(SNAPSHOT).encode()[:500]
@@ -368,3 +408,26 @@ class TestLookupsManagerFactory:
     def test_mongo_type_is_gone(self):
         with pytest.raises(ValueError, match="removed"):
             LookupsManager._get_instrument_lookup("mongo")
+
+
+class TestLookupsManagerSingleton:
+    def test_a_failed_build_leaves_no_instance_and_the_next_call_retries(self, monkeypatch):
+        monkeypatch.delattr(LookupsManager, "instance", raising=False)
+        real = LookupsManager._get_instrument_lookup
+        calls = []
+
+        def flaky(type: str, **kwargs):
+            calls.append(type)
+            if len(calls) == 1:
+                raise RuntimeError("instrument service is unavailable")
+            return real(type, **kwargs)
+
+        monkeypatch.setattr(LookupsManager, "_get_instrument_lookup", staticmethod(flaky))
+        with pytest.raises(RuntimeError, match="unavailable"):
+            LookupsManager()
+        assert not hasattr(LookupsManager, "instance")
+
+        manager = LookupsManager()
+        assert LookupsManager.instance is manager and manager._i_lookup is not None
+        assert LookupsManager() is manager
+        assert len(calls) == 2

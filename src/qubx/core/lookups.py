@@ -29,7 +29,7 @@ from qubx.core.basics import (
 )
 from qubx.utils.marketdata.dukas import SAMPLE_INSTRUMENTS
 from qubx.utils.misc import get_local_qubx_folder, load_qubx_resources_as_json, load_qubx_resources_as_text, makedirs
-from qubx.utils.time import to_timedelta
+from qubx.utils.time import to_timedelta, to_utc_naive
 
 _DEF_INSTRUMENTS_FOLDER = "instruments"
 _DEF_FEES_FOLDER = "fees"
@@ -46,53 +46,138 @@ class _InstrumentEncoder(json.JSONEncoder):
         return super().default(obj)
 
 
-def _ts(value) -> pd.Timestamp | None:
-    if value is None or value == "NaT":
-        return None
-    ts = pd.Timestamp(value)
-    if pd.isna(ts):
-        return None
-    return ts.tz_convert(None) if ts.tzinfo is not None else ts
+class _InstrumentMapper:
+    """Builds Instruments from the shapes they are stored in: cache files, tardis metadata, service listings."""
 
+    _TARDIS_EXCHANGES = {
+        "binance": "BINANCE",
+        "binance-delivery": "BINANCE.CM",
+        "binance-futures": "BINANCE.UM",
+        "kraken": "KRAKEN",
+        "cryptofacilities": "KRAKEN.F",
+        "bitfinex": "BITFINEX",
+        "bitfinex-derivatives": "BITFINEX.F",
+        "hyperliquid": "HYPERLIQUID",
+    }
 
-def _instrument_from_dict(obj: dict) -> Instrument:
-    """Reads both the current shape and files written before the Instrument redesign
-    (onboard_date/delist_date/delivery_date, contract_multiplier, margin fields)."""
-    _u = obj.get("underlying")
-    return Instrument(
-        symbol=obj["symbol"],
-        market_type=MarketType[obj["market_type"]],
-        exchange=obj["exchange"],
-        base=obj["base"],
-        quote=obj["quote"],
-        settle=obj["settle"],
-        exchange_symbol=obj.get("exchange_symbol") or obj["symbol"],
-        tick_size=float(obj["tick_size"]),
-        lot_size=float(obj["lot_size"]),
-        min_size=float(obj["min_size"]),
-        min_notional=float(obj.get("min_notional") or 0.0),
-        contract_size=float(obj.get("contract_size") or 1.0) * float(obj.get("contract_multiplier") or 1.0),
-        inverse=bool(obj.get("inverse") or False),
-        listing_id=obj.get("listing_id"),
-        underlying=Underlying(AssetKind(_u["kind"]), _u["code"]) if _u else None,
-        calendar=obj.get("calendar"),
-        expiry=_ts(obj.get("expiry", obj.get("delivery_date"))),
-        strike=obj.get("strike"),
-        option_right=obj.get("option_right"),
-        listed_at=_ts(obj.get("listed_at", obj.get("onboard_date"))),
-        delisted_at=_ts(obj.get("delisted_at", obj.get("delist_date"))),
-        margin_tradable=bool(obj.get("margin_tradable") or False),
-        venue_attributes=obj.get("venue_attributes") or {},
-    )
+    @staticmethod
+    def _time(value) -> pd.Timestamp | None:
+        # - older cache files carry NaT serialized as "NaT"
+        return None if value is None or value == "NaT" else to_utc_naive(value)
+
+    @classmethod
+    def from_dict(cls, obj: dict) -> Instrument:
+        """Reads both the current shape and files written before the Instrument redesign
+        (onboard_date/delist_date/delivery_date, contract_multiplier, margin fields)."""
+        _u = obj.get("underlying")
+        return Instrument(
+            symbol=obj["symbol"],
+            market_type=MarketType[obj["market_type"]],
+            exchange=obj["exchange"],
+            base=obj["base"],
+            quote=obj["quote"],
+            settle=obj["settle"],
+            exchange_symbol=obj.get("exchange_symbol") or obj["symbol"],
+            tick_size=float(obj["tick_size"]),
+            lot_size=float(obj["lot_size"]),
+            min_size=float(obj["min_size"]),
+            min_notional=float(obj.get("min_notional") or 0.0),
+            contract_size=float(obj.get("contract_size") or 1.0) * float(obj.get("contract_multiplier") or 1.0),
+            inverse=bool(obj.get("inverse") or False),
+            listing_id=obj.get("listing_id"),
+            underlying=Underlying(AssetKind(_u["kind"]), _u["code"]) if _u else None,
+            calendar=obj.get("calendar"),
+            expiry=cls._time(obj.get("expiry", obj.get("delivery_date"))),
+            strike=obj.get("strike"),
+            option_right=obj.get("option_right"),
+            listed_at=cls._time(obj.get("listed_at", obj.get("onboard_date"))),
+            delisted_at=cls._time(obj.get("delisted_at", obj.get("delist_date"))),
+            margin_tradable=bool(obj.get("margin_tradable") or False),
+            venue_attributes=obj.get("venue_attributes") or {},
+        )
+
+    @classmethod
+    def from_tardis(cls, data: list[dict]) -> list[Instrument]:
+        r = []
+        for s in data:
+            _pfx = ""
+            _delivery_date = cls._time(s.get("expiry"))
+
+            match s["type"]:
+                case "perpetual":
+                    _type = MarketType.SWAP
+                case "spot":
+                    _type = MarketType.SPOT
+                case "future":
+                    _type = MarketType.FUTURE
+                    if _delivery_date:
+                        _pfx = "." + _delivery_date.strftime("%Y%m%d")
+                case _:
+                    raise ValueError(f" -> Unsupported type {s['type']}")
+            r.append(
+                Instrument(
+                    s["baseCurrency"] + s["quoteCurrency"] + _pfx,
+                    _type,
+                    cls._TARDIS_EXCHANGES.get(s["exchange"], s["exchange"].upper()),
+                    s["baseCurrency"],
+                    s["quoteCurrency"],
+                    s["quoteCurrency"],
+                    s["datasetId"],
+                    tick_size=s["priceIncrement"],
+                    # lot_size is the quantity step everywhere it is read (rounding, add_in_lots,
+                    # half-lot tolerances); minTradeAmount is a floor, not a step
+                    lot_size=s["amountIncrement"],
+                    min_size=s["amountIncrement"],
+                    min_notional=0,  # we don't have this info from tardis
+                    contract_size=s.get("contractMultiplier", 1.0),
+                    listed_at=cls._time(s.get("availableSince")),
+                    expiry=_delivery_date,
+                    inverse=s.get("inverse", False),
+                    delisted_at=cls._time(s.get("availableTo")),
+                )
+            )
+        return r
+
+    @classmethod
+    def from_listing(cls, listing: dict) -> Instrument:
+        """Instrument from an instrument-service /snapshot listing, built from its current version."""
+        versions = listing["versions"]
+        v = next((x for x in reversed(versions) if x.get("valid_to") is None), versions[-1])
+        u = listing["underlying"]
+        return Instrument(
+            symbol=v["symbol"],
+            market_type=MarketType(listing["market_type"]),
+            exchange=listing["exchange"],
+            base=v["base"],
+            quote=listing["quote"],
+            settle=listing["settle"],
+            exchange_symbol=v["exchange_symbol"] or v["symbol"],
+            tick_size=float(v["tick_size"]),
+            lot_size=float(v["lot_size"]),
+            min_size=float(v["min_size"]),
+            min_notional=float(v["min_notional"] or 0.0),
+            contract_size=float(v["contract_size"] or 1.0),
+            inverse=bool(listing["inverse"]),
+            listing_id=listing["id"],
+            underlying=Underlying(AssetKind(u["kind"]), u["code"]),
+            calendar=listing.get("calendar"),
+            expiry=cls._time(listing.get("expiry")),
+            strike=float(listing["strike"]) if listing.get("strike") is not None else None,
+            option_right=listing.get("option_right"),
+            listed_at=cls._time(listing.get("listed_at")),
+            delisted_at=cls._time(listing.get("delisted_at")),
+            margin_tradable=bool(v.get("margin_tradable")),
+            venue_attributes=v.get("venue_attributes") or {},
+        )
 
 
 class _InstrumentDecoder(json.JSONDecoder):
     def decode(self, json_string):
         obj = super(_InstrumentDecoder, self).decode(json_string)
         if isinstance(obj, dict):
-            return _instrument_from_dict(obj)
+            return _InstrumentMapper.from_dict(obj)
         elif isinstance(obj, list):
-            return [_instrument_from_dict(item) for item in obj]
+            return [_InstrumentMapper.from_dict(item) for item in obj]
         return obj
 
 
@@ -177,7 +262,7 @@ class FileInstrumentsLookupWithCCXT(InstrumentsLookup):
         try:
             _package_data = load_qubx_resources_as_json(f"instruments/symbols-{file_name}")
             if _package_data:
-                for i in _convert_instruments_metadata_to_qubx(_package_data):
+                for i in _InstrumentMapper.from_tardis(_package_data):
                     instruments[i] = i
         except Exception as e:
             logger.warning(f"Can't load resource file from instruments/symbols-{file_name} - {str(e)}")
@@ -390,112 +475,52 @@ class FeesLookupFile(FeesLookup):
         return s
 
 
-def _convert_instruments_metadata_to_qubx(data: list[dict]) -> list[Instrument]:
+@dataclasses.dataclass(frozen=True)
+class _SnapshotIndex:
+    """One instrument-service snapshot, swapped in as a whole so readers never see a mix.
+
+    A relisted symbol is a new listing next to its delisted predecessors: `current` keeps the
+    active (else the newest) one per symbol, `listings` keeps every incarnation for as-of lookups.
     """
-    Converting tardis symbols meta-data to Qubx instruments
-    """
-    _excs = {
-        "binance": "BINANCE",
-        "binance-delivery": "BINANCE.CM",
-        "binance-futures": "BINANCE.UM",
-        "kraken": "KRAKEN",
-        "cryptofacilities": "KRAKEN.F",
-        "bitfinex": "BITFINEX",
-        "bitfinex-derivatives": "BITFINEX.F",
-        "hyperliquid": "HYPERLIQUID",
-    }
-    r = []
-    for s in data:
-        _pfx = ""
-        _delist_date = _ts(s.get("availableTo", None))
-        _delivery_date = _ts(s.get("expiry", None))
 
-        match s["type"]:
-            case "perpetual":
-                _type = MarketType.SWAP
-            case "spot":
-                _type = MarketType.SPOT
-            case "future":
-                _type = MarketType.FUTURE
-                if _delivery_date:
-                    _pfx = "." + _delivery_date.strftime("%Y%m%d")
-            case _:
-                raise ValueError(f" -> Unsupported type {s['type']}")
-        r.append(
-            Instrument(
-                s["baseCurrency"] + s["quoteCurrency"] + _pfx,
-                _type,
-                _excs.get(s["exchange"], s["exchange"].upper()),
-                s["baseCurrency"],
-                s["quoteCurrency"],
-                s["quoteCurrency"],
-                s["datasetId"],
-                tick_size=s["priceIncrement"],
-                # lot_size is the quantity step everywhere it is read (rounding, add_in_lots,
-                # half-lot tolerances); minTradeAmount is a floor, not a step
-                lot_size=s["amountIncrement"],
-                min_size=s["amountIncrement"],
-                min_notional=0,  # we don't have this info from tardis
-                contract_size=s.get("contractMultiplier", 1.0),
-                listed_at=_ts(s.get("availableSince", None)),
-                expiry=_delivery_date,
-                inverse=s.get("inverse", False),
-                delisted_at=_delist_date,
-            )
-        )
-    return r
+    current: dict[str, Instrument]
+    listings: list[Instrument]
+    by_symbol: dict[tuple[str, str], list[Instrument]]  # - current first
+    by_alias: dict[tuple[str, str], list[Instrument]]
 
+    @classmethod
+    def build(cls, listings: list[dict]) -> "_SnapshotIndex":
+        built: list[tuple[Instrument, list[str]]] = []
+        for listing in listings:
+            try:
+                built.append((_InstrumentMapper.from_listing(listing), listing.get("aliases") or []))
+            except (ValueError, KeyError, IndexError, TypeError) as e:
+                logger.warning(f"[lookup] skipping listing {listing.get('id')} ({listing.get('exchange')}): {e!r}")
 
-_EPOCH = pd.Timestamp(0)
-
-
-def listing_to_instrument(listing: dict) -> Instrument:
-    """Instrument from an instrument-service /snapshot listing, built from its current version."""
-    versions = listing["versions"]
-    v = next((x for x in reversed(versions) if x.get("valid_to") is None), versions[-1])
-    u = listing["underlying"]
-    return Instrument(
-        symbol=v["symbol"],
-        market_type=MarketType(listing["market_type"]),
-        exchange=listing["exchange"],
-        base=v["base"],
-        quote=listing["quote"],
-        settle=listing["settle"],
-        exchange_symbol=v["exchange_symbol"] or v["symbol"],
-        tick_size=float(v["tick_size"]),
-        lot_size=float(v["lot_size"]),
-        min_size=float(v["min_size"]),
-        min_notional=float(v["min_notional"] or 0.0),
-        contract_size=float(v["contract_size"] or 1.0),
-        inverse=bool(listing["inverse"]),
-        listing_id=listing["id"],
-        underlying=Underlying(AssetKind(u["kind"]), u["code"]),
-        calendar=listing.get("calendar"),
-        expiry=_ts(listing.get("expiry")),
-        strike=float(listing["strike"]) if listing.get("strike") is not None else None,
-        option_right=listing.get("option_right"),
-        listed_at=_ts(listing.get("listed_at")),
-        delisted_at=_ts(listing.get("delisted_at")),
-        margin_tradable=bool(v.get("margin_tradable")),
-        venue_attributes=v.get("venue_attributes") or {},
-    )
+        built.sort(key=lambda b: (b[0].delisted_at is not None, -(b[0].listed_at or pd.Timestamp(0)).value))
+        current, by_symbol, by_alias = {}, {}, {}
+        for i, aliases in built:
+            current.setdefault(f"{i.exchange}:{i.market_type}:{i.symbol}", i)
+            by_symbol.setdefault((i.exchange, i.symbol), []).append(i)
+            for alias in aliases:
+                if alias != i.symbol:
+                    by_alias.setdefault((i.exchange, alias), []).append(i)
+        return cls(current, [i for i, _ in built], by_symbol, by_alias)
 
 
 class InstrumentsLookupService(InstrumentsLookup):
     """Instruments from the platform instrument service ({url}/snapshot).
 
     The first load must succeed (after a few attempts). With a reload_interval, a daemon thread
-    re-reads the snapshot with If-None-Match and swaps the indexes in; accessors never do I/O.
+    re-reads the snapshot with If-None-Match and swaps the index in; accessors never do I/O.
     A failed refresh keeps the in-memory copy and is retried only after a full interval.
-    There is no fallback lookup.
+    A snapshot without usable listings is an outage, never "everything delisted": it fails the
+    first load and is refused on refresh. There is no fallback lookup.
     """
 
     FIRST_LOAD_ATTEMPTS = 3
 
-    # - (lookup, by_symbol, by_alias), replaced as one object so readers never see a mix
-    _index: tuple[
-        dict[str, Instrument], dict[tuple[str, str], list[Instrument]], dict[tuple[str, str], list[Instrument]]
-    ]
+    _index: _SnapshotIndex
 
     def __init__(
         self,
@@ -513,7 +538,7 @@ class InstrumentsLookupService(InstrumentsLookup):
         self._deadline = deadline
         self._client = httpx.Client(headers={"Authorization": f"Bearer {token}"} if token else {}, timeout=timeout)
         self._etag: str | None = None
-        self._index = ({}, {}, {})
+        self._index = _SnapshotIndex({}, [], {}, {})
         self._refresh_lock = threading.Lock()
         self._stop = threading.Event()
 
@@ -547,29 +572,13 @@ class InstrumentsLookupService(InstrumentsLookup):
         body = json.loads(b"".join(chunks))
         if not isinstance(body, dict) or not isinstance(body.get("listings"), list):
             raise ValueError("snapshot body has no listings")
-        self._build(body["listings"])
+        index = _SnapshotIndex.build(body["listings"])
+        if not index.current:
+            raise ValueError(f"snapshot has no usable listings (of {len(body['listings'])})")
+        self._index = index
         self._etag = etag
+        logger.info(f"[lookup] loaded {len(index.current)} instruments from the instrument service")
         return True
-
-    def _build(self, listings: list[dict]) -> None:
-        built: list[tuple[Instrument, list[str]]] = []
-        for listing in listings:
-            try:
-                built.append((listing_to_instrument(listing), listing.get("aliases") or []))
-            except (ValueError, KeyError, IndexError, TypeError) as e:
-                logger.warning(f"[lookup] skipping listing {listing.get('id')} ({listing.get('exchange')}): {e!r}")
-
-        # - a relisted symbol is a new listing next to the delisted one: the active, then the newest, wins
-        built.sort(key=lambda b: (b[0].delisted_at is not None, -(b[0].listed_at or _EPOCH).value))
-        lookup, by_symbol, by_alias = {}, {}, {}
-        for i, aliases in built:
-            lookup.setdefault(f"{i.exchange}:{i.market_type}:{i.symbol}", i)
-            by_symbol.setdefault((i.exchange, i.symbol), []).append(i)
-            for alias in aliases:
-                if alias != i.symbol:
-                    by_alias.setdefault((i.exchange, alias), []).append(i)
-        self._index = (lookup, by_symbol, by_alias)
-        logger.info(f"[lookup] loaded {len(lookup)} instruments from the instrument service")
 
     def _refresh_loop(self) -> None:
         assert self._reload_interval is not None
@@ -584,7 +593,7 @@ class InstrumentsLookupService(InstrumentsLookup):
             return self._fetch()
         except Exception as e:
             logger.warning(
-                f"[lookup] instrument service refresh failed, keeping {len(self._index[0])} instruments: {e}"
+                f"[lookup] instrument service refresh failed, keeping {len(self._index.current)} instruments: {e}"
             )
             return False
         finally:
@@ -595,16 +604,22 @@ class InstrumentsLookupService(InstrumentsLookup):
         self._client.close()
 
     def get_lookup(self) -> dict[str, Instrument]:
-        return self._index[0]
+        return self._index.current
+
+    def get_listings(self) -> list[Instrument]:
+        return self._index.listings
+
+    def find_listings(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> list[Instrument]:
+        """Every listing of a symbol, current first, resolving former symbols of renamed listings."""
+        index = self._index
+        for by in (index.by_symbol, index.by_alias):
+            found = [i for i in by.get((exchange, symbol), ()) if market_type is None or i.market_type == market_type]
+            if found:
+                return found
+        return []
 
     def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
-        """Current instrument for a symbol, resolving former symbols of renamed listings."""
-        _, by_symbol, by_alias = self._index
-        for index in (by_symbol, by_alias):
-            for i in index.get((exchange, symbol), ()):
-                if market_type is None or i.market_type == market_type:
-                    return i
-        return None
+        return next(iter(self.find_listings(exchange, symbol, market_type)), None)
 
 
 class AccountsLookupFromManager(AccountsLookup):
@@ -633,13 +648,16 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
     _a_lookup: AccountsLookupFromManager
 
     def __new__(cls):
+        # - published only once fully built: a failure leaves no instance, so the next call retries
         if not hasattr(cls, "instance"):
-            cls.instance = super(LookupsManager, cls).__new__(cls)
-
             from qubx.config import settings
 
             i_cfg = settings.instrument_lookup
             f_cfg = settings.fees_lookup
+
+            f_kwargs = {}
+            if f_cfg.path:
+                f_kwargs["path"] = f_cfg.path
 
             i_kwargs = {}
             if i_cfg.url:
@@ -652,13 +670,12 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
                 i_kwargs["reload_interval"] = i_cfg.reload_interval
             if i_cfg.path:
                 i_kwargs["path"] = i_cfg.path
-            cls.instance._i_lookup = LookupsManager._get_instrument_lookup(type=i_cfg.type, **i_kwargs)
 
-            f_kwargs = {}
-            if f_cfg.path:
-                f_kwargs["path"] = f_cfg.path
-            cls.instance._t_lookup = LookupsManager._get_fees_lookup(type=f_cfg.type, **f_kwargs)
-            cls.instance._a_lookup = AccountsLookupFromManager()
+            instance = super(LookupsManager, cls).__new__(cls)
+            instance._t_lookup = LookupsManager._get_fees_lookup(type=f_cfg.type, **f_kwargs)
+            instance._i_lookup = LookupsManager._get_instrument_lookup(type=i_cfg.type, **i_kwargs)
+            instance._a_lookup = AccountsLookupFromManager()
+            cls.instance = instance
 
         return cls.instance
 
@@ -685,8 +702,17 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
             case _:
                 raise ValueError(f"Invalid lookup type: {type}")
 
+    def get_lookup(self) -> dict[str, Instrument]:
+        return self._i_lookup.get_lookup()
+
+    def get_listings(self) -> list[Instrument]:
+        return self._i_lookup.get_listings()
+
     def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
         return self._i_lookup.find_symbol(exchange, symbol, market_type)
+
+    def find_listings(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> list[Instrument]:
+        return self._i_lookup.find_listings(exchange, symbol, market_type)
 
     def find_instruments(
         self,

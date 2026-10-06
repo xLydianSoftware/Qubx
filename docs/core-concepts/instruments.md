@@ -31,7 +31,7 @@ Fields after `min_notional` are keyword-only.
 
 `i.asset` is the venue coin with any multiplier prefix or suffix stripped from `base`: `1000PEPE`, `10000SATS` and `SHIB1000` answer `PEPE`, `SATS` and `SHIB`, and the bStock `NVDAB` answers `NVDAB`. It depends only on the listing, so an instrument a connector builds itself and the same instrument from the lookup always agree. Economic exposure is `i.underlying` (it can be `None`); `i.exposure_code` is `i.underlying.code`, or `i.asset` when there is no underlying. Group or match by `exposure_code` across venues (`NVDA.XNAS` for a bStock, `XAU` for PAXG); keep `asset` for venue-coin keys such as blacklists. These are the platform's settled asset semantics (design decision D23).
 
-Instruments carry no margin rates. Live positions use the margin the venue reports. In simulation the maintenance margin is `AccountManagerConfig.maint_margin_rate` (default 5% of notional) and the initial margin is 0.
+Instruments carry no margin rates. Live positions use the margin the venue reports; when it reports none, the maintenance margin is the account's `live.account_manager.maint_margin_rate` (default 5% of notional). Simulation uses the same rate: `simulate(..., maint_margin_rate=...)`, or `simulation.maint_margin_rate` in a config, which falls back to `live.account_manager.maint_margin_rate`. The simulated initial margin is 0.
 
 ## Lookup types
 
@@ -58,7 +58,9 @@ The instrument lookup is configured by `instrument_lookup` in the Qubx settings 
 - The lookup reads `GET {url}/snapshot` on startup and builds every instrument from its listing's current version. It tries three times; if all fail, startup fails. There is no fallback to another lookup.
 - With a `reload_interval`, a background thread re-reads the snapshot with `If-None-Match` and swaps the result in; lookups never wait on the network. A `304` keeps the current copy. A failed refresh logs a warning, keeps the copy and is retried after a full interval.
 - `find_symbol(exchange, old_symbol)` resolves a renamed listing's former symbols to its current `Instrument`. A listing whose current symbol is the same string wins over an alias.
+- A snapshot with no usable listings is treated as an outage, not as everything being delisted: it fails startup, and a refresh that returns one is refused and keeps the current copy.
 - Delisted listings are included, with `delisted_at` set.
+- A relisted symbol has one listing per incarnation. `find_symbol` and `get_lookup()` return the active one (else the newest); `find_listings(exchange, symbol)` returns them all, current first. `find_instruments(..., as_of=t)` matches every incarnation listed at `t` (`listed_at <= t < delisted_at`), so as-of lookups over an earlier incarnation work, and the signal-simulation start adjustment counts from the symbol's first listing.
 
 The `mongo` lookup was removed in Qubx 4.0.
 

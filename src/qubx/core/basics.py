@@ -23,7 +23,7 @@ from qubx.core.utils import (
 )
 from qubx.utils.clock import start_clock_discipline, time_now
 from qubx.utils.misc import Stopwatch
-from qubx.utils.time import to_timedelta
+from qubx.utils.time import to_timedelta, to_utc_naive
 
 dt_64 = np.datetime64
 td_64 = np.timedelta64
@@ -450,6 +450,13 @@ class Instrument:
     def exposure_code(self) -> str:
         """What the listing is a contract on (NVDA.XNAS for a bStock, XAU for PAXG); `asset` when the underlying is unknown."""
         return self.underlying.code if self.underlying is not None else self.asset
+
+    def is_listed_at(self, time: datetime | str) -> bool:
+        """listed_at <= time < delisted_at, an unknown date leaving that side open."""
+        t = to_utc_naive(time)
+        return (self.listed_at is None or to_utc_naive(self.listed_at) <= t) and (
+            self.delisted_at is None or t < to_utc_naive(self.delisted_at)
+        )
 
     def is_futures(self) -> bool:
         return self.market_type in [MarketType.FUTURE, MarketType.SWAP]
@@ -2080,6 +2087,10 @@ class RestoredState:
 class InstrumentsLookup:
     def get_lookup(self) -> dict[str, Instrument]: ...
 
+    def get_listings(self) -> list[Instrument]:
+        """Every listing, including the delisted predecessors of relisted symbols that get_lookup() drops."""
+        return list(self.get_lookup().values())
+
     def find(
         self,
         exchange: str,
@@ -2118,6 +2129,10 @@ class InstrumentsLookup:
 
         return None
 
+    def find_listings(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> list[Instrument]:
+        """Every listing a symbol has had, the current (find_symbol) one first."""
+        return [i for i in [self.find_symbol(exchange, symbol, market_type)] if i is not None]
+
     def find_instruments(
         self,
         exchange: str,
@@ -2128,29 +2143,23 @@ class InstrumentsLookup:
     ) -> list[Instrument]:
         """
         Find instruments by exchange, quote, market type and as of date.
-        If as_of is not None, then only instruments that are not delisted after as_of date will be returned.
+        If as_of is not None, only instruments listed at that time are returned, delisted predecessors
+        of relisted symbols included (see get_listings).
         - exchange: str - exchange name
         - base: str | None - base currency
         - quote: str | None - quote currency
         - market_type: MarketType | None - market type
         - as_of is a string in format YYYY-MM-DD or pd.Timestamp or None
         """
-        _limit_time = pd.Timestamp(as_of) if as_of else None
+        _limit_time = to_utc_naive(as_of) if as_of else None
         matched = [
             i
-            for i in self.get_lookup().values()
+            for i in (self.get_lookup().values() if _limit_time is None else self.get_listings())
             if i.exchange == exchange
             and (base is None or i.base == base or i.asset == base)
             and (quote is None or i.quote == quote)
             and (market_type is None or i.market_type == market_type)
-            and (
-                _limit_time is None
-                or (i.listed_at is None or pd.Timestamp(i.listed_at).tz_localize(None) <= _limit_time)
-            )
-            and (
-                _limit_time is None
-                or (i.delisted_at is None or pd.Timestamp(i.delisted_at).tz_localize(None) >= _limit_time)
-            )
+            and (_limit_time is None or i.is_listed_at(_limit_time))
         ]
         if base is not None:
             aliases = sorted({i.base for i in matched} - {base})
