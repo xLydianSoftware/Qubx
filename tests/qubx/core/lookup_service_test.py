@@ -11,8 +11,7 @@ from qubx.core.basics import AssetKind, MarketType, Underlying
 from qubx.core.lookups import InstrumentsLookupService, LookupsManager, _InstrumentMapper
 
 # Recorded from the dev /internal/instrument-service/snapshot (2026-10-02) and trimmed. The
-# BINANCE.UM POLUSDT listing carries a synthesized MATICUSDT predecessor version + alias: dev
-# had no linked rename yet.
+# delisted BINANCE.UM MATICUSDT listing (POLUSDT's predecessor) is synthesized: dev had none.
 _DATA = Path(__file__).parents[2] / "data" / "instrument_service"
 SNAPSHOT = json.loads((_DATA / "snapshot.json").read_text())
 # Hand-built from the doc's mapping table (dev ingests none of these yet): a quarterly, an option,
@@ -216,22 +215,31 @@ class TestInstrumentsLookupService:
         lookups(service.url)
         assert "Authorization" not in service.requests[0]["headers"]
 
-    def test_former_symbol_resolves_to_the_current_instrument(self, service, lookups):
+    def test_a_renamed_symbol_is_its_own_delisted_listing(self, service, lookups):
         lookup = lookups(service.url)
-        current = lookup.find_symbol("BINANCE.UM", "POLUSDT")
-        assert current is not None
-        assert lookup.find_symbol("BINANCE.UM", "MATICUSDT") is current
-        assert lookup.find_symbol("BINANCE.UM", "MATICUSDT", MarketType.SWAP) is current
-        assert "BINANCE.UM:SWAP:MATICUSDT" not in lookup.get_lookup()
+        matic, pol = _listing("BINANCE.UM", "MATICUSDT"), _listing("BINANCE.UM", "POLUSDT")
 
-    def test_a_current_symbol_wins_over_an_alias(self, service, lookups):
-        reused = json.loads(json.dumps(_listing("BINANCE.UM", "BTCUSDT")))
-        reused["id"] = "00000000-0000-0000-0000-000000000001"
-        for v in reused["versions"]:
-            v["symbol"] = "MATICUSDT"
-        service.body["listings"].append(reused)
+        old = lookup.find_symbol("BINANCE.UM", "MATICUSDT")
+        assert old.listing_id == matic["id"] and old.symbol == "MATICUSDT"
+        assert old.delisted_at == pd.Timestamp("2024-09-13 12:15")
+        assert lookup.find_symbol("BINANCE.UM", "MATICUSDT", MarketType.SWAP) is old
+        assert [i.listing_id for i in lookup.find_listings("BINANCE.UM", "MATICUSDT")] == [matic["id"]]
+        assert lookup.find_symbol("BINANCE.UM", "POLUSDT").listing_id == pol["id"]
+
+        during_old = lookup.find_instruments("BINANCE.UM", quote="USDT", base="MATIC", as_of="2023-01-01")
+        assert [(i.symbol, i.tick_size, i.lot_size) for i in during_old] == [("MATICUSDT", 0.0001, 10)]
+        assert not lookup.find_instruments("BINANCE.UM", base="POL", as_of="2023-01-01")
+        after = lookup.find_instruments("BINANCE.UM", base="POL", as_of="2025-01-01")
+        assert [(i.symbol, i.tick_size, i.lot_size) for i in after] == [("POLUSDT", 1e-05, 1)]
+        assert not lookup.find_instruments("BINANCE.UM", base="MATIC", as_of="2025-01-01")
+
+    def test_listing_aliases_are_ignored(self, service, lookups):
+        pol = next(l for l in service.body["listings"] if l["versions"][-1]["symbol"] == "POLUSDT")
+        pol["aliases"] = ["MATICUSDT", "OLDPOLUSDT"]
         lookup = lookups(service.url)
-        assert lookup.find_symbol("BINANCE.UM", "MATICUSDT").listing_id == reused["id"]
+        assert lookup.find_symbol("BINANCE.UM", "OLDPOLUSDT") is None
+        assert lookup.find_symbol("BINANCE.UM", "MATICUSDT").symbol == "MATICUSDT"
+        assert lookup.find_symbol("BINANCE.UM", "POLUSDT").listing_id == pol["id"]
 
     def test_an_active_listing_wins_over_a_delisted_one_with_the_same_symbol(self, service, lookups):
         old = json.loads(json.dumps(_listing("BINANCE.UM", "BTCUSDT")))

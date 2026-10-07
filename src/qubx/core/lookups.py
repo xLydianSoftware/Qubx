@@ -487,26 +487,22 @@ class _SnapshotIndex:
     current: dict[str, Instrument]
     listings: list[Instrument]
     by_symbol: dict[tuple[str, str], list[Instrument]]  # - current first
-    by_alias: dict[tuple[str, str], list[Instrument]]
 
     @classmethod
     def build(cls, listings: list[dict]) -> "_SnapshotIndex":
-        built: list[tuple[Instrument, list[str]]] = []
+        built: list[Instrument] = []
         for listing in listings:
             try:
-                built.append((_InstrumentMapper.from_listing(listing), listing.get("aliases") or []))
+                built.append(_InstrumentMapper.from_listing(listing))
             except (ValueError, KeyError, IndexError, TypeError) as e:
                 logger.warning(f"[lookup] skipping listing {listing.get('id')} ({listing.get('exchange')}): {e!r}")
 
-        built.sort(key=lambda b: (b[0].delisted_at is not None, -(b[0].listed_at or pd.Timestamp(0)).value))
-        current, by_symbol, by_alias = {}, {}, {}
-        for i, aliases in built:
+        built.sort(key=lambda i: (i.delisted_at is not None, -(i.listed_at or pd.Timestamp(0)).value))
+        current, by_symbol = {}, {}
+        for i in built:
             current.setdefault(f"{i.exchange}:{i.market_type}:{i.symbol}", i)
             by_symbol.setdefault((i.exchange, i.symbol), []).append(i)
-            for alias in aliases:
-                if alias != i.symbol:
-                    by_alias.setdefault((i.exchange, alias), []).append(i)
-        return cls(current, [i for i, _ in built], by_symbol, by_alias)
+        return cls(current, built, by_symbol)
 
 
 class InstrumentsLookupService(InstrumentsLookup):
@@ -539,7 +535,7 @@ class InstrumentsLookupService(InstrumentsLookup):
         self._deadline = deadline
         self._client = httpx.Client(headers={"Authorization": f"Bearer {token}"} if token else {}, timeout=timeout)
         self._etag: str | None = None
-        self._index = _SnapshotIndex({}, [], {}, {})
+        self._index = _SnapshotIndex({}, [], {})
         self._refresh_lock = threading.Lock()
         self._stop = threading.Event()
 
@@ -611,13 +607,9 @@ class InstrumentsLookupService(InstrumentsLookup):
         return self._index.listings
 
     def find_listings(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> list[Instrument]:
-        """Every listing of a symbol, current first, resolving former symbols of renamed listings."""
-        index = self._index
-        for by in (index.by_symbol, index.by_alias):
-            found = [i for i in by.get((exchange, symbol), ()) if market_type is None or i.market_type == market_type]
-            if found:
-                return found
-        return []
+        """Every listing registered under this exact symbol, the active (else the newest) first."""
+        found = self._index.by_symbol.get((exchange, symbol), ())
+        return [i for i in found if market_type is None or i.market_type == market_type]
 
     def find_symbol(self, exchange: str, symbol: str, market_type: MarketType | None = None) -> Instrument | None:
         return next(iter(self.find_listings(exchange, symbol, market_type)), None)

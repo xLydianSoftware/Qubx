@@ -19,7 +19,6 @@
     "kind": "CRYPTO",
     "code": "VOXEL"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -56,7 +55,6 @@
     "kind": "CRYPTO",
     "code": "GTC"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -107,7 +105,6 @@
     "kind": "EQUITY",
     "code": "SNDK.XNAS"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -148,7 +145,6 @@
     "kind": "CRYPTO",
     "code": "BTC"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -185,7 +181,6 @@
     "kind": "EQUITY",
     "code": "0625.XHKG"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-09-01T08:00:00Z",
@@ -228,7 +223,6 @@
     "kind": "CRYPTO",
     "code": "BTC"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -272,7 +266,6 @@
     "kind": "CRYPTO",
     "code": "PEPE"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -298,6 +291,49 @@
    ]
   },
   {
+   "id": "3c1e9b52-5d2a-5f0e-9a41-6c0d7e2b8f11",
+   "exchange": "BINANCE.UM",
+   "market_type": "SWAP",
+   "quote": "USDT",
+   "settle": "USDT",
+   "inverse": false,
+   "expiry": null,
+   "strike": null,
+   "option_right": null,
+   "calendar": null,
+   "listed_at": "2020-10-22T00:00:00Z",
+   "delisted_at": "2024-09-13T12:15:00Z",
+   "predecessor_id": null,
+   "underlying": {
+    "id": "6f0b1d3e-2a7c-5b49-8e15-0d4c9a7b3e21",
+    "kind": "CRYPTO",
+    "code": "MATIC"
+   },
+   "versions": [
+    {
+     "valid_from": "2020-10-22T00:00:00Z",
+     "valid_to": "2024-09-13T12:15:00Z",
+     "symbol": "MATICUSDT",
+     "exchange_symbol": "MATICUSDT",
+     "base": "MATIC",
+     "tick_size": 0.0001,
+     "lot_size": 10,
+     "min_size": 10,
+     "min_notional": 5,
+     "contract_size": 1,
+     "margin_tradable": false,
+     "venue_attributes": {
+      "contractType": "PERPETUAL",
+      "underlyingSubType": [
+       "Layer-2",
+       "Crypto"
+      ],
+      "underlyingType": "COIN"
+     }
+    }
+   ]
+  },
+  {
    "id": "8712a9a7-c05d-5ad1-a9bf-3b6ba5fc7cbf",
    "exchange": "BINANCE.UM",
    "market_type": "SWAP",
@@ -310,39 +346,15 @@
    "calendar": null,
    "listed_at": "2024-09-13T12:15:00Z",
    "delisted_at": null,
-   "predecessor_id": null,
+   "predecessor_id": "3c1e9b52-5d2a-5f0e-9a41-6c0d7e2b8f11",
    "underlying": {
     "id": "b2073d74-8ac7-522f-9377-267f8067cac5",
     "kind": "CRYPTO",
     "code": "POL"
    },
-   "aliases": [
-    "MATICUSDT"
-   ],
    "versions": [
     {
-     "valid_from": "2026-06-01T08:00:00Z",
-     "valid_to": "2026-07-09T08:00:00Z",
-     "symbol": "MATICUSDT",
-     "exchange_symbol": "MATICUSDT",
-     "base": "MATIC",
-     "tick_size": 1e-05,
-     "lot_size": 1,
-     "min_size": 1,
-     "min_notional": 5,
-     "contract_size": 1,
-     "margin_tradable": false,
-     "venue_attributes": {
-      "contractType": "PERPETUAL",
-      "underlyingSubType": [
-       "Layer-2",
-       "Crypto"
-      ],
-      "underlyingType": "COIN"
-     }
-    },
-    {
-     "valid_from": "2026-07-09T08:00:00Z",
+     "valid_from": "2024-09-13T12:15:00Z",
      "valid_to": null,
      "symbol": "POLUSDT",
      "exchange_symbol": "POLUSDT",
@@ -383,7 +395,6 @@
     "kind": "CRYPTO",
     "code": "PEPE"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -420,7 +431,6 @@
     "kind": "CRYPTO",
     "code": "BTC"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -457,7 +467,6 @@
     "kind": "CRYPTO",
     "code": "BTC"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -494,7 +503,6 @@
     "kind": "EQUITY",
     "code": "AMZN.XNAS"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -533,7 +541,6 @@
     "kind": "CRYPTO",
     "code": "BTC"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -570,7 +577,6 @@
     "kind": "CRYPTO",
     "code": "BTC"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -610,7 +616,6 @@
     "kind": "CRYPTO",
     "code": "ETH"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -661,7 +666,6 @@
     "kind": "CRYPTO",
     "code": "PEPE"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -726,7 +730,6 @@
     "kind": "CRYPTO",
     "code": "INIT"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -765,7 +768,6 @@
     "kind": "CRYPTO",
     "code": "EGLD"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",
@@ -804,7 +806,6 @@
     "kind": "CRYPTO",
     "code": "BTC"
    },
-   "aliases": [],
    "versions": [
     {
      "valid_from": "2026-07-09T08:00:00Z",

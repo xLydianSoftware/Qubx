@@ -19,7 +19,7 @@ Identity is `(exchange, market_type, symbol)`: equality, hashing and `str(i)` (`
 | `base`, `quote`, `settle`, `inverse` | |
 | `tick_size`, `lot_size`, `min_size`, `min_notional` | Venue trading rules |
 | `contract_size` | Quantity per contract: base units for linear contracts, quote units for inverse ones. It is the product of every venue size and multiplier field (OKX `ctVal × ctMult`). `quantity_multiplier` is an alias. |
-| `listing_id` | The instrument service's listing id; stable through renames |
+| `listing_id` | The instrument service's listing id. A symbol change is a new listing, so it gets a new id |
 | `underlying` | `Underlying(kind: AssetKind, code)`, what the listing is a contract on: `CRYPTO:PEPE`, `EQUITY:NVDA.XNAS`, `COMMODITY:XAU` |
 | `calendar` | When this listing trades: `24/7`, a MIC such as `XNAS`, or `None` |
 | `expiry`, `strike`, `option_right` | Futures and options only |
@@ -57,7 +57,7 @@ The instrument lookup is configured by `instrument_lookup` in the Qubx settings 
 
 - The lookup reads `GET {url}/snapshot` on startup and builds every instrument from its listing's current version. It tries three times; if all fail, startup fails. There is no fallback to another lookup.
 - With a `reload_interval`, a background thread re-reads the snapshot with `If-None-Match` and swaps the result in; lookups never wait on the network. A `304` keeps the current copy. A failed refresh logs a warning, keeps the copy and is retried after a full interval.
-- `find_symbol(exchange, old_symbol)` resolves a renamed listing's former symbols to its current `Instrument`. A listing whose current symbol is the same string wins over an alias.
+- A venue rename is a delisting plus a new listing (design decision D24): when MATICUSDT became POLUSDT, the MATICUSDT listing was delisted and POLUSDT listed with its own id, dates and specs. `find_symbol(exchange, "MATICUSDT")` returns the delisted MATICUSDT instrument, never POLUSDT, and `find_instruments(..., as_of=t)` returns whichever was listed at `t`, with that listing's own symbol and specs, which matches the as-of symbols stored in the data lake. Spec changes that keep the symbol (tick, lot, sizes, venue attributes) stay versions of one listing; the instrument is built from the current version. Predecessor links ("POL replaced MATIC") are platform metadata only and never affect a lookup.
 - A snapshot with no usable listings is treated as an outage, not as everything being delisted: it fails startup, and a refresh that returns one is refused and keeps the current copy.
 - Delisted listings are included, with `delisted_at` set.
 - A relisted symbol has one listing per incarnation. `find_symbol` and `get_lookup()` return the active one (else the newest); `find_listings(exchange, symbol)` returns them all, current first. `find_instruments(..., as_of=t)` matches every incarnation listed at `t` (`listed_at <= t < delisted_at`), so as-of lookups over an earlier incarnation work, and the signal-simulation start adjustment counts from the symbol's first listing.

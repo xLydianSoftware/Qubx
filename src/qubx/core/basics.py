@@ -408,7 +408,7 @@ class Instrument:
     _: KW_ONLY
     contract_size: float = 1.0  # quantity per contract: base units (linear) or quote units (inverse)
     inverse: bool = False
-    listing_id: str | None = None  # instrument-service listing id, stable through renames
+    listing_id: str | None = None  # instrument-service listing id; a new symbol is a new listing
     underlying: Underlying | None = None
     calendar: str | None = None  # when this listing trades: "24/7", a MIC ("XNAS") or None
     expiry: datetime | None = None
