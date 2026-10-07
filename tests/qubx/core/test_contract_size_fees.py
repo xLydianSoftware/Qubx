@@ -6,21 +6,17 @@ BasicAccountProcessor._lock_limit_order_value correctly use
 instrument.quantity_multiplier for futures with contract_size != 1.
 """
 
-import numpy as np
-import pytest
 from pytest import approx
 
 from qubx.core.basics import (
-    Deal,
     Instrument,
     MarketType,
     Position,
     TransactionCostsCalculator,
 )
-from qubx.core.series import Quote, time_as_nsec
 
 
-def _make_instrument(contract_size: float = 1.0, contract_multiplier: float = 1.0) -> Instrument:
+def _make_instrument(contract_size: float = 1.0) -> Instrument:
     """Create a SWAP instrument with the given contract_size."""
     return Instrument(
         symbol="BCHUSDT",
@@ -34,7 +30,6 @@ def _make_instrument(contract_size: float = 1.0, contract_multiplier: float = 1.
         lot_size=1.0,
         min_size=1.0,
         contract_size=contract_size,
-        contract_multiplier=contract_multiplier,
     )
 
 
@@ -87,10 +82,10 @@ class TestFeeCalculationWithContractSize:
         assert maker_fee == approx(3000.0 * 0.02 / 100)
         assert taker_fee == approx(3000.0 * 0.05 / 100)
 
-    def test_fee_with_contract_multiplier(self):
-        """quantity_multiplier = contract_size * contract_multiplier."""
+    def test_quantity_multiplier_is_contract_size(self):
+        """quantity_multiplier is an alias of contract_size (OKX ctVal x ctMult is folded into it)."""
         tcc = TransactionCostsCalculator("test", maker=0.02, taker=0.05)
-        instrument = _make_instrument(contract_size=0.1, contract_multiplier=2.0)
+        instrument = _make_instrument(contract_size=0.2)
         assert instrument.quantity_multiplier == approx(0.2)
 
         # 50 contracts * 0.2 * 300 = 3000 notional

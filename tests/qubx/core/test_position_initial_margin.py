@@ -16,7 +16,7 @@ T1 = np.datetime64("2026-05-28T00:01:00", "ns")
 T2 = np.datetime64("2026-05-28T00:02:00", "ns")
 
 
-def _make_instrument(initial_margin: float = 0.0) -> Instrument:
+def _make_instrument() -> Instrument:
     return Instrument(
         symbol="ETHUSDT",
         market_type=MarketType.SWAP,
@@ -29,7 +29,6 @@ def _make_instrument(initial_margin: float = 0.0) -> Instrument:
         lot_size=0.001,
         min_size=0.001,
         contract_size=1.0,
-        initial_margin=initial_margin,
     )
 
 
@@ -55,14 +54,10 @@ def test_external_initial_margin_survives_price_update():
 
 
 def test_internal_initial_margin_recomputes_when_not_external():
-    """Without an external value, _update_initial_margin can populate from
-    instrument metadata + position size.  Default impl yields 0.0 today
-    (Instrument.initial_margin is 0.0 unless populated by metadata storage).
-    """
+    """Without an external value the framework derives no initial margin."""
     pos = Position(instrument=_make_instrument(), quantity=1.0, pos_average_price=2000.0)
     pos.last_update_price = 2000.0
     pos._update_initial_margin()
-    # No external value, no instrument-level initial_margin → stays 0.0
     assert pos.initial_margin == 0.0
     assert pos._initial_margin_external is False
 
@@ -129,7 +124,7 @@ def test_partial_close_keeps_venue_reported_margins():
 
 
 def test_reopen_after_close_derives_margins_until_venue_reports_again():
-    pos = Position(instrument=_make_instrument(initial_margin=0.1))
+    pos = Position(instrument=_make_instrument())
     pos.update_position(T0, 100.0, 2000.0)
     pos.set_external_maint_margin(15.35693)
     pos.set_external_initial_margin(26.85)
@@ -139,7 +134,7 @@ def test_reopen_after_close_derives_margins_until_venue_reports_again():
     pos.update_position(T2, 2.0, 2020.0)
     assert pos.maint_margin == pytest.approx(DEFAULT_MAINTENANCE_MARGIN * 2.0 * 2020.0)
     assert pos._maint_margin_external is False
-    assert pos.initial_margin == pytest.approx(0.1 * 2.0 * 2020.0)
+    assert pos.initial_margin == 0.0
     assert pos._initial_margin_external is False
 
     # the next snapshot carrying the instrument takes over again
@@ -155,7 +150,7 @@ def test_flatten_clears_external_flags_so_reopen_derives_margins():
     # flatten() (settle_position / missed-close recovery) zeroes the values; it must drop the
     # flags too, otherwise a reopen with no quote in between is an OPEN position reading
     # zero margin — an account that looks maximally safe with real risk on.
-    pos = Position(instrument=_make_instrument(initial_margin=0.1))
+    pos = Position(instrument=_make_instrument())
     pos.update_position(T0, 100.0, 2000.0)
     pos.set_external_maint_margin(15.35693)
     pos.set_external_initial_margin(26.85)
@@ -170,25 +165,31 @@ def test_flatten_clears_external_flags_so_reopen_derives_margins():
     assert pos.is_open() is True
     assert pos.maint_margin == pytest.approx(DEFAULT_MAINTENANCE_MARGIN * 2.0 * 2020.0)
     assert pos.maint_margin > 0.0
-    assert pos.initial_margin == pytest.approx(0.1 * 2.0 * 2020.0)
-    assert pos.initial_margin > 0.0
+    assert pos.initial_margin == 0.0
 
 
 def test_derived_margins_open_close_cycle_without_venue_values():
     # simulated / backtester path: the external flags are never set, so margins are derived
     # while open and zero once flat — the flat guard changes nothing here
-    pos = Position(instrument=_make_instrument(initial_margin=0.1))
+    pos = Position(instrument=_make_instrument())
 
     pos.update_position(T0, 100.0, 2000.0)
     assert pos.maint_margin == pytest.approx(DEFAULT_MAINTENANCE_MARGIN * 100.0 * 2000.0)
-    assert pos.initial_margin == pytest.approx(0.1 * 100.0 * 2000.0)
+    assert pos.initial_margin == 0.0
 
     pos.update_position(T1, 40.0, 2010.0)
     assert pos.maint_margin == pytest.approx(DEFAULT_MAINTENANCE_MARGIN * 40.0 * 2010.0)
-    assert pos.initial_margin == pytest.approx(0.1 * 40.0 * 2010.0)
+    assert pos.initial_margin == 0.0
 
     pos.update_position(T2, 0.0, 2020.0)
     assert pos.maint_margin == 0.0
     assert pos._maint_margin_external is False
     assert pos.initial_margin == 0.0
     assert pos._initial_margin_external is False
+
+
+def test_maint_margin_rate_comes_from_the_position_not_the_instrument():
+    pos = Position(instrument=_make_instrument())
+    pos.maint_margin_rate = 0.02
+    pos.update_position(T0, 10.0, 2000.0)
+    assert pos.maint_margin == pytest.approx(0.02 * 10.0 * 2000.0)

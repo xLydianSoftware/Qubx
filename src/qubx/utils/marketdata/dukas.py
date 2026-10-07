@@ -13,9 +13,6 @@ SAMPLE_INSTRUMENTS = [
         lot_size=1000,
         min_size=1000,
         min_notional=0.0,
-        initial_margin=0.0,
-        maint_margin=0.0,
-        liquidation_fee=0.0,
         contract_size=1.0,
     ),
     Instrument(
@@ -30,9 +27,6 @@ SAMPLE_INSTRUMENTS = [
         lot_size=1000,
         min_size=1000,
         min_notional=0.0,
-        initial_margin=0.0,
-        maint_margin=0.0,
-        liquidation_fee=0.0,
         contract_size=1.0,
     ),
     Instrument(
@@ -47,9 +41,6 @@ SAMPLE_INSTRUMENTS = [
         lot_size=1000,
         min_size=1000,
         min_notional=0.0,
-        initial_margin=0.0,
-        maint_margin=0.0,
-        liquidation_fee=0.0,
         contract_size=1.0,
     ),
     Instrument(
@@ -64,9 +55,6 @@ SAMPLE_INSTRUMENTS = [
         lot_size=1000,
         min_size=1000,
         min_notional=0.0,
-        initial_margin=0.0,
-        maint_margin=0.0,
-        liquidation_fee=0.0,
         contract_size=1.0,
     ),
     Instrument(
@@ -81,9 +69,6 @@ SAMPLE_INSTRUMENTS = [
         lot_size=1000,
         min_size=1000,
         min_notional=0.0,
-        initial_margin=0.0,
-        maint_margin=0.0,
-        liquidation_fee=0.0,
         contract_size=1.0,
     ),
     Instrument(
@@ -98,9 +83,6 @@ SAMPLE_INSTRUMENTS = [
         lot_size=1000,
         min_size=1000,
         min_notional=0.0,
-        initial_margin=0.0,
-        maint_margin=0.0,
-        liquidation_fee=0.0,
         contract_size=1.0,
     ),
     Instrument(
@@ -115,9 +97,6 @@ SAMPLE_INSTRUMENTS = [
         lot_size=1000,
         min_size=1000,
         min_notional=0.0,
-        initial_margin=0.0,
-        maint_margin=0.0,
-        liquidation_fee=0.0,
         contract_size=1.0,
     ),
 ]

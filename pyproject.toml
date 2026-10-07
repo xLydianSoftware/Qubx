@@ -62,7 +62,6 @@ dependencies = [
     "statsmodels>=0.14.6,<0.15",
 
     # - - - Database backends - - - 
-    "pymongo>=4.6.1,<5",
     "redis>=5.2.1,<6",
     "psycopg>=3.1.18,<4",
     "psycopg-binary>=3.1.19,<4",
@@ -177,7 +176,6 @@ dev = [
     "pytest-cov>=4.1.0,<5",
     "pytest-xdist>=3.6.1,<4",
     "pytest-textual-snapshot>=1.1.0,<2",
-    "mongomock>=4.3.0,<5",
     "pyiceberg[pyarrow,sql-sqlite,pyiceberg-core]==0.12.0",
 
     # - - - Linting & formatting - - - 

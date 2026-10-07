@@ -516,11 +516,10 @@ class IAccountViewer:
         In live this is the venue-reported figure when the venue provides one
         (e.g. Binance ``availableBalance``); otherwise it derives as
         ``total_capital - total_initial_margin``. For an accurate derivation,
-        the connector must populate ``Position.initial_margin`` either via
+        the connector must populate ``Position.initial_margin`` via
         ``set_external_initial_margin(...)`` from venue data (e.g. HPL
-        ``marginUsed``) or via ``instrument.initial_margin`` in the metadata.
-        Connectors that populate neither will see this method return the full
-        capital.
+        ``marginUsed``). Connectors that don't will see this method return the
+        full capital.
 
         Returns:
             float: Available balance
@@ -2665,7 +2664,7 @@ class IStrategyInitializer:
         """
         Set the number of days ahead to check for delisting.
 
-        When an instrument has a delist_date set, this configuration determines how many
+        When an instrument has a delisted_at set, this configuration determines how many
         days before the delisting date the framework should:
         1. Filter the instrument out from universe updates
         2. Close positions and remove the instrument during the daily delisting check

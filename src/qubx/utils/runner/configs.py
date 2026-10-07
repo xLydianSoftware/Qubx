@@ -210,6 +210,8 @@ class AccountManagerConfig(StrictBaseModel):
     terminal_order_retention_ms: int = 30_000
     terminal_order_history_size: int = 10_000
 
+    maint_margin_rate: float = 0.05
+
 
 class MarketCacheConfig(StrictBaseModel):
     """Retention caps for per-instrument market-data buffers (spec 2026-08-11)."""
@@ -281,6 +283,7 @@ class SimulationConfig(StrictBaseModel):
     run_separate_instruments: bool = False
     enable_funding: bool = False
     enable_inmemory_emitter: bool = False
+    maint_margin_rate: float | None = None
     prefetch: PrefetchConfig | None = None
     aux: list[StorageConfig] | StorageConfig | None = None
     portfolio_log_freq: str | None = None

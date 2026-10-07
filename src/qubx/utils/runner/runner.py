@@ -27,6 +27,7 @@ from qubx.connectors.plugin import BuildContext, ConnectorBuildContext
 from qubx.connectors.registry import ConnectorRegistry
 from qubx.core.account_manager import AccountManager, AccountManagerConfig, SimulatedAccountManager
 from qubx.core.basics import (
+    DEFAULT_MAINTENANCE_MARGIN,
     Balance,
     CtrlChannel,
     Instrument,
@@ -344,6 +345,7 @@ def run_strategy(
             live_time_provider=_live_time_provider,
             account_manager=account_manager,
             enable_funding=config.live.warmup.enable_funding if config.live.warmup else False,
+            maint_margin_rate=config.live.account_manager.maint_margin_rate,
             aux_configs=aux_configs,
         )
     except KeyboardInterrupt:
@@ -386,16 +388,6 @@ def _infer_restorer_from_logger(logging_config: LoggingConfig, strategy_name: st
                 "strategy_name": strategy_name,
                 "postgres_uri": args.get("postgres_uri", "postgresql://localhost:5432/qubx_logs"),
                 "table_prefix": args.get("table_prefix", "qubx_logs"),
-            },
-        )
-    elif logger_type == "MongoDBLogsWriter":
-        return RestorerConfig(
-            type="MongoDBStateRestorer",
-            parameters={
-                "strategy_name": strategy_name,
-                "mongo_uri": args.get("mongo_uri", "mongodb://localhost:27017/"),
-                "db_name": args.get("db_name", "default_logs_db"),
-                "collection_name_prefix": args.get("collection_name_prefix", "qubx_logs"),
             },
         )
     elif logger_type == "CsvFileLogsWriter":
@@ -1001,6 +993,7 @@ def _run_warmup(
     live_time_provider,
     account_manager: AccountConfigurationManager | None = None,
     enable_funding: bool = False,
+    maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN,
     aux_configs: list[StorageConfig] | None = None,
     trading_sessions_time: str | None = None,
 ) -> None:
@@ -1078,6 +1071,7 @@ def _run_warmup(
                 base_currency=ctx.account.get_base_currency(),
                 commissions=None,  # TODO: get commissions from somewhere
                 enable_funding=enable_funding,
+                maint_margin_rate=maint_margin_rate,
             ),
             data_config=recognize_simulation_data_config(
                 data_storage=_warmup_data_storage,
@@ -1220,6 +1214,12 @@ def _build_sim_params(
         "enable_funding": sim.enable_funding,
         "enable_inmemory_emitter": sim.enable_inmemory_emitter,
     }
+
+    # - the simulation's own rate wins, else the live account's, so a backtest margins like the bot
+    if sim.maint_margin_rate is not None:
+        sim_params["maint_margin_rate"] = sim.maint_margin_rate
+    elif cfg.live is not None:
+        sim_params["maint_margin_rate"] = cfg.live.account_manager.maint_margin_rate
 
     if sim.base_currency is not None:
         sim_params["base_currency"] = sim.base_currency

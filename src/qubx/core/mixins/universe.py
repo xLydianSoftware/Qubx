@@ -70,17 +70,17 @@ class UniverseManager(IUniverseManager):
 
     def _is_market_gone(self, instrument: Instrument) -> bool:
         """State B only: the market no longer exists / is untradeable.
-        A future delist_date (state A) is NOT gone."""
+        A future delisted_at (state A) is NOT gone."""
         if not self._mkt_manager.is_instrument_listed(instrument):
             return True  # authoritative live signal
-        d = instrument.delist_date
+        d = instrument.delisted_at
         if d is None:
             return False
         try:
             delist_ts = to_timestamp(d).replace(tzinfo=None)
             now_ts = to_timestamp(self._time_provider.time())
         except (TypeError, ValueError):
-            # - unparseable delist_date: fail-open, treat as not gone
+            # - unparseable delisted_at: fail-open, treat as not gone
             return False
         return delist_ts <= now_ts
 
@@ -93,7 +93,7 @@ class UniverseManager(IUniverseManager):
             self._account.settle_position(instrument)
             logger.warning(f"[UniverseManager] Settled delisted position {instrument.symbol} (market gone)")
         else:
-            # flagged by past delist_date metadata only, but still listed (settlement
+            # flagged by past delisted_at metadata only, but still listed (settlement
             # overlap) -- leave it for the close-via-trade path / manual review
             logger.warning(
                 f"[UniverseManager] {instrument.symbol} flagged delisted by metadata but still listed; "
@@ -165,7 +165,7 @@ class UniverseManager(IUniverseManager):
         ), "Invalid if_has_position_then policy"
 
         # Settle & exclude instruments whose market is already gone (state B) FIRST,
-        # so a gone instrument that also carries a delist_date is settled in place
+        # so a gone instrument that also carries a delisted_at is settled in place
         # before the delisting filter (state A) would otherwise strip it from the list.
         candidate_set = set(instruments)
         instruments = self._drop_gone(instruments)
@@ -229,7 +229,7 @@ class UniverseManager(IUniverseManager):
     def add_instruments(self, instruments: list[Instrument]):
         # Settle & exclude already-gone markets (same gone-filter as set_universe).
         # Only _drop_gone (already-gone), NOT filter_delistings (future/scheduled),
-        # so an explicitly-added still-listed instrument with a future delist_date
+        # so an explicitly-added still-listed instrument with a future delisted_at
         # stays addable and is handled by the existing scheduled-delist path.
         instruments = self._drop_gone(instruments)
         # Then drop blacklisted instruments (same order as set_universe: gone -> blacklist).

@@ -36,19 +36,6 @@ def ccxt_build_qubx_exchange_name(ccxt_exchange: str, market_type: str | None = 
 def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -> Instrument:
     exchange = ccxt_build_qubx_exchange_name(ccxt_exchange_name, market["type"], market.get("linear", True))
     inner_info = market["info"]
-    maint_margin = 0.0
-    required_margin = 0.0
-    liquidation_fee = 0.0
-    if "marginLevels" in inner_info:
-        margins = inner_info["marginLevels"][0]
-        maint_margin = float(margins["maintenanceMargin"])
-        required_margin = float(margins["initialMargin"])
-    if "maintMarginPercent" in inner_info:
-        maint_margin = float(inner_info["maintMarginPercent"]) / 100
-    if "requiredMarginPercent" in inner_info:
-        required_margin = float(inner_info["requiredMarginPercent"]) / 100
-    if "liquidationFee" in inner_info:
-        liquidation_fee = float(inner_info["liquidationFee"])
 
     # symbol = market["id"]
     # let's use unified symbol format across all exchanges / types: BASEQUOTE
@@ -81,38 +68,38 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         expiry_date = pd.Timestamp(int(inner_info["deliveryDate"]), unit="ms")
 
     # - extract onboard date from multiple possible sources
-    onboard_date = None
+    listed_at = None
     try:
         # Try inner_info.onboardDate first (Binance futures)
         if "onboardDate" in inner_info and inner_info["onboardDate"]:
-            onboard_date = pd.Timestamp(int(inner_info["onboardDate"]), unit="ms")
+            listed_at = pd.Timestamp(int(inner_info["onboardDate"]), unit="ms")
         # Try top-level created field (available for many exchanges)
         elif "created" in market and market["created"]:
-            onboard_date = pd.Timestamp(int(market["created"]), unit="ms")
-    except (ValueError, TypeError, OverflowError) as e:
-        onboard_date = None
+            listed_at = pd.Timestamp(int(market["created"]), unit="ms")
+    except (ValueError, TypeError, OverflowError):
+        listed_at = None
 
     # - extract delist date if present
-    delist_date = None
+    delisted_at = None
     try:
         if "delistDate" in inner_info and inner_info["delistDate"]:
-            delist_date = pd.Timestamp(int(inner_info["delistDate"]), unit="ms")
+            delisted_at = pd.Timestamp(int(inner_info["delistDate"]), unit="ms")
         # Some exchanges may have status-based delisting info
         elif "deliveryDate" in inner_info and inner_info["deliveryDate"]:
-            delist_date = pd.Timestamp(int(inner_info["deliveryDate"]), unit="ms")
+            delisted_at = pd.Timestamp(int(inner_info["deliveryDate"]), unit="ms")
         elif "status" in inner_info and inner_info["status"] in ["DELISTED", "INACTIVE"]:
-            # For delisted instruments, we could set delist_date to now, but it's better to leave None
+            # For delisted instruments, we could set delisted_at to now, but it's better to leave None
             # and let the 'active' field handle current status
             pass
-    except (ValueError, TypeError, OverflowError) as e:
-        delist_date = None
+    except (ValueError, TypeError, OverflowError):
+        delisted_at = None
 
     # - add expiry date to futures symbol if present
     if mkt_type == MarketType.FUTURE and expiry_date:
         symbol += f".{expiry_date.strftime('%Y%m%d')}"
 
-    contract_size = float(market.get("contractSize", 1.0) or 1.0)
-    contract_multiplier = float(market.get("info", {}).get("ctMult", 1.0) or 1.0)
+    # - OKX splits the contract into ctVal (contractSize) x ctMult
+    contract_size = float(market.get("contractSize", 1.0) or 1.0) * float(inner_info.get("ctMult", 1.0) or 1.0)
 
     return Instrument(
         symbol=symbol,
@@ -128,14 +115,10 @@ def ccxt_symbol_to_instrument(ccxt_exchange_name: str, market: dict[str, Any]) -
         lot_size=lot_size,
         min_size=min_size,
         min_notional=min_notional,
-        initial_margin=required_margin,
-        maint_margin=maint_margin,
-        liquidation_fee=liquidation_fee,
         contract_size=contract_size,
-        contract_multiplier=contract_multiplier,
-        onboard_date=onboard_date,
-        delivery_date=expiry_date,
-        delist_date=delist_date,
+        listed_at=listed_at,
+        expiry=expiry_date,
+        delisted_at=delisted_at,
         inverse=market.get("inverse", False),
     )
 

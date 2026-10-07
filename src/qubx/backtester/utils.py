@@ -8,6 +8,7 @@ import pandas as pd
 
 from qubx import logger
 from qubx.core.basics import (
+    DEFAULT_MAINTENANCE_MARGIN,
     STABLE_CURRENCIES,
     Balance,
     CtrlChannel,
@@ -114,6 +115,7 @@ class SimulationSetup:
     signal_timeframe: str = "1Min"
     accurate_stop_orders_execution: bool = False
     enable_funding: bool = False
+    maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN
     base_currencies: dict[str, str] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
@@ -405,6 +407,7 @@ def recognize_simulation_configuration(
     accurate_stop_orders_execution: bool,
     run_separate_instruments: bool = False,
     enable_funding: bool = False,
+    maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN,
 ) -> list[SimulationSetup]:
     """
     Recognize and create setups based on the provided simulation configuration.
@@ -426,6 +429,7 @@ def recognize_simulation_configuration(
     - accurate_stop_orders_execution (bool): If True, enables more accurate stop order execution simulation.
     - run_separate_instruments (bool): If True, creates separate setups for each instrument.
     - enable_funding (bool): If True, enables funding rate simulation, default is False.
+    - maint_margin_rate (float): Maintenance margin as a fraction of notional for simulated positions.
 
     Returns:
     - list[SimulationSetup]: A list of SimulationSetup objects, each representing a
@@ -447,7 +451,7 @@ def recognize_simulation_configuration(
                 recognize_simulation_configuration(
                     _n + n, v, instruments, exchanges, capital, basic_currency, commissions, 
                     signal_timeframe, accurate_stop_orders_execution, run_separate_instruments,
-                    enable_funding
+                    enable_funding, maint_margin_rate
                 )
             )
 
@@ -468,14 +472,14 @@ def recognize_simulation_configuration(
             if run_separate_instruments:
                 # Create separate setups for each instrument
                 for instrument in setup_instruments:
-                    _s1 = c1[instrument.symbol] if isinstance(_s, pd.DataFrame) else _s
+                    _s1 = _s[instrument.symbol] if isinstance(_s, pd.DataFrame) else _s
                     r.append(
                         SimulationSetup(
                             _t, f"{name}/{instrument.symbol}", _s1, c1,   # type: ignore
                             [instrument],
                             exchanges, capital, basic_currency, commissions, 
                             signal_timeframe, accurate_stop_orders_execution,
-                            enable_funding
+                            enable_funding, maint_margin_rate
                         )
                     )
             else:
@@ -485,7 +489,7 @@ def recognize_simulation_configuration(
                         setup_instruments,
                         exchanges, capital, basic_currency, commissions, 
                         signal_timeframe, accurate_stop_orders_execution,
-                        enable_funding
+                        enable_funding, maint_margin_rate
                     )
                 )
         else:
@@ -495,7 +499,7 @@ def recognize_simulation_configuration(
                         # name + "/" + str(j), s, instruments, exchange, capital, basic_currency, commissions
                         name, s, instruments, exchanges, capital, basic_currency, commissions,  # type: ignore
                         signal_timeframe, accurate_stop_orders_execution, run_separate_instruments,
-                        enable_funding
+                        enable_funding, maint_margin_rate
                     )
                 )
 
@@ -509,7 +513,7 @@ def recognize_simulation_configuration(
                         f"{name}/{instrument.symbol}", configs, None, [instrument],
                         exchanges, capital, basic_currency, commissions, 
                         signal_timeframe, accurate_stop_orders_execution,
-                        enable_funding
+                        enable_funding, maint_margin_rate
                     )
                 )
         else:
@@ -519,7 +523,7 @@ def recognize_simulation_configuration(
                     name, configs, None, instruments,
                     exchanges, capital, basic_currency, commissions, 
                     signal_timeframe, accurate_stop_orders_execution,
-                    enable_funding
+                    enable_funding, maint_margin_rate
                 )
             )
 
@@ -538,7 +542,7 @@ def recognize_simulation_configuration(
                         f"{name}/{instrument.symbol}", _c1, None, [instrument],
                         exchanges, capital, basic_currency, commissions, 
                         signal_timeframe, accurate_stop_orders_execution,
-                        enable_funding
+                        enable_funding, maint_margin_rate
                     )
                 )
         else:
@@ -548,7 +552,7 @@ def recognize_simulation_configuration(
                     name, c1, None, setup_instruments,
                     exchanges, capital, basic_currency, commissions, 
                     signal_timeframe, accurate_stop_orders_execution,
-                    enable_funding
+                    enable_funding, maint_margin_rate
                 )
             )
 

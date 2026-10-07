@@ -1,5 +1,7 @@
 from dataclasses import dataclass
 
+from qubx.core.basics import DEFAULT_MAINTENANCE_MARGIN
+
 
 @dataclass
 class AccountManagerConfig:
@@ -21,3 +23,5 @@ class AccountManagerConfig:
 
     terminal_order_retention_ms: int = 30_000
     terminal_order_history_size: int = 10_000
+
+    maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN  # - framework-computed maintenance margin (fraction of notional) when the venue reports none

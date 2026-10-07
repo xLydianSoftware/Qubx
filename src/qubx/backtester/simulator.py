@@ -5,8 +5,9 @@ from joblib import delayed
 
 from qubx import QubxLogConfig, file_formatter, logger
 from qubx.backtester.utils import SetupTypes
-from qubx.core.basics import Instrument
+from qubx.core.basics import DEFAULT_MAINTENANCE_MARGIN, Instrument
 from qubx.core.exceptions import SimulationError
+from qubx.core.lookups import lookup
 from qubx.core.metrics import TradingSessionResult
 from qubx.data.storage import IStorage
 from qubx.emitters.inmemory import InMemoryMetricEmitter
@@ -45,6 +46,7 @@ def simulate(
     accurate_stop_orders_execution: bool = False,
     signal_timeframe: str = "1Min",
     enable_funding: bool = False,
+    maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN,
     debug: Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None = "WARNING",
     show_latency_report: bool = False,
     portfolio_log_freq: str = "5Min",
@@ -76,6 +78,7 @@ def simulate(
         - accurate_stop_orders_execution (bool): If True, enables more accurate stop order execution simulation.
         - signal_timeframe (str): Timeframe for signals, default is "1Min".
         - enable_funding (bool): If True, enables funding rate simulation, default is False.
+        - maint_margin_rate (float): Maintenance margin as a fraction of notional for simulated positions (the account's `maint_margin_rate`).
         - debug (Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"] | None): Logging level for debugging.
         - show_latency_report: If True, shows simulator's latency report.
         - portfolio_log_freq (str): Frequency for portfolio logging, default is "5Min".
@@ -125,6 +128,7 @@ def simulate(
         accurate_stop_orders_execution=accurate_stop_orders_execution,
         run_separate_instruments=run_separate_instruments,
         enable_funding=enable_funding,
+        maint_margin_rate=maint_margin_rate,
     )
     if not simulation_setups:
         logger.error(
@@ -259,13 +263,16 @@ def _run_setup(
         # Adjust the start date for the simulation to the onboard date of the instrument with the minimum onboard date.
         # TODO: this can be removed once we add some artificial data stream to move the simulation
         if setup.setup_type in [SetupTypes.SIGNAL, SetupTypes.SIGNAL_AND_TRACKER]:
-            onboard_dates = [
-                to_utc_naive(to_timestamp(instrument.onboard_date))
+            # - a relisted symbol has data from its first listing on
+            listed_dates = [
+                to_utc_naive(to_timestamp(listing.listed_at))
                 for instrument in setup.instruments
-                if instrument.onboard_date is not None
+                for listing in lookup.find_listings(instrument.exchange, instrument.symbol, instrument.market_type)
+                or [instrument]
+                if listing.listed_at is not None
             ]
-            if onboard_dates:
-                start = max(start, min(onboard_dates))
+            if listed_dates:
+                start = max(start, min(listed_dates))
 
         runner = SimulationRunner(
             setup=setup,

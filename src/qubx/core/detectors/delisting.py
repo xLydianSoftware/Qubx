@@ -38,11 +38,11 @@ class DelistingDetector:
 
         delisting = []
         for instrument in instruments:
-            if instrument.delist_date is None:
+            if instrument.delisted_at is None:
                 continue
 
             try:
-                delist_timestamp = to_timestamp(instrument.delist_date).replace(tzinfo=None)
+                delist_timestamp = to_timestamp(instrument.delisted_at).replace(tzinfo=None)
                 if bool(pd.isna(delist_timestamp)):
                     continue
 
@@ -73,7 +73,7 @@ class DelistingDetector:
 
         # Log instruments being filtered out
         for instrument in delisting_instruments:
-            self._info(f"Filtering out {instrument.symbol} - delisting on {instrument.delist_date}")
+            self._info(f"Filtering out {instrument.symbol} - delisting on {instrument.delisted_at}")
 
         # Return instruments that are NOT in the delisting set
         return [instrument for instrument in instruments if instrument not in delisting_set]

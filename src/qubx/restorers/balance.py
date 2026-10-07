@@ -11,12 +11,11 @@ from pathlib import Path
 
 import pandas as pd
 from psycopg import Connection, sql
-from pymongo import MongoClient
 
 from qubx import logger
 from qubx.core.basics import Balance
 from qubx.restorers.interfaces import IBalanceRestorer
-from qubx.restorers.utils import find_latest_run_folder, latest_run_id, mongo_latest_run_id
+from qubx.restorers.utils import find_latest_run_folder, latest_run_id
 
 
 class CsvBalanceRestorer(IBalanceRestorer):
@@ -123,87 +122,6 @@ class CsvBalanceRestorer(IBalanceRestorer):
             balances.append(balance)
 
         return balances
-
-
-class MongoDBBalanceRestorer(IBalanceRestorer):
-    """
-    Balance restorer that reads account balances from a MongoDB collection.
-
-    This restorer queries the most recent balance entries stored using MongoDBLogsWriter.
-    It restores data only from the most recent run_id for the given bot_id.
-    """
-
-    def __init__(
-        self,
-        strategy_name: str,
-        mongo_client: MongoClient,
-        db_name: str = "default_logs_db",
-        collection_name: str = "qubx_logs",
-        run_id: str | None = None,
-    ):
-        self.mongo_client = mongo_client
-        self.db_name = db_name
-        self.collection_name = collection_name
-        self.strategy_name = strategy_name
-        self.run_id = run_id
-
-        self.collection = self.mongo_client[db_name][collection_name]
-
-    def restore_balances(self) -> list[Balance]:
-        """
-        Restore account balances from the most recent run.
-
-        Returns:
-            A list of Balance objects.
-            Example: [Balance(exchange="BINANCE", currency="USDT", total=100000.0, locked=0.0)]
-        """
-        try:
-            now = datetime.utcnow()
-            lookup_range = now - timedelta(days=7)
-            base_match = {
-                "log_type": "balance",
-                "strategy_name": self.strategy_name,
-                "timestamp": {"$gte": lookup_range},
-            }
-
-            run_id = self.run_id or mongo_latest_run_id(self.collection, base_match)
-            if run_id is None:
-                logger.warning("No balance logs found for given filters.")
-                return []
-
-            logger.info(f"Restoring balances from MongoDB for run_id: {run_id}")
-
-            pipeline = [
-                {"$match": {**base_match, "run_id": run_id}},
-                {"$sort": {"timestamp": -1}},
-                {"$group": {"_id": {"exchange": "$exchange", "currency": "$currency"}, "doc": {"$first": "$$ROOT"}}},
-            ]
-
-            cursor = self.collection.aggregate(pipeline)
-            balances: list[Balance] = []
-
-            for entry in cursor:
-                log = entry["doc"]
-                exchange = log.get("exchange")
-                currency = log.get("currency")
-                if not currency:
-                    continue
-                total = log.get("total", 0.0)
-                locked = log.get("locked", 0.0)
-
-                balance = Balance(
-                    exchange=exchange,
-                    currency=currency,
-                    total=total,
-                    locked=locked,
-                    free=total - locked,
-                )
-                balances.append(balance)
-
-            return balances
-        except Exception as e:
-            logger.error(f"Error restoring balances from MongoDB: {e}")
-            return []
 
 
 class PostgresBalanceRestorer(IBalanceRestorer):

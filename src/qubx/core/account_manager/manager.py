@@ -161,6 +161,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 exchange=ex,
                 base_currency=base_currencies[ex],
                 terminal_history_size=self._cfg.terminal_order_history_size,
+                maint_margin_rate=self._cfg.maint_margin_rate,
             )
             for ex in connectors
         }

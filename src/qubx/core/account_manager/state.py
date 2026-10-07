@@ -19,7 +19,16 @@ from dataclasses import dataclass
 import numpy as np
 
 from qubx import logger
-from qubx.core.basics import STABLE_CURRENCIES, Balance, Deal, Instrument, Order, OrderStatus, Position
+from qubx.core.basics import (
+    DEFAULT_MAINTENANCE_MARGIN,
+    STABLE_CURRENCIES,
+    Balance,
+    Deal,
+    Instrument,
+    Order,
+    OrderStatus,
+    Position,
+)
 
 # Bounded per-exchange funding-bucket dedup (insertion order ≈ funding-event time order):
 # old buckets evict once the cap is hit so the set can't grow unbounded over long-running
@@ -57,6 +66,7 @@ class AccountState:
     __slots__ = (
         "exchange",
         "base_currency",
+        "maint_margin_rate",
         "_active_orders",
         "_positions",
         "_balances",
@@ -77,9 +87,17 @@ class AccountState:
         "_position_deal_booked_at",
     )
 
-    def __init__(self, exchange: str, base_currency: str, *, terminal_history_size: int = 10_000):
+    def __init__(
+        self,
+        exchange: str,
+        base_currency: str,
+        *,
+        terminal_history_size: int = 10_000,
+        maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN,
+    ):
         self.exchange: str = exchange
         self.base_currency: str = base_currency.upper()
+        self.maint_margin_rate: float = maint_margin_rate
 
         # ---- primary data ------------------------------------------------
         self._active_orders: dict[str, Order] = {}  # client_order_id -> Order
@@ -471,9 +489,18 @@ class AccountState:
         # the framework hold references to it), never swapped for a new object.
         existing = self._positions.get(instrument)
         if existing is None:
-            self._positions[instrument] = position
+            self._adopt_position(instrument, position)
         else:
             existing.reset_by_position(position)
+
+    def _adopt_position(self, instrument: Instrument, position: Position) -> Position:
+        # - every held position margins at the account's rate, however it got here; a venue-reported
+        #   margin is kept, a framework one is recomputed now rather than on the next mark
+        position.maint_margin_rate = self.maint_margin_rate
+        if not position._maint_margin_external and position.is_open() and not np.isnan(position.last_update_price):
+            position._update_maint_margin()
+        self._positions[instrument] = position
+        return position
 
     def settle_position(self, instrument: Instrument) -> None:
         # Reconcile a delisted/gone position to flat WITHOUT trading: the exchange has
@@ -506,7 +533,7 @@ class AccountState:
         """
         existing = self._positions.get(snapshot.instrument)
         if existing is None:
-            self._positions[snapshot.instrument] = snapshot
+            self._adopt_position(snapshot.instrument, snapshot)
             logger.info(
                 f"[{self.exchange}] reconcile: materialized position <y>{snapshot.instrument}</y> from snapshot "
                 f"-> size=<g>{snapshot.quantity}</g> avg={snapshot.position_avg_price}"
@@ -644,8 +671,7 @@ class AccountState:
     def ensure_position(self, instrument: Instrument) -> Position:
         pos = self._positions.get(instrument)
         if pos is None:
-            pos = Position(instrument=instrument)
-            self._positions[instrument] = pos
+            pos = self._adopt_position(instrument, Position(instrument=instrument))
         return pos
 
     def adjust_balance(self, currency: str, delta: float) -> None:

@@ -36,7 +36,7 @@ def _mock_instrument(symbol: str = "BTCUSDT") -> MagicMock:
     instrument.symbol = symbol
     instrument.min_size = 0.001
     instrument.exchange = "BINANCE"
-    instrument.delist_date = None
+    instrument.delisted_at = None
     return instrument
 
 

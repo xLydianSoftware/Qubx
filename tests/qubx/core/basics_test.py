@@ -1,12 +1,15 @@
 from dataclasses import dataclass
+from datetime import date
 from typing import List, Union
 
+import numpy as np
 import pandas as pd
 import pytest
 from pytest import approx
 
 from qubx import logger
 from qubx.core.basics import (
+    AssetKind,
     Balance,
     Instrument,
     InstrumentsLookup,
@@ -14,6 +17,7 @@ from qubx.core.basics import (
     OrderOrigin,
     Position,
     TransactionCostsCalculator,
+    Underlying,
     classify_origin,
     multiplier_coin,
     resolve_reduce_only,
@@ -522,6 +526,49 @@ class TestMultiplierCoin:
         assert _named_instrument("1INCHUSDT", "1INCH").asset == "1INCH"
 
 
+class TestInstrumentShape:
+    def test_asset_is_the_venue_coin_and_exposure_the_underlying(self):
+        i = _named_instrument("NVDABUSDT", "NVDAB", exchange="BINANCE")
+        assert (i.asset, i.exposure_code) == ("NVDAB", "NVDAB")
+        i.underlying = Underlying(AssetKind.EQUITY, "NVDA.XNAS")
+        assert (i.asset, i.exposure_code) == ("NVDAB", "NVDA.XNAS")
+
+    def test_identity_ignores_metadata(self):
+        a = _named_instrument("BTCUSDT", "BTC")
+        b = _named_instrument("BTCUSDT", "BTC")
+        b.tick_size, b.listing_id, b.underlying = 1.0, "x", Underlying("CRYPTO", "BTC")
+        assert a == b and hash(a) == hash(b) and str(b) == "BYBIT.F:SWAP:BTCUSDT"
+
+    def test_ordering_is_by_symbol(self):
+        a, b = _named_instrument("ETHUSDT", "ETH"), _named_instrument("BTCUSDT", "BTC")
+        assert sorted([a, b]) == [b, a]
+
+    def test_venue_attributes_are_read_only_and_picklable(self):
+        import pickle
+
+        i = Instrument(
+            "BTCUSDT", MarketType.SWAP, "BINANCE.UM", "BTC", "USDT", "USDT", "BTCUSDT", 0.1, 0.001, 0.001,
+            venue_attributes={"contractType": "PERPETUAL"},
+        )  # fmt: skip
+        with pytest.raises(TypeError):
+            i.venue_attributes["contractType"] = "X"  # type: ignore[index]
+        with pytest.raises(TypeError):
+            i.venue_attributes.update(a=1)
+        j = pickle.loads(pickle.dumps(i))
+        assert j.venue_attributes == {"contractType": "PERPETUAL"}
+        with pytest.raises(TypeError):
+            j.venue_attributes["contractType"] = "X"  # type: ignore[index]
+
+    def test_fields_after_min_notional_are_keyword_only(self):
+        with pytest.raises(TypeError):
+            Instrument("BTCUSDT", MarketType.SWAP, "BINANCE.UM", "BTC", "USDT", "USDT", "BTCUSDT", 0.1, 0.001, 0.001, 5.0, 0.01)  # type: ignore[misc]  # fmt: skip
+
+    def test_quantity_multiplier_is_contract_size(self):
+        i = _named_instrument("BTCUSDT", "BTC")
+        i.contract_size = 0.01
+        assert i.quantity_multiplier == 0.01
+
+
 class TestFindInstrumentsByCoinName:
     @staticmethod
     def _lookup(*instruments: Instrument) -> InstrumentsLookup:
@@ -529,6 +576,17 @@ class TestFindInstrumentsByCoinName:
         data = {f"{i.exchange}:{i.market_type}:{i.symbol}": i for i in instruments}
         lk.get_lookup = lambda: data  # type: ignore[method-assign]
         return lk
+
+    def test_as_of_takes_any_time_the_context_hands_out(self):
+        i = Instrument(
+            "BTCUSDT", MarketType.SWAP, "BYBIT.F", "BTC", "USDT", "USDT", "BTCUSDT", 0.1, 0.001, 0.001,
+            listed_at=pd.Timestamp("2020-01-01"), delisted_at=pd.Timestamp("2022-01-01"),
+        )  # fmt: skip
+        lk = self._lookup(i)
+        for as_of in (np.datetime64("2021-01-01T00:00:00", "ns"), date(2021, 1, 1), pd.Timestamp("2021-01-01").value):
+            assert lk.find_instruments("BYBIT.F", base="BTC", as_of=as_of) == [i]  # type: ignore[arg-type]
+        assert lk.find_instruments("BYBIT.F", base="BTC", as_of=np.datetime64("2022-01-01")) == []
+        assert i.is_listed_at(np.datetime64("2020-01-01")) and not i.is_listed_at(np.datetime64("2019-12-31"))
 
     def test_a_trailing_multiplier_resolves(self):
         """bybit spells it SHIB1000, every other venue puts the multiplier in front."""

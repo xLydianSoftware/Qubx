@@ -19,7 +19,7 @@ def mock_dependencies(mocker: MockerFixture):
     market_data_manager.is_instrument_listed.return_value = True
     market_data_manager.get_market_data_cache.return_value = cache
 
-    # - provide a real "now" so _is_market_gone can compare against delist_date
+    # - provide a real "now" so _is_market_gone can compare against delisted_at
     time_provider = mocker.Mock()
     time_provider.time.return_value = np.datetime64("2026-06-16T00:00:00", "ns")
 
@@ -301,7 +301,7 @@ def test_set_universe_keeps_non_delisting_instruments(universe_manager, mock_dep
 def _gone_instr(mocker, symbol="TONUSDT"):
     i = mocker.Mock(spec=Instrument, symbol=symbol)
     i.exchange = "OKX.F"
-    i.delist_date = None
+    i.delisted_at = None
     i.min_size = 0.001
     return i
 
@@ -310,7 +310,7 @@ def test_set_universe_excludes_gone_instrument(universe_manager, mock_dependenci
     mock_dependencies["subscription_manager"].auto_subscribe = True
     live = mocker.Mock(spec=Instrument, symbol="BTCUSDT")
     live.exchange = "OKX.F"
-    live.delist_date = None
+    live.delisted_at = None
     live.min_size = 0.001
     gone = _gone_instr(mocker)
 
@@ -362,7 +362,7 @@ def test_future_delist_but_listed_is_not_gone(universe_manager, mock_dependencie
     import pandas as pd
 
     instr = _gone_instr(mocker, symbol="SOLUSDT")
-    instr.delist_date = pd.Timestamp("2999-01-01")  # far future
+    instr.delisted_at = pd.Timestamp("2999-01-01")  # far future
     mock_dependencies["market_data_manager"].is_instrument_listed.return_value = True
     mock_dependencies["account"].positions = {}
     mock_dependencies["subscription_manager"].auto_subscribe = True
@@ -373,14 +373,14 @@ def test_future_delist_but_listed_is_not_gone(universe_manager, mock_dependencie
     mock_dependencies["account"].settle_position.assert_not_called()
 
 
-def test_gone_held_with_delist_date_settled_before_filter_delistings(universe_manager, mock_dependencies, mocker):
-    """A gone instrument that ALSO has a (past) delist_date must still be settled:
+def test_gone_held_with_delisted_at_settled_before_filter_delistings(universe_manager, mock_dependencies, mocker):
+    """A gone instrument that ALSO has a (past) delisted_at must still be settled:
     _drop_gone must run before filter_delistings, else the delisting filter strips it
     first and the held position is never settled."""
     import pandas as pd
 
     gone = _gone_instr(mocker)
-    gone.delist_date = pd.Timestamp("2020-01-01")  # already past
+    gone.delisted_at = pd.Timestamp("2020-01-01")  # already past
     pos = mocker.Mock()
     pos.quantity = 3175.0
     mock_dependencies["account"].positions = {gone: pos}
@@ -388,9 +388,9 @@ def test_gone_held_with_delist_date_settled_before_filter_delistings(universe_ma
 
     # live listing: gone is not listed (authoritative "gone" signal)
     mock_dependencies["market_data_manager"].is_instrument_listed.side_effect = lambda i: i is not gone
-    # simulate the REAL DelistingDetector: it strips instruments whose delist_date is set
+    # simulate the REAL DelistingDetector: it strips instruments whose delisted_at is set
     mock_dependencies["delisting_detector"].filter_delistings.side_effect = lambda instruments: [
-        i for i in instruments if i.delist_date is None
+        i for i in instruments if i.delisted_at is None
     ]
 
     universe_manager.set_universe([gone])
@@ -458,7 +458,7 @@ def test_add_instruments_excludes_gone_and_settles(universe_manager, mock_depend
     mock_dependencies["subscription_manager"].auto_subscribe = True
     live = mocker.Mock(spec=Instrument, symbol="BTCUSDT")
     live.exchange = "OKX.F"
-    live.delist_date = None
+    live.delisted_at = None
     live.min_size = 0.001
     gone = _gone_instr(mocker)
 
@@ -481,7 +481,7 @@ def test_set_universe_settles_gone_held_position_out_of_universe(universe_manage
     never sees it, so a dedicated held-position sweep is required."""
     live = mocker.Mock(spec=Instrument, symbol="BTCUSDT")
     live.exchange = "BINANCE.UM"
-    live.delist_date = None
+    live.delisted_at = None
     live.min_size = 0.001
     gone = _gone_instr(mocker)  # TONUSDT, delisted (is_instrument_listed -> False)
 
