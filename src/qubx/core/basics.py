@@ -2088,7 +2088,7 @@ class InstrumentsLookup:
     def get_lookup(self) -> dict[str, Instrument]: ...
 
     def get_listings(self) -> list[Instrument]:
-        """Every listing, including the delisted predecessors of relisted symbols that get_lookup() drops."""
+        """Every listing, including the earlier, delisted incarnations of relisted symbols that get_lookup() drops."""
         return list(self.get_lookup().values())
 
     def find(

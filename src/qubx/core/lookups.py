@@ -480,7 +480,7 @@ class FeesLookupFile(FeesLookup):
 class _SnapshotIndex:
     """One instrument-service snapshot, swapped in as a whole so readers never see a mix.
 
-    A relisted symbol is a new listing next to its delisted predecessors: `current` keeps the
+    A relisted symbol is a new listing next to its earlier, delisted incarnations: `current` keeps the
     active (else the newest) one per symbol, `listings` keeps every incarnation for as-of lookups.
     """
 

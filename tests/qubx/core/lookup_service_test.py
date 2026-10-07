@@ -11,7 +11,8 @@ from qubx.core.basics import AssetKind, MarketType, Underlying
 from qubx.core.lookups import InstrumentsLookupService, LookupsManager, _InstrumentMapper
 
 # Recorded from the dev /internal/instrument-service/snapshot (2026-10-02) and trimmed. The
-# delisted BINANCE.UM MATICUSDT listing (POLUSDT's predecessor) is synthesized: dev had none.
+# delisted BINANCE.UM MATICUSDT listing (POLUSDT's predecessor) mirrors dev's real rows: delisted 2024-09-06 with its
+# version left open (the platform only sets delisted_at), POLUSDT listed 2024-09-13.
 _DATA = Path(__file__).parents[2] / "data" / "instrument_service"
 SNAPSHOT = json.loads((_DATA / "snapshot.json").read_text())
 # Hand-built from the doc's mapping table (dev ingests none of these yet): a quarterly, an option,
@@ -221,14 +222,17 @@ class TestInstrumentsLookupService:
 
         old = lookup.find_symbol("BINANCE.UM", "MATICUSDT")
         assert old.listing_id == matic["id"] and old.symbol == "MATICUSDT"
-        assert old.delisted_at == pd.Timestamp("2024-09-13 12:15")
+        assert old.delisted_at == pd.Timestamp("2024-09-06")
         assert lookup.find_symbol("BINANCE.UM", "MATICUSDT", MarketType.SWAP) is old
         assert [i.listing_id for i in lookup.find_listings("BINANCE.UM", "MATICUSDT")] == [matic["id"]]
         assert lookup.find_symbol("BINANCE.UM", "POLUSDT").listing_id == pol["id"]
 
         during_old = lookup.find_instruments("BINANCE.UM", quote="USDT", base="MATIC", as_of="2023-01-01")
-        assert [(i.symbol, i.tick_size, i.lot_size) for i in during_old] == [("MATICUSDT", 0.0001, 10)]
+        assert [(i.symbol, i.tick_size, i.lot_size) for i in during_old] == [("MATICUSDT", 0.0001, 1)]
         assert not lookup.find_instruments("BINANCE.UM", base="POL", as_of="2023-01-01")
+        # the week between MATIC's delisting and POL's listing has neither
+        assert not lookup.find_instruments("BINANCE.UM", base="MATIC", as_of="2024-09-10")
+        assert not lookup.find_instruments("BINANCE.UM", base="POL", as_of="2024-09-10")
         after = lookup.find_instruments("BINANCE.UM", base="POL", as_of="2025-01-01")
         assert [(i.symbol, i.tick_size, i.lot_size) for i in after] == [("POLUSDT", 1e-05, 1)]
         assert not lookup.find_instruments("BINANCE.UM", base="MATIC", as_of="2025-01-01")

@@ -302,7 +302,7 @@
    "option_right": null,
    "calendar": null,
    "listed_at": "2020-10-22T00:00:00Z",
-   "delisted_at": "2024-09-13T12:15:00Z",
+   "delisted_at": "2024-09-06T00:00:00Z",
    "predecessor_id": null,
    "underlying": {
     "id": "6f0b1d3e-2a7c-5b49-8e15-0d4c9a7b3e21",
@@ -312,13 +312,13 @@
    "versions": [
     {
      "valid_from": "2020-10-22T00:00:00Z",
-     "valid_to": "2024-09-13T12:15:00Z",
+     "valid_to": null,
      "symbol": "MATICUSDT",
      "exchange_symbol": "MATICUSDT",
      "base": "MATIC",
      "tick_size": 0.0001,
-     "lot_size": 10,
-     "min_size": 10,
+     "lot_size": 1,
+     "min_size": 1,
      "min_notional": 5,
      "contract_size": 1,
      "margin_tradable": false,
