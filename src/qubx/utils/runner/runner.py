@@ -1079,21 +1079,25 @@ def _run_warmup(
     logger.info(f"<yellow>Running warmup from {warmup_start_time} to {current_time}</yellow>")
     try:
         ctx.initializer.simulation = True
+        # - exchanges served by another's account (spot_margin) warm up as unified margin too
+        _aliases = ctx.account.exchange_aliases if isinstance(ctx.account, AccountManager) else {}
+        _warmup_setup = SimulationSetup(
+            setup_type=SetupTypes.STRATEGY,
+            name=ctx.strategy_name,
+            generator=ctx.strategy,
+            tracker=None,
+            instruments=instruments,
+            # ctx.exchanges are already canonical (the runner canonicalizes at the config boundary)
+            exchanges=[*ctx.exchanges, *(a for a in _aliases if a not in ctx.exchanges)],
+            capital=ctx.account.get_total_capital(),
+            base_currency=ctx.account.get_base_currency(),
+            commissions=None,  # TODO: get commissions from somewhere
+            enable_funding=enable_funding,
+            maint_margin_rate=maint_margin_rate,
+        )
+        _warmup_setup.unify_margin(_aliases)
         warmup_runner = SimulationRunner(
-            setup=SimulationSetup(
-                setup_type=SetupTypes.STRATEGY,
-                name=ctx.strategy_name,
-                generator=ctx.strategy,
-                tracker=None,
-                instruments=instruments,
-                # ctx.exchanges are already canonical (the runner canonicalizes at the config boundary)
-                exchanges=list(ctx.exchanges),
-                capital=ctx.account.get_total_capital(),
-                base_currency=ctx.account.get_base_currency(),
-                commissions=None,  # TODO: get commissions from somewhere
-                enable_funding=enable_funding,
-                maint_margin_rate=maint_margin_rate,
-            ),
+            setup=_warmup_setup,
             data_config=recognize_simulation_data_config(
                 data_storage=_warmup_data_storage,
                 custom_data=_warmup_custom_data,
@@ -1256,6 +1260,8 @@ def _build_sim_params(
         sim_params["prefetch_config"] = sim.prefetch
     if sim.trading_session is not None:
         sim_params["trading_sessions_time"] = sim.trading_session
+    if sim.unified_margin:
+        sim_params["unified_margin"] = sim.unified_margin
 
     # - resolve aux_data
     aux_configs = resolve_aux_config(cfg.aux, getattr(sim, "aux", None))

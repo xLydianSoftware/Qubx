@@ -104,13 +104,20 @@ def test_alias_must_point_at_a_managed_exchange():
             time=_Time(),
             exchange_aliases={"BINANCE": "OKX"},
         )
-    with pytest.raises(ValueError):
-        AccountManager(
-            connectors={UM: MagicMock(), "BINANCE": MagicMock()},
-            base_currencies={UM: "USDT", "BINANCE": "USDT"},
-            time=_Time(),
-            exchange_aliases={"BINANCE": UM},
-        )
+
+
+def test_alias_with_its_own_connector_executes_there_but_books_into_the_target():
+    um, spot = MagicMock(), MagicMock()
+    am = AccountManager(
+        connectors={UM: um, "BINANCE": spot},
+        base_currencies={UM: "USDT", "BINANCE": "USDT"},
+        time=_Time(),
+        exchange_aliases={"BINANCE": UM},
+    )
+    assert am.get_state("BINANCE") is am.get_state(UM)
+    assert len(am._states) == 1
+    assert am._connector_for("BINANCE") is spot
+    assert am._connector_for(UM) is um
 
 
 def test_spot_and_perp_share_one_state_and_one_capital():
@@ -178,3 +185,19 @@ def test_spot_sold_out_reads_flat():
     clock.now = T2
     am.apply(_snapshot(T2, []))
     assert am.get_position(SPOT).quantity == 0.0
+
+
+def test_snapshot_from_an_aliased_connector_is_ignored():
+    am = AccountManager(
+        connectors={UM: MagicMock(), "BINANCE": MagicMock()},
+        base_currencies={UM: "USDT", "BINANCE": "USDT"},
+        time=_Time(),
+        exchange_aliases={"BINANCE": UM},
+    )
+    _fill(am, SPOT, "s1", 60.0, 0.30, "t1")
+    # - the spot connector's snapshot holds only its slice; applied, it would read the account as flat
+    am.apply(
+        AccountSnapshotEvent(instrument=None, snapshot=AccountSnapshot(exchange="BINANCE", as_of=T2, positions=[]))
+    )
+    assert am.get_position(SPOT).quantity == 60.0
+    assert am.get_state(UM).get_last_snapshot_as_of() is None

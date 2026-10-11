@@ -117,6 +117,8 @@ class SimulationSetup:
     enable_funding: bool = False
     maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN
     base_currencies: dict[str, str] = field(init=False, default_factory=dict)
+    # - exchange -> exchange whose account it books into (unified margin); see unify_margin
+    exchange_aliases: dict[str, str] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         # Per-exchange base currency: explicit mapping wins, else the venue's shared settle
@@ -147,6 +149,23 @@ class SimulationSetup:
             n = len(self.exchanges)
             per_exchange = float(self.capital) / n if n > 0 else float(self.capital)
             self.capital = {exchange: per_exchange for exchange in self.exchanges}
+
+    def unify_margin(self, aliases: dict[str, str]) -> None:
+        """Book each aliased exchange into its target's account: one capital pool, the alias's
+        capital merged into the target's. Aliases whose exchange is not traded are ignored."""
+        assert isinstance(self.capital, dict)
+        for alias, target in aliases.items():
+            if alias not in self.exchanges:
+                continue
+            if target not in self.exchanges:
+                raise SimulationConfigError(f"unified_margin {alias} -> {target}: {target} is not traded in this setup")
+            if self.base_currencies[alias] != self.base_currencies[target]:
+                raise SimulationConfigError(
+                    f"unified_margin {alias} -> {target}: base currencies differ "
+                    f"({self.base_currencies[alias]} vs {self.base_currencies[target]})"
+                )
+            self.capital[target] = self.capital.get(target, 0.0) + self.capital.pop(alias, 0.0)
+            self.exchange_aliases[alias] = target
 
     def __str__(self) -> str:
         return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchanges}[{self.commissions}]"

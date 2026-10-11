@@ -86,6 +86,14 @@ class TestMaintMarginRate:
         assert "maint_margin_rate" not in params
 
 
+class TestUnifiedMargin:
+    def test_sim_params_carry_unified_margin(self):
+        _, params = _build_sim_params(_config({"unified_margin": {"BINANCE": "BINANCE.UM"}}))
+        assert params["unified_margin"] == {"BINANCE": "BINANCE.UM"}
+        _, params = _build_sim_params(_config({}))
+        assert "unified_margin" not in params
+
+
 class TestSignalStartAdjustment:
     def _start(self, monkeypatch, setup: SimulationSetup, listings: dict[str, list[Instrument]]) -> pd.Timestamp:
         captured = {}

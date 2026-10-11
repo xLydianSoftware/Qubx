@@ -89,8 +89,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
     _default_instrument_leverage: float | None
     # - instruments an explicit set_instrument_leverage claimed, which the default apply skips
     _pinned_leverage: dict[Instrument, float]
-    # - exchange -> the managed exchange whose state/connector serves it (one venue account
-    #   trading two instrument universes, e.g. BINANCE spot on a BINANCE.PM account)
+    # - exchange -> the managed exchange whose account (state) it books into: one venue account
+    #   trading two instrument universes (BINANCE spot on a BINANCE.PM account). The alias may
+    #   keep its own connector for execution (simulated unified margin); else the target's serves it
     _aliases: dict[str, str]
 
     def __init__(
@@ -149,9 +150,10 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         # subclass can't silently drift from the parent's field set.
         self._connectors = connectors
         self._aliases = dict(exchange_aliases or {})
+        managed = [ex for ex in connectors if ex not in self._aliases]
         for alias, target in self._aliases.items():
-            if alias in connectors or target not in connectors:
-                raise ValueError(f"bad exchange alias {alias} -> {target}: alias must be unmanaged, target managed")
+            if target not in managed:
+                raise ValueError(f"bad exchange alias {alias} -> {target}: the target must be a managed exchange")
         self._default_instrument_leverage = default_instrument_leverage
         self._time = time
         self._cfg = cfg or AccountManagerConfig()
@@ -173,7 +175,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 terminal_history_size=self._cfg.terminal_order_history_size,
                 maint_margin_rate=self._cfg.maint_margin_rate,
             )
-            for ex in connectors
+            for ex in managed
         }
         self._liveness_unready_since = {}
         self._last_eviction_sweep = time.time()
@@ -190,7 +192,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 order_confirm_wait=np.timedelta64(self._cfg.order_confirm_wait_ms, "ms"),
                 order_confirm_max_retries=self._cfg.order_confirm_retries,
             )
-            for ex in connectors
+            for ex in managed
         }
 
     def _register_ticks(self) -> None:
@@ -211,6 +213,15 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
     def _key(self, exchange: str) -> str:
         return self._aliases.get(exchange, exchange)
+
+    def _connector_for(self, exchange: str) -> IConnector | None:
+        if (connector := self._connectors.get(exchange)) is not None:
+            return connector
+        return self._connectors.get(self._key(exchange))
+
+    @property
+    def exchange_aliases(self) -> dict[str, str]:
+        return dict(self._aliases)
 
     def resolve_exchange(self, exchange: str) -> str:
         """The managed exchange whose state and connector serve ``exchange`` (itself unless aliased)."""
@@ -356,7 +367,11 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         # - route by the most specific locator the event carries
         match event:
             case AccountSnapshotEvent():
-                return self._states.get(self._key(event.snapshot.exchange))
+                # - an alias's own connector sees only its slice of the shared account; the
+                #   target's snapshot is the account's truth
+                if event.snapshot.exchange in self._aliases:
+                    return None
+                return self._states.get(event.snapshot.exchange)
 
             case BalanceUpdateEvent():
                 # balance pushes carry no instrument — route strictly by the balance's exchange
@@ -604,13 +619,13 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         leverage = self.get_position(instrument).leverage
         if leverage is not None:
             return leverage
-        connector = self._connectors.get(self._key(instrument.exchange))
+        connector = self._connector_for(instrument.exchange)
         return connector.get_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         # - the venue cap, not a setting: the snapshot carries no such field, so it comes
         #   from the connector's cache of the venue's published maximum
-        connector = self._connectors.get(self._key(instrument.exchange))
+        connector = self._connector_for(instrument.exchange)
         return connector.get_max_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
@@ -628,7 +643,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         notional = self.get_position(instrument).max_notional
         if notional is not None:
             return notional
-        connector = self._connectors.get(self._key(instrument.exchange))
+        connector = self._connector_for(instrument.exchange)
         return connector.get_max_instrument_notional(instrument) if connector is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
@@ -637,7 +652,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         mode = self.get_position(instrument).margin_mode
         if mode is not None:
             return mode
-        connector = self._connectors.get(self._key(instrument.exchange))
+        connector = self._connector_for(instrument.exchange)
         return connector.get_margin_mode(instrument) if connector is not None else None
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
@@ -705,7 +720,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         self._send_instrument_leverage(instrument, leverage)
 
     def _send_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
-        connector = self._connectors.get(self._key(instrument.exchange))
+        connector = self._connector_for(instrument.exchange)
         if connector is None:
             logger.warning(f"[{instrument.exchange}] no connector; cannot set instrument leverage")
             return
@@ -751,7 +766,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return self._default_instrument_leverage
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
-        connector = self._connectors.get(self._key(instrument.exchange))
+        connector = self._connector_for(instrument.exchange)
         if connector is None:
             logger.warning(f"[{instrument.exchange}] no connector; cannot set margin mode")
             return False

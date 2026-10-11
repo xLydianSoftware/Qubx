@@ -1,10 +1,42 @@
 # STATUS — Qubx PM spot (agent `qubx-pm-spot`, branch `feat/pm-spot-margin`)
 
+## FINAL SUMMARY (2026-10-12) — all checkpoints done, nothing pushed
+A strategy with `live.exchanges.BINANCE.PM` + **`spot_margin: true`** trades BINANCE.UM perps and BINANCE spot
+(universe entries `TRXUSDT` + `BINANCE:TRXUSDT`) from the one PM account:
+- **Q1** spot orders/cancels/queries/trades go to papi cross margin (`/papi/v1/margin/*`); margin fills arrive in
+  real time on the same `/pm/ws` stream (live-verified, ~10 ms after ack). Spot instruments stay `BINANCE`.
+- **Q2** one AccountState for the account (`BINANCE` aliased to `BINANCE.UM`): spot positions = net cross-margin
+  balance per asset (floored to lot), restart snapshot + reconcile adopt both legs (live-verified twice), capital =
+  `actualEquity` counted once; spot avg price is the ledger's (venues report none).
+- **Q3** `reduceOnly` stripped for spot orders in the connector (live-verified on the spot close).
+- **Q4** `simulate(..., unified_margin={"BINANCE": "BINANCE.UM"})` (also `simulation.unified_margin` in YAML and the
+  live warmup when spot_margin is on): spot keeps its own simulated exchange (spot fees/OME), books into the UM account
+  — one capital pool; funding on the perp only. Without it: separate accounts, capital split evenly.
+- **Q5** tests per change (see C2/C4), full unit suite 4000+ pass (only pre-existing env failures).
+- Live smoke on the $454 PM account passed; account left as found: USDT 41.835 + USDC 412.57, no positions, no
+  orders, no TRX (cost ≈ $0.07). Two real bugs surfaced live and were fixed (perp market data dropped when one
+  provider serves two exchanges; spot price fallback).
+
+Commits on `feat/pm-spot-margin` (from main @ ad85bcce): C1 docs, C2 feat, C3 fix, C4 feat. Not pushed, no PR.
+
+Follow-ups (not blocking, not done):
+- Spot buy fee charged in the base asset: the gross deal is booked, the snapshot trims the position to the net
+  holding (one extra `papiGetMarginMyTrades` fetch per buy, deduped). Sub-lot dust remains on the venue after a sell.
+- Spot amend is rejected (OrderUpdateRejected) — ccxt's spot edit hits the SPOT account; cancel + resubmit instead.
+- Subscription watchdog keys exchanges by `canonical_exchange(provider.exchange())` → BINANCE spot staleness is not
+  policed separately (orders on BINANCE are never blocked by it either).
+- Paper mode with spot_margin routes spot to the UM paper connector (UM fees) — approximation.
+- Collateral haircuts for non-USDT assets are the venue's (`accountEquity`); no local collateral-rate table.
+- Pre-existing env test failures: no local BITFINEX.F instrument data (`test_subscription_watchdog`,
+  `test_subscription_intent` x3) and tardis tests (10 errors).
+- Smoke harness `~/projects/test_strategies/pm-spot-smoke` is not committed to test-strategies (repo has other
+  people's uncommitted work; accounts.toml is gitignored).
+
 ## Checkpoints
 - [x] C1 design notes (this file)
 - [x] C2 Q1–Q3 implemented + unit tests
 - [x] C3 live smoke
-- [ ] C4 Q4 simulator
+- [x] C4 Q4 simulator
 
 ## Live account inventory (before any change, 2026-10-12)
 `tools/inventory.py` in `~/projects/test_strategies/pm-spot-smoke` (read-only, keys never printed):
@@ -120,8 +152,19 @@ Bugs found live and fixed (commit "fix: …"):
 | dust | 0.0636 TRX left → bought exactly 63.6 (0.999·63.6 + 0.0636 = 63.6) and sold 63.6 → 0 TRX |
 | end state | USDT 41.835 + USDC 412.57, no positions/orders; actualEquity 454.33 (start 454.40 → cost ≈ $0.07) |
 
+## C4 — simulator (Q4) done
+- Preferred option implemented: unified margin. `SimulationSetup.unify_margin(aliases)` merges the alias's capital
+  into the target and records `exchange_aliases`; the backtest runner passes them to `SimulatedAccountManager`.
+- AM: an alias may keep its own connector (execution only: spot SimulatedConnector with spot fees); states and
+  reconcilers exist only for managed exchanges; a snapshot from an alias's own connector is ignored (it sees only
+  its slice). `AccountManager.exchange_aliases` exposed.
+- Live warmup simulation includes the alias exchanges and unifies margin, so a spot_margin bot warms up with spot.
+- YAML: `simulation.unified_margin: {BINANCE: BINANCE.UM}` → `simulate(unified_margin=...)`.
+- Tests: `tests/qubx/backtester/test_spot_perp_unified_margin.py` (carry: spot long + perp short, funding on perp
+  only, one pool vs split accounts), AM alias-connector + alias-snapshot tests, `_build_sim_params` test.
+
 ## In progress
-- C4 simulator (Q4).
+- none — done.
 
 ## Blockers
 - none

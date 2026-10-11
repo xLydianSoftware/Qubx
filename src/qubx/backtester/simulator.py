@@ -57,6 +57,7 @@ def simulate(
     prefetch_config: PrefetchConfig | None = None,
     trading_sessions_time: str | dict[str, str | tuple[int, int] | tuple[str, str]] = "DEFAULT",
     log_file: str | None = None,
+    unified_margin: dict[str, str] | None = None,
 ) -> list[TradingSessionResult]:
     """
     Backtest utility for trading strategies or signals using historical data.
@@ -89,6 +90,9 @@ def simulate(
         - prefetch_config (dict[str, Any] | None): Configuration for prefetching auxiliary data, default is None.
         - trading_sessions_time (str | dict[str, str | tuple[int, int] | tuple[str, str]]): trading session times (may be "DEFAULT", "STOCKS", "CME" or tuple like ("9:30:00", "15:59:59") or specified for every exchange {"NYSE": "STOKS", ....})
         - log_file (str | None): Optional path to write simulation logs to a file (in addition to stdout). Defaults to None.
+        - unified_margin (dict[str, str] | None): exchanges whose account is another's, e.g. {"BINANCE": "BINANCE.UM"}
+          for a portfolio-margin account trading spot and perps: the spot leg keeps its own simulated exchange (fees,
+          execution) but books into the BINANCE.UM account — one capital pool, capital merged into it.
     Returns:
         - list[TradingSessionResult]: A list of TradingSessionResult objects containing the results of each simulation setup.
     """
@@ -136,6 +140,9 @@ def simulate(
             := "Can't recognize setup - it should be a strategy, a set of signals or list of signals/strategies + tracker !"
         )
         raise SimulationError(_msg)
+    if unified_margin:
+        for setup in simulation_setups:
+            setup.unify_margin(unified_margin)
 
     # - inform about separate instruments mode
     if run_separate_instruments and len(simulation_setups) > 1:

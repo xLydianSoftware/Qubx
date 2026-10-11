@@ -291,6 +291,9 @@ class SimulationConfig(StrictBaseModel):
     aux: list[StorageConfig] | StorageConfig | None = None
     portfolio_log_freq: str | None = None
     trading_session: str | dict | None = None
+    # exchange -> exchange whose account it books into, e.g. {BINANCE: BINANCE.UM} for a portfolio-margin
+    # account trading spot + perps (one capital pool)
+    unified_margin: dict[str, str] | None = None
 
 
 class PluginsConfig(StrictBaseModel):
