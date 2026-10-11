@@ -44,6 +44,8 @@ class ConnectorBuildContext(BuildContext):
     """Adds the already-built data provider the connector depends on."""
 
     data_provider: IDataProvider
+    # spot exchange this account also trades (ExchangeConfig.spot_margin), None when not enabled
+    spot_exchange: str | None = None
 
 
 class ExchangePlugin(ABC):

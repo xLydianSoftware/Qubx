@@ -423,6 +423,81 @@ class TestRunStrategyYaml:
         ctx.account.on_market_quote(btc, quote)
         assert ctx.account.get_position(btc).last_update_price == quote.mid_price()
 
+    def _pm_spot_context(self, mock_create_data_provider, mock_data_provider, temp_config_file, venue="BINANCE.PM"):
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        _returns_data_provider(mock_create_data_provider, mock_data_provider)
+        mock_data_provider.exchange.return_value = venue
+        config = load_strategy_config_from_yaml(temp_config_file)
+        config.live.warmup = None
+        section = config.live.exchanges["BINANCE.UM"]
+        section.universe = ["BTCUSDT", "BINANCE:BTCUSDT"]
+        section.spot_margin = True
+        config.live.exchanges = {venue: section}
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        acc_manager = MagicMock(spec=AccountConfigurationManager)
+        acc_manager.get_exchange_settings.return_value = MagicMock(
+            base_currency="USDT", initial_capital=100_000.0, commissions="vip0_usdt", testnet=False
+        )
+        with patch(
+            "qubx.utils.runner.runner.class_import",
+            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+        ):
+            return create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=True,
+                restored_state=None,
+                stg_name="pm_spot_test",
+            )
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_pm_spot_margin_serves_spot_from_the_pm_account(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        mock_live_time_provider_class.return_value = mock_time_provider
+        ctx = self._pm_spot_context(mock_create_data_provider, mock_data_provider, temp_config_file)
+
+        # - one connector and one account state; BINANCE spot rides on them
+        assert set(ctx._connectors.keys()) == {"BINANCE.UM"}
+        assert {i.exchange for i in ctx._initial_instruments} == {"BINANCE.UM", "BINANCE"}
+        assert ctx.account.resolve_exchange("BINANCE") == "BINANCE.UM"
+        # - the spot leg keeps its own fee schedule
+        assert ctx.account.get_fees_calculator("BINANCE").taker != ctx.account.get_fees_calculator("BINANCE.UM").taker
+
+        # - a spot order routes to the PM account's connector; spot data falls back to the PM provider
+        spot = self._find_instrument("BINANCE", "BTCUSDT")
+        quote = Quote(time=np.datetime64("now"), bid=100_000.0, ask=100_001.0, bid_size=1.0, ask_size=1.0)
+        ctx._connectors["BINANCE.UM"].process_market_data(spot, quote)
+        order = ctx.trade(spot, 0.01)
+        assert order.instrument == spot
+        assert ctx._market_data_provider._get_data_provider("BINANCE") is mock_data_provider
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_spot_margin_rejected_off_portfolio_margin(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        mock_live_time_provider_class.return_value = mock_time_provider
+        with pytest.raises(ValueError, match="spot_margin"):
+            self._pm_spot_context(mock_create_data_provider, mock_data_provider, temp_config_file, venue="BINANCE.UM")
+
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
     @patch("qubx.utils.runner.runner.CtrlChannel")

@@ -22,7 +22,7 @@ from qubx.utils.time import (
     to_timestamp,
 )
 
-from .utils import EXCHANGE_MAPPINGS
+from .utils import DATA_PROVIDER_FALLBACKS, EXCHANGE_MAPPINGS
 
 INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE_MAPPINGS.items()}
 
@@ -653,8 +653,8 @@ class MarketManager(IMarketManager):
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:
             return self._exchange_to_data_provider[exchange]
-        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
-            return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
+        if (venue := DATA_PROVIDER_FALLBACKS.get(exchange)) in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[venue]
         raise ValueError(f"Data provider for exchange {exchange} not found")
 
     def is_instrument_listed(self, instrument: Instrument) -> bool:

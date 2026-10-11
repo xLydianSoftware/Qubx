@@ -1712,7 +1712,7 @@ class ProcessingManager(IProcessingManager):
         # the OME in backtests. Live (not paper) executes at the venue and has no local OME.
         if self._is_simulation or not self._context.is_paper_trading:
             return
-        connector = self._connectors.get(instrument.exchange)
+        connector = self._connectors.get(self._account_manager.resolve_exchange(instrument.exchange))
         if connector is None:
             return
         if not isinstance(connector, IMarketDataSink):

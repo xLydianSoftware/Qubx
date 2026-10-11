@@ -70,6 +70,9 @@ class ExchangeConfig(StrictBaseModel):
     universe: list[str]
     params: dict = Field(default_factory=dict)
     base_currency: str | None = None
+    # also trade the venue's spot universe from the same account (BINANCE.PM -> BINANCE spot,
+    # bought into the cross-margin wallet)
+    spot_margin: bool = False
 
 
 class StorageConfig(StrictBaseModel):

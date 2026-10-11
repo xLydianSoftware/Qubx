@@ -48,7 +48,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.lookups import lookup, register_accounts
-from qubx.core.mixins.utils import canonical_exchange
+from qubx.core.mixins.utils import SPOT_MARGIN_EXCHANGES, canonical_exchange
 from qubx.data.cache import CachedStorage, MemoryCache
 from qubx.data.storages.stub import NoConfiguredStorage
 from qubx.health import BaseHealthMonitor
@@ -516,6 +516,7 @@ def create_strategy_context(
     _exchange_to_data_provider = {}
     _connectors: dict[str, IConnector] = {}
     _base_currencies: dict[str, str] = {}
+    _exchange_aliases: dict[str, str] = {}
     _instruments = []
 
     for venue_name, exchange_config in config.live.exchanges.items():
@@ -538,6 +539,11 @@ def create_strategy_context(
             _venue_api_key = None
         rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector, api_key=_venue_api_key)
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager))
+        spot_exchange = _spot_margin_exchange(venue_name, exchange_config)
+        if spot_exchange is not None:
+            # - the spot leg lives in the same venue account: one AccountState, one connector
+            _exchange_aliases[spot_exchange] = exchange_name
+            _exchange_to_tcc[spot_exchange] = _create_tcc(spot_exchange, venue_name, account_manager)
         # Both paper and live use a REAL market-data provider (live quotes/OHLC); only paper's
         # *execution* is simulated. The data provider may come from a different source than the
         # connector (e.g. an xdata data service + a venue connector) — it is resolved by the
@@ -567,7 +573,9 @@ def create_strategy_context(
                     f"[{venue_name}] connector '{exchange_config.connector}' declares no rate limits — "
                     "venue calls are unthrottled (add rate_limits() to the plugin)."
                 )
-            _conn_ctx = ConnectorBuildContext(**vars(_base_ctx), data_provider=_data_provider)
+            _conn_ctx = ConnectorBuildContext(
+                **vars(_base_ctx), data_provider=_data_provider, spot_exchange=spot_exchange
+            )
             _connectors[exchange_name] = ConnectorRegistry.get_connector(exchange_config.connector.lower(), _conn_ctx)
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
         _base_currencies[exchange_name] = _resolve_base_currency(
@@ -606,6 +614,8 @@ def create_strategy_context(
 
     # - central account manager: paper uses SimulatedAccountManager (synchronous execution, no ticks).
     #   NB: the `account_manager` function param is the credentials manager — keep them distinct (`_am`).
+    if clash := set(_exchange_aliases) & set(_connectors):
+        raise ValueError(f"spot_margin exchange(s) {sorted(clash)} are also configured as separate exchanges")
     _am_cls = SimulatedAccountManager if paper else AccountManager
     _am = _am_cls(
         connectors=_connectors,
@@ -615,6 +625,7 @@ def create_strategy_context(
         account_id=stg_name,
         tcc=_exchange_to_tcc,
         default_instrument_leverage=config.live.default_instrument_leverage,
+        exchange_aliases=_exchange_aliases,
     )
     # Paper seeds the configured initial capital per exchange (no venue to query); live seeds
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions
@@ -754,6 +765,16 @@ def _create_tcc(
     tcc = lookup.find_fees(exchange_name, settings.commissions)
     assert tcc is not None, f"Can't find fees calculator for {exchange_name} exchange"
     return tcc
+
+
+def _spot_margin_exchange(venue_name: str, exchange_config: ExchangeConfig) -> str | None:
+    if not exchange_config.spot_margin:
+        return None
+    if (spot := SPOT_MARGIN_EXCHANGES.get(venue_name.upper())) is None:
+        raise ValueError(
+            f"{venue_name}: spot_margin is supported only for {', '.join(sorted(SPOT_MARGIN_EXCHANGES))}"
+        )
+    return spot
 
 
 def _resolve_base_currency(

@@ -1,0 +1,377 @@
+"""BINANCE spot traded from a BINANCE.PM account (``spot_margin``).
+
+Pins the ccxt routing the spot leg relies on (spot market + portfolioMargin -> papi
+cross-margin endpoints, margin execution reports parse as the spot symbol) and the PM
+connector's spot behaviour: reduceOnly stripped, holdings from cross-margin balances,
+margin open orders in the snapshot, spot skipped for leverage/ADL/amend. Offline.
+"""
+
+import asyncio
+from unittest.mock import AsyncMock, MagicMock, Mock
+
+import pytest
+
+from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
+from qubx.connectors.ccxt.exchanges.binance.exchange import BinancePortfolioMargin
+from qubx.connectors.ccxt.utils import spot_fee_in_quote
+from qubx.core.basics import CtrlChannel, Deal, Order, OrderRequest, OrderSide, OrderStatus, OrderType
+from qubx.core.events import OrderUpdateRejectedEvent
+from qubx.core.lookups import lookup
+from qubx.core.series import Quote
+from tests.qubx.core.utils_test import DummyTimeProvider
+
+
+def run(coro):
+    loop = asyncio.new_event_loop()
+    try:
+        return loop.run_until_complete(coro)
+    finally:
+        loop.close()
+
+
+def _market(symbol: str, market_id: str, base: str, kind: str) -> dict:
+    spot = kind == "spot"
+    return {
+        "id": market_id,
+        "symbol": symbol,
+        "base": base,
+        "quote": "USDT",
+        "settle": None if spot else "USDT",
+        "baseId": base,
+        "quoteId": "USDT",
+        "settleId": None if spot else "USDT",
+        "type": kind,
+        "spot": spot,
+        "margin": spot,
+        "swap": not spot,
+        "future": False,
+        "option": False,
+        "contract": not spot,
+        "linear": None if spot else True,
+        "inverse": None if spot else False,
+        "subType": None if spot else "linear",
+        "active": True,
+        "contractSize": None if spot else 1.0,
+        "expiry": None,
+        "expiryDatetime": None,
+        "strike": None,
+        "optionType": None,
+        "precision": {"amount": 0.1 if spot else 1.0, "price": 0.0001},
+        "limits": {
+            "amount": {"min": 0.1 if spot else 1.0, "max": None},
+            "price": {"min": None, "max": None},
+            "cost": {"min": 5.0, "max": None},
+            "leverage": {"min": None, "max": None},
+        },
+        "info": {"orderTypes": ["LIMIT", "LIMIT_MAKER", "MARKET", "STOP_LOSS_LIMIT", "TAKE_PROFIT_LIMIT"]}
+        if spot
+        else {},
+        "created": None,
+    }
+
+
+TRX_SPOT = _market("TRX/USDT", "TRXUSDT", "TRX", "spot")
+TRX_SWAP = _market("TRX/USDT:USDT", "TRXUSDT", "TRX", "swap")
+USDC_SPOT = _market("USDC/USDT", "USDCUSDT", "USDC", "spot")
+
+
+def _pm_exchange() -> BinancePortfolioMargin:
+    ex = BinancePortfolioMargin({"name": "BINANCE.PM", "apiKey": "k", "secret": "s"})
+    ex.set_markets([TRX_SPOT, TRX_SWAP, USDC_SPOT])
+    return ex
+
+
+MARGIN_ORDER = {
+    "symbol": "TRXUSDT",
+    "orderId": 101,
+    "clientOrderId": "qubx_TRXUSDT_1",
+    "price": "0.3",
+    "origQty": "60",
+    "executedQty": "0",
+    "cummulativeQuoteQty": "0",
+    "status": "NEW",
+    "timeInForce": "GTC",
+    "type": "LIMIT",
+    "side": "BUY",
+    "time": 1784722758752,
+    "updateTime": 1784722758752,
+}
+
+
+class TestCcxtSpotRouting:
+    """What ccxt 4.5.50 does with a spot market on the PM class — verified in its source."""
+
+    def test_spot_create_order_goes_to_papi_margin(self):
+        ex = _pm_exchange()
+        try:
+            ex.papiPostMarginOrder = AsyncMock(return_value=MARGIN_ORDER)
+            ex.papiPostUmOrder = AsyncMock(side_effect=AssertionError("UM endpoint for a spot order"))
+            order = run(ex.create_order("TRX/USDT", "limit", "buy", 60, 0.3, {"clientOrderId": "qubx_TRXUSDT_1"}))
+            request = ex.papiPostMarginOrder.await_args.args[0]
+            assert request["symbol"] == "TRXUSDT"
+            assert request["newClientOrderId"] == "qubx_TRXUSDT_1"
+            assert order["symbol"] == "TRX/USDT"
+        finally:
+            run(ex.close())
+
+    def test_ccxt_forwards_reduce_only_on_spot(self):
+        # why the connector strips it: ccxt only drops reduceOnly for marginMode/margin type
+        ex = _pm_exchange()
+        try:
+            request = ex.create_order_request("TRX/USDT", "market", "sell", 60, None, {"reduceOnly": True})
+            assert request.get("reduceOnly") is True
+        finally:
+            run(ex.close())
+
+    def test_spot_cancel_query_trades_and_open_orders_go_to_papi_margin(self):
+        ex = _pm_exchange()
+        try:
+            ex.papiDeleteMarginOrder = AsyncMock(return_value=MARGIN_ORDER | {"status": "CANCELED"})
+            ex.papiGetMarginOrder = AsyncMock(return_value=MARGIN_ORDER)
+            ex.papiGetMarginMyTrades = AsyncMock(return_value=[])
+            ex.papiGetMarginOpenOrders = AsyncMock(return_value=[MARGIN_ORDER])
+            ex.papiGetUmOpenOrders = AsyncMock(side_effect=AssertionError("UM book queried for a spot symbol"))
+            run(ex.cancel_order("101", "TRX/USDT"))
+            run(ex.fetch_order("101", "TRX/USDT"))
+            run(ex.fetch_my_trades("TRX/USDT", since=1784722758000))
+            (row,) = run(ex.fetch_open_orders("TRX/USDT"))
+            assert row["symbol"] == "TRX/USDT"
+            for call in (ex.papiDeleteMarginOrder, ex.papiGetMarginOrder, ex.papiGetMarginMyTrades):
+                call.assert_awaited_once()
+        finally:
+            run(ex.close())
+
+    def test_margin_rows_parse_as_spot_and_um_rows_as_swap(self):
+        ex = _pm_exchange()
+        try:
+            assert ex.parse_order(MARGIN_ORDER)["symbol"] == "TRX/USDT"
+            um_row = MARGIN_ORDER | {"positionSide": "BOTH", "cumQuote": "0"}
+            assert ex.parse_order(um_row)["symbol"] == "TRX/USDT:USDT"
+        finally:
+            run(ex.close())
+
+    def test_pm_stream_execution_report_parses_as_spot(self):
+        ex = _pm_exchange()
+        try:
+            report = {
+                "e": "executionReport",
+                "s": "TRXUSDT",
+                "c": "qubx_TRXUSDT_1",
+                "S": "BUY",
+                "o": "MARKET",
+                "q": "60",
+                "p": "0",
+                "X": "FILLED",
+                "x": "TRADE",
+                "i": 101,
+                "l": "60",
+                "z": "60",
+                "L": "0.3",
+                "n": "0.06",
+                "N": "TRX",
+                "T": 1784722758752,
+                "t": 555,
+                "m": False,
+                "O": 1784722758700,
+            }
+            assert ex.parse_ws_order(report)["symbol"] == "TRX/USDT"
+            futures_report = {"s": "TRXUSDT", "ps": "BOTH", "X": "NEW", "x": "NEW", "i": 1, "T": 1}
+            assert ex.parse_ws_order(futures_report)["symbol"] == "TRX/USDT:USDT"
+        finally:
+            run(ex.close())
+
+
+def _instr(exchange: str):
+    instrument = lookup.find_symbol(exchange, "TRXUSDT")
+    assert instrument is not None
+    return instrument
+
+
+def _connector(*, spot: bool = True, exchange=None, quote: Quote | None = None):
+    em = Mock()
+    em.exchange = exchange if exchange is not None else Mock()
+    em.rate_limiter = None
+    data_provider = Mock()
+    data_provider.get_quote = Mock(return_value=quote)
+    sent: list = []
+    channel = Mock(spec=CtrlChannel)
+    channel.send = Mock(side_effect=lambda e: sent.append(e))
+    conn = BinancePmCcxtConnector(
+        exchange_name="BINANCE.UM",
+        spot_exchange="BINANCE" if spot else None,
+        channel=channel,
+        time_provider=DummyTimeProvider(),
+        exchange_manager=em,
+        data_provider=data_provider,
+    )
+    captured: list = []
+    conn._spawn = Mock(side_effect=lambda coro: captured.append(coro))
+    conn._captured = captured  # type: ignore[attr-defined]
+    return conn, sent
+
+
+def _request(instrument, *, side: str = "SELL", options: dict | None = None) -> OrderRequest:
+    return OrderRequest(
+        instrument=instrument,
+        quantity=60.0,
+        price=None,
+        order_type="MARKET",
+        side=side,  # type: ignore[arg-type]
+        time_in_force="gtc",
+        client_id="qubx_TRXUSDT_1",
+        options=options or {},
+    )
+
+
+class TestReduceOnlyStrip:
+    @pytest.mark.parametrize("options", [{"reduce_only": True}, {"reduceOnly": True}])
+    def test_spot_order_drops_reduce_only(self, options):
+        ex = Mock()
+        ex.create_order = AsyncMock(return_value={})
+        conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3001, 1, 1))
+        conn.submit_order(_request(_instr("BINANCE"), options=options))
+        run(conn._captured[0])  # type: ignore[attr-defined]
+        payload = ex.create_order.await_args.kwargs
+        assert payload["symbol"] == "TRX/USDT"
+        assert "reduceOnly" not in payload["params"]
+
+    def test_perp_order_keeps_reduce_only(self):
+        ex = Mock()
+        ex.create_order = AsyncMock(return_value={})
+        conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3001, 1, 1))
+        conn.submit_order(_request(_instr("BINANCE.UM"), options={"reduce_only": True}))
+        run(conn._captured[0])  # type: ignore[attr-defined]
+        assert ex.create_order.await_args.kwargs["params"]["reduceOnly"] is True
+
+
+def _balance_row(asset: str, **fields) -> dict:
+    return {"asset": asset, "updateTime": 1784722758752, **fields}
+
+
+def _raw_balance(*rows: dict) -> dict:
+    return {"info": {"balance": list(rows), "account": {}}}
+
+
+class TestSpotPositionsFromBalances:
+    def test_net_holding_floored_to_lot_and_marked(self):
+        ex = _pm_exchange()
+        try:
+            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.30, 0.32, 1, 1))
+            raw = _raw_balance(
+                _balance_row("USDT", crossMarginAsset="40"),
+                _balance_row("USDC", crossMarginAsset="412.57"),  # stable: collateral, not a position
+                _balance_row("TRX", crossMarginAsset="60.37", crossMarginBorrowed="0", crossMarginInterest="0"),
+            )
+            (pos,) = run(conn._balance_positions(raw))
+            assert pos.instrument == _instr("BINANCE")
+            assert pos.quantity == pytest.approx(60.3)  # 0.07 below the 0.1 lot is dust
+            assert pos.position_avg_price == pytest.approx(0.31)
+            assert pos.last_update_price == pytest.approx(0.31)
+            assert pos.market_value == pytest.approx(60.3 * 0.31)
+        finally:
+            run(ex.close())
+
+    def test_borrow_and_interest_reduce_the_holding(self):
+        ex = _pm_exchange()
+        try:
+            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.30, 0.30, 1, 1))
+            raw = _raw_balance(
+                _balance_row("TRX", crossMarginAsset="10", crossMarginBorrowed="25", crossMarginInterest="0.05")
+            )
+            (pos,) = run(conn._balance_positions(raw))
+            assert pos.quantity == pytest.approx(-15.0)  # net short: borrowed beyond the holding
+        finally:
+            run(ex.close())
+
+    def test_dust_only_and_disabled_spot_yield_nothing(self):
+        ex = _pm_exchange()
+        try:
+            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
+            assert run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="0.05")))) == []
+            off, _ = _connector(spot=False, exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
+            assert run(off._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="60")))) == []
+        finally:
+            run(ex.close())
+
+    def test_price_falls_back_to_ticker_and_missing_price_raises(self):
+        ex = _pm_exchange()
+        try:
+            conn, _ = _connector(exchange=ex, quote=None)
+            ex.fetch_tickers = AsyncMock(return_value={"TRX/USDT": {"last": 0.33}})
+            raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"))
+            (pos,) = run(conn._balance_positions(raw))
+            assert pos.position_avg_price == pytest.approx(0.33)
+            assert ex.fetch_tickers.await_args.args[0] == ["TRX/USDT"]
+
+            ex.fetch_tickers = AsyncMock(return_value={})
+            with pytest.raises(ValueError):
+                run(conn._balance_positions(raw))
+        finally:
+            run(ex.close())
+
+
+class TestSpotOpenOrders:
+    def test_margin_open_orders_join_the_snapshot(self):
+        ex = _pm_exchange()
+        try:
+            conn, _ = _connector(exchange=ex)
+            ex.fetch_open_orders = AsyncMock(return_value=[])  # trigger (algo) surface
+            ex.papiGetMarginOpenOrders = AsyncMock(return_value=[MARGIN_ORDER])
+            (order,) = conn._merge_open_orders([], run(conn._fetch_extra_open_orders()))
+            assert order.instrument == _instr("BINANCE")
+            assert order.client_order_id == "qubx_TRXUSDT_1"
+
+            off, _ = _connector(spot=False, exchange=ex)
+            ex.papiGetMarginOpenOrders.reset_mock()
+            assert run(off._fetch_extra_open_orders()) == []
+            ex.papiGetMarginOpenOrders.assert_not_awaited()
+        finally:
+            run(ex.close())
+
+
+class TestSpotSkips:
+    def test_leverage_not_sent_for_spot(self):
+        conn, _ = _connector()
+        conn.set_instrument_leverage(_instr("BINANCE"), 3)
+        assert conn._captured == []  # type: ignore[attr-defined]
+
+    def test_adl_is_futures_only(self):
+        conn, _ = _connector()
+        conn._adl_levels = {"TRXUSDT": 4}
+        conn._em.exchange.market = MagicMock(return_value={"id": "TRXUSDT"})
+        assert conn.get_adl_level(_instr("BINANCE")) is None
+        assert conn.get_adl_level(_instr("BINANCE.UM")) == 4
+
+    def test_spot_amend_is_rejected(self):
+        conn, sent = _connector()
+        order = Order(
+            client_order_id="qubx_TRXUSDT_1",
+            type=OrderType.LIMIT,
+            instrument=_instr("BINANCE"),
+            quantity=60.0,
+            side=OrderSide.BUY,
+            time_in_force="gtc",
+            status=OrderStatus.ACCEPTED,
+            venue_order_id="101",
+            price=0.3,
+        )
+        conn.update_order(order, price=0.31)
+        assert conn._captured == []  # type: ignore[attr-defined]
+        (event,) = sent
+        assert isinstance(event, OrderUpdateRejectedEvent)
+
+
+class TestSpotFee:
+    def _deal(self, fee: float | None, currency: str | None) -> Deal:
+        return Deal("t1", "101", 0, 60.0, 0.3, True, fee_amount=fee, fee_currency=currency)  # type: ignore[arg-type]
+
+    def test_base_fee_restated_in_quote(self):
+        deal = spot_fee_in_quote(_instr("BINANCE"), self._deal(0.06, "TRX"))
+        assert deal.fee_amount == pytest.approx(0.018)
+        assert deal.fee_currency == "USDT"
+
+    def test_quote_fee_and_perp_fee_untouched(self):
+        quote_fee = self._deal(0.018, "USDT")
+        assert spot_fee_in_quote(_instr("BINANCE"), quote_fee) is quote_fee
+        perp = self._deal(0.06, "TRX")
+        assert spot_fee_in_quote(_instr("BINANCE.UM"), perp) is perp

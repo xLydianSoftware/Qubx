@@ -588,8 +588,10 @@ class TradingManager(ITradingManager):
 
     def _get_connector(self, exchange: str) -> IConnector:
         # Connectors are keyed by the canonical exchange (the runner canonicalizes
-        # venue names like BINANCE.PM at the config boundary), so instrument.exchange
-        # always hits directly.
+        # venue names like BINANCE.PM at the config boundary).
         if exchange in self._exchange_to_connector:
             return self._exchange_to_connector[exchange]
+        # - an exchange served by another's account (BINANCE spot on a BINANCE.PM account)
+        if (served_by := self._account_manager.resolve_exchange(exchange)) in self._exchange_to_connector:
+            return self._exchange_to_connector[served_by]
         raise ValueError(f"Connector for exchange {exchange} not found")

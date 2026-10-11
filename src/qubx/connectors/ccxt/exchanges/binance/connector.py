@@ -27,6 +27,11 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   and margin→futures negative-balance repay; both amount-less on the venue side.
 - **Debt repayment**: ``repayLoan`` pays cross-margin ``borrowed`` + ``interest`` from the
   margin wallet.
+- **Spot leg** (``spot_exchange``, from ``spot_margin: true``): BINANCE spot orders go to the papi
+  cross-margin surface (ccxt routes a spot market under portfolioMargin there; cancels, order
+  queries and trades follow, margin fills arrive on the same ``/pm/ws`` stream). A holding is a
+  balance, not a venue position: the snapshot derives one position per non-stable asset from its
+  net cross-margin balance, priced at the current mark (the venue reports no entry price).
 """
 
 import math
@@ -35,10 +40,21 @@ from decimal import Decimal
 from typing import Any
 
 import ccxt
+import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import Balance, DebtRepaid, FundsMoved, Instrument, Position, WalletMove
+from qubx.core.basics import (
+    STABLE_CURRENCIES,
+    Balance,
+    DebtRepaid,
+    FundsMoved,
+    Instrument,
+    Order,
+    Position,
+    WalletMove,
+)
 from qubx.core.events import DebtRepaidEvent, FundsMovedEvent
+from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 
 from ...connector import CcxtConnector, VenueFigures
 from ...utils import info_float, instrument_to_ccxt_symbol, set_liabilities
@@ -79,6 +95,15 @@ def _failure(e: Exception, sent: bool) -> tuple[str, str]:
     return ("UNKNOWN" if sent and maybe_applied else "FAILED"), reason
 
 
+def _net_margin_holding(row: dict[str, Any]) -> float:
+    """Net cross-margin holding of an asset: asset (free + locked) less what is borrowed and owed."""
+    return (
+        (info_float(row, "crossMarginAsset") or 0.0)
+        - (info_float(row, "crossMarginBorrowed") or 0.0)
+        - (info_float(row, "crossMarginInterest") or 0.0)
+    )
+
+
 def _parse_adl_quantiles(rows: Any) -> dict[str, int]:
     """Market id -> worst (max) ADL quantile across sides, from the papi adlQuantile
     response: ``[{"symbol": ..., "adlQuantile": {"LONG": n, "SHORT": n} | {"BOTH": n}}]``."""
@@ -106,13 +131,18 @@ class BinancePmCcxtConnector(CcxtConnector):
     _wants_ws_balance_push = False
 
     _adl_levels: dict[str, int]
+    # - spot exchange whose instruments this account also trades (None = UM only)
+    _spot_exchange: str | None
+    # - quote of the spot instrument a held asset maps to
+    _spot_quote: str = "USDT"
 
     _COLLECT = WalletMove("futures_um", "margin", False)
     _REPAY = WalletMove("margin", "futures_um", False)
 
-    def __init__(self, **kwargs: Any):
+    def __init__(self, *, spot_exchange: str | None = None, **kwargs: Any):
         super().__init__(**kwargs)
         self._adl_levels = {}
+        self._spot_exchange = spot_exchange
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         balances = super()._convert_balances(raw_balance)
@@ -165,6 +195,83 @@ class BinancePmCcxtConnector(CcxtConnector):
         await super()._fill_leverage_settings(positions)
         await self._fill_adl_levels(positions)
 
+    async def _balance_positions(self, raw_balance: dict[str, Any]) -> list[Position]:
+        """Spot positions from the cross-margin balances already in the snapshot payload: one per
+        non-stable asset with a spot market against ``_spot_quote``, sized by the net holding floored
+        to the lot (sub-lot dust is not a position), marked and averaged at the current price.
+
+        A missing price raises: the snapshot is authoritative, and dropping a held asset would
+        read as a sell.
+        """
+        if self._spot_exchange is None:
+            return []
+        ex = self._em.exchange
+        held: list[tuple[Instrument, float, dict[str, Any]]] = []
+        for asset, row in _pm_rows(raw_balance).items():
+            if asset.upper() in STABLE_CURRENCIES:
+                continue
+            market = ex.markets.get(f"{asset}/{self._spot_quote}")
+            if market is None or not market.get("spot"):
+                continue
+            instrument = ccxt_symbol_to_instrument(ex.name, market)
+            net = _net_margin_holding(row)
+            quantity = math.copysign(instrument.round_size_down(abs(net)), net)
+            if quantity != 0.0:
+                held.append((instrument, quantity, row))
+        if not held:
+            return []
+        prices = await self._spot_prices([i for i, _, _ in held])
+        positions = []
+        for instrument, quantity, row in held:
+            price = prices[instrument]
+            pos = Position(instrument=instrument, quantity=quantity, pos_average_price=price)
+            updated = row.get("updateTime")
+            pos.update_market_price(
+                pd.Timestamp(int(updated), unit="ms").asm8 if updated else self._time.time(), price, 1
+            )
+            positions.append(pos)
+        return positions
+
+    async def _spot_prices(self, instruments: list[Instrument]) -> dict[Instrument, float]:
+        prices: dict[Instrument, float] = {}
+        for instrument in instruments:
+            quote = self._data_provider.get_quote(instrument)
+            if quote is not None and quote.mid_price() > 0:
+                prices[instrument] = quote.mid_price()
+        missing = [i for i in instruments if i not in prices]
+        if missing:
+            tickers = await self._em.exchange.fetch_tickers([instrument_to_ccxt_symbol(i) for i in missing])
+            for instrument in missing:
+                last = (tickers.get(instrument_to_ccxt_symbol(instrument)) or {}).get("last")
+                if not last:
+                    raise ValueError(f"no price for spot holding {instrument.symbol}")
+                prices[instrument] = float(last)
+        return prices
+
+    async def _fetch_extra_open_orders(self) -> list[dict]:
+        orders = await super()._fetch_extra_open_orders()
+        if self._spot_exchange is None:
+            return orders
+        ex = self._em.exchange
+        return [*orders, *ex.parse_orders(await ex.papiGetMarginOpenOrders())]
+
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
+        if instrument.is_spot():
+            logger.debug(f"[{self.exchange_name}] {instrument.symbol}: spot has no leverage setting; skipped")
+            return
+        super().set_instrument_leverage(instrument, leverage)
+
+    def update_order(self, order: Order, *, price: float | None = None, quantity: float | None = None) -> None:
+        if order.instrument.is_spot():
+            # - ccxt's spot edit is the SPOT account's cancelReplace, not the papi margin surface
+            self._emit_update_rejected(
+                order.client_order_id,
+                order.venue_order_id,
+                ccxt.NotSupported("amending a PM margin (spot) order is not supported; cancel and resubmit"),
+            )
+            return
+        super().update_order(order, price=price, quantity=quantity)
+
     async def _fill_adl_levels(self, positions: list[Position]) -> None:
         """Stamp ``Position.adl_level`` from ONE account-wide adlQuantile call per
         snapshot and refresh the cache ``get_adl_level`` reads. Best-effort: a failure
@@ -178,6 +285,8 @@ class BinancePmCcxtConnector(CcxtConnector):
             return
         self._adl_levels = _parse_adl_quantiles(rows)
         for pos in positions:
+            if not pos.instrument.is_futures():
+                continue
             level = self._adl_levels.get(self._market_id(pos.instrument))
             if level is not None:
                 pos.adl_level = level
@@ -189,6 +298,8 @@ class BinancePmCcxtConnector(CcxtConnector):
             return instrument.symbol
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
+        if not instrument.is_futures():
+            return None
         # local cache read (refreshed each snapshot) — never a blocking venue call;
         # strategies normally read ctx.get_adl_level -> Position.adl_level anyway
         return self._adl_levels.get(self._market_id(instrument))

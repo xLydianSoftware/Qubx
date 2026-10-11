@@ -106,6 +106,7 @@ from .utils import (
     normalize_margin_mode,
     prepare_ccxt_order_payload,
     reject_cause_of,
+    spot_fee_in_quote,
 )
 
 # Venue-verdict exceptions: every one of these is the venue refusing the order,
@@ -396,6 +397,9 @@ class CcxtConnector(ChannelEmitter):
             if k in FRAMEWORK_ONLY_OPTIONS:
                 continue
             payload["params"].setdefault(k, v)
+        if instrument.is_spot():
+            # - spot has no reduce-only (Binance PM margin rejects it); executors may still set it
+            payload["params"].pop("reduceOnly", None)
 
         self._spawn(self._submit_async(instrument, request.client_id, payload))
 
@@ -1657,6 +1661,7 @@ class CcxtConnector(ChannelEmitter):
         here (no DealEvents), so position/balance converge via the next snapshot's
         position reconcile rather than per-deal booking.
         """
+        deals = [spot_fee_in_quote(instrument, d) for d in deals]
         if not deals:
             if partial:
                 logger.debug(
@@ -1860,7 +1865,7 @@ class CcxtConnector(ChannelEmitter):
             f"{' (emitting DealEvents)' if raw_trades else ' (nothing to recover)'}"
         )
         for raw in raw_trades:
-            deal = ccxt_convert_deal_info(raw)
+            deal = spot_fee_in_quote(instrument, ccxt_convert_deal_info(raw))
             logger.debug(
                 f"[{self.exchange_name}] hist-deals: {symbol} trade tid={deal.trade_id} "
                 f"amt={deal.amount} px={deal.price} order={raw.get('order')} t={deal.time}"
@@ -1964,6 +1969,15 @@ class CcxtConnector(ChannelEmitter):
             logger.debug(f"[{self.exchange_name}] snapshot: no trigger open-orders surface ({e}); regular only")
             return []
 
+    async def _fetch_extra_open_orders(self) -> list[dict]:
+        """Open orders the venue-wide ``fetch_open_orders`` does not return: trigger orders here;
+        a venue with a further order surface (Binance PM margin) adds it."""
+        return await self._fetch_trigger_open_orders()
+
+    async def _balance_positions(self, raw_balance: dict[str, Any]) -> list[Position]:
+        """Positions the venue reports as balances rather than positions (spot holdings); none here."""
+        return []
+
     def _merge_open_orders(self, raw_orders: list[dict], raw_trigger_orders: list[dict]) -> list[Order]:
         """Merge regular + trigger raw open orders into framework Orders (dedup by venue id).
 
@@ -2028,7 +2042,7 @@ class CcxtConnector(ChannelEmitter):
             if include_orders:
                 raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
                     ex.fetch_open_orders(),
-                    self._fetch_trigger_open_orders(),
+                    self._fetch_extra_open_orders(),
                     ex.fetch_positions(),
                     ex.fetch_balance(),
                 )
@@ -2038,6 +2052,7 @@ class CcxtConnector(ChannelEmitter):
                 open_orders = None  # - not observed this tick -> reconcile skips order diffing
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
+            positions += await self._balance_positions(raw_balance)
             balances = self._convert_balances(raw_balance)
             figures = self._extract_venue_figures(raw_balance)
         except Exception as e:  # noqa: BLE001 — AM retries on its next snapshot tick

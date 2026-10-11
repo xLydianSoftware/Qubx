@@ -2,7 +2,7 @@
 
 ## Checkpoints
 - [x] C1 design notes (this file)
-- [ ] C2 Q1–Q3 implemented + unit tests
+- [x] C2 Q1–Q3 implemented + unit tests
 - [ ] C3 live smoke
 - [ ] C4 Q4 simulator
 
@@ -71,8 +71,29 @@ snapshot's mark-based avg only when materializing).
    larger than the holding is refused by the venue.
 4. Smoke uses TRX/ADA (pm-smoke notes box-test shares this account on DOGE/XRP).
 
+## C2 — done (Q1–Q3 + unit tests)
+- `ExchangeConfig.spot_margin` (runner validates: only BINANCE.PM) → `exchange_aliases={"BINANCE": "BINANCE.UM"}`
+  into the AM, spot tcc registered under `BINANCE`, `ConnectorBuildContext.spot_exchange` → PM connector.
+- AM: every state/connector lookup resolves through `_key`; `resolve_exchange()` public; exchange-scoped
+  `get_positions/get_orders` filter by `instrument.exchange`; fee calculator prefers the alias's own.
+- TradingManager / paper feed resolve the connector through the AM; data-provider fallback
+  `DATA_PROVIDER_FALLBACKS` (BINANCE → BINANCE.PM, BINANCE.UM → BINANCE.PM).
+- CcxtConnector: spot orders drop `reduceOnly` (Q3); hooks `_fetch_extra_open_orders` / `_balance_positions`;
+  `spot_fee_in_quote` restates base-asset fees in quote on WS fills and hist deals.
+- BinancePmCcxtConnector (spot on): spot positions from cross-margin net balances (floored to lot, stables
+  skipped, priced from the quote or a ticker fetch — a missing price fails the snapshot rather than flattening),
+  `papiGetMarginOpenOrders` in full snapshots, no leverage/ADL/amend for spot (amend → OrderUpdateRejected:
+  ccxt's spot edit is the SPOT account's cancelReplace).
+- BinancePortfolioMargin.fetch_open_orders(spot symbol) → papi margin (ccxt picked the UM book via defaultSubType).
+- AM spot rule: Differ skips avg-price diffs for spot; reconcile keeps the ledger avg on same-side size changes.
+- Reconciler confirm-task key = `str(instrument)` (spot/perp same symbol no longer collide).
+- Tests: `tests/qubx/connectors/ccxt/test_binance_pm_spot.py` (18), `tests/qubx/core/account_manager/spot_alias_test.py` (7),
+  runner `test_pm_spot_margin_serves_spot_from_the_pm_account` + `test_spot_margin_rejected_off_portfolio_margin`.
+- Full unit suite: 3998 passed; 3 failed + 10 errors are pre-existing env issues (no local BITFINEX.F instrument
+  data → `test_subscription_watchdog`/`test_subscription_intent`; tardis tests) — unrelated to this branch.
+
 ## In progress
-- C2 implementation.
+- C3 live smoke (harness `~/projects/test_strategies/pm-spot-smoke`, strategy `pm_smoke.spot_smoke`, port 8092).
 
 ## Blockers
 - none

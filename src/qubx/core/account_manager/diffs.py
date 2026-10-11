@@ -384,7 +384,10 @@ class Differ:
             if abs(lp.quantity - sp.quantity) > _qeps(sp.instrument):
                 diffs.append(PositionSizeMismatch(local=lp, origin=sp))
 
-            if abs(lp.position_avg_price - sp.position_avg_price) > _peps(sp.instrument):
+            # - a spot holding is a balance: the venue has no entry price, the local ledger owns it
+            if not sp.instrument.is_spot() and abs(lp.position_avg_price - sp.position_avg_price) > _peps(
+                sp.instrument
+            ):
                 diffs.append(PositionAvgPriceMismatch(local=lp, origin=sp))
 
             if not _close_margin(lp.maint_margin, sp.maint_margin):

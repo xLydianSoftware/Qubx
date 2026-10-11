@@ -543,16 +543,20 @@ class AccountState:
         # half-lot / half-tick like the Differ: n * lot_size is not always the double the
         # venue's decimal parses to
         inst = snapshot.instrument
+        avg = snapshot.position_avg_price
+        if inst.is_spot() and existing.is_open() and np.sign(existing.quantity) == np.sign(snapshot.quantity):
+            # - a spot holding is a balance with no venue entry price: keep the ledger's average
+            avg = existing.position_avg_price
         changed = (
             abs(existing.quantity - snapshot.quantity) > inst.lot_size * 0.5
-            or abs(existing.position_avg_price - snapshot.position_avg_price) > inst.tick_size * 0.5
+            or abs(existing.position_avg_price - avg) > inst.tick_size * 0.5
         )
         if changed:
             logger.info(
                 f"[{self.exchange}] reconcile: position <y>{snapshot.instrument}</y> from snapshot -> "
-                f"size {existing.quantity}->{snapshot.quantity} avg {existing.position_avg_price}->{snapshot.position_avg_price}"
+                f"size {existing.quantity}->{snapshot.quantity} avg {existing.position_avg_price}->{avg}"
             )
-            existing.reconcile_size(snapshot.quantity, snapshot.position_avg_price, timestamp=snapshot.last_update_time)
+            existing.reconcile_size(snapshot.quantity, avg, timestamp=snapshot.last_update_time)
 
         # external margins first, so the mark refresh below skips recalculating them
         if snapshot._maint_margin_external:

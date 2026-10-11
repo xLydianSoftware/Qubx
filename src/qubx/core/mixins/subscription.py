@@ -14,7 +14,7 @@ from qubx.core.status import ContextStatus
 from qubx.core.subscription_watchdog import SubscriptionWatchdog
 from qubx.utils.misc import synchronized
 
-from .utils import EXCHANGE_MAPPINGS
+from .utils import DATA_PROVIDER_FALLBACKS
 
 # Channel d_type under which a deferred subscription swap rides the CtrlChannel as a
 # (None, SUBSCRIPTION_SWAP_EVENT, apply_callable, False) tuple; posted by the warmup
@@ -455,8 +455,8 @@ class SubscriptionManager(ISubscriptionManager):
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:
             return self._exchange_to_data_provider[exchange]
-        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
-            return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
+        if (venue := DATA_PROVIDER_FALLBACKS.get(exchange)) in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[venue]
         raise ValueError(f"Data provider for exchange {exchange} not found")
 
     def _init_connection_status_callbacks(self) -> None:

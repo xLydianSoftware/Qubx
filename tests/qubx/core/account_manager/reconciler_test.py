@@ -619,7 +619,7 @@ def test_in_session_position_size_diff_spawns_confirm_task():
     pos = st.get_position(_inst())
     assert pos.quantity == 0.005  # type: ignore
     assert pos.r_pnl == 5.0  # type: ignore
-    assert rec.active_keys() == {"BTCUSDT"}  # ConfirmPositionBySnapshot task owns the symbol
+    assert rec.active_keys() == {str(_inst())}  # ConfirmPositionBySnapshot task owns the symbol
     assert a == []
 
 
@@ -694,7 +694,7 @@ def test_position_confirm_late_deal_arrives_drops_task_without_fetch():
     st.set_position(_inst(), _position(0.003, ts=_passed_seconds(T0, -10)))
     _mark_in_session(st)
     rec.on_snapshot(st, _origin(positions=[_position(0.005, ts=T0)]), T0)
-    assert rec.active_keys() == {"BTCUSDT"}
+    assert rec.active_keys() == {str(_inst())}
 
     a = rec.on_event(st, _deal(_passed_seconds(T0, 1)), _passed_seconds(T0, 1))
     assert rec.active_keys() == set()  # recovered by the arriving deal -> task dropped
@@ -746,7 +746,7 @@ def test_local_position_missing_flattens_and_spawns_confirm_task():
     pos = st.get_position(_inst())
     assert pos.quantity == 0.0  # type: ignore # flattened (venue authoritative)
     assert pos.r_pnl == 7.0  # type: ignore # local accounting preserved
-    assert rec.active_keys() == {"BTCUSDT"}  # confirm task to recover the closing deals
+    assert rec.active_keys() == {str(_inst())}  # confirm task to recover the closing deals
     assert a == []
     D_OFF()
 
@@ -855,7 +855,7 @@ def test_position_decrease_the_deals_arrived_with_small_latency():
     # snapshot decrease -> size-only reconcile (+ watermark=T0 + confirm task), pnl NOT realized
     rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
     assert st.get_position(_inst()).quantity == 0.003  # type: ignore
-    assert rec.active_keys() == {"BTCUSDT"}
+    assert rec.active_keys() == {str(_inst())}
     assert rec.on_tick(st, T0) == []  # nothing fetched at spawn (inside the window)
 
     # the FULL missed close (-0.002, == the missed delta) arrives late but within the 2s window. It
@@ -887,13 +887,13 @@ def test_position_decrease_partial_deal_still_fetches_remainder():
     st.set_position(_inst(), _position(0.005, avg=59_000.0, ts=_passed_seconds(T0, -10)))
     _mark_in_session(st)
     rec.on_snapshot(st, _origin(positions=[_position(0.003, avg=59_000.0, ts=T0)]), T0)
-    assert rec.active_keys() == {"BTCUSDT"}  # missed delta = 0.002
+    assert rec.active_keys() == {str(_inst())}  # missed delta = 0.002
 
     # only half the missed delta is delivered live within the window
     half = _deal(_passed_seconds(T0, -1), amount=-0.001, price=59_500.0, trade_id="hist1", venue_id="v_hist")
     reducer.apply(st, half, _passed_seconds(T0, 1))
     assert rec.on_event(st, half, _passed_seconds(T0, 1)) == []  # partial — does NOT drop yet
-    assert rec.active_keys() == {"BTCUSDT"}  # still armed: 0.001 of 0.002 outstanding
+    assert rec.active_keys() == {str(_inst())}  # still armed: 0.001 of 0.002 outstanding
 
     # window elapses with the remainder still missing -> fetch it for the record
     out = rec.on_tick(st, _passed_seconds(T0, 3))
@@ -919,7 +919,7 @@ def test_position_decrease_then_pushed_historical_deals_end_to_end():
     pos = st.get_position(_inst())
     assert pos.quantity == 0.003  # type: ignore # size corrected from the snapshot
     assert pos.r_pnl == 0.0  # type: ignore # snapshot is size-only — no realized pnl yet
-    assert rec.active_keys() == {"BTCUSDT"}
+    assert rec.active_keys() == {str(_inst())}
 
     assert rec.on_tick(st, T0) == []  # inside the window
     assert rec.on_tick(st, _passed_seconds(T0, 1)) == []
