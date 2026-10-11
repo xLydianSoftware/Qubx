@@ -3,7 +3,7 @@
 ## Checkpoints
 - [x] C1 design notes (this file)
 - [x] C2 Q1–Q3 implemented + unit tests
-- [ ] C3 live smoke
+- [x] C3 live smoke
 - [ ] C4 Q4 simulator
 
 ## Live account inventory (before any change, 2026-10-12)
@@ -92,8 +92,36 @@ snapshot's mark-based avg only when materializing).
 - Full unit suite: 3998 passed; 3 failed + 10 errors are pre-existing env issues (no local BITFINEX.F instrument
   data → `test_subscription_watchdog`/`test_subscription_intent`; tardis tests) — unrelated to this branch.
 
+## C3 — live smoke passed (2026-10-12 ~00:55–01:05 local, TRXUSDT)
+Harness: `~/projects/test_strategies/pm-spot-smoke` (qubx → this worktree; strategy `pm_smoke.spot_smoke`,
+control port 8092, `./_cmd.sh legs|market|resting|cancel|close|events`, `tools/inventory.py` read-only).
+Ran in Herdr tab `w1D:t3` (pane `w1D:p4`).
+
+Bugs found live and fixed (commit "fix: …"):
+1. **Perp leg got no market data**: the subscription mixin issued one `subscribe(reset=True)` per
+   instrument exchange; one BINANCE.PM provider serves both → the BINANCE call replaced the BINANCE.UM one.
+   Now grouped by serving provider (also pending warmups — they were filtered by `instr.exchange ==
+   provider.exchange()`, which never matched for any PM instrument).
+2. **Spot price fallback empty**: ccxt `fetch_tickers` on the PM class takes the linear path → `[]`.
+   Now `GET /api/v3/ticker/price?symbols=[…]` directly.
+
+## Live smoke log
+| step | result |
+|---|---|
+| boot | both legs quote (`orderbook:2`), capital 454.42 = actualEquity |
+| resting spot buy 30.3 @ 0.2642 | REST ack 350 ms, visible in `papiGetMarginOpenOrders`, cancel OK |
+| market buy spot 36.4 TRX (~$12) | fill over `/pm/ws` executionReport ~10 ms after ack, real trade id; fee 0.0364 TRX → 0.0120 USDT |
+| snapshot after buy | spot 36.4 → 36.3 (venue net 36.3636, floored), avg kept 0.3303; one hist-deals fetch (`papiGetMarginMyTrades`) deduped |
+| market sell perp 37 (~$12) | 2 fills real-time; perp −37 @ 0.32998 |
+| both held | capital 454.40 (no double count), gross lev 5.3%, IM 4.07, MM 0.079, margin ratio = uniMMR 5654 |
+| restart #1 | first snapshot failed "no price" (DNS blip + empty fetch_tickers → bug 2); next snapshot adopted perp −37 and spot 36.3 |
+| restart #2 (fix 2) | first snapshot adopted both legs |
+| close spot with `reduce_only=True` | accepted (stripped, Q3), filled; close perp filled; both flat |
+| dust | 0.0636 TRX left → bought exactly 63.6 (0.999·63.6 + 0.0636 = 63.6) and sold 63.6 → 0 TRX |
+| end state | USDT 41.835 + USDC 412.57, no positions/orders; actualEquity 454.33 (start 454.40 → cost ≈ $0.07) |
+
 ## In progress
-- C3 live smoke (harness `~/projects/test_strategies/pm-spot-smoke`, strategy `pm_smoke.spot_smoke`, port 8092).
+- C4 simulator (Q4).
 
 ## Blockers
 - none

@@ -34,6 +34,7 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   net cross-margin balance, priced at the current mark (the venue reports no entry price).
 """
 
+import json
 import math
 import uuid
 from decimal import Decimal
@@ -238,14 +239,17 @@ class BinancePmCcxtConnector(CcxtConnector):
             quote = self._data_provider.get_quote(instrument)
             if quote is not None and quote.mid_price() > 0:
                 prices[instrument] = quote.mid_price()
-        missing = [i for i in instruments if i not in prices]
+        missing = {self._market_id(i): i for i in instruments if i not in prices}
         if missing:
-            tickers = await self._em.exchange.fetch_tickers([instrument_to_ccxt_symbol(i) for i in missing])
-            for instrument in missing:
-                last = (tickers.get(instrument_to_ccxt_symbol(instrument)) or {}).get("last")
-                if not last:
-                    raise ValueError(f"no price for spot holding {instrument.symbol}")
-                prices[instrument] = float(last)
+            # - spot ticker endpoint directly: ccxt's fetch_tickers on this class takes the linear path
+            rows = await self._em.exchange.publicGetTickerPrice(
+                {"symbols": json.dumps(list(missing), separators=(",", ":"))}
+            )
+            for row in rows if isinstance(rows, list) else []:
+                if (instrument := missing.get(row.get("symbol"))) is not None and (price := info_float(row, "price")):
+                    prices[instrument] = price
+            if unpriced := [i.symbol for i in missing.values() if i not in prices]:
+                raise ValueError(f"no price for spot holding(s) {unpriced}")
         return prices
 
     async def _fetch_extra_open_orders(self) -> list[dict]:

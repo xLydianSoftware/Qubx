@@ -296,3 +296,16 @@ def test_stop_is_a_noop_in_simulation():
     manager = _manager(_provider(simulation=True))
     assert manager._watchdog is None
     manager.stop()  # must not raise
+
+
+def test_one_provider_serving_two_exchanges_gets_one_subscribe_with_both():
+    """A BINANCE.PM provider serves BINANCE.UM perps and BINANCE spot: a reset subscribe per
+    instrument exchange would leave only the last exchange's instruments subscribed."""
+    provider = _provider("BINANCE.PM")
+    manager = _manager(provider)
+    perp, spot = _instrument("TRXUSDT"), _instrument("TRXUSDT", "BINANCE")
+    manager.subscribe(DataType.ORDERBOOK, [perp, spot])
+    manager.commit()
+    (call,) = provider.subscribe.call_args_list
+    assert call.args[1] == {perp, spot}
+    assert call.kwargs == {"reset": True}

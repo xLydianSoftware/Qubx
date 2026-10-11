@@ -297,13 +297,13 @@ class TestSpotPositionsFromBalances:
         ex = _pm_exchange()
         try:
             conn, _ = _connector(exchange=ex, quote=None)
-            ex.fetch_tickers = AsyncMock(return_value={"TRX/USDT": {"last": 0.33}})
+            ex.publicGetTickerPrice = AsyncMock(return_value=[{"symbol": "TRXUSDT", "price": "0.33"}])
             raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"))
             (pos,) = run(conn._balance_positions(raw))
             assert pos.position_avg_price == pytest.approx(0.33)
-            assert ex.fetch_tickers.await_args.args[0] == ["TRX/USDT"]
+            assert ex.publicGetTickerPrice.await_args.args[0] == {"symbols": '["TRXUSDT"]'}
 
-            ex.fetch_tickers = AsyncMock(return_value={})
+            ex.publicGetTickerPrice = AsyncMock(return_value=[])
             with pytest.raises(ValueError):
                 run(conn._balance_positions(raw))
         finally:
