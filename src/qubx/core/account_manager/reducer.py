@@ -449,6 +449,10 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
     # in _resolve_or_materialize). A historical (RequestHistDeals) recovery deal materializes
     # TERMINAL — the order already completed; an ACCEPTED phantom would be chased as missing.
     materialize_status = OrderStatus.FILLED if event.historical else OrderStatus.ACCEPTED
+    if event.instrument is not None and state.is_trade_booked(event.instrument, event.deal.trade_id):
+        # - already booked under an order since evicted: a re-fetch addressed by venue id alone
+        #   would not resolve and would book again under a materialized external order
+        return ApplyResult()
     order = _resolve_or_materialize(state, event, now, materialize_status=materialize_status)
     if order is None:
         return ApplyResult()

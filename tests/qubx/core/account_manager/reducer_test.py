@@ -945,3 +945,61 @@ def test_redelivered_trade_does_not_double_book():
     apply(state, DealEvent(instrument=BTC, client_order_id="c1", venue_order_id="v1", deal=_fill("t1", 1.0)), T1)
 
     assert state.ensure_position(BTC).quantity == 1.0
+
+
+def test_historical_refetch_of_a_booked_trade_after_eviction_is_a_noop():
+    # A trade booked live, its order then evicted (terminal retention), and the SAME trade
+    # re-fetched by RequestHistDeals behind a later size mismatch (a spot buy's base-asset fee
+    # trims the holding, so every PM spot buy takes this path). The refetch carries only the
+    # venue order id, which no longer resolves; it must not book its fee (or pnl) a second time.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="V1")
+    fill = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=T0,
+        amount=0.5,
+        price=100.0,
+        aggressive=True,
+        fee_amount=0.05,
+        fee_currency="USDT",
+    )
+    apply(state, OrderFilledEvent(instrument=BTC, client_order_id="c1", venue_order_id="V1", fill=fill), T0)
+    pos = _present(state.get_position(BTC))
+    assert pos.commissions == pytest.approx(0.05)
+
+    state.evict_to_history("c1")
+    state.mark_position_reconcile(BTC, T1)
+    r = apply(
+        state, DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V1", deal=fill, historical=True), T1
+    )
+
+    assert r.deal is None
+    assert pos.commissions == pytest.approx(0.05)
+    assert state.get_order_by_venue_id("V1") is None  # no external phantom materialized
+
+
+def test_historical_trade_never_booked_still_realizes_after_eviction():
+    # The dedup is by trade id: a trade of an evicted order that was never booked live (WS fill
+    # missed) is still recovered realize-only.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="V1")
+    apply(state, OrderFilledEvent(instrument=BTC, client_order_id="c1", venue_order_id="V1", fill=_fill("t1", 0.5)), T0)
+    state.evict_to_history("c1")
+    state.mark_position_reconcile(BTC, T1)
+    missed = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=T0,
+        amount=0.5,
+        price=100.0,
+        aggressive=True,
+        fee_amount=0.05,
+        fee_currency="USDT",
+    )
+    r = apply(
+        state, DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V1", deal=missed, historical=True), T1
+    )
+
+    assert r.deal is not None
+    assert _present(state.get_position(BTC)).commissions == pytest.approx(0.05)
