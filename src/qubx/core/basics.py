@@ -1,4 +1,3 @@
-import math
 import re
 from dataclasses import KW_ONLY, dataclass, field
 from datetime import datetime
@@ -746,6 +745,11 @@ class Deal:
     fee_currency: str | None = None
 
 
+def _add_exact(quantity: float, amount: float) -> float:
+    # - venue balances carry at most 8 decimals; 12 drops the float noise of the sum
+    return round(quantity + amount, 12)
+
+
 def deal_base_fee(instrument: Instrument, deal: Deal) -> float:
     """The deal's fee when it was charged in the instrument's base asset (a spot buy's fee on
     Binance), else 0."""
@@ -1272,10 +1276,6 @@ class Position:
     margin_mode: Literal["cross", "isolated"] | None = None
     max_notional: float | None = None
 
-    # - spot only: the sub-lot part of the venue holding beyond `quantity` (a fee charged in the
-    #   base asset leaves the holding off the lot grid); the venue holds quantity + base_residual
-    base_residual: float = 0.0
-
     # funding payment tracking
     cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
     last_funding_time: dt_64 = np.datetime64("NaT")  # last funding payment time
@@ -1345,7 +1345,6 @@ class Position:
         Reset position to zero
         """
         self.quantity = 0.0
-        self.base_residual = 0.0
         self.pnl = 0.0
         self.r_pnl = 0.0
         self.market_value = 0.0
@@ -1400,7 +1399,6 @@ class Position:
 
     def reset_by_position(self, pos: "Position") -> None:
         self.quantity = pos.quantity
-        self.base_residual = getattr(pos, "base_residual", 0.0)
         self.pnl = pos.pnl
         self.r_pnl = pos.r_pnl
         self.market_value = pos.market_value
@@ -1474,16 +1472,21 @@ class Position:
         #   the result a few ulp short of the grid, which is how a position reached 0.0 locally
         #   while the venue still held one lot.
         lot = self.instrument.lot_size
-        if not is_lot_multiple(self.quantity, lot) or not is_lot_multiple(amount, lot):
-            # - stale instrument metadata or a connector fault. Reported, then booked to the
-            #   nearest lot: dropping the deal is the worse error.
-            logger.error(
-                f"[{self.instrument.symbol}] booking {self.quantity} + {amount} is not on the "
-                f"lot grid (lot_size {lot}) — rounding to the nearest lot"
-            )
+        if self.instrument.is_spot() and not is_lot_multiple(self.quantity, lot):
+            # - a spot holding a base-asset fee left off the grid: the venue holds the exact sum
+            new_quantity = _add_exact(self.quantity, amount)
+        else:
+            if not is_lot_multiple(self.quantity, lot) or not is_lot_multiple(amount, lot):
+                # - stale instrument metadata or a connector fault. Reported, then booked to the
+                #   nearest lot: dropping the deal is the worse error.
+                logger.error(
+                    f"[{self.instrument.symbol}] booking {self.quantity} + {amount} is not on the "
+                    f"lot grid (lot_size {lot}) — rounding to the nearest lot"
+                )
+            new_quantity = add_in_lots(self.quantity, amount, lot)
         return self.update_position(
             timestamp,
-            add_in_lots(self.quantity, amount, lot),
+            new_quantity,
             exec_price,
             fee_amount,
             conversion_rate=conversion_rate,
@@ -1607,12 +1610,10 @@ class Position:
         time = deal.time.as_unit("ns").asm8 if isinstance(deal.time, pd.Timestamp) else deal.time
         fee = deal.fee_amount or 0
         if (base_fee := deal_base_fee(self.instrument, deal)) and not realize_only:
-            # - the fee came out of the bought asset: book the net holding, floored to the lot,
-            #   and carry the sub-lot rest; commissions take the fee's quote value
-            exact = self.quantity + self.base_residual + deal.amount - base_fee
-            target = math.copysign(self.instrument.round_size_down(abs(exact)), exact)
-            self.base_residual = round(exact - target, 12)
-            return self.update_position(time, target, deal.price, base_fee * deal.price, conversion_rate)
+            # - the fee came out of the bought asset: the position takes the net holding, off the
+            #   lot grid as the venue holds it; commissions take the fee's quote value
+            exact = _add_exact(self.quantity, deal.amount - base_fee)
+            return self.update_position(time, exact, deal.price, base_fee * deal.price, conversion_rate)
         return self.change_position_by(
             timestamp=time,
             amount=deal.amount,

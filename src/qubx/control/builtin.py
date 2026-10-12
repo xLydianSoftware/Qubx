@@ -746,7 +746,7 @@ def _close_position(ctx: IStrategyContext, symbol: str, exchange: str | None = N
 
 def _close_positions(ctx: IStrategyContext, **kwargs) -> ActionResult:
     try:
-        positions = {str(i): p.quantity for i, p in ctx.get_positions().items() if p.quantity != 0}
+        positions = {str(i): p.quantity for i, p in ctx.get_positions().items() if p.is_open()}
         ctx.close_positions()
         return ActionResult(status="ok", data={"closed": positions})
     except Exception as e:

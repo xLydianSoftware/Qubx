@@ -259,6 +259,7 @@ class TestTradingManagerClosePosition:
         # Given a closed position
         position = Mock(spec=Position)
         position.quantity = 0.0
+        position.is_open.return_value = False
         mock_account.get_position.return_value = position
 
         # When closing the position
@@ -274,13 +275,14 @@ class TestTradingManagerClosePosition:
         """Test closing a position that is below minimum size but not zero."""
         # Given a position below minimum size but not zero
         position = Mock(spec=Position)
-        position.quantity = 0.0001  # Below min_size of 0.001, but not zero
+        position.quantity = 0.0001  # Below min_size of 0.001, but a whole lot
+        position.is_open.return_value = True
         mock_account.get_position.return_value = position
 
         # When closing the position
         trading_manager.close_position(mock_instrument)
 
-        # Then a signal is emitted because quantity != 0 (new logic checks quantity == 0)
+        # Then a signal is emitted: the position is open (a lot or more), however small
         assert len(strategy_context.emitted_signals) == 1
         signal = strategy_context.emitted_signals[0]
         assert signal.signal == 0
@@ -1229,3 +1231,33 @@ class TestRepayDebt:
             read_only_trading_manager.repay_debt("BINANCE.UM", "USDT", 1.0)
 
         mock_connector.repay_debt.assert_not_called()
+
+
+class TestSpotDust:
+    """A spot holding a base-asset fee left off the lot grid: 45.2521 TRX, 0.0521 of it sub-lot dust."""
+
+    @pytest.fixture
+    def trx(self):
+        return lookup.find_symbol("BINANCE", "TRXUSDT")  # lot 0.1, min notional 5
+
+    def _hold(self, mock_account, trx, qty):
+        mock_account.get_position.return_value = Position(trx, quantity=qty, pos_average_price=0.33)
+
+    def test_a_reduce_never_rounds_up_past_the_whole_lots_held(self, trading_manager, mock_account, trx):
+        trading_manager._context.quote = Mock(return_value=None)
+        self._hold(mock_account, trx, 45.2521)
+        assert trading_manager._adjust_size(trx, -45.2521) == pytest.approx(45.2)
+        assert trading_manager._adjust_size(trx, -10.05) == pytest.approx(10.0)
+
+    def test_dust_alone_is_nothing_to_reduce(self, trading_manager, mock_account, trx):
+        # - before: -0.0521 rounded up to a 0.1 sell of a holding of 0.0521, refused by the venue
+        trading_manager._context.quote = Mock(return_value=None)
+        self._hold(mock_account, trx, 0.0521)
+        with pytest.raises(InvalidOrderSize):
+            trading_manager._adjust_size(trx, -0.0521)
+
+    def test_closing_dust_sends_nothing(self, trading_manager, mock_account, trx):
+        self._hold(mock_account, trx, 0.0521)
+        trading_manager.trade = Mock()
+        trading_manager.close_position(trx, without_signals=True)
+        trading_manager.trade.assert_not_called()

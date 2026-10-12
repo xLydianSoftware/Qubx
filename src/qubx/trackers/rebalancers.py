@@ -39,7 +39,7 @@ class PortfolioRebalancerTracker(PositionsTracker):
         if instr_to_close is not None:
             for instr in instr_to_close:
                 p = ctx.positions.get(instr)
-                if p is not None and p.quantity != 0:
+                if p is not None and p.is_open():
                     released_capital_after_close += p.get_amount_released_funds_after_closing()
                     closed_symbols.append(instr)
         return released_capital_after_close, closed_symbols
