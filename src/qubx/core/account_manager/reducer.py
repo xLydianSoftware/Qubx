@@ -28,6 +28,7 @@ from qubx.core.basics import (
     OrderStatus,
     OrderType,
     Position,
+    deal_base_fee,
     external_client_id,
 )
 from qubx.core.events import (
@@ -327,10 +328,12 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal, now: np.
         if not _covered_by_balance_push(state, instrument.settle, deal.time):
             state.adjust_balance(instrument.settle, realized_pnl - fee)
     else:
+        # - a fee charged in the base asset comes out of the bought amount, not the quote
+        base_fee = deal_base_fee(instrument, deal)
         if not _covered_by_balance_push(state, instrument.quote, deal.time):
-            state.adjust_balance(instrument.quote, -(deal.amount * deal.price + fee))
+            state.adjust_balance(instrument.quote, -(deal.amount * deal.price + (0.0 if base_fee else fee)))
         if not _covered_by_balance_push(state, instrument.base, deal.time):
-            state.adjust_balance(instrument.base, deal.amount)
+            state.adjust_balance(instrument.base, deal.amount - base_fee)
     return pos
 
 

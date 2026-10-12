@@ -1,7 +1,6 @@
 import asyncio
 import re
 from collections import defaultdict
-from dataclasses import replace
 from typing import Any, Awaitable, Callable, Literal
 
 import ccxt.pro as cxp
@@ -273,19 +272,6 @@ def ccxt_convert_deal_info(raw: dict[str, Any]) -> Deal:
         fee_amount=fee_amount,
         fee_currency=fee_currency,
     )
-
-
-def spot_fee_in_quote(instrument: Instrument, deal: Deal) -> Deal:
-    """A spot fee charged in the base asset, restated as its quote value — the ledger books
-    fees in the quote currency. The holding the base fee removes is left to snapshot reconcile."""
-    if (
-        not instrument.is_spot()
-        or deal.fee_amount is None
-        or deal.fee_currency is None
-        or deal.fee_currency.upper() != instrument.base.upper()
-    ):
-        return deal
-    return replace(deal, fee_amount=deal.fee_amount * deal.price, fee_currency=instrument.quote)
 
 
 def ccxt_extract_deals_from_exec(report: dict[str, Any]) -> list[Deal]:

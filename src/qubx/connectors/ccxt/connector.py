@@ -106,7 +106,6 @@ from .utils import (
     normalize_margin_mode,
     prepare_ccxt_order_payload,
     reject_cause_of,
-    spot_fee_in_quote,
 )
 
 # Venue-verdict exceptions: every one of these is the venue refusing the order,
@@ -1661,7 +1660,6 @@ class CcxtConnector(ChannelEmitter):
         here (no DealEvents), so position/balance converge via the next snapshot's
         position reconcile rather than per-deal booking.
         """
-        deals = [spot_fee_in_quote(instrument, d) for d in deals]
         if not deals:
             if partial:
                 logger.debug(
@@ -1865,7 +1863,7 @@ class CcxtConnector(ChannelEmitter):
             f"{' (emitting DealEvents)' if raw_trades else ' (nothing to recover)'}"
         )
         for raw in raw_trades:
-            deal = spot_fee_in_quote(instrument, ccxt_convert_deal_info(raw))
+            deal = ccxt_convert_deal_info(raw)
             logger.debug(
                 f"[{self.exchange_name}] hist-deals: {symbol} trade tid={deal.trade_id} "
                 f"amt={deal.amount} px={deal.price} order={raw.get('order')} t={deal.time}"

@@ -13,8 +13,7 @@ import pytest
 
 from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
 from qubx.connectors.ccxt.exchanges.binance.exchange import BinancePortfolioMargin
-from qubx.connectors.ccxt.utils import spot_fee_in_quote
-from qubx.core.basics import CtrlChannel, Deal, Order, OrderRequest, OrderSide, OrderStatus, OrderType
+from qubx.core.basics import CtrlChannel, Order, OrderRequest, OrderSide, OrderStatus, OrderType
 from qubx.core.events import OrderUpdateRejectedEvent
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
@@ -265,6 +264,7 @@ class TestSpotPositionsFromBalances:
             (pos,) = run(conn._balance_positions(raw))
             assert pos.instrument == _instr("BINANCE")
             assert pos.quantity == pytest.approx(60.3)  # 0.07 below the 0.1 lot is dust
+            assert pos.base_residual == pytest.approx(0.07)  # ... carried for the next base-fee booking
             assert pos.position_avg_price == pytest.approx(0.31)
             assert pos.last_update_price == pytest.approx(0.31)
             assert pos.market_value == pytest.approx(60.3 * 0.31)
@@ -359,19 +359,3 @@ class TestSpotSkips:
         assert conn._captured == []  # type: ignore[attr-defined]
         (event,) = sent
         assert isinstance(event, OrderUpdateRejectedEvent)
-
-
-class TestSpotFee:
-    def _deal(self, fee: float | None, currency: str | None) -> Deal:
-        return Deal("t1", "101", 0, 60.0, 0.3, True, fee_amount=fee, fee_currency=currency)  # type: ignore[arg-type]
-
-    def test_base_fee_restated_in_quote(self):
-        deal = spot_fee_in_quote(_instr("BINANCE"), self._deal(0.06, "TRX"))
-        assert deal.fee_amount == pytest.approx(0.018)
-        assert deal.fee_currency == "USDT"
-
-    def test_quote_fee_and_perp_fee_untouched(self):
-        quote_fee = self._deal(0.018, "USDT")
-        assert spot_fee_in_quote(_instr("BINANCE"), quote_fee) is quote_fee
-        perp = self._deal(0.06, "TRX")
-        assert spot_fee_in_quote(_instr("BINANCE.UM"), perp) is perp

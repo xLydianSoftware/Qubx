@@ -1003,3 +1003,83 @@ def test_historical_trade_never_booked_still_realizes_after_eviction():
 
     assert r.deal is not None
     assert _present(state.get_position(BTC)).commissions == pytest.approx(0.05)
+
+
+_TRX = Instrument(
+    symbol="TRXUSDT",
+    market_type=MarketType.SPOT,
+    exchange="binance",
+    base="TRX",
+    quote="USDT",
+    settle="USDT",
+    exchange_symbol="TRXUSDT",
+    tick_size=0.0001,
+    lot_size=0.1,
+    min_size=0.1,
+    contract_size=1.0,
+)
+
+
+def _spot_fill(state: AccountState, cid: str, tid: str, amount: float, price: float, fee: float, fee_ccy: str):
+    state.add_order(
+        Order(
+            client_order_id=cid,
+            type=OrderType.MARKET,
+            instrument=_TRX,
+            quantity=abs(amount),
+            side=OrderSide.BUY if amount > 0 else OrderSide.SELL,
+            time_in_force="gtc",
+            status=OrderStatus.ACCEPTED,
+            price=0.0,
+            origin=OrderOrigin.FRAMEWORK,
+        )
+    )
+    deal = Deal(tid, "v" + tid, T0, amount, price, True, fee_amount=fee, fee_currency=fee_ccy)
+    return apply(state, OrderFilledEvent(instrument=_TRX, client_order_id=cid, fill=deal), T1)
+
+
+def test_spot_buy_with_base_asset_fee_books_the_net_holding():
+    # Binance takes a spot buy's fee out of the bought asset: 36.3 bought, 36.2637 held. The fill
+    # books what the venue holds: 36.2 on the lot grid + 0.0637 residual, the fee's quote value as
+    # commission, and the base balance credited net. A later snapshot agrees: nothing to re-sync.
+    state = _state()
+    _seed_usdt(state, 100.0)
+    _spot_fill(state, "b1", "t1", 36.3, 0.3315, 0.0363, "TRX")
+    pos = _present(state.get_position(_TRX))
+    assert pos.quantity == pytest.approx(36.2)
+    assert pos.base_residual == pytest.approx(0.0637)
+    assert pos.commissions == pytest.approx(0.0363 * 0.3315)
+    assert pos.position_avg_price == pytest.approx(0.3315)
+    assert _present(state.get_balance("TRX")).total == pytest.approx(36.2637)
+    assert _present(state.get_balance("USDT")).total == pytest.approx(100.0 - 36.3 * 0.3315)
+
+    # - the residual carries: 36.2 + 0.0637 + 31 - 0.031 = 67.2327 -> 67.2 + 0.0327
+    _spot_fill(state, "b2", "t2", 31.0, 0.3316, 0.031, "TRX")
+    assert pos.quantity == pytest.approx(67.2)
+    assert pos.base_residual == pytest.approx(0.0327)
+
+    # - a sell pays its fee in the quote: the lots go, the residual stays as venue dust
+    _spot_fill(state, "s1", "t3", -67.2, 0.3314, 0.0223, "USDT")
+    assert pos.quantity == 0.0
+    assert pos.base_residual == pytest.approx(0.0327)
+    assert _present(state.get_balance("TRX")).total == pytest.approx(0.0327)
+
+
+def test_spot_base_fee_crossing_the_lot_drops_a_lot():
+    # residual 0.0085 can't absorb a 0.0242 fee: 24.2 bought books 24.1 + 0.0843
+    state = _state()
+    pos = Position(_TRX, quantity=67.2, pos_average_price=0.3315)
+    pos.base_residual = 0.0085
+    state.set_position(_TRX, pos)
+    _spot_fill(state, "b1", "t1", 24.2, 0.3316, 0.0242, "TRX")
+    assert pos.quantity == pytest.approx(91.3)
+    assert pos.base_residual == pytest.approx(0.0843)
+
+
+def test_snapshot_carries_the_spot_residual():
+    state = _state()
+    state.set_position(_TRX, Position(_TRX, quantity=36.2, pos_average_price=0.3315))
+    snap = Position(_TRX, quantity=36.2, pos_average_price=0.33)
+    snap.base_residual = 0.0637
+    assert state.reconcile_position_from_snapshot(snap) is False  # same size: no change reported
+    assert _present(state.get_position(_TRX)).base_residual == pytest.approx(0.0637)

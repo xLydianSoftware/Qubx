@@ -31,7 +31,8 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   cross-margin surface (ccxt routes a spot market under portfolioMargin there; cancels, order
   queries and trades follow, margin fills arrive on the same ``/pm/ws`` stream). A holding is a
   balance, not a venue position: the snapshot derives one position per non-stable asset from its
-  net cross-margin balance, priced at the current mark (the venue reports no entry price).
+  net cross-margin balance floored to the lot (the sub-lot rest is the position's ``base_residual``),
+  priced at the current mark (the venue reports no entry price).
 """
 
 import json
@@ -226,6 +227,7 @@ class BinancePmCcxtConnector(CcxtConnector):
         for instrument, quantity, row in held:
             price = prices[instrument]
             pos = Position(instrument=instrument, quantity=quantity, pos_average_price=price)
+            pos.base_residual = round(_net_margin_holding(row) - quantity, 12)
             updated = row.get("updateTime")
             pos.update_market_price(
                 pd.Timestamp(int(updated), unit="ms").asm8 if updated else self._time.time(), price, 1

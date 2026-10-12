@@ -580,6 +580,10 @@ class AccountState:
             )
             existing.reconcile_size(snapshot.quantity, avg, timestamp=snapshot.last_update_time)
 
+        if inst.is_spot():
+            # - the venue's sub-lot rest of the holding seeds the next base-fee booking
+            existing.base_residual = snapshot.base_residual
+
         # external margins first, so the mark refresh below skips recalculating them
         if snapshot._maint_margin_external:
             existing.set_external_maint_margin(snapshot.maint_margin)

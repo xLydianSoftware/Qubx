@@ -1,3 +1,4 @@
+import math
 import re
 from dataclasses import KW_ONLY, dataclass, field
 from datetime import datetime
@@ -745,6 +746,19 @@ class Deal:
     fee_currency: str | None = None
 
 
+def deal_base_fee(instrument: Instrument, deal: Deal) -> float:
+    """The deal's fee when it was charged in the instrument's base asset (a spot buy's fee on
+    Binance), else 0."""
+    if (
+        not deal.fee_amount
+        or deal.fee_currency is None
+        or not instrument.is_spot()
+        or deal.fee_currency.upper() != instrument.base.upper()
+    ):
+        return 0.0
+    return deal.fee_amount
+
+
 class OrderType(StrEnum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
@@ -1258,6 +1272,10 @@ class Position:
     margin_mode: Literal["cross", "isolated"] | None = None
     max_notional: float | None = None
 
+    # - spot only: the sub-lot part of the venue holding beyond `quantity` (a fee charged in the
+    #   base asset leaves the holding off the lot grid); the venue holds quantity + base_residual
+    base_residual: float = 0.0
+
     # funding payment tracking
     cumulative_funding: float = 0.0  # cumulative funding paid (negative) or received (positive)
     last_funding_time: dt_64 = np.datetime64("NaT")  # last funding payment time
@@ -1327,6 +1345,7 @@ class Position:
         Reset position to zero
         """
         self.quantity = 0.0
+        self.base_residual = 0.0
         self.pnl = 0.0
         self.r_pnl = 0.0
         self.market_value = 0.0
@@ -1381,6 +1400,7 @@ class Position:
 
     def reset_by_position(self, pos: "Position") -> None:
         self.quantity = pos.quantity
+        self.base_residual = getattr(pos, "base_residual", 0.0)
         self.pnl = pos.pnl
         self.r_pnl = pos.r_pnl
         self.market_value = pos.market_value
@@ -1585,11 +1605,19 @@ class Position:
         self, deal: Deal, conversion_rate: float = 1, *, realize_only: bool = False
     ) -> tuple[float, float]:
         time = deal.time.as_unit("ns").asm8 if isinstance(deal.time, pd.Timestamp) else deal.time
+        fee = deal.fee_amount or 0
+        if (base_fee := deal_base_fee(self.instrument, deal)) and not realize_only:
+            # - the fee came out of the bought asset: book the net holding, floored to the lot,
+            #   and carry the sub-lot rest; commissions take the fee's quote value
+            exact = self.quantity + self.base_residual + deal.amount - base_fee
+            target = math.copysign(self.instrument.round_size_down(abs(exact)), exact)
+            self.base_residual = round(exact - target, 12)
+            return self.update_position(time, target, deal.price, base_fee * deal.price, conversion_rate)
         return self.change_position_by(
             timestamp=time,
             amount=deal.amount,
             exec_price=deal.price,
-            fee_amount=deal.fee_amount or 0,
+            fee_amount=fee * deal.price if base_fee else fee,
             conversion_rate=conversion_rate,
             realize_only=realize_only,
         )
