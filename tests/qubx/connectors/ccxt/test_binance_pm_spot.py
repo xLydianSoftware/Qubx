@@ -292,6 +292,23 @@ class TestSpotPositionsFromBalances:
         finally:
             run(ex.close())
 
+    def test_residuals_cover_dust_only_holdings(self):
+        ex = _pm_exchange()
+        try:
+            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
+            raw = _raw_balance(
+                _balance_row("USDT", crossMarginAsset="40.123"),  # stable: no residual
+                _balance_row("TRX", crossMarginAsset="0.0973"),  # dust only: no position, still a residual
+            )
+            assert run(conn._balance_positions(raw)) == []
+            assert conn._spot_residuals(raw) == {_instr("BINANCE"): pytest.approx(0.0973)}
+            # - a holding on the lot grid has none; spot off observes nothing
+            assert conn._spot_residuals(_raw_balance(_balance_row("TRX", crossMarginAsset="60.3"))) == {}
+            off, _ = _connector(spot=False, exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
+            assert off._spot_residuals(raw) is None
+        finally:
+            run(ex.close())
+
     def test_price_falls_back_to_ticker_and_missing_price_raises(self):
         ex = _pm_exchange()
         try:

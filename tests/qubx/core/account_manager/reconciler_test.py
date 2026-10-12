@@ -1227,3 +1227,71 @@ def test_cancel_rejection_does_not_confirm_a_sent_order():
 
     rec.on_event(st, _cancel_rejected("X1"), _passed_seconds(T0, 1))
     assert rec.active_keys() == {"X1"}
+
+
+# -- spot residuals: the sub-lot rest of a spot holding (Binance PM, base-asset buy fee) -- #
+
+_SPOT = lookup.find_symbol("BINANCE", "TRXUSDT")  # lot 0.1
+
+
+def _spot_snapshot(residuals: dict | None, *, as_of=T0, positions=None) -> AccountSnapshot:
+    return AccountSnapshot(
+        exchange=EXCHANGE, as_of=as_of, positions=positions if positions is not None else [], spot_residuals=residuals
+    )
+
+
+def test_dust_only_holding_seeds_the_flat_tracked_spot_position():
+    # 0.0973 TRX of dust from an earlier session, no position: without the seed a 45.2 buy paying
+    # 0.0452 TRX books 45.1; with it, 0.0973 + 45.1548 = 45.2521 books 45.2, as the venue holds
+    st = _local()
+    st.set_position(_SPOT, Position(_SPOT))  # the universe seeds a flat entry
+    _reconciler().on_snapshot(st, _spot_snapshot({_SPOT: 0.0973}), T0)
+    pos = st.get_position(_SPOT)
+    assert pos.quantity == 0.0  # type: ignore # dust is no position
+    assert pos.base_residual == 0.0973  # type: ignore
+
+    pos.update_position_by_deal(  # type: ignore
+        Deal("t1", "v1", _passed_seconds(T0, 1), 45.2, 0.3311, False, fee_amount=0.0452, fee_currency="TRX")
+    )
+    assert pos.quantity == 45.2  # type: ignore
+
+
+def test_spot_absent_from_observed_residuals_has_none_left():
+    st = _local()
+    pos = Position(_SPOT)
+    pos.base_residual = 0.05
+    st.set_position(_SPOT, pos)
+    _reconciler().on_snapshot(st, _spot_snapshot({}), T0)
+    assert pos.base_residual == 0.0
+
+
+def test_unobserved_residuals_leave_the_position_alone():
+    st = _local()
+    pos = Position(_SPOT)
+    pos.base_residual = 0.05
+    st.set_position(_SPOT, pos)
+    _reconciler().on_snapshot(st, _spot_snapshot(None), T0)
+    assert pos.base_residual == 0.05
+
+
+def test_a_snapshot_older_than_a_booked_deal_keeps_the_residual():
+    # the deal booked after the snapshot was taken already moved the residual on
+    st = _local()
+    pos = Position(_SPOT, quantity=45.2, pos_average_price=0.3311)
+    pos.base_residual = 0.0521
+    st.set_position(_SPOT, pos)
+    st.mark_position_deal_booked(_SPOT, _passed_seconds(T0, 1))
+    _reconciler().on_snapshot(
+        st, _spot_snapshot({_SPOT: 0.0973}, positions=[Position(_SPOT, quantity=45.2, pos_average_price=0.33)]), T0
+    )
+    assert pos.base_residual == 0.0521
+
+
+def test_residuals_never_materialize_a_position_or_touch_a_perp():
+    st = _local()
+    perp = _position(0.003)
+    perp.base_residual = 0.0  # perps have no residual; must stay 0
+    st.set_position(_inst(), perp)
+    _reconciler().on_snapshot(st, _spot_snapshot({_SPOT: 0.0973}, positions=[_position(0.003)]), T0)
+    assert st.get_position(_SPOT) is None
+    assert st.get_position(_inst()).base_residual == 0.0  # type: ignore
