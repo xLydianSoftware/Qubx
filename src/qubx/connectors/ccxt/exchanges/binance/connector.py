@@ -51,7 +51,6 @@ from qubx.core.basics import (
     DebtRepaid,
     FundsMoved,
     Instrument,
-    Order,
     Position,
     WalletMove,
 )
@@ -131,6 +130,9 @@ class BinancePmCcxtConnector(CcxtConnector):
     # the REST path already sidesteps in BinanceQV.parse_balance_custom, which reads
     # whole-account totalWalletBalance. Snapshot-only here.
     _wants_ws_balance_push = False
+    # - papi margin: a client id is unique among OPEN orders only (live-checked 2026-10-12: a duplicate
+    #   is refused with -2010 while the first is open, accepted once it is cancelled)
+    _replaces_with_same_client_id = True
 
     _adl_levels: dict[str, int]
     # - spot exchange whose instruments this account also trades (None = UM only)
@@ -267,16 +269,10 @@ class BinancePmCcxtConnector(CcxtConnector):
             return
         super().set_instrument_leverage(instrument, leverage)
 
-    def update_order(self, order: Order, *, price: float | None = None, quantity: float | None = None) -> None:
-        if order.instrument.is_spot():
-            # - ccxt's spot edit is the SPOT account's cancelReplace, not the papi margin surface
-            self._emit_update_rejected(
-                order.client_order_id,
-                order.venue_order_id,
-                ccxt.NotSupported("amending a PM margin (spot) order is not supported; cancel and resubmit"),
-            )
-            return
-        super().update_order(order, price=price, quantity=quantity)
+    def _amends_in_place(self, instrument: Instrument) -> bool:
+        # - papi has no margin amend; ccxt's spot edit is the SPOT account's cancelReplace, which
+        #   cannot see a margin order. Spot amends run as cancel + recreate (connector._replace_async).
+        return not instrument.is_spot() and super()._amends_in_place(instrument)
 
     async def _fill_adl_levels(self, positions: list[Position]) -> None:
         """Stamp ``Position.adl_level`` from ONE account-wide adlQuantile call per

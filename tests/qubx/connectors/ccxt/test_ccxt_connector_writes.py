@@ -616,9 +616,9 @@ async def test_update_edit_venue_reject_emits_update_rejected() -> None:
 
 @pytest.mark.asyncio
 async def test_update_cancel_recreate_path_rejects_without_touching_live_order() -> None:
-    # Exchange without editOrder support -> cancel+recreate path, not yet wired, so it must
-    # reject WITHOUT cancelling: cancelling first would leave the order dead at the venue
-    # while telling the strategy "still alive".
+    # Exchange without editOrder support and no verified cancel+recreate emulation (opt-in,
+    # _replaces_with_same_client_id) -> reject WITHOUT cancelling: cancelling first would leave
+    # the order dead at the venue while telling the strategy "still alive".
     exchange = Mock()
     exchange.has = {"editOrder": False}
     exchange.cancel_order = AsyncMock(return_value={"id": "VENUE123"})
