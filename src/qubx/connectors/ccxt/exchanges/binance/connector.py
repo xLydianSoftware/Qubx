@@ -200,15 +200,42 @@ class BinancePmCcxtConnector(CcxtConnector):
     async def _balance_positions(self, raw_balance: dict[str, Any]) -> list[Position]:
         """Spot positions from the cross-margin balances already in the snapshot payload: one per
         non-stable asset with a spot market against ``_spot_quote``, sized by the net holding floored
-        to the lot (sub-lot dust is not a position), marked and averaged at the current price.
+        to the lot (sub-lot dust is not a position: its rest goes in ``_spot_residuals``), marked and averaged at the current price.
 
         A missing price raises: the snapshot is authoritative, and dropping a held asset would
         read as a sell.
         """
+        held = [(i, net, q, row) for i, net, q, row in self._spot_holdings(raw_balance) if q != 0.0]
+        if not held:
+            return []
+        prices = await self._spot_prices([i for i, _, _, _ in held])
+        positions = []
+        for instrument, net, quantity, row in held:
+            price = prices[instrument]
+            pos = Position(instrument=instrument, quantity=quantity, pos_average_price=price)
+            pos.base_residual = round(net - quantity, 12)
+            updated = row.get("updateTime")
+            pos.update_market_price(
+                pd.Timestamp(int(updated), unit="ms").asm8 if updated else self._time.time(), price, 1
+            )
+            positions.append(pos)
+        return positions
+
+    def _spot_residuals(self, raw_balance: dict[str, Any]) -> dict[Instrument, float] | None:
+        """The sub-lot rest of every spot holding, dust-only ones included: a holding below a lot
+        is no position, but the next buy books on top of it."""
+        if self._spot_exchange is None:
+            return None
+        rests = {i: round(net - q, 12) for i, net, q, _ in self._spot_holdings(raw_balance)}
+        return {i: r for i, r in rests.items() if r != 0.0}
+
+    def _spot_holdings(self, raw_balance: dict[str, Any]) -> list[tuple[Instrument, float, float, dict[str, Any]]]:
+        """(instrument, net holding, net floored to the lot, row) for each non-stable asset with a
+        spot market against ``_spot_quote``; empty when spot is off."""
         if self._spot_exchange is None:
             return []
         ex = self._em.exchange
-        held: list[tuple[Instrument, float, dict[str, Any]]] = []
+        out = []
         for asset, row in _pm_rows(raw_balance).items():
             if asset.upper() in STABLE_CURRENCIES:
                 continue
@@ -217,23 +244,8 @@ class BinancePmCcxtConnector(CcxtConnector):
                 continue
             instrument = ccxt_symbol_to_instrument(ex.name, market)
             net = _net_margin_holding(row)
-            quantity = math.copysign(instrument.round_size_down(abs(net)), net)
-            if quantity != 0.0:
-                held.append((instrument, quantity, row))
-        if not held:
-            return []
-        prices = await self._spot_prices([i for i, _, _ in held])
-        positions = []
-        for instrument, quantity, row in held:
-            price = prices[instrument]
-            pos = Position(instrument=instrument, quantity=quantity, pos_average_price=price)
-            pos.base_residual = round(_net_margin_holding(row) - quantity, 12)
-            updated = row.get("updateTime")
-            pos.update_market_price(
-                pd.Timestamp(int(updated), unit="ms").asm8 if updated else self._time.time(), price, 1
-            )
-            positions.append(pos)
-        return positions
+            out.append((instrument, net, math.copysign(instrument.round_size_down(abs(net)), net), row))
+        return out
 
     async def _spot_prices(self, instruments: list[Instrument]) -> dict[Instrument, float]:
         prices: dict[Instrument, float] = {}

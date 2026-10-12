@@ -517,6 +517,15 @@ class Reconciler:
         for snap_pos in snap.positions or ():
             state.apply_position_settings(snap_pos)
 
+        # - the sub-lot rest of a spot holding is no position, so the differ never sees it; it
+        #   seeds the next base-fee booking of every tracked spot position, flat ones included
+        #   (dust left by an earlier session). A snapshot that predates a booked deal is skipped.
+        if snap.spot_residuals is not None:
+            for instr, pos in state.get_positions().items():
+                booked = state.get_position_deal_booked_at(instr)
+                if instr.is_spot() and (booked is None or booked <= snap.as_of):
+                    pos.base_residual = snap.spot_residuals.get(instr, 0.0)
+
         # - wallet split/debt move without total/free/locked (collect, interest) so the differ
         #   can't see them; same unconditional refresh as the settings. A held currency absent
         #   from an observed list (zero-total rows are dropped) has no breakdown left.
