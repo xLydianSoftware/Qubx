@@ -1040,46 +1040,42 @@ def _spot_fill(state: AccountState, cid: str, tid: str, amount: float, price: fl
 
 def test_spot_buy_with_base_asset_fee_books_the_net_holding():
     # Binance takes a spot buy's fee out of the bought asset: 36.3 bought, 36.2637 held. The fill
-    # books what the venue holds: 36.2 on the lot grid + 0.0637 residual, the fee's quote value as
-    # commission, and the base balance credited net. A later snapshot agrees: nothing to re-sync.
+    # books what the venue holds (off the lot grid), the fee's quote value as commission, and the
+    # base balance credited net. A later snapshot agrees: nothing to re-sync.
     state = _state()
     _seed_usdt(state, 100.0)
     _spot_fill(state, "b1", "t1", 36.3, 0.3315, 0.0363, "TRX")
     pos = _present(state.get_position(_TRX))
-    assert pos.quantity == pytest.approx(36.2)
-    assert pos.base_residual == pytest.approx(0.0637)
+    assert pos.quantity == pytest.approx(36.2637)
     assert pos.commissions == pytest.approx(0.0363 * 0.3315)
     assert pos.position_avg_price == pytest.approx(0.3315)
     assert _present(state.get_balance("TRX")).total == pytest.approx(36.2637)
     assert _present(state.get_balance("USDT")).total == pytest.approx(100.0 - 36.3 * 0.3315)
 
-    # - the residual carries: 36.2 + 0.0637 + 31 - 0.031 = 67.2327 -> 67.2 + 0.0327
+    # - 36.2637 + 31 - 0.031
     _spot_fill(state, "b2", "t2", 31.0, 0.3316, 0.031, "TRX")
-    assert pos.quantity == pytest.approx(67.2)
-    assert pos.base_residual == pytest.approx(0.0327)
+    assert pos.quantity == pytest.approx(67.2327)
 
-    # - a sell pays its fee in the quote: the lots go, the residual stays as venue dust
+    # - a sell pays its fee in the quote: the lots go, the dust stays, as at the venue
     _spot_fill(state, "s1", "t3", -67.2, 0.3314, 0.0223, "USDT")
-    assert pos.quantity == 0.0
-    assert pos.base_residual == pytest.approx(0.0327)
+    assert pos.quantity == pytest.approx(0.0327)
+    assert not pos.is_open()
     assert _present(state.get_balance("TRX")).total == pytest.approx(0.0327)
 
 
-def test_spot_base_fee_crossing_the_lot_drops_a_lot():
-    # residual 0.0085 can't absorb a 0.0242 fee: 24.2 bought books 24.1 + 0.0843
+def test_a_buy_on_top_of_dust_books_the_whole_holding():
+    # 0.0973 of dust + 45.2 bought - 0.0452 fee = 45.2521: a lot more than the fill alone nets
     state = _state()
-    pos = Position(_TRX, quantity=67.2, pos_average_price=0.3315)
-    pos.base_residual = 0.0085
-    state.set_position(_TRX, pos)
-    _spot_fill(state, "b1", "t1", 24.2, 0.3316, 0.0242, "TRX")
-    assert pos.quantity == pytest.approx(91.3)
-    assert pos.base_residual == pytest.approx(0.0843)
+    state.set_position(_TRX, Position(_TRX, quantity=0.0973, pos_average_price=0.33))
+    _spot_fill(state, "b1", "t1", 45.2, 0.3311, 0.0452, "TRX")
+    pos = _present(state.get_position(_TRX))
+    assert pos.quantity == pytest.approx(45.2521)
+    assert pos.is_open()
 
 
-def test_snapshot_carries_the_spot_residual():
+def test_snapshot_size_is_the_exact_spot_holding():
     state = _state()
-    state.set_position(_TRX, Position(_TRX, quantity=36.2, pos_average_price=0.3315))
-    snap = Position(_TRX, quantity=36.2, pos_average_price=0.33)
-    snap.base_residual = 0.0637
+    state.set_position(_TRX, Position(_TRX, quantity=36.2637, pos_average_price=0.3315))
+    snap = Position(_TRX, quantity=36.2637, pos_average_price=0.33)
     assert state.reconcile_position_from_snapshot(snap) is False  # same size: no change reported
-    assert _present(state.get_position(_TRX)).base_residual == pytest.approx(0.0637)
+    assert _present(state.get_position(_TRX)).quantity == pytest.approx(36.2637)

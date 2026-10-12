@@ -200,10 +200,6 @@ class AccountSnapshot:
     total_maint_margin: float | None = None
     total_initial_margin: float | None = None
     collateral_equity: float | None = None
-    # Sub-lot rest of each spot holding (a base-asset fee leaves it off the lot grid), which the
-    # held position's next base-fee booking starts from. None = not observed; when observed, a
-    # spot instrument absent from it holds no rest.
-    spot_residuals: dict[Instrument, float] | None = None
 
 
 @msg

@@ -109,7 +109,7 @@ def portfolio(all=True):
     from tabulate import tabulate
     d = dict()
     for s, p in ctx.get_positions().items():
-        if p.quantity != 0.0 or all:
+        if p.is_open() or all:
             d[dequotify(s.symbol, s.quote)] = _pos_to_dict(p)
     d = pd.DataFrame.from_dict(d, orient='index')
     if d.empty:
@@ -138,7 +138,7 @@ def _positions_as_records(all=True):
     rows = []
     try:
         for s, p in ctx.get_positions().items():
-            if p.quantity != 0.0 or all:
+            if p.is_open() or all:
                 rows.append({{
                     "exchange": s.exchange,
                     "symbol": s.symbol,

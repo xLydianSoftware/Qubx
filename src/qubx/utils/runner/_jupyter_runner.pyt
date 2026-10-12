@@ -140,7 +140,7 @@ class ActiveInstrument:
         return ctx.quote(self._instrument)
 
     def close(self):
-        if (p:=ctx.get_position(self._instrument)).quantity != 0:
+        if (p:=ctx.get_position(self._instrument)).is_open():
             ctx.trade(self._instrument, -p.quantity)
 
     def cancel(self):
@@ -196,7 +196,7 @@ def portfolio(all=True):
 
     d = dict()
     for s, p in ctx.get_positions().items():
-        if p.quantity != 0.0 or all:
+        if p.is_open() or all:
             d[dequotify(s.symbol, s.quote)] = _pos_to_dict(p)
 
     d = pd.DataFrame.from_dict(d, orient='index')

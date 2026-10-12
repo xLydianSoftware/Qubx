@@ -80,8 +80,8 @@ def _close_margin(a: float, b: float) -> bool:
 
 
 def _material_pos(position: Position) -> bool:
-    # a position smaller than half a lot is effectively flat — never a presence diff
-    return abs(position.quantity) > _qeps(position.instrument)
+    # a position below a lot (a spot holding's dust) is flat — never a presence diff
+    return position.is_open()
 
 
 def _material_bal(balance: Balance) -> bool:

@@ -1976,11 +1976,6 @@ class CcxtConnector(ChannelEmitter):
         """Positions the venue reports as balances rather than positions (spot holdings); none here."""
         return []
 
-    def _spot_residuals(self, raw_balance: dict[str, Any]) -> dict[Instrument, float] | None:
-        """Sub-lot rest of each spot holding, for venues whose spot holdings are balances; None
-        (not observed) here."""
-        return None
-
     def _merge_open_orders(self, raw_orders: list[dict], raw_trigger_orders: list[dict]) -> list[Order]:
         """Merge regular + trigger raw open orders into framework Orders (dedup by venue id).
 
@@ -2056,7 +2051,6 @@ class CcxtConnector(ChannelEmitter):
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
             positions += await self._balance_positions(raw_balance)
-            spot_residuals = self._spot_residuals(raw_balance)
             balances = self._convert_balances(raw_balance)
             figures = self._extract_venue_figures(raw_balance)
         except Exception as e:  # noqa: BLE001 — AM retries on its next snapshot tick
@@ -2086,7 +2080,6 @@ class CcxtConnector(ChannelEmitter):
                     total_maint_margin=figures.total_maint_margin,
                     total_initial_margin=figures.total_initial_margin,
                     collateral_equity=figures.collateral_equity,
-                    spot_residuals=spot_residuals,
                 ),
             )
         )

@@ -252,7 +252,7 @@ def _raw_balance(*rows: dict) -> dict:
 
 
 class TestSpotPositionsFromBalances:
-    def test_net_holding_floored_to_lot_and_marked(self):
+    def test_exact_net_holding_marked(self):
         ex = _pm_exchange()
         try:
             conn, _ = _connector(exchange=ex, quote=Quote(0, 0.30, 0.32, 1, 1))
@@ -263,11 +263,10 @@ class TestSpotPositionsFromBalances:
             )
             (pos,) = run(conn._balance_positions(raw))
             assert pos.instrument == _instr("BINANCE")
-            assert pos.quantity == pytest.approx(60.3)  # 0.07 below the 0.1 lot is dust
-            assert pos.base_residual == pytest.approx(0.07)  # ... carried for the next base-fee booking
+            assert pos.quantity == pytest.approx(60.37)  # as held: 0.07 of it is sub-lot dust
             assert pos.position_avg_price == pytest.approx(0.31)
             assert pos.last_update_price == pytest.approx(0.31)
-            assert pos.market_value == pytest.approx(60.3 * 0.31)
+            assert pos.market_value == pytest.approx(60.37 * 0.31)
         finally:
             run(ex.close())
 
@@ -279,34 +278,27 @@ class TestSpotPositionsFromBalances:
                 _balance_row("TRX", crossMarginAsset="10", crossMarginBorrowed="25", crossMarginInterest="0.05")
             )
             (pos,) = run(conn._balance_positions(raw))
-            assert pos.quantity == pytest.approx(-15.0)  # net short: borrowed beyond the holding
+            assert pos.quantity == pytest.approx(-15.05)  # net short: borrowed + interest beyond the holding
         finally:
             run(ex.close())
 
-    def test_dust_only_and_disabled_spot_yield_nothing(self):
+    def test_dust_only_is_a_flat_position_and_disabled_spot_yields_nothing(self):
         ex = _pm_exchange()
         try:
             conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
-            assert run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="0.05")))) == []
+            (pos,) = run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="0.05"))))
+            assert pos.quantity == pytest.approx(0.05)
+            assert not pos.is_open()
+            assert pos.last_update_price == pytest.approx(0.3)
+
+            # - dust with no live quote is left out: no ticker request, no failed snapshot
+            bare, _ = _connector(exchange=ex, quote=None)
+            ex.publicGetTickerPrice = AsyncMock(return_value=[])
+            assert run(bare._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="0.05")))) == []
+            ex.publicGetTickerPrice.assert_not_awaited()
+
             off, _ = _connector(spot=False, exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
             assert run(off._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="60")))) == []
-        finally:
-            run(ex.close())
-
-    def test_residuals_cover_dust_only_holdings(self):
-        ex = _pm_exchange()
-        try:
-            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
-            raw = _raw_balance(
-                _balance_row("USDT", crossMarginAsset="40.123"),  # stable: no residual
-                _balance_row("TRX", crossMarginAsset="0.0973"),  # dust only: no position, still a residual
-            )
-            assert run(conn._balance_positions(raw)) == []
-            assert conn._spot_residuals(raw) == {_instr("BINANCE"): pytest.approx(0.0973)}
-            # - a holding on the lot grid has none; spot off observes nothing
-            assert conn._spot_residuals(_raw_balance(_balance_row("TRX", crossMarginAsset="60.3"))) == {}
-            off, _ = _connector(spot=False, exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
-            assert off._spot_residuals(raw) is None
         finally:
             run(ex.close())
 
