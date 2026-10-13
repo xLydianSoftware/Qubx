@@ -1,4 +1,4 @@
-"""BINANCE spot traded from a BINANCE.PM account (``spot_margin``).
+"""BINANCE spot traded from a BINANCE.PM account (``markets: [BINANCE.UM, BINANCE]``).
 
 Pins the ccxt routing the spot leg relies on (spot market + portfolioMargin -> papi
 cross-margin endpoints, margin execution reports parse as the spot symbol) and the PM
@@ -196,7 +196,7 @@ def _connector(*, spot: bool = True, exchange=None, quote: Quote | None = None):
     channel.send = Mock(side_effect=lambda e: sent.append(e))
     conn = BinancePmCcxtConnector(
         exchange_name="BINANCE.UM",
-        aliases=("BINANCE",) if spot else (),
+        markets=("BINANCE.UM", "BINANCE") if spot else (),
         channel=channel,
         time_provider=DummyTimeProvider(),
         exchange_manager=em,
@@ -371,3 +371,12 @@ class TestSpotSkips:
         assert coro.cr_code.co_name == "_replace_async"
         coro.close()
         assert sent == []
+
+
+def test_only_a_pm_account_can_also_trade_binance_spot():
+    from qubx.connectors.ccxt.plugin import CcxtPlugin
+
+    plugin = CcxtPlugin()
+    assert plugin.extra_markets("BINANCE.PM") == ("BINANCE",)
+    assert plugin.extra_markets("BINANCE.UM") == ()
+    assert plugin.extra_markets("OKX.F") == ()

@@ -69,6 +69,9 @@ def _make_mock_ctx():
     account.get_net_leverage.return_value = 0.15
     account.get_gross_leverage.return_value = 0.15
     account.get_base_currency.return_value = "USDT"
+    # - one account per exchange, each trading only its own market
+    account.get_account_markets.return_value = {}
+    account.account_of.side_effect = lambda exchange: exchange
 
     # Mock balances
     bal = MagicMock()

@@ -761,7 +761,18 @@ class TestReviewFixes:
         context = MagicMock()
         context.get_positions.return_value = positions if positions is not None else {}
         context.exchanges = exchanges if exchanges is not None else ["BINANCE"]
+        context.account.account_of.side_effect = lambda exchange: exchange
         return FitContext(context, FitCycleState()), context
+
+    def test_a_market_traded_on_an_account_peeks_an_empty_position(self):
+        # - BINANCE spot on a BINANCE.PM account: not itself an exchange, but its account is
+        instrument = _mock_instrument()
+        fit_ctx, context = self._make_fit_ctx(exchanges=["ACCOUNT"])
+        context.account.account_of.side_effect = lambda exchange: "ACCOUNT"
+
+        pos = fit_ctx.get_position(instrument)
+        assert pos is not None and pos.instrument is instrument
+        assert fit_ctx.get_instrument_leverage(instrument) is None
 
     def test_get_position_never_materializes_into_account_state(self):
         instrument = _mock_instrument()

@@ -70,6 +70,7 @@ from qubx.core.interfaces import (
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.core.mixins.instrument_service import InstrumentServiceManager
+from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 from qubx.core.status import ContextStatus, QubxStatusInfo
 from qubx.data.storage import IStorage
 from qubx.gathering.simplest import SimplePositionGatherer
@@ -266,9 +267,13 @@ class StrategyContext(IStrategyContext):
         # Inert (a single None check) in simulation and inline mode.
         self._fit_state = FitCycleState()
 
+        # - a market traded on another market's account (BINANCE spot on a BINANCE.PM account) is
+        #   served by that account's data provider
+        _market_data_providers = _account_market_data_providers(self._data_providers, self._account_manager)
         self._subscription_manager = SubscriptionManager(
             time_provider=self._time_provider,
             data_providers=self._data_providers,
+            market_data_providers=_market_data_providers,
             channel=self._channel,
             health_monitor=self._health_monitor,
             strategy_state=self._strategy_state,
@@ -285,6 +290,7 @@ class StrategyContext(IStrategyContext):
         self._market_data_provider = MarketManager(
             time_provider=self._time_provider,
             data_providers=self._data_providers,
+            market_data_providers=_market_data_providers,
             universe_manager=self,
             aux_data_storage=aux_data_storage,
             max_buffer_size=_mc_default_length,
@@ -714,6 +720,12 @@ class StrategyContext(IStrategyContext):
 
     def get_base_currency(self, exchange: str | None = None) -> str:
         return self.account.get_base_currency(exchange)
+
+    def get_account_markets(self) -> dict[str, tuple[str, ...]]:
+        return self.account.get_account_markets()
+
+    def account_of(self, exchange: str) -> str:
+        return self.account.account_of(exchange)
 
     # balance and position information
     def get_balances(self, exchange: str | None = None) -> list[Balance]:
@@ -1265,3 +1277,17 @@ class StrategyContext(IStrategyContext):
         __strategy.ctx = self
         set_parameters_to_object(__strategy, **config if config else {})
         return __strategy
+
+
+def _account_market_data_providers(
+    data_providers: list[IDataProvider], account_manager: AccountManager
+) -> dict[str, IDataProvider]:
+    """Market -> its account's data provider, for each market without a provider of its own."""
+    by_exchange = {dp.exchange(): dp for dp in data_providers}
+    out: dict[str, IDataProvider] = {}
+    for account, markets in account_manager.get_account_markets().items():
+        provider = by_exchange.get(account) or by_exchange.get(EXCHANGE_MAPPINGS.get(account, ""))
+        if provider is None:
+            continue
+        out |= {market: provider for market in markets if market not in by_exchange and market != account}
+    return out

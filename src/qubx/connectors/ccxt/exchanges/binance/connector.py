@@ -27,7 +27,7 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   and margin→futures negative-balance repay; both amount-less on the venue side.
 - **Debt repayment**: ``repayLoan`` pays cross-margin ``borrowed`` + ``interest`` from the
   margin wallet.
-- **Spot leg** (``spot_margin: true``, which aliases BINANCE to this connector): BINANCE spot orders go to the papi
+- **Spot leg** (``markets: [BINANCE.UM, BINANCE]``): BINANCE spot orders go to the papi
   cross-margin surface (ccxt routes a spot market under portfolioMargin there; cancels, order
   queries and trades follow, margin fills arrive on the same ``/pm/ws`` stream). A holding is a
   balance, not a venue position: the snapshot derives one position per non-stable asset from its
@@ -135,7 +135,9 @@ class BinancePmCcxtConnector(CcxtConnector):
     _replaces_with_same_client_id = True
 
     _adl_levels: dict[str, int]
-    # - the account also trades the BINANCE spot universe (cross margin)
+    # - markets a PM account can trade besides BINANCE.UM: BINANCE spot, in the cross-margin wallet
+    EXTRA_MARKETS = ("BINANCE",)
+    # - the account trades BINANCE spot (configured in its markets)
     _spot_margin: bool
     # - quote of the spot instrument a held asset maps to
     _spot_quote: str = "USDT"
@@ -143,11 +145,10 @@ class BinancePmCcxtConnector(CcxtConnector):
     _COLLECT = WalletMove("futures_um", "margin", False)
     _REPAY = WalletMove("margin", "futures_um", False)
 
-    def __init__(self, *, aliases: tuple[str, ...] = (), **kwargs: Any):
+    def __init__(self, *, markets: tuple[str, ...] = (), **kwargs: Any):
         super().__init__(**kwargs)
         self._adl_levels = {}
-        # - the only exchange a PM account can serve besides BINANCE.UM is its spot universe
-        self._spot_margin = bool(aliases)
+        self._spot_margin = "BINANCE" in markets
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         balances = super()._convert_balances(raw_balance)

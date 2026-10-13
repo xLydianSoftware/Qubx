@@ -423,7 +423,14 @@ class TestRunStrategyYaml:
         ctx.account.on_market_quote(btc, quote)
         assert ctx.account.get_position(btc).last_update_price == quote.mid_price()
 
-    def _pm_spot_context(self, mock_create_data_provider, mock_data_provider, temp_config_file, venue="BINANCE.PM"):
+    def _pm_spot_context(
+        self,
+        mock_create_data_provider,
+        mock_data_provider,
+        temp_config_file,
+        venue="BINANCE.PM",
+        markets=("BINANCE.UM", "BINANCE"),
+    ):
         from qubx.utils.runner.configs import load_strategy_config_from_yaml
         from qubx.utils.runner.runner import create_strategy_context
 
@@ -433,7 +440,7 @@ class TestRunStrategyYaml:
         config.live.warmup = None
         section = config.live.exchanges["BINANCE.UM"]
         section.universe = ["BTCUSDT", "BINANCE:BTCUSDT"]
-        section.spot_margin = True
+        section.markets = list(markets)
         config.live.exchanges = {venue: section}
 
         class MockStrategy(IStrategy):
@@ -458,7 +465,7 @@ class TestRunStrategyYaml:
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
-    def test_pm_spot_margin_serves_spot_from_the_pm_account(
+    def test_pm_account_trades_spot_as_a_market_of_its_own(
         self,
         mock_create_data_provider,
         mock_live_time_provider_class,
@@ -469,24 +476,28 @@ class TestRunStrategyYaml:
         mock_live_time_provider_class.return_value = mock_time_provider
         ctx = self._pm_spot_context(mock_create_data_provider, mock_data_provider, temp_config_file)
 
-        # - one connector and one account state; BINANCE spot rides on them
-        assert set(ctx._connectors.keys()) == {"BINANCE.UM"}
+        # - one account (BINANCE.UM) trading two markets; paper simulates each market's execution and fees
+        assert ctx.exchanges == ["BINANCE.UM"]
+        assert ctx.account.get_account_markets() == {"BINANCE.UM": ("BINANCE.UM", "BINANCE")}
+        assert ctx.account.account_of("BINANCE") == "BINANCE.UM"
+        assert set(ctx._connectors) == {"BINANCE.UM", "BINANCE"}
         assert {i.exchange for i in ctx._initial_instruments} == {"BINANCE.UM", "BINANCE"}
-        assert ctx.account.resolve_exchange("BINANCE") == "BINANCE.UM"
-        # - the spot leg keeps its own fee schedule
         assert ctx.account.get_fees_calculator("BINANCE").taker != ctx.account.get_fees_calculator("BINANCE.UM").taker
+        # - the capital is seeded once, into the account
+        assert ctx.account.get_total_capital() == 100_000.0
 
-        # - a spot order routes to the PM account's connector; spot data falls back to the PM provider
+        # - a spot order executes on the spot market's connector; spot data comes from the PM provider
         spot = self._find_instrument("BINANCE", "BTCUSDT")
         quote = Quote(time=np.datetime64("now"), bid=100_000.0, ask=100_001.0, bid_size=1.0, ask_size=1.0)
-        ctx._connectors["BINANCE.UM"].process_market_data(spot, quote)
+        ctx._connectors["BINANCE"].process_market_data(spot, quote)
         order = ctx.trade(spot, 0.01)
         assert order.instrument == spot
         assert ctx._market_data_provider._get_data_provider("BINANCE") is mock_data_provider
+        assert ctx._subscription_manager._get_data_provider("BINANCE") is mock_data_provider
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
-    def test_spot_margin_rejected_off_portfolio_margin(
+    def test_a_market_the_venue_account_cannot_trade_is_rejected(
         self,
         mock_create_data_provider,
         mock_live_time_provider_class,
@@ -495,8 +506,16 @@ class TestRunStrategyYaml:
         mock_time_provider,
     ):
         mock_live_time_provider_class.return_value = mock_time_provider
-        with pytest.raises(ValueError, match="spot_margin"):
-            self._pm_spot_context(mock_create_data_provider, mock_data_provider, temp_config_file, venue="BINANCE.UM")
+        with pytest.raises(ValueError, match="cannot trade"):
+            self._pm_spot_context(
+                mock_create_data_provider,
+                mock_data_provider,
+                temp_config_file,
+                venue="BINANCE.UM",
+                markets=("BINANCE.UM", "BINANCE"),
+            )
+        with pytest.raises(ValueError, match="own market"):
+            self._pm_spot_context(mock_create_data_provider, mock_data_provider, temp_config_file, markets=("BINANCE",))
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")

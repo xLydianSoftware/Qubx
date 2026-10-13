@@ -302,7 +302,7 @@ def test_one_provider_serving_two_exchanges_gets_one_subscribe_with_both():
     """A BINANCE.PM provider serves BINANCE.UM perps and BINANCE spot: a reset subscribe per
     instrument exchange would leave only the last exchange's instruments subscribed."""
     provider = _provider("BINANCE.PM")
-    manager = _manager(provider)
+    manager = _manager(provider, market_data_providers={"BINANCE": provider})
     perp, spot = _instrument("TRXUSDT"), _instrument("TRXUSDT", "BINANCE")
     manager.subscribe(DataType.ORDERBOOK, [perp, spot])
     manager.commit()

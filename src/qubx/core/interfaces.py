@@ -232,6 +232,21 @@ class IAccountViewer:
 
     account_id: str
 
+    def get_account_markets(self) -> dict[str, tuple[str, ...]]:
+        """Every account -> the markets it trades, its own first.
+
+        An account is named after its own market and usually trades only that one. A venue account
+        may trade more (``ExchangeConfig.markets``): a BINANCE.PM portfolio-margin account is
+        ``BINANCE.UM`` and trades ``(BINANCE.UM, BINANCE)``, perps and spot. Positions and orders
+        are per market; capital, balances, leverage and margin are per account.
+        """
+        ...
+
+    def account_of(self, exchange: str) -> str:
+        """The account that trades the market ``exchange``: itself unless it is a market of another
+        account (BINANCE spot -> BINANCE.UM on a portfolio-margin account)."""
+        ...
+
     def get_base_currency(self, exchange: str | None = None) -> str:
         """Get the base currency for the account.
 

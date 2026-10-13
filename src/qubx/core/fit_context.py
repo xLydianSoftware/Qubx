@@ -167,7 +167,7 @@ class FitContext(ITimeProvider):
         semantics, never inserted)."""
         if (pos := self._context.get_positions().get(instrument)) is not None:
             return pos
-        if instrument.exchange not in self._context.exchanges:
+        if self._context.account.account_of(instrument.exchange) not in self._context.exchanges:
             return None
         return Position(instrument=instrument)
 
@@ -449,6 +449,8 @@ _PASSTHROUGH_READS: tuple[str, ...] = (
     "get_total_capital",
     "get_collateral_equity",
     "get_base_currency",
+    "get_account_markets",
+    "account_of",
     "get_balance",
     "find_order_by_id",
     "find_order_by_client_id",

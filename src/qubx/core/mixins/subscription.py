@@ -14,7 +14,7 @@ from qubx.core.status import ContextStatus
 from qubx.core.subscription_watchdog import SubscriptionWatchdog
 from qubx.utils.misc import synchronized
 
-from .utils import DATA_PROVIDER_FALLBACKS
+from .utils import EXCHANGE_MAPPINGS
 
 # Channel d_type under which a deferred subscription swap rides the CtrlChannel as a
 # (None, SUBSCRIPTION_SWAP_EVENT, apply_callable, False) tuple; posted by the warmup
@@ -66,11 +66,14 @@ class SubscriptionManager(ISubscriptionManager):
         auto_subscribe: bool = True,
         default_base_subscription: str = DataType.NONE,
         monitor_interval_seconds: float = 30.0,
+        market_data_providers: dict[str, IDataProvider] | None = None,
     ) -> None:
         self._time_provider = time_provider
         self._data_providers = data_providers
         self._channel = channel
-        self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
+        # - plus the markets served by another market's provider (BINANCE spot on a BINANCE.PM account)
+        self._market_data_providers = dict(market_data_providers or {})
+        self._exchange_to_data_provider = {dp.exchange(): dp for dp in data_providers} | self._market_data_providers
         self._health_monitor = health_monitor
         self._strategy_state = strategy_state
         self._status = status
@@ -460,8 +463,8 @@ class SubscriptionManager(ISubscriptionManager):
     def _get_data_provider(self, exchange: str) -> IDataProvider:
         if exchange in self._exchange_to_data_provider:
             return self._exchange_to_data_provider[exchange]
-        if (venue := DATA_PROVIDER_FALLBACKS.get(exchange)) in self._exchange_to_data_provider:
-            return self._exchange_to_data_provider[venue]
+        if exchange in EXCHANGE_MAPPINGS and EXCHANGE_MAPPINGS[exchange] in self._exchange_to_data_provider:
+            return self._exchange_to_data_provider[EXCHANGE_MAPPINGS[exchange]]
         raise ValueError(f"Data provider for exchange {exchange} not found")
 
     def _init_connection_status_callbacks(self) -> None:
@@ -482,5 +485,6 @@ class SubscriptionManager(ISubscriptionManager):
             snapshot_fn=self.desired_snapshot,
             strategy_state=self._strategy_state,
             interval_seconds=self._monitor_interval_seconds,
+            market_data_providers=self._market_data_providers,
         )
         self._watchdog.start()

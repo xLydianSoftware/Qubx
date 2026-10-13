@@ -1,8 +1,8 @@
-"""One venue account serving two instrument universes: BINANCE spot on a BINANCE.PM account.
+"""One venue account trading two markets: BINANCE spot on a BINANCE.PM account.
 
-The AM keeps ONE state for the account (keyed BINANCE.UM) and routes BINANCE instruments to it
-through ``exchange_aliases``; capital is counted once. Spot holdings are balances, so a snapshot
-is authoritative for their size only — the average price stays the local ledger's.
+The AM keeps ONE state for the account (its id is its own market, BINANCE.UM) and routes BINANCE
+instruments to it through ``account_markets``; capital is counted once. Spot holdings are balances,
+so a snapshot is authoritative for their size only — the average price stays the local ledger's.
 """
 
 from unittest.mock import MagicMock
@@ -49,7 +49,7 @@ def _am() -> tuple[AccountManager, MagicMock, _Time]:
         connectors={UM: conn},
         base_currencies={UM: "USDT"},
         time=clock,
-        exchange_aliases={"BINANCE": UM},
+        account_markets={UM: (UM, "BINANCE")},
     )
     return am, conn, clock
 
@@ -96,23 +96,40 @@ def _spot_pos(qty: float, price: float) -> Position:
     return pos
 
 
-def test_alias_must_point_at_a_managed_exchange():
+def test_the_account_must_be_a_managed_exchange():
     with pytest.raises(ValueError):
         AccountManager(
             connectors={UM: MagicMock()},
             base_currencies={UM: "USDT"},
             time=_Time(),
-            exchange_aliases={"BINANCE": "OKX"},
+            account_markets={"OKX": ("OKX", "BINANCE")},
         )
 
 
-def test_alias_with_its_own_connector_executes_there_but_books_into_the_target():
+def test_a_market_belongs_to_one_account():
+    with pytest.raises(ValueError, match="two accounts"):
+        AccountManager(
+            connectors={UM: MagicMock(), "OKX": MagicMock()},
+            base_currencies={UM: "USDT", "OKX": "USDT"},
+            time=_Time(),
+            account_markets={UM: (UM, "BINANCE"), "OKX": ("OKX", "BINANCE")},
+        )
+
+
+def test_account_markets_list_every_account():
+    am, _, _ = _am()
+    assert am.get_account_markets() == {UM: (UM, "BINANCE")}
+    assert am.account_of("BINANCE") == UM
+    assert am.account_of(UM) == UM
+
+
+def test_a_market_with_its_own_connector_executes_there_but_books_into_the_account():
     um, spot = MagicMock(), MagicMock()
     am = AccountManager(
         connectors={UM: um, "BINANCE": spot},
         base_currencies={UM: "USDT", "BINANCE": "USDT"},
         time=_Time(),
-        exchange_aliases={"BINANCE": UM},
+        account_markets={UM: (UM, "BINANCE")},
     )
     assert am.get_state("BINANCE") is am.get_state(UM)
     assert len(am._states) == 1
@@ -122,7 +139,6 @@ def test_alias_with_its_own_connector_executes_there_but_books_into_the_target()
 
 def test_spot_and_perp_share_one_state_and_one_capital():
     am, _, _ = _am()
-    assert am.resolve_exchange("BINANCE") == UM
     assert am.get_state("BINANCE") is am.get_state(UM)
 
     _fill(am, SPOT, "s1", 60.0, 0.30, "t1")
@@ -134,7 +150,7 @@ def test_spot_and_perp_share_one_state_and_one_capital():
     # one account, counted once — whichever exchange the caller names
     assert am.get_total_capital() == 454.0
     assert am.get_total_capital("BINANCE") == 454.0
-    # exchange-scoped reads filter by the instrument's own exchange
+    # positions and orders are per market
     assert set(am.get_positions("BINANCE")) == {SPOT}
     assert set(am.get_positions(UM)) == {PERP}
     assert set(am.get_positions()) == {SPOT, PERP}
@@ -187,12 +203,12 @@ def test_spot_sold_out_reads_flat():
     assert am.get_position(SPOT).quantity == 0.0
 
 
-def test_snapshot_from_an_aliased_connector_is_ignored():
+def test_snapshot_from_a_market_connector_is_ignored():
     am = AccountManager(
         connectors={UM: MagicMock(), "BINANCE": MagicMock()},
         base_currencies={UM: "USDT", "BINANCE": "USDT"},
         time=_Time(),
-        exchange_aliases={"BINANCE": UM},
+        account_markets={UM: (UM, "BINANCE")},
     )
     _fill(am, SPOT, "s1", 60.0, 0.30, "t1")
     # - the spot connector's snapshot holds only its slice; applied, it would read the account as flat
@@ -201,3 +217,59 @@ def test_snapshot_from_an_aliased_connector_is_ignored():
     )
     assert am.get_position(SPOT).quantity == 60.0
     assert am.get_state(UM).get_last_snapshot_as_of() is None
+
+
+def _holding_both_legs() -> AccountManager:
+    am, _, _ = _am()
+    _fill(am, SPOT, "s1", 60.0, 0.30, "t1")
+    _fill(am, PERP, "p1", -60.0, 0.30, "t2")
+    perp = Position(instrument=PERP, quantity=-60.0, pos_average_price=0.30)
+    perp.update_market_price(T0, 0.30, 1)
+    am.apply(_snapshot(T1, [_spot_pos(60.0, 0.30), perp], equity=454.0))
+    return am
+
+
+def _assert_one_entry_per_market(entries: dict) -> None:
+    # - positions per market (spot and perp TRXUSDT never collide); the account's figures once
+    assert set(entries) == {UM, "BINANCE"}
+    assert entries[UM]["positions"]["TRXUSDT"]["quantity"] == -60.0
+    assert entries["BINANCE"]["positions"]["TRXUSDT"]["quantity"] == 60.0
+    assert entries[UM]["account"] == entries["BINANCE"]["account"] == UM
+    assert entries[UM]["capital"]["total"] == pytest.approx(454.0)
+    assert entries["BINANCE"]["capital"]["total"] == 0.0
+    assert entries["BINANCE"]["balances"] == {}
+
+
+def test_state_snapshot_has_an_entry_per_market_and_the_capital_once():
+    from types import SimpleNamespace
+
+    from qubx.core.mixins.processing import ProcessingManager
+
+    am = _holding_both_legs()
+    saved: dict = {}
+    ctx = SimpleNamespace(
+        _strategy_state=SimpleNamespace(is_on_start_called=True),
+        account=am,
+        exchanges=[UM],
+        persistence=SimpleNamespace(save=saved.__setitem__),
+    )
+    pm = SimpleNamespace(_context=ctx, _account_manager=am, _time_provider=_Time(), _last_event_times=lambda ex: {})
+    ProcessingManager._handle_state_snapshot(pm, None, "state_snapshot", (None, T1))  # type: ignore[arg-type]
+
+    _assert_one_entry_per_market(saved["state"]["exchanges"])
+
+
+def test_get_state_has_an_entry_per_market_and_the_capital_once():
+    from qubx.control.builtin import _get_state
+
+    am = _holding_both_legs()
+    ctx = MagicMock()
+    ctx.account = am
+    ctx.exchanges = [UM]
+    ctx.get_total_capital.return_value = am.get_total_capital()
+    ctx.strategy = object()
+
+    result = _get_state(ctx)
+
+    assert result.status == "ok", result.error
+    _assert_one_entry_per_market(result.data["exchanges"])

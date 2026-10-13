@@ -59,7 +59,7 @@ def _connector(quote: Quote | None = None):
     channel.send = Mock(side_effect=lambda e: sent.append(e))
     conn = BinancePmCcxtConnector(
         exchange_name="BINANCE.UM",
-        aliases=("BINANCE",),
+        markets=("BINANCE.UM", "BINANCE"),
         channel=channel,
         time_provider=DummyTimeProvider(),
         exchange_manager=em,

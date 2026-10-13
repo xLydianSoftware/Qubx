@@ -70,9 +70,10 @@ class ExchangeConfig(StrictBaseModel):
     universe: list[str]
     params: dict = Field(default_factory=dict)
     base_currency: str | None = None
-    # also trade the venue's spot universe from the same account (BINANCE.PM -> BINANCE spot,
-    # bought into the cross-margin wallet)
-    spot_margin: bool = False
+    # markets this account trades, its own first; default only its own. A venue may allow more
+    # (ExchangePlugin.extra_markets): BINANCE.PM -> [BINANCE.UM, BINANCE] adds BINANCE spot, bought
+    # into the cross-margin wallet
+    markets: list[str] | None = None
 
 
 class StorageConfig(StrictBaseModel):
@@ -291,9 +292,9 @@ class SimulationConfig(StrictBaseModel):
     aux: list[StorageConfig] | StorageConfig | None = None
     portfolio_log_freq: str | None = None
     trading_session: str | dict | None = None
-    # exchange -> exchange whose account it books into, e.g. {BINANCE: BINANCE.UM} for a portfolio-margin
-    # account trading spot + perps (one capital pool)
-    unified_margin: dict[str, str] | None = None
+    # account -> the markets it trades, its own first, e.g. {BINANCE.UM: [BINANCE.UM, BINANCE]} for a
+    # portfolio-margin account trading perps + spot (one capital pool); default one account per exchange
+    accounts: dict[str, list[str]] | None = None
 
 
 class PluginsConfig(StrictBaseModel):

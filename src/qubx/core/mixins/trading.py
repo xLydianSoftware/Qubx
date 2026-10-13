@@ -498,7 +498,9 @@ class TradingManager(ITradingManager):
         return self._client_id_store.generate_id(self._context, symbol)
 
     def exchanges(self) -> list[str]:
-        return list(self._exchange_to_connector.keys())
+        # - the accounts: a market traded on another market's account may have its own connector
+        #   (paper, simulation) but is not an exchange of its own
+        return [ex for ex in self._exchange_to_connector if self._account_manager.account_of(ex) == ex]
 
     def _is_position_reducing(self, instrument: Instrument, amount: float) -> bool:
         current_position = self._account_manager.get_position(instrument)
@@ -598,7 +600,7 @@ class TradingManager(ITradingManager):
         # venue names like BINANCE.PM at the config boundary).
         if exchange in self._exchange_to_connector:
             return self._exchange_to_connector[exchange]
-        # - an exchange served by another's account (BINANCE spot on a BINANCE.PM account)
-        if (served_by := self._account_manager.resolve_exchange(exchange)) in self._exchange_to_connector:
-            return self._exchange_to_connector[served_by]
+        # - a market traded on another market's account (BINANCE spot on a BINANCE.PM account)
+        if (account := self._account_manager.account_of(exchange)) in self._exchange_to_connector:
+            return self._exchange_to_connector[account]
         raise ValueError(f"Connector for exchange {exchange} not found")

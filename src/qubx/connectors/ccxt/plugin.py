@@ -1,11 +1,12 @@
 """The built-in ``ccxt`` exchange plugin."""
 
 from qubx.connectors.ccxt.data import CcxtDataProvider
-from qubx.connectors.ccxt.factory import create_ccxt_connector
+from qubx.connectors.ccxt.factory import ccxt_connector_class, create_ccxt_connector
 from qubx.connectors.ccxt.rate_limits import create_ccxt_rate_limit_config
 from qubx.connectors.plugin import BuildContext, ConnectorBuildContext, ExchangePlugin
 from qubx.core.connector import IConnector
 from qubx.core.interfaces import IDataProvider
+from qubx.core.mixins.utils import canonical_exchange
 from qubx.rate_limiting import ExchangeRateLimitConfig
 
 
@@ -26,6 +27,10 @@ class CcxtPlugin(ExchangePlugin):
 
     def rate_limits(self, exchange_name: str) -> ExchangeRateLimitConfig | None:
         return create_ccxt_rate_limit_config(exchange_name)
+
+    def extra_markets(self, exchange_name: str) -> tuple[str, ...]:
+        # - declared by the venue's connector class (BINANCE.PM: BINANCE spot)
+        return ccxt_connector_class(canonical_exchange(exchange_name), exchange_name).EXTRA_MARKETS
 
 
 PLUGIN = CcxtPlugin()

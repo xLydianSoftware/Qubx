@@ -1,7 +1,7 @@
 """One backtest trading BINANCE spot and BINANCE.UM perps: long spot / short perp carry.
 
-Funding is booked on the perp only. With ``unified_margin={"BINANCE": "BINANCE.UM"}`` both legs
-book into one account (a portfolio-margin account): one capital pool holding the spot purchase
+Funding is booked on the perp only. With ``accounts={"BINANCE.UM": ["BINANCE.UM", "BINANCE"]}`` both
+legs book into one account (a portfolio-margin account): one capital pool holding the spot purchase
 and the perp PnL; without it each exchange is a separate account with half the capital.
 """
 
@@ -45,6 +45,7 @@ class Carry(IStrategy):
             "spot_funding": ctx.positions[spot].cumulative_funding,
             "perp_funding": ctx.positions[perp].cumulative_funding,
             "shared": am.get_state("BINANCE") is am.get_state("BINANCE.UM"),
+            "exchanges": list(ctx.exchanges),
             "capital": am.get_total_capital(),
             "capital_spot": am.get_total_capital("BINANCE"),
             "capital_perp": am.get_total_capital("BINANCE.UM"),
@@ -89,9 +90,11 @@ def _run(**kwargs) -> dict:
     return strategy.result
 
 
-def test_unified_margin_books_both_legs_into_one_account():
-    r = _run(unified_margin={"BINANCE": "BINANCE.UM"})
+def test_one_account_books_both_markets():
+    r = _run(accounts={"BINANCE.UM": ["BINANCE.UM", "BINANCE"]})
     assert r["shared"]
+    # - one account, as live: the spot market keeps its simulated exchange but is not an account
+    assert r["exchanges"] == ["BINANCE.UM"]
     assert r["spot_qty"] == pytest.approx(QTY)
     assert r["perp_qty"] == pytest.approx(-QTY)
     # - funding on the perp only: a short receives a positive rate
@@ -108,6 +111,7 @@ def test_unified_margin_books_both_legs_into_one_account():
 def test_separate_accounts_split_capital():
     r = _run()
     assert not r["shared"]
+    assert sorted(r["exchanges"]) == ["BINANCE", "BINANCE.UM"]
     assert r["perp_funding"] > 0 and r["spot_funding"] == 0.0
     assert r["capital"] == pytest.approx(r["capital_spot"] + r["capital_perp"])
     # - each account started with half; the spot account holds the coin, the perp account the margin

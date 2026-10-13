@@ -243,6 +243,9 @@ class CcxtConnector(ChannelEmitter):
     # make_client_id actually produces, so producer and classifier can never drift.
     cid_framework_prefix: str = FRAMEWORK_CID_PREFIX
 
+    # Markets an account of this venue can trade besides its own (ExchangePlugin.extra_markets).
+    EXTRA_MARKETS: tuple[str, ...] = ()
+
     # Whether the venue's ACCOUNT_UPDATE `a.B[].wb` is the ACCOUNT wallet balance.
     # True on plain UM/CM, where the futures wallet is the account. False on venues
     # whose stream reports a SUB-wallet (Binance PM) — there an absolute push would

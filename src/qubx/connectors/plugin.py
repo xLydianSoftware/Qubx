@@ -44,9 +44,9 @@ class ConnectorBuildContext(BuildContext):
     """Adds the already-built data provider the connector depends on."""
 
     data_provider: IDataProvider
-    # other exchanges whose instruments this connector serves from the same account, resolved by
-    # the runner (e.g. BINANCE for a BINANCE.PM account with spot_margin)
-    aliases: tuple[str, ...] = ()
+    # markets the account trades, its own first (ExchangeConfig.markets, validated against
+    # ExchangePlugin.extra_markets); empty means only its own
+    markets: tuple[str, ...] = ()
 
 
 class ExchangePlugin(ABC):
@@ -67,3 +67,8 @@ class ExchangePlugin(ABC):
 
     def rate_limits(self, exchange_name: str) -> ExchangeRateLimitConfig | None:
         return None
+
+    def extra_markets(self, exchange_name: str) -> tuple[str, ...]:
+        """Markets an account of this venue can trade besides its own (``ExchangeConfig.markets``),
+        e.g. BINANCE spot on a BINANCE.PM portfolio-margin account. Nothing by default."""
+        return ()
