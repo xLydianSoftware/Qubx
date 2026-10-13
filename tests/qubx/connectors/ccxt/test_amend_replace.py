@@ -2,6 +2,7 @@
 Binance PM connector whose spot (papi margin) orders cannot be modified in place."""
 
 import asyncio
+import dataclasses
 from unittest.mock import AsyncMock, Mock
 
 import ccxt
@@ -35,7 +36,8 @@ def run(coro):
 def _instr(exchange: str):
     instrument = lookup.find_symbol(exchange, "TRXUSDT")
     assert instrument is not None
-    return instrument
+    # - the venue's 5 USDT floor, pinned: the bundled instrument data may carry none
+    return dataclasses.replace(instrument, min_notional=5.0)
 
 
 SPOT = _instr("BINANCE")
