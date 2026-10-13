@@ -14,7 +14,6 @@ import pytest
 from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
 from qubx.connectors.ccxt.exchanges.binance.exchange import BinancePortfolioMargin
 from qubx.core.basics import CtrlChannel, Order, OrderRequest, OrderSide, OrderStatus, OrderType
-from qubx.core.events import OrderUpdateRejectedEvent
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 from tests.qubx.core.utils_test import DummyTimeProvider
@@ -351,7 +350,8 @@ class TestSpotSkips:
         assert conn.get_adl_level(_instr("BINANCE")) is None
         assert conn.get_adl_level(_instr("BINANCE.UM")) == 4
 
-    def test_spot_amend_is_rejected(self):
+    def test_spot_amend_runs_as_cancel_and_recreate(self):
+        # - papi has no margin amend: the connector emulates it (see test_amend_replace.py)
         conn, sent = _connector()
         order = Order(
             client_order_id="qubx_TRXUSDT_1",
@@ -364,7 +364,10 @@ class TestSpotSkips:
             venue_order_id="101",
             price=0.3,
         )
+        assert not conn._amends_in_place(order.instrument)
+        assert conn._amends_in_place(_instr("BINANCE.UM")) == bool(conn._em.exchange.has.get("editOrder", False))
         conn.update_order(order, price=0.31)
-        assert conn._captured == []  # type: ignore[attr-defined]
-        (event,) = sent
-        assert isinstance(event, OrderUpdateRejectedEvent)
+        (coro,) = conn._captured  # type: ignore[attr-defined]
+        assert coro.cr_code.co_name == "_replace_async"
+        coro.close()
+        assert sent == []
