@@ -149,6 +149,7 @@ class BinancePmCcxtConnector(CcxtConnector):
         super().__init__(**kwargs)
         self._adl_levels = {}
         self._spot_margin = "BINANCE" in markets
+        self._unpriced_warned: set[str] = set()
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         balances = super()._convert_balances(raw_balance)
@@ -209,7 +210,9 @@ class BinancePmCcxtConnector(CcxtConnector):
         A missing price raises for a holding of at least a lot: the snapshot is authoritative, and
         dropping a held asset would read as a sell. Sub-lot dust is priced from the live quote only
         (a coin the bot does not trade has none) and left out without one: dust is never a
-        presence diff, so leaving it out changes nothing.
+        presence diff, so leaving it out changes nothing. An asset whose spot market is inactive, or that
+        the venue refuses to price, is left out with a warning: one halted coin in the wallet must not
+        fail every snapshot (a traded instrument is priced from its live quote and never gets there).
         """
         if not self._spot_margin:
             return []
@@ -220,6 +223,9 @@ class BinancePmCcxtConnector(CcxtConnector):
                 continue
             market = ex.markets.get(f"{asset}/{self._spot_quote}")
             if market is None or not market.get("spot"):
+                continue
+            if market.get("active") is False:
+                self._warn_unpriced(asset, "its spot market is inactive")
                 continue
             if (net := round(_net_margin_holding(row), 12)) != 0.0:
                 held.append((ccxt_symbol_to_instrument(ex.name, market), net, row))
@@ -249,16 +255,38 @@ class BinancePmCcxtConnector(CcxtConnector):
                 prices[instrument] = quote.mid_price()
         missing = {self._market_id(i): i for i in instruments if i not in prices}
         if missing:
-            # - spot ticker endpoint directly: ccxt's fetch_tickers on this class takes the linear path
-            rows = await self._em.exchange.publicGetTickerPrice(
-                {"symbols": json.dumps(list(missing), separators=(",", ":"))}
-            )
-            for row in rows if isinstance(rows, list) else []:
+            refused: set[str] = set()
+            try:
+                rows = await self._spot_tickers(list(missing))
+            except ccxt.NetworkError:
+                raise
+            except ccxt.ExchangeError:
+                # - the venue refuses the batch for one bad symbol (-1121): price them one by one
+                rows = []
+                for market_id in missing:
+                    try:
+                        rows.extend(await self._spot_tickers([market_id]))
+                    except ccxt.NetworkError:
+                        raise
+                    except ccxt.ExchangeError as e:
+                        refused.add(market_id)
+                        self._warn_unpriced(missing[market_id].symbol, f"the venue refuses to price it ({e})")
+            for row in rows:
                 if (instrument := missing.get(row.get("symbol"))) is not None and (price := info_float(row, "price")):
                     prices[instrument] = price
-            if unpriced := [i.symbol for i in missing.values() if i not in prices]:
+            if unpriced := [i.symbol for m, i in missing.items() if i not in prices and m not in refused]:
                 raise ValueError(f"no price for spot holding(s) {unpriced}")
         return prices
+
+    async def _spot_tickers(self, market_ids: list[str]) -> list[dict[str, Any]]:
+        # - spot ticker endpoint directly: ccxt's fetch_tickers on this class takes the linear path
+        rows = await self._em.exchange.publicGetTickerPrice({"symbols": json.dumps(market_ids, separators=(",", ":"))})
+        return rows if isinstance(rows, list) else []
+
+    def _warn_unpriced(self, name: str, why: str) -> None:
+        if name not in self._unpriced_warned:
+            self._unpriced_warned.add(name)
+            logger.warning(f"[{self.exchange_name}] spot holding {name} left out of the snapshot: {why}")
 
     async def _fetch_extra_open_orders(self) -> list[dict]:
         orders = await super()._fetch_extra_open_orders()

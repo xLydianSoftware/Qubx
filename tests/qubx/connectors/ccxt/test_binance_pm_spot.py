@@ -7,8 +7,10 @@ margin open orders in the snapshot, spot skipped for leverage/ADL/amend. Offline
 """
 
 import asyncio
+import json
 from unittest.mock import AsyncMock, MagicMock, Mock
 
+import ccxt
 import pytest
 
 from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
@@ -314,6 +316,51 @@ class TestSpotPositionsFromBalances:
             ex.publicGetTickerPrice = AsyncMock(return_value=[])
             with pytest.raises(ValueError):
                 run(conn._balance_positions(raw))
+        finally:
+            run(ex.close())
+
+    def test_an_inactive_spot_market_is_left_out_not_failing_the_snapshot(self):
+        ex = _pm_exchange()
+        try:
+            ex.set_markets(
+                [TRX_SPOT, TRX_SWAP, USDC_SPOT, {**_market("ADA/USDT", "ADAUSDT", "ADA", "spot"), "active": False}]
+            )
+            conn, _ = _connector(exchange=ex, quote=None)
+            ex.publicGetTickerPrice = AsyncMock(return_value=[{"symbol": "TRXUSDT", "price": "0.33"}])
+            raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"), _balance_row("ADA", crossMarginAsset="100"))
+            (pos,) = run(conn._balance_positions(raw))
+            assert pos.instrument.symbol == "TRXUSDT"
+            assert ex.publicGetTickerPrice.await_args.args[0] == {"symbols": '["TRXUSDT"]'}
+        finally:
+            run(ex.close())
+
+    def test_a_symbol_the_venue_refuses_to_price_is_left_out_the_rest_priced(self):
+        ex = _pm_exchange()
+        try:
+            ex.set_markets([TRX_SPOT, TRX_SWAP, USDC_SPOT, _market("ADA/USDT", "ADAUSDT", "ADA", "spot")])
+            conn, _ = _connector(exchange=ex, quote=None)
+
+            async def tickers(params):
+                symbols = json.loads(params["symbols"])
+                if "ADAUSDT" in symbols:
+                    raise ccxt.BadSymbol('binance {"code":-1121,"msg":"Invalid symbol."}')
+                return [{"symbol": "TRXUSDT", "price": "0.33"}]
+
+            ex.publicGetTickerPrice = AsyncMock(side_effect=tickers)
+            raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"), _balance_row("ADA", crossMarginAsset="100"))
+            (pos,) = run(conn._balance_positions(raw))
+            assert pos.instrument.symbol == "TRXUSDT" and pos.position_avg_price == pytest.approx(0.33)
+            assert ex.publicGetTickerPrice.await_count == 3  # - the batch, then one request per symbol
+        finally:
+            run(ex.close())
+
+    def test_a_network_error_while_pricing_still_fails_the_snapshot(self):
+        ex = _pm_exchange()
+        try:
+            conn, _ = _connector(exchange=ex, quote=None)
+            ex.publicGetTickerPrice = AsyncMock(side_effect=ccxt.RequestTimeout("timeout"))
+            with pytest.raises(ccxt.NetworkError):
+                run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="60"))))
         finally:
             run(ex.close())
 
