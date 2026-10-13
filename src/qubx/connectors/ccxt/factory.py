@@ -201,7 +201,7 @@ def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
     return get_ccxt_connector(
         canonical_exchange(ctx.exchange_name),
         venue_name=ctx.exchange_name,
-        spot_exchange=ctx.spot_exchange,
+        aliases=ctx.aliases,
         channel=ctx.channel,
         time_provider=ctx.time_provider,
         exchange_manager=exchange_manager,
