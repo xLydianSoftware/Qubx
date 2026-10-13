@@ -15,6 +15,7 @@ import datetime as dt
 import os
 import re
 import threading
+import time
 from collections.abc import Callable, Hashable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -308,6 +309,10 @@ def _row_chunks(batches: Iterator[pa.RecordBatch], chunksize: int) -> Iterator[p
 class IcebergLakeReader(IReader):
     """Reads one (exchange, market) slice of the lake."""
 
+    # - every loaded Table brings its own FileIO (an S3 client with threads and eventfds); loading one per
+    # - read accumulates them faster than they are collected, so a table is reused for this many seconds
+    TABLE_TTL_SECONDS = 600.0
+
     def __init__(
         self,
         catalog: Catalog,
@@ -329,6 +334,21 @@ class IcebergLakeReader(IReader):
         self._resolved: list[LakeTable] | None = None
         self._symbols: dict[tuple[str, ...], list[str]] = {}
         self._days: dict[tuple[str, ...], dict[str, tuple[np.datetime64, np.datetime64]]] = {}
+        self._loaded: dict[tuple[str, ...], tuple[Table, float]] = {}
+        self._loaded_lock = threading.Lock()
+
+    def _table(self, identifier: tuple[str, ...]) -> Table:
+        """The loaded table, reloaded once it is older than `TABLE_TTL_SECONDS` so a long-lived reader
+        still sees new snapshots."""
+        now = time.monotonic()
+        with self._loaded_lock:
+            hit = self._loaded.get(identifier)
+            if hit is not None and now - hit[1] < self.TABLE_TTL_SECONDS:
+                return hit[0]
+        table = self._catalog.load_table(identifier)
+        with self._loaded_lock:
+            self._loaded[identifier] = (table, now)
+        return table
 
     def _discover(self) -> None:
         """Layout discovery costs a namespace walk and one `load_table` per
@@ -433,7 +453,7 @@ class IcebergLakeReader(IReader):
     def _plan(
         self, table: LakeTable, symbols: list[str] | None, start, stop, columns: list[str] | None = None
     ) -> tuple[Table, DataScan]:
-        source = self._catalog.load_table(table.identifier)
+        source = self._table(table.identifier)
         time_column = table.time_column
         names = source.schema().column_names
         if columns is None:
@@ -548,7 +568,7 @@ class IcebergLakeReader(IReader):
         cached = self._days.get(identifier)
         if cached is not None:
             return cached
-        source = self._catalog.load_table(identifier)
+        source = self._table(identifier)
         data = source.scan(selected_fields=(SYMBOL_COLUMN, TIME_COLUMN)).to_arrow()
         spans = data.group_by(SYMBOL_COLUMN).aggregate([(TIME_COLUMN, "min"), (TIME_COLUMN, "max")])
         index = {
@@ -568,7 +588,7 @@ class IcebergLakeReader(IReader):
         cached = self._symbols.get(table.identifier)
         if cached is not None:
             return cached
-        source = self._catalog.load_table(table.identifier)
+        source = self._table(table.identifier)
         partitions = [f.name for f in source.spec().fields]
         values = source.inspect.partitions().column("partition").to_pylist()
         if SYMBOL_COLUMN in partitions:
@@ -612,7 +632,7 @@ class IcebergLakeReader(IReader):
                 raise ValueError(f"{'.'.join(discovery)} has no data for {data_id}")
             return span
 
-        source = self._catalog.load_table(table.identifier)
+        source = self._table(table.identifier)
         if SYMBOL_COLUMN in [f.name for f in source.spec().fields]:
             return self._range_from_files(source, table, data_id)
         return self._range_from_scan(source, table, data_id)
