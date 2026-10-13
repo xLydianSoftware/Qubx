@@ -225,17 +225,34 @@ class TestBarTableSelection:
         assert _picked(reader, "ohlc(1d)") == "binance.umswap.candles_1d"
 
     @pytest.mark.parametrize("order", [_PROD_ORDER, list(reversed(_PROD_ORDER))])
-    def test_resampled_timeframe_uses_coarsest_dividing_table(self, order):
+    def test_resampled_timeframe_uses_finest_dividing_table(self, order):
         reader = _bar_reader(order)
         assert _picked(reader, "ohlc(5min)") == "binance.umswap.candles_1m"
-        assert _picked(reader, "ohlc(30min)") == "binance.umswap.candles_15m"
-        assert _picked(reader, "ohlc(4h)") == "binance.umswap.candles_1h"
-        assert _picked(reader, "ohlc(1w)") == "binance.umswap.candles_1d"
+        assert _picked(reader, "ohlc(30min)") == "binance.umswap.candles_1m"
+        assert _picked(reader, "ohlc(4h)") == "binance.umswap.candles_1m"
+        assert _picked(reader, "ohlc(1w)") == "binance.umswap.candles_1m"
 
-    def test_divisor_preferred_over_coarser_non_divisor(self):
+    def test_xdata_like_tables_resample_from_1m(self):
+        # - only ohlc_1m/ohlc_15m: exact 15min hits ohlc_15m, coarser frames resample the finest table
+        reader = _bar_reader(["binance.umswap.ohlc_15m", "binance.umswap.ohlc_1m"])
+        assert _picked(reader, "ohlc(15min)") == "binance.umswap.ohlc_15m"
+        assert _picked(reader, "ohlc(1h)") == "binance.umswap.ohlc_1m"
+        assert _picked(reader, "ohlc(1d)") == "binance.umswap.ohlc_1m"
+
+    def test_divisor_preferred_over_non_divisor(self):
         tables = ["binance.umswap.candles_1m", "binance.umswap.candles_2h"]
         reader = _bar_reader(tables, pgc=_OhlcPGC({t: _UMSWAP_BARS["binance.umswap.candles_1m"] for t in tables}))
         assert _picked(reader, "ohlc(3h)") == "binance.umswap.candles_1m"
+        assert _picked(reader, "ohlc(4h)") == "binance.umswap.candles_1m"
+        reader = _bar_reader(
+            ["binance.umswap.candles_2h", "binance.umswap.candles_3h"],
+            pgc=_OhlcPGC(
+                {
+                    t: _UMSWAP_BARS["binance.umswap.candles_1m"]
+                    for t in ["binance.umswap.candles_2h", "binance.umswap.candles_3h"]
+                }
+            ),
+        )
         assert _picked(reader, "ohlc(4h)") == "binance.umswap.candles_2h"
 
     def test_candles_preferred_over_ohlc_kernel_tables(self):
@@ -247,7 +264,7 @@ class TestBarTableSelection:
     def test_ohlc_kernel_tables_used_when_no_candles(self):
         reader = _bar_reader(["binance.umswap.ohlc_1m", "binance.umswap.ohlc_1h"])
         assert _picked(reader, "ohlc(1h)") == "binance.umswap.ohlc_1h"
-        assert _picked(reader, "ohlc(15min)") == "binance.umswap.ohlc_1m"
+        assert _picked(reader, "ohlc(4h)") == "binance.umswap.ohlc_1m"
 
     def test_symbols_lookup_follows_same_rule(self):
         reader = _bar_reader(self._PROD_ORDER)

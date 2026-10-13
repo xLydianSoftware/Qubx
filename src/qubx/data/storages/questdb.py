@@ -481,7 +481,7 @@ class QuestDBReader(IReader):
 
         1. ``candles_*`` over any other naming (``ohlc_*`` kernel tables lack quote_volume / count / taker_*)
         2. table timeframe equal to the requested one, then one that divides it, then any other
-        3. coarser table timeframe (fewer rows to resample)
+        3. finer table timeframe (a coarse table's missing bars would silently drop data from the resample)
         4. table name, so the choice never depends on the order ``tables()`` lists them in
         """
         _type_ctor = DataType.OHLC if x.dtype == DataType.OHLC else DataType.AGGREGATED_LIQUIDATIONS
@@ -501,7 +501,7 @@ class QuestDBReader(IReader):
             tf = timedelta_to_str(f) if self.synthetic_ohlc_timeframes_types else x.data_timeframe
             dt = _type_ctor[tf]
             fit = 2 if f == base else (1 if f % base == pd.Timedelta(0) else 0)
-            keys.append((dt, (family, fit, base, x.table_name)))
+            keys.append((dt, (family, fit, -base, x.table_name)))
         return keys
 
     def _build_lookups(self, available_data: list[xLTableMetaInfo], symbols_by_table: dict[str, set[str]]):
