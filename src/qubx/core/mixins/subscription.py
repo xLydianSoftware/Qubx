@@ -16,6 +16,22 @@ from qubx.utils.misc import synchronized
 
 from .utils import EXCHANGE_MAPPINGS
 
+# - data that exists for derivatives only: a spot instrument is never subscribed to (nor warmed up for) them
+_DERIVATIVES_ONLY = frozenset(
+    {
+        DataType.FUNDING_RATE,
+        DataType.FUNDING_PAYMENT,
+        DataType.OPEN_INTEREST,
+        DataType.LIQUIDATION,
+        DataType.AGGREGATED_LIQUIDATIONS,
+    }
+)
+
+
+def _applies_to(sub: str, instrument: Instrument) -> bool:
+    return not (instrument.is_spot() and DataType.from_str(sub)[0] in _DERIVATIVES_ONLY)
+
+
 # Channel d_type under which a deferred subscription swap rides the CtrlChannel as a
 # (None, SUBSCRIPTION_SWAP_EVENT, apply_callable, False) tuple; posted by the warmup
 # worker when its fetch completes, dispatched to ProcessingManager._handle_subscription_swap
@@ -224,7 +240,11 @@ class SubscriptionManager(ISubscriptionManager):
                 _added_instruments.update({i for instrs in self._desired.values() for i in instrs})
 
             # - subscribe collection
-            _updated_instruments = _current_sub_instruments.union(_added_instruments).difference(_removed_instruments)
+            _updated_instruments = {
+                i
+                for i in _current_sub_instruments.union(_added_instruments).difference(_removed_instruments)
+                if _applies_to(_sub, i)
+            }
             # - intent is recorded BEFORE the provider calls, so a raising provider leaves
             #   the universe intact and the watchdog repairs it
             if _updated_instruments:
@@ -389,7 +409,8 @@ class SubscriptionManager(ISubscriptionManager):
             _warmup_period = self._sub_to_warmup.get(subscription_type)
             if _warmup_period is not None:
                 for instrument in instruments:
-                    self._pending_warmups[(subscription_type, instrument)] = _warmup_period
+                    if _applies_to(subscription_type, instrument):
+                        self._pending_warmups[(subscription_type, instrument)] = _warmup_period
 
         # - if base subscription, then we need to fetch historical OHLC data for warmup
         if subscription_type == self._base_sub:
@@ -450,7 +471,8 @@ class SubscriptionManager(ISubscriptionManager):
             return
         _sub_instruments = data_provider.get_subscribed_instruments(sub)
         for instr in candidate_instruments.difference(_sub_instruments):
-            self._pending_warmups[(sub, instr)] = _warmup_period
+            if _applies_to(sub, instr):
+                self._pending_warmups[(sub, instr)] = _warmup_period
 
     def _get_pending_warmups_for_provider(self, data_provider: IDataProvider) -> dict[tuple[str, Instrument], str]:
         # - by serving provider: a venue provider (BINANCE.PM) serves instruments of other exchanges

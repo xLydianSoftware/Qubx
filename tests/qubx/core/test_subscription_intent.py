@@ -309,3 +309,44 @@ def test_one_provider_serving_two_exchanges_gets_one_subscribe_with_both():
     (call,) = provider.subscribe.call_args_list
     assert call.args[1] == {perp, spot}
     assert call.kwargs == {"reset": True}
+
+
+# --- derivatives-only data never reaches a spot instrument ---
+
+
+def _subscribed_with(provider: Mock, sub: str) -> set:
+    return {i for c in provider.subscribe.call_args_list if c.args[0] == sub for i in c.args[1]}
+
+
+def test_funding_is_never_subscribed_for_spot_instruments():
+    """A spot + perp universe (BINANCE.PM trading BINANCE spot): funding, open interest and liquidations exist for
+    the perp only; asking for them on spot made the ccxt funding watcher reject the whole batch."""
+    perp_provider, spot_provider = _provider(), _provider("BINANCE")
+    manager = _manager(perp_provider, spot_provider)
+    perp, spot = _instrument("BTCUSDT"), _instrument("BTCUSDT", "BINANCE")
+
+    manager.subscribe(DataType.ORDERBOOK, [perp, spot])
+    manager.subscribe(DataType.FUNDING_PAYMENT, [perp, spot])
+    manager.subscribe(DataType.OPEN_INTEREST)  # - global: expands to the universe
+    manager.commit()
+
+    assert _subscribed_with(perp_provider, DataType.FUNDING_PAYMENT) == {perp}
+    assert _subscribed_with(perp_provider, DataType.OPEN_INTEREST) == {perp}
+    assert _subscribed_with(spot_provider, DataType.FUNDING_PAYMENT) == set()
+    assert _subscribed_with(spot_provider, DataType.OPEN_INTEREST) == set()
+    assert _subscribed_with(spot_provider, DataType.ORDERBOOK) == {spot}
+    assert not manager.has_subscription(spot, DataType.FUNDING_PAYMENT)
+
+
+def test_no_funding_warmup_for_spot_instruments():
+    # - simulation providers: the warmup runs synchronously in commit()
+    perp_provider, spot_provider = _provider(simulation=True), _provider("BINANCE", simulation=True)
+    manager = _manager(perp_provider, spot_provider)
+    perp, spot = _instrument("BTCUSDT"), _instrument("BTCUSDT", "BINANCE")
+    manager.set_warmup({DataType.FUNDING_PAYMENT: "3d"})
+    manager.subscribe(DataType.FUNDING_PAYMENT, [perp, spot])
+    manager.commit()
+    warmed = {
+        i for c in (*perp_provider.warmup.call_args_list, *spot_provider.warmup.call_args_list) for (_s, i) in c.args[0]
+    }
+    assert warmed == {perp}
