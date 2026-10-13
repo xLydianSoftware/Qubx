@@ -163,3 +163,104 @@ class TestQuestDbStorages:
         assert x4.market_type == "UNIVERSE"
         assert x4.dtype == DataType.RECORD
         assert x4.alias_for_record_type == "factors"
+
+
+class _OhlcPGC:
+    """Answers the OHLC aggregation and column probe; records which table each data query hit."""
+
+    def __init__(self, columns: dict[str, list[str]]):
+        self.columns = columns
+        self.queries: list[str] = []
+
+    def execute(self, query: str):
+        self.queries.append(query)
+        m = re.search(r'from "([^"]+)"', query, re.IGNORECASE)
+        assert m is not None, query
+        if "limit 0" in query.lower():
+            return self.columns[m.group(1)], []
+        return ["timestamp", "symbol", "open", "high", "low", "close", "volume"], []
+
+
+_UMSWAP_BARS = {
+    "binance.umswap.ohlc_1m": ["timestamp", "symbol", "open", "high", "low", "close", "volume", "volume_notional"],
+    "binance.umswap.ohlc_1d": ["timestamp", "symbol", "open", "high", "low", "close", "volume", "volume_notional"],
+    "binance.umswap.ohlc_1h": ["timestamp", "symbol", "open", "high", "low", "close", "volume", "volume_notional"],
+    "binance.umswap.candles_1m": ["timestamp", "symbol", "open", "high", "low", "close", "volume", "quote_volume"],
+    "binance.umswap.ohlc_15m": ["timestamp", "symbol", "open", "high", "low", "close", "volume", "volume_notional"],
+    "binance.umswap.candles_1h": ["timestamp", "symbol", "open", "high", "low", "close", "volume", "quote_volume"],
+    "binance.umswap.candles_1d": ["timestamp", "symbol", "open", "high", "low", "close", "volume", "quote_volume"],
+    "binance.umswap.candles_15m": ["timestamp", "symbol", "open", "high", "low", "close", "volume", "quote_volume"],
+}
+
+
+def _bar_reader(tables: list[str], synthetic: bool = True, pgc=None) -> QuestDBReader:
+    metas = [xLTableMetaInfo.decode_table_metadata(t) for t in tables]
+    return QuestDBReader(
+        "BINANCE.UM",
+        "SWAP",
+        metas,  # type: ignore[arg-type]
+        pgc or _OhlcPGC(_UMSWAP_BARS),
+        synthetic_ohlc_timeframes_types=synthetic,
+        min_symbols_for_all_data_request=50,
+        symbols_by_table={t: {"BTCUSDT"} for t in tables},
+        manifest_manager=None,
+        lookup_refresh_interval=timedelta(days=365),
+    )
+
+
+def _picked(reader: QuestDBReader, dtype: str) -> str:
+    return reader._dtype_lookup[dtype][1].table_name
+
+
+class TestBarTableSelection:
+    # - the order QuantLab's tables() returned in production: candles_15m last
+    _PROD_ORDER = list(_UMSWAP_BARS)
+
+    @pytest.mark.parametrize("order", [_PROD_ORDER, list(reversed(_PROD_ORDER)), sorted(_PROD_ORDER)])
+    def test_exact_timeframe_candles_table_wins_in_any_order(self, order):
+        reader = _bar_reader(order)
+        assert _picked(reader, "ohlc(1min)") == "binance.umswap.candles_1m"
+        assert _picked(reader, "ohlc(15min)") == "binance.umswap.candles_15m"
+        assert _picked(reader, "ohlc(1h)") == "binance.umswap.candles_1h"
+        assert _picked(reader, "ohlc(1d)") == "binance.umswap.candles_1d"
+
+    @pytest.mark.parametrize("order", [_PROD_ORDER, list(reversed(_PROD_ORDER))])
+    def test_resampled_timeframe_uses_coarsest_dividing_table(self, order):
+        reader = _bar_reader(order)
+        assert _picked(reader, "ohlc(5min)") == "binance.umswap.candles_1m"
+        assert _picked(reader, "ohlc(30min)") == "binance.umswap.candles_15m"
+        assert _picked(reader, "ohlc(4h)") == "binance.umswap.candles_1h"
+        assert _picked(reader, "ohlc(1w)") == "binance.umswap.candles_1d"
+
+    def test_divisor_preferred_over_coarser_non_divisor(self):
+        tables = ["binance.umswap.candles_1m", "binance.umswap.candles_2h"]
+        reader = _bar_reader(tables, pgc=_OhlcPGC({t: _UMSWAP_BARS["binance.umswap.candles_1m"] for t in tables}))
+        assert _picked(reader, "ohlc(3h)") == "binance.umswap.candles_1m"
+        assert _picked(reader, "ohlc(4h)") == "binance.umswap.candles_2h"
+
+    def test_candles_preferred_over_ohlc_kernel_tables(self):
+        # - only ohlc_1h at the exact timeframe: candles_15m still serves ohlc(1h), keeping quote_volume
+        tables = ["binance.umswap.candles_15m", "binance.umswap.ohlc_1h"]
+        for order in (tables, list(reversed(tables))):
+            assert _picked(_bar_reader(order), "ohlc(1h)") == "binance.umswap.candles_15m"
+
+    def test_ohlc_kernel_tables_used_when_no_candles(self):
+        reader = _bar_reader(["binance.umswap.ohlc_1m", "binance.umswap.ohlc_1h"])
+        assert _picked(reader, "ohlc(1h)") == "binance.umswap.ohlc_1h"
+        assert _picked(reader, "ohlc(15min)") == "binance.umswap.ohlc_1m"
+
+    def test_symbols_lookup_follows_same_rule(self):
+        reader = _bar_reader(self._PROD_ORDER)
+        assert reader._symbols_lookup["BTCUSDT"]["ohlc(1h)"].table_name == "binance.umswap.candles_1h"
+
+    def test_non_synthetic_mode_exact_keys_prefer_candles(self):
+        reader = _bar_reader(["binance.umswap.candles_1h", "binance.umswap.ohlc_1h"], synthetic=False)
+        assert _picked(reader, "ohlc(1h)") == "binance.umswap.candles_1h"
+
+    def test_read_queries_chosen_table(self):
+        pgc = _OhlcPGC(_UMSWAP_BARS)
+        reader = _bar_reader(self._PROD_ORDER, pgc=pgc)
+        reader.read(["BTCUSDT"], "ohlc(1h)", start="2026-10-01", stop="2026-10-02")
+        data_q = [q for q in pgc.queries if "limit 0" not in q.lower()]
+        assert len(data_q) == 1 and 'from "binance.umswap.candles_1h"' in data_q[0]
+        assert "SAMPLE by 1h" in data_q[0]

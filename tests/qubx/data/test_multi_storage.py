@@ -571,3 +571,98 @@ class TestMultiStorage:
             full_df.reset_index(drop=True),
             check_index_type=False,
         )
+
+
+# ---------------------------------------------------------------------------
+# MultiReader — schema union across sources
+# ---------------------------------------------------------------------------
+
+
+def _bars(data_id: str, times: list[str], closes: list[float], unit: str = "us", **extra) -> RawData:
+    cols = {
+        "timestamp": pa.array([pd.Timestamp(t) for t in times], type=pa.timestamp(unit)),
+        "close": pa.array(closes, type=pa.float64()),
+    }
+    cols.update(extra)
+    return RawData.from_record_batch(data_id, DataType.OHLC["1h"], pa.RecordBatch.from_pydict(cols))
+
+
+class TestMultiReaderSchemaUnion:
+    def test_column_missing_in_one_source_is_kept_with_nulls(self):
+        # - cron-like source has quote_volume/count, xdata-like source has volume_notional
+        cron = _bars(
+            "BTCUSDT",
+            ["2024-01-01 00:00", "2024-01-01 01:00"],
+            [1.0, 2.0],
+            quote_volume=pa.array([10.0, 20.0]),
+            count=pa.array([5, 6], type=pa.int64()),
+        )
+        xdata = _bars(
+            "BTCUSDT", ["2024-01-01 01:00", "2024-01-01 02:00"], [2.5, 3.0], volume_notional=pa.array([7.0, 8.0])
+        )
+
+        result = MultiReader([_mock_reader(xdata), _mock_reader(cron)]).read("BTCUSDT", DataType.OHLC["1h"])
+
+        assert result.data.schema.names == ["timestamp", "close", "volume_notional", "quote_volume", "count"]
+        df = result.data.to_pandas()
+        # - exact dedup, last reader (cron) wins on 01:00
+        assert df["close"].tolist() == [1.0, 2.0, 3.0]
+        assert df["quote_volume"].tolist()[:2] == [10.0, 20.0] and np.isnan(df["quote_volume"].iloc[2])
+        # - dedup is row-level: the winning cron row at 01:00 brings no volume_notional
+        assert df["volume_notional"].isna().tolist() == [True, True, False]
+        assert df["volume_notional"].iloc[2] == 8.0
+        assert result.data.column("count").type == pa.int64()
+        assert result.data.column("count").to_pylist() == [5, 6, None]
+
+    def test_schema_does_not_depend_on_which_sources_return_rows(self):
+        cron = _bars("BTCUSDT", ["2024-01-01 00:00"], [1.0], quote_volume=pa.array([10.0]))
+        xdata = _bars("BTCUSDT", ["2024-01-01 01:00"], [2.0])
+        both = MultiReader([_mock_reader(xdata), _mock_reader(cron)]).read("BTCUSDT", DataType.OHLC["1h"])
+        cron_only = MultiReader([_mock_reader(None), _mock_reader(cron)]).read("BTCUSDT", DataType.OHLC["1h"])
+        assert "quote_volume" in both.data.schema.names
+        assert "quote_volume" in cron_only.data.schema.names
+
+    def test_numeric_type_mismatch_promoted_to_float(self):
+        a = _bars("BTCUSDT", ["2024-01-01 00:00"], [1.0], count=pa.array([5], type=pa.int64()))
+        b = _bars("BTCUSDT", ["2024-01-01 01:00"], [2.0], count=pa.array([6.5], type=pa.float64()))
+        result = MultiReader([_mock_reader(a), _mock_reader(b)]).read("BTCUSDT", DataType.OHLC["1h"])
+        assert result.data.column("count").type == pa.float64()
+        assert result.data.column("count").to_pylist() == [5.0, 6.5]
+
+    def test_timestamp_precision_unified_to_finest(self):
+        a = _bars("BTCUSDT", ["2024-01-01 00:00"], [1.0], unit="ms")
+        b = _bars("BTCUSDT", ["2024-01-01 01:00"], [2.0], unit="us")
+        result = MultiReader([_mock_reader(a), _mock_reader(b)]).read("BTCUSDT", DataType.OHLC["1h"])
+        assert result.data.schema.field("timestamp").type == pa.timestamp("us")
+        assert len(result) == 2
+
+    def test_multi_symbol_single_source_symbol_gets_union_schema(self):
+        # - ETH only comes from xdata, BTC from both: both symbols must expose the same columns
+        xdata = RawMultiData(
+            [
+                _bars("BTCUSDT", ["2024-01-01 01:00"], [2.0], volume_notional=pa.array([7.0])),
+                _bars("ETHUSDT", ["2024-01-01 01:00"], [20.0], volume_notional=pa.array([70.0])),
+            ]
+        )
+        cron = RawMultiData([_bars("BTCUSDT", ["2024-01-01 00:00"], [1.0], quote_volume=pa.array([10.0]))])
+        result = MultiReader([_mock_reader(xdata), _mock_reader(cron)]).read(
+            ["BTCUSDT", "ETHUSDT"], DataType.OHLC["1h"]
+        )
+        assert result["BTCUSDT"].data.schema.names == result["ETHUSDT"].data.schema.names
+        assert "quote_volume" in result["ETHUSDT"].data.schema.names
+        assert result["ETHUSDT"].data.column("quote_volume").to_pylist() == [None]
+
+    def test_failing_source_warns_once_per_dtype(self, monkeypatch):
+        from qubx.data.storages import multi as multi_mod
+
+        warnings: list[str] = []
+        monkeypatch.setattr(multi_mod.logger, "warning", lambda m, *a, **k: warnings.append(m))
+        bad = MagicMock(spec=IReader)
+        bad.read.side_effect = RuntimeError("Can't find table")
+        good = _mock_reader(_bars("BTCUSDT", ["2024-01-01 00:00"], [1.0]))
+        mr = MultiReader([bad, good])
+        for _ in range(3):
+            mr.read("BTCUSDT", DataType.OHLC["1h"])
+        mr.read("BTCUSDT", DataType.OHLC["1d"])
+        assert len(warnings) == 2
+        assert "Can't find table" in warnings[0]
