@@ -20,6 +20,7 @@ from qubx.core.events import (
 )
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
+from qubx.rate_limiting import RateLimitGateTimeout
 from tests.qubx.core.utils_test import DummyTimeProvider
 
 CID = "qubx_TRXUSDT_1"
@@ -331,6 +332,63 @@ class TestCancelDuringReplace:
         assert [c.args[0] for c in ex.cancel_order.await_args_list] == ["A", "B"]
         assert isinstance(sent[0], OrderUpdatedEvent)
         assert isinstance(sent[-1], OrderCanceledEvent) and sent[-1].venue_order_id == "B"
+
+    @pytest.mark.parametrize(
+        "outcome",
+        [
+            pytest.param("refused", id="venue-refuses-the-replace-cancel"),
+            pytest.param("unknown", id="replace-cancel-outcome-unknown"),
+            pytest.param("rate_limited", id="replace-cancel-rate-limited"),
+        ],
+    )
+    def test_a_cancel_held_back_by_a_replace_that_left_the_order_live_is_sent(self, outcome):
+        """The strategy cancels while the replace's own cancel is out; the replace then ends with the old order
+        possibly still live: the held-back cancel must reach the venue, not be dropped."""
+        conn, ex, sent, captured = _connector()
+        calls: list = []
+
+        async def cancel_with_retry(cid, vid, symbol, is_trigger=False):
+            calls.append((cid, vid))
+            if len(calls) == 1:
+                conn.cancel_order(_order())  # - arrives while the replace is in flight
+                await captured.pop()
+                if outcome == "refused":
+                    return False, None
+                if outcome == "unknown":
+                    raise ccxt.RequestTimeout("timeout")
+                raise RateLimitGateTimeout("gate closed")
+            return True, {"id": vid, "status": "canceled", "clientOrderId": cid}
+
+        conn._cancel_with_retry = cancel_with_retry  # type: ignore[method-assign]
+        _replace(conn, captured)
+        ex.create_order.assert_not_called()
+        assert calls == [(CID, "A"), (CID, "A")]
+        assert isinstance(sent[-1], OrderCanceledEvent) and sent[-1].venue_order_id == "A"
+        assert CID not in conn._replacements
+
+    def test_a_cancel_held_back_while_the_recreate_is_unknown_goes_by_client_id(self, monkeypatch):
+        monkeypatch.setattr("qubx.connectors.ccxt.connector.asyncio.sleep", AsyncMock())
+        conn, ex, sent, captured = _connector()
+
+        async def create(**_k):
+            conn.cancel_order(_order())
+            await captured.pop()
+            raise ccxt.RequestTimeout("timeout")
+
+        ex.create_order.side_effect = create
+        ex.fetch_order_with_client_order_id.side_effect = ccxt.NetworkError("down")
+        ex.cancel_order_with_client_order_id = AsyncMock(return_value={"id": "B", "status": "canceled"})
+        _replace(conn, captured)
+        ex.cancel_order_with_client_order_id.assert_awaited_once()
+        assert ex.cancel_order_with_client_order_id.await_args.args[0] == CID
+
+    def test_no_cancel_is_sent_when_none_was_asked(self):
+        conn, ex, sent, captured = _connector()
+        ex.cancel_order.side_effect = ccxt.RequestTimeout("timeout")
+        conn.cancel_retry_interval = 0
+        conn.max_cancel_retries = 1
+        _replace(conn, captured)
+        assert ex.cancel_order.await_count == 1 and sent == []
 
     def test_a_cancel_addressed_to_the_old_venue_id_goes_to_the_new_one(self):
         conn, ex, sent, captured = _connector()

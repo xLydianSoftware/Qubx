@@ -931,17 +931,17 @@ class CcxtConnector(ChannelEmitter):
             await self._acquire_endpoint_budget("cancel_order")
             ok, response = await self._cancel_with_retry(cid, vid, symbol)
         except RateLimitGateTimeout as e:
-            self._end_replace(cid, record)
+            self._end_replace(cid, record, vid, symbol)
             self._emit_update_rejected(cid, vid, e)
             return
         except ccxt.NetworkError as e:
             # - UNKNOWN whether the cancel landed: no recreate (two live orders would be worse than
             #   none); stop filtering so the venue's own report of the old order gets through
-            self._end_replace(cid, record)
+            self._end_replace(cid, record, vid, symbol)
             logger.warning(f"[{self.exchange_name}] replace of {cid}: cancel outcome unknown ({e}); leaving inflight")
             return
         if ok is False:
-            self._end_replace(cid, record)
+            self._end_replace(cid, record, vid, symbol)
             self._emit_update_rejected(cid, vid, ccxt.OperationRejected("venue refused the cancel of the replace"))
             return
         if ok is None:
@@ -1052,7 +1052,8 @@ class CcxtConnector(ChannelEmitter):
             logger.error(
                 f"[{self.exchange_name}] replace of {cid}: recreate outcome still unknown; reconciler takes over"
             )
-            self._end_replace(cid, record)
+            # - a recreated order's venue id is unknown here: a pending cancel goes by client id
+            self._end_replace(cid, record, None, symbol)
             return
         self._finish_replace_as_cancel(cid, old_vid, record, "recreate did not land")
 
@@ -1061,11 +1062,18 @@ class CcxtConnector(ChannelEmitter):
         self._end_replace(cid, record)
         self.send(OrderCanceledEvent(instrument=None, client_order_id=cid, venue_order_id=vid))
 
-    def _end_replace(self, cid: str | None, record: Replacement) -> None:
+    def _end_replace(
+        self, cid: str | None, record: Replacement, live_vid: str | None = None, symbol: str | None = None
+    ) -> None:
+        """Stop the replace. With ``symbol`` given the order may still be live at the venue (``live_vid``, or
+        unknown): a cancel the strategy asked for meanwhile, held back by the replace, is sent now."""
         # - kept only while a live recreated order needs its reports rewritten
         record.abandoned()
         if cid is not None and (record.current_vid is None or not record.superseded):
             self._replacements.pop(cid, None)
+        if symbol is not None and record.cancel_requested:
+            record.cancel_requested = False
+            self._spawn(self._cancel_async(cid, live_vid, symbol))
 
     def _replaced_view(self, order: Order) -> Order | None:
         """Route one venue report of an order through its replace record, if it has one."""
