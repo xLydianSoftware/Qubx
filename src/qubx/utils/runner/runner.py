@@ -541,6 +541,7 @@ def create_strategy_context(
         rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector, api_key=_venue_api_key)
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager))
         markets = _account_markets_of(venue_name, exchange_name, exchange_config)
+        ignore_assets = _ignore_assets(venue_name, exchange_config, markets)
         if len(markets) > 1:
             # - one venue account trading several markets: one AccountState; each market keeps its fees
             _account_markets[exchange_name] = markets
@@ -580,7 +581,12 @@ def create_strategy_context(
                     f"[{venue_name}] connector '{exchange_config.connector}' declares no rate limits — "
                     "venue calls are unthrottled (add rate_limits() to the plugin)."
                 )
-            _conn_ctx = ConnectorBuildContext(**vars(_base_ctx), data_provider=_data_provider, markets=markets)
+            _conn_ctx = ConnectorBuildContext(
+                **vars(_base_ctx),
+                data_provider=_data_provider,
+                markets=markets,
+                ignore_assets=ignore_assets,
+            )
             _connectors[exchange_name] = ConnectorRegistry.get_connector(exchange_config.connector.lower(), _conn_ctx)
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
         _base_currencies[exchange_name] = _resolve_base_currency(
@@ -786,6 +792,16 @@ def _account_markets_of(venue_name: str, account: str, exchange_config: Exchange
     if refused := [m for m in extra if m not in allowed]:
         raise ValueError(f"{venue_name}: cannot trade {refused} (allowed besides {account}: {list(allowed) or 'none'})")
     return (account, *extra)
+
+
+def _ignore_assets(venue_name: str, exchange_config: ExchangeConfig, markets: tuple[str, ...]) -> tuple[str, ...]:
+    """``ExchangeConfig.ignore_assets``, upper-cased: coins of an account's further (spot) markets, so only an
+    account that trades one may set it."""
+    if not exchange_config.ignore_assets:
+        return ()
+    if len(markets) < 2:
+        raise ValueError(f"{venue_name}: ignore_assets needs an account that also trades a spot market (markets)")
+    return tuple(dict.fromkeys(a.upper() for a in exchange_config.ignore_assets))
 
 
 def _resolve_base_currency(

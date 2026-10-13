@@ -51,10 +51,12 @@ from qubx.core.basics import (
     DebtRepaid,
     FundsMoved,
     Instrument,
+    OrderRequest,
     Position,
     WalletMove,
 )
 from qubx.core.events import DebtRepaidEvent, FundsMovedEvent
+from qubx.core.exceptions import InvalidOrderParameters
 from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 
 from ...connector import CcxtConnector, VenueFigures
@@ -145,11 +147,19 @@ class BinancePmCcxtConnector(CcxtConnector):
     _COLLECT = WalletMove("futures_um", "margin", False)
     _REPAY = WalletMove("margin", "futures_um", False)
 
-    def __init__(self, *, markets: tuple[str, ...] = (), **kwargs: Any):
+    def __init__(self, *, markets: tuple[str, ...] = (), ignore_assets: tuple[str, ...] = (), **kwargs: Any):
         super().__init__(**kwargs)
         self._adl_levels = {}
         self._spot_margin = "BINANCE" in markets
+        # - coins left as plain balances: never a spot position, never traded (e.g. BNB for the fee discount)
+        self._ignored_assets = frozenset(a.upper() for a in ignore_assets)
         self._unpriced_warned: set[str] = set()
+
+    def submit_order(self, request: OrderRequest) -> None:
+        instrument = request.instrument
+        if instrument is not None and instrument.is_spot() and instrument.base.upper() in self._ignored_assets:
+            raise InvalidOrderParameters(f"{instrument.base} is in the account's ignore_assets: not traded")
+        super().submit_order(request)
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         balances = super()._convert_balances(raw_balance)
@@ -219,7 +229,7 @@ class BinancePmCcxtConnector(CcxtConnector):
         ex = self._em.exchange
         held: list[tuple[Instrument, float, dict[str, Any]]] = []
         for asset, row in _pm_rows(raw_balance).items():
-            if asset.upper() in STABLE_CURRENCIES:
+            if asset.upper() in STABLE_CURRENCIES or asset.upper() in self._ignored_assets:
                 continue
             market = ex.markets.get(f"{asset}/{self._spot_quote}")
             if market is None or not market.get("spot"):

@@ -16,6 +16,7 @@ import pytest
 from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
 from qubx.connectors.ccxt.exchanges.binance.exchange import BinancePortfolioMargin
 from qubx.core.basics import CtrlChannel, Order, OrderRequest, OrderSide, OrderStatus, OrderType
+from qubx.core.exceptions import InvalidOrderParameters
 from qubx.core.lookups import lookup
 from qubx.core.series import Quote
 from tests.qubx.core.utils_test import DummyTimeProvider
@@ -187,7 +188,7 @@ def _instr(exchange: str):
     return instrument
 
 
-def _connector(*, spot: bool = True, exchange=None, quote: Quote | None = None):
+def _connector(*, spot: bool = True, exchange=None, quote: Quote | None = None, ignore_assets: tuple = ()):
     em = Mock()
     em.exchange = exchange if exchange is not None else Mock()
     em.rate_limiter = None
@@ -199,6 +200,7 @@ def _connector(*, spot: bool = True, exchange=None, quote: Quote | None = None):
     conn = BinancePmCcxtConnector(
         exchange_name="BINANCE.UM",
         markets=("BINANCE.UM", "BINANCE") if spot else (),
+        ignore_assets=ignore_assets,
         channel=channel,
         time_provider=DummyTimeProvider(),
         exchange_manager=em,
@@ -363,6 +365,28 @@ class TestSpotPositionsFromBalances:
                 run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="60"))))
         finally:
             run(ex.close())
+
+
+class TestIgnoredAssets:
+    def test_an_ignored_coin_stays_a_balance_not_a_position(self):
+        ex = _pm_exchange()
+        try:
+            ex.set_markets([TRX_SPOT, TRX_SWAP, USDC_SPOT, _market("BNB/USDT", "BNBUSDT", "BNB", "spot")])
+            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.30, 0.32, 1, 1), ignore_assets=("bnb",))
+            raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"), _balance_row("BNB", crossMarginAsset="2"))
+            (pos,) = run(conn._balance_positions(raw))
+            assert pos.instrument.symbol == "TRXUSDT"
+        finally:
+            run(ex.close())
+
+    def test_an_ignored_coin_is_not_traded_on_spot(self):
+        conn, _ = _connector(exchange=Mock(), quote=Quote(0, 600.0, 600.1, 1, 1), ignore_assets=("BNB",))
+        bnb_spot = lookup.find_symbol("BINANCE", "BNBUSDT")
+        assert bnb_spot is not None
+        with pytest.raises(InvalidOrderParameters, match="ignore_assets"):
+            conn.submit_order(_request(bnb_spot, side="BUY"))
+        conn.submit_order(_request(lookup.find_symbol("BINANCE.UM", "BNBUSDT")))  # - the perp is unaffected
+        assert conn._captured  # type: ignore[attr-defined]
 
 
 class TestSpotOpenOrders:

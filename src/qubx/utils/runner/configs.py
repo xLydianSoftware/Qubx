@@ -74,6 +74,9 @@ class ExchangeConfig(StrictBaseModel):
     # (ExchangePlugin.extra_markets): BINANCE.PM -> [BINANCE.UM, BINANCE] adds BINANCE spot, bought
     # into the cross-margin wallet
     markets: list[str] | None = None
+    # coins of the account's spot markets never treated as positions nor traded: they stay plain balances
+    # (e.g. BNB kept for the fee discount, coins posted as collateral)
+    ignore_assets: list[str] | None = None
 
 
 class StorageConfig(StrictBaseModel):

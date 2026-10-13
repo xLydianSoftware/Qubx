@@ -430,6 +430,7 @@ class TestRunStrategyYaml:
         temp_config_file,
         venue="BINANCE.PM",
         markets=("BINANCE.UM", "BINANCE"),
+        ignore_assets=(),
     ):
         from qubx.utils.runner.configs import load_strategy_config_from_yaml
         from qubx.utils.runner.runner import create_strategy_context
@@ -441,6 +442,7 @@ class TestRunStrategyYaml:
         section = config.live.exchanges["BINANCE.UM"]
         section.universe = ["BTCUSDT", "BINANCE:BTCUSDT"]
         section.markets = list(markets)
+        section.ignore_assets = list(ignore_assets) if ignore_assets else None
         config.live.exchanges = {venue: section}
 
         class MockStrategy(IStrategy):
@@ -516,6 +518,30 @@ class TestRunStrategyYaml:
             )
         with pytest.raises(ValueError, match="own market"):
             self._pm_spot_context(mock_create_data_provider, mock_data_provider, temp_config_file, markets=("BINANCE",))
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_ignore_assets_needs_an_account_that_trades_spot(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        mock_live_time_provider_class.return_value = mock_time_provider
+        ctx = self._pm_spot_context(
+            mock_create_data_provider, mock_data_provider, temp_config_file, ignore_assets=("bnb",)
+        )
+        assert ctx.exchanges == ["BINANCE.UM"]
+        with pytest.raises(ValueError, match="ignore_assets"):
+            self._pm_spot_context(
+                mock_create_data_provider,
+                mock_data_provider,
+                temp_config_file,
+                markets=("BINANCE.UM",),
+                ignore_assets=("BNB",),
+            )
 
     @patch("qubx.utils.runner.runner.LiveTimeProvider")
     @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")

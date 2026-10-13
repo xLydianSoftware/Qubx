@@ -47,6 +47,8 @@ class ConnectorBuildContext(BuildContext):
     # markets the account trades, its own first (ExchangeConfig.markets, validated against
     # ExchangePlugin.extra_markets); empty means only its own
     markets: tuple[str, ...] = ()
+    # coins of its spot markets the account neither reports as positions nor trades (ExchangeConfig.ignore_assets)
+    ignore_assets: tuple[str, ...] = ()
 
 
 class ExchangePlugin(ABC):
