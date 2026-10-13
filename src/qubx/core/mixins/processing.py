@@ -1588,10 +1588,15 @@ class ProcessingManager(IProcessingManager):
 
         account = self._context.account
 
-        exchanges = self._context.exchanges
+        # - one entry per market: positions and orders are per market; capital, balances and
+        #   leverage are per account, so they sit on the account's own entry only (a market traded on
+        #   another market's account carries zeros there, or totals would count the account twice)
+        account_markets = self._account_manager.get_account_markets()
+        exchanges = [m for ex in self._context.exchanges for m in account_markets.get(ex, (ex,))]
 
         exchanges_snapshot: dict[str, dict] = {}
         for exchange in exchanges:
+            owner = self._account_manager.account_of(exchange)
             positions = account.get_positions(exchange)
             orders = account.get_orders(exchange=exchange)
 
@@ -1624,21 +1629,23 @@ class ProcessingManager(IProcessingManager):
 
             # Build balances snapshot
             balances_snapshot: dict[str, dict] = {}
-            for bal in account.get_balances(exchange):
+            for bal in account.get_balances(exchange) if owner == exchange else []:
                 balances_snapshot[bal.currency] = {
                     "total": bal.total,
                     "free": bal.free,
                     "locked": bal.locked,
                 }
 
+            is_account = owner == exchange
             exchanges_snapshot[exchange] = {
+                "account": owner,
                 "capital": {
-                    "total": account.get_total_capital(exchange),
-                    "available": account.get_available_margin(exchange),
+                    "total": account.get_total_capital(exchange) if is_account else 0.0,
+                    "available": account.get_available_margin(exchange) if is_account else 0.0,
                 },
                 "balances": balances_snapshot,
-                "net_leverage": account.get_net_leverage(exchange),
-                "gross_leverage": account.get_gross_leverage(exchange),
+                "net_leverage": account.get_net_leverage(exchange) if is_account else 0.0,
+                "gross_leverage": account.get_gross_leverage(exchange) if is_account else 0.0,
                 "open_positions": open_positions,
                 "positions": positions_snapshot,
                 "orders": dict(orders_by_symbol),
@@ -1712,7 +1719,9 @@ class ProcessingManager(IProcessingManager):
         # the OME in backtests. Live (not paper) executes at the venue and has no local OME.
         if self._is_simulation or not self._context.is_paper_trading:
             return
-        connector = self._connectors.get(instrument.exchange)
+        connector = self._connectors.get(instrument.exchange) or self._connectors.get(
+            self._account_manager.account_of(instrument.exchange)
+        )
         if connector is None:
             return
         if not isinstance(connector, IMarketDataSink):

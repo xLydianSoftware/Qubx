@@ -5,7 +5,7 @@ from typing import Callable
 
 import pandas as pd
 
-from qubx.core.basics import DataType, Instrument, MarketType, Position, Signal
+from qubx.core.basics import STABLE_CURRENCIES, Balance, DataType, Instrument, MarketType, Position, Signal
 from qubx.core.interfaces import IAccountViewer, IStrategyContext
 from qubx.core.lookups import lookup
 from qubx.core.state_snapshot import position_entry
@@ -39,6 +39,13 @@ def _default_quote(ctx: IStrategyContext) -> str:
 def _rm(v: float) -> float:
     """Round money/dollar amounts to 2 decimals."""
     return round(v, 2)
+
+
+def _balance_figures(bal: Balance) -> dict[str, float]:
+    """A balance's total / free / locked: stablecoins as money (2 decimals), any other asset at
+    the venue's precision (8), or 0.141 SOL would read as 0.14."""
+    digits = 2 if bal.currency.upper() in STABLE_CURRENCIES else 8
+    return {"total": round(bal.total, digits), "free": round(bal.free, digits), "locked": round(bal.locked, digits)}
 
 
 def _rl(v: float) -> float:
@@ -387,12 +394,7 @@ def _get_balances(ctx: IStrategyContext, **kwargs) -> ActionResult:
     balances = {}
     for bal in ctx.get_balances():
         key = f"{bal.exchange}:{bal.currency}"
-        balances[key] = {
-            "total": _rm(bal.total),
-            "free": _rm(bal.free),
-            "locked": _rm(bal.locked),
-            "last_updated_time": str(bal.last_update_time),
-        }
+        balances[key] = {**_balance_figures(bal), "last_updated_time": str(bal.last_update_time)}
     return ActionResult(status="ok", data={"balances": balances})
 
 
@@ -476,10 +478,14 @@ def _get_ohlc(
 
 def _get_state(ctx: IStrategyContext, **kwargs) -> ActionResult:
     account = ctx.account
-    exchanges = ctx.exchanges
+    # - one entry per market; account-level figures on the account's own entry (see the state snapshot)
+    account_markets = account.get_account_markets()
+    exchanges = [m for ex in ctx.exchanges for m in account_markets.get(ex, (ex,))]
 
     exchanges_snapshot: dict[str, dict] = {}
     for exchange in exchanges:
+        owner = account.account_of(exchange)
+        is_account = owner == exchange
         positions = account.get_positions(exchange)
         orders = account.get_orders(exchange=exchange)
 
@@ -507,21 +513,18 @@ def _get_state(ctx: IStrategyContext, **kwargs) -> ActionResult:
 
         # Build balances snapshot
         balances_snapshot: dict[str, dict] = {}
-        for bal in account.get_balances(exchange):
-            balances_snapshot[bal.currency] = {
-                "total": _rm(bal.total),
-                "free": _rm(bal.free),
-                "locked": _rm(bal.locked),
-            }
+        for bal in account.get_balances(exchange) if is_account else []:
+            balances_snapshot[bal.currency] = _balance_figures(bal)
 
         exchanges_snapshot[exchange] = {
+            "account": owner,
             "base_currency": account.get_base_currency(exchange),
             "capital": {
-                "total": _rm(account.get_total_capital(exchange)),
-                "available": _rm(account.get_available_margin(exchange)),
+                "total": _rm(account.get_total_capital(exchange)) if is_account else 0.0,
+                "available": _rm(account.get_available_margin(exchange)) if is_account else 0.0,
             },
-            "net_leverage": _rl(account.get_net_leverage(exchange)),
-            "gross_leverage": _rl(account.get_gross_leverage(exchange)),
+            "net_leverage": _rl(account.get_net_leverage(exchange)) if is_account else 0.0,
+            "gross_leverage": _rl(account.get_gross_leverage(exchange)) if is_account else 0.0,
             "open_positions": open_positions,
             "positions": positions_snapshot,
             "orders": dict(orders_by_symbol),
@@ -746,7 +749,7 @@ def _close_position(ctx: IStrategyContext, symbol: str, exchange: str | None = N
 
 def _close_positions(ctx: IStrategyContext, **kwargs) -> ActionResult:
     try:
-        positions = {str(i): p.quantity for i, p in ctx.get_positions().items() if p.quantity != 0}
+        positions = {str(i): p.quantity for i, p in ctx.get_positions().items() if p.is_open()}
         ctx.close_positions()
         return ActionResult(status="ok", data={"closed": positions})
     except Exception as e:

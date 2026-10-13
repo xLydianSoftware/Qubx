@@ -475,7 +475,7 @@ class StrategyLogging:
             ts = str(_floored_ts.astype("datetime64[s]"))
             capital = self._account.get_total_capital()
             positions = self._account.positions
-            n_pos = sum(1 for p in positions.values() if p.quantity != 0)
+            n_pos = sum(1 for p in positions.values() if p.is_open())
             gross_lev = self._account.get_gross_leverage()
             net_lev = self._account.get_net_leverage()
             logger.info(

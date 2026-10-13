@@ -303,7 +303,7 @@ class TradingManager(ITradingManager):
         position = self._account_manager.get_position(instrument)
         quantity = position.quantity if position is not None else 0.0
 
-        if quantity == 0:
+        if position is None or not position.is_open():
             logger.debug(f"[<g>{instrument.symbol}</g>] :: Position already closed or zero size")
             return
 
@@ -498,7 +498,9 @@ class TradingManager(ITradingManager):
         return self._client_id_store.generate_id(self._context, symbol)
 
     def exchanges(self) -> list[str]:
-        return list(self._exchange_to_connector.keys())
+        # - the accounts: a market traded on another market's account may have its own connector
+        #   (paper, simulation) but is not an exchange of its own
+        return [ex for ex in self._exchange_to_connector if self._account_manager.account_of(ex) == ex]
 
     def _is_position_reducing(self, instrument: Instrument, amount: float) -> bool:
         current_position = self._account_manager.get_position(instrument)
@@ -523,6 +525,13 @@ class TradingManager(ITradingManager):
 
     def _adjust_size(self, instrument: Instrument, amount: float) -> float:
         abs_amount = abs(amount)
+        if self._is_position_reducing(instrument, amount):
+            # - a reduce never rounds up past the whole lots held: a spot holding can carry sub-lot
+            #   dust (a base-asset fee) that no sell can take
+            held = instrument.round_size_down(abs(self._account_manager.get_position(instrument).quantity))
+            if held < instrument.lot_size:
+                raise InvalidOrderSize(f"[{instrument.symbol}] only sub-lot dust held, nothing to reduce")
+            abs_amount = min(abs_amount, held)
         size_adj = instrument.round_size_down(abs_amount)
         min_size = self._get_min_size(instrument, amount)
 
@@ -588,8 +597,10 @@ class TradingManager(ITradingManager):
 
     def _get_connector(self, exchange: str) -> IConnector:
         # Connectors are keyed by the canonical exchange (the runner canonicalizes
-        # venue names like BINANCE.PM at the config boundary), so instrument.exchange
-        # always hits directly.
+        # venue names like BINANCE.PM at the config boundary).
         if exchange in self._exchange_to_connector:
             return self._exchange_to_connector[exchange]
+        # - a market traded on another market's account (BINANCE spot on a BINANCE.PM account)
+        if (account := self._account_manager.account_of(exchange)) in self._exchange_to_connector:
+            return self._exchange_to_connector[account]
         raise ValueError(f"Connector for exchange {exchange} not found")

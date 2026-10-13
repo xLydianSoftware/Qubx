@@ -6,7 +6,7 @@ Periodic ticks (reconcile, sweep, liveness) call the reconcile.py decision helpe
 fire the connector requests — connector calls stay manager-only, as does PM wiring.
 """
 
-from collections.abc import Iterable
+from collections.abc import Iterable, Sequence
 from typing import Callable, Literal
 
 import numpy as np
@@ -89,6 +89,11 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
     _default_instrument_leverage: float | None
     # - instruments an explicit set_instrument_leverage claimed, which the default apply skips
     _pinned_leverage: dict[Instrument, float]
+    # - market -> the account it trades in, for a market that is not an account itself: one venue
+    #   account trading several markets (BINANCE spot on a BINANCE.PM account, whose id is its main
+    #   market BINANCE.UM). Such a market may keep its own connector for execution (simulation);
+    #   else its account's connector serves it
+    _market_account: dict[str, str]
 
     def __init__(
         self,
@@ -101,6 +106,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         account_id: str = "AccountManager",
         tcc: dict[str, TransactionCostsCalculator] | None = None,
         default_instrument_leverage: float | None = None,
+        account_markets: dict[str, Sequence[str]] | None = None,
     ):
         self._pm = pm
         self._pinned_leverage = {}
@@ -112,6 +118,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             account_id=account_id,
             tcc=tcc,
             default_instrument_leverage=default_instrument_leverage,
+            account_markets=account_markets,
         )
         # Live passes pm=None and registers the ticks later — see set_processing_manager.
         if self._pm is not None:
@@ -138,10 +145,24 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         account_id: str,
         tcc: dict[str, TransactionCostsCalculator] | None,
         default_instrument_leverage: float | None,
+        account_markets: dict[str, Sequence[str]] | None = None,
     ) -> None:
         # Shared field init for both the live and simulation managers, so the
         # subclass can't silently drift from the parent's field set.
         self._connectors = connectors
+        # - account -> the markets it trades (its own included); an account not listed trades only its own
+        self._market_account = {}
+        for account, markets in (account_markets or {}).items():
+            for market in markets:
+                if market == account:
+                    continue
+                if market in self._market_account:
+                    raise ValueError(f"market {market} is listed under two accounts")
+                self._market_account[market] = account
+        managed = [ex for ex in connectors if ex not in self._market_account]
+        for market, account in self._market_account.items():
+            if account not in managed:
+                raise ValueError(f"market {market} -> account {account}: the account must be a managed exchange")
         self._default_instrument_leverage = default_instrument_leverage
         self._time = time
         self._cfg = cfg or AccountManagerConfig()
@@ -163,7 +184,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 terminal_history_size=self._cfg.terminal_order_history_size,
                 maint_margin_rate=self._cfg.maint_margin_rate,
             )
-            for ex in connectors
+            for ex in managed
         }
         self._liveness_unready_since = {}
         self._last_eviction_sweep = time.time()
@@ -180,7 +201,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 order_confirm_wait=np.timedelta64(self._cfg.order_confirm_wait_ms, "ms"),
                 order_confirm_max_retries=self._cfg.order_confirm_retries,
             )
-            for ex in connectors
+            for ex in managed
         }
 
     def _register_ticks(self) -> None:
@@ -199,20 +220,36 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 timedelta_to_crontab(pd.Timedelta(cfg.liveness_check_interval_ms, "ms")), self._on_liveness_tick
             )
 
+    def _connector_for(self, exchange: str) -> IConnector | None:
+        if (connector := self._connectors.get(exchange)) is not None:
+            return connector
+        return self._connectors.get(self.account_of(exchange))
+
+    def get_account_markets(self) -> dict[str, tuple[str, ...]]:
+        return {
+            account: (account, *(m for m, a in self._market_account.items() if a == account))
+            for account in self._states
+        }
+
+    def account_of(self, exchange: str) -> str:
+        return self._market_account.get(exchange, exchange)
+
     def add_order(self, order: Order) -> None:
         exchange = order.instrument.exchange
-        state = self._states[exchange]
+        state = self._states[self.account_of(exchange)]
         state.add_order(order)
 
         # - spawn AwaitOrderConfirm for the freshly-sent order (no immediate I/O)
-        self._reconcilers[exchange].on_order_sent(state, order, self._time.time())
+        self._reconcilers[self.account_of(exchange)].on_order_sent(state, order, self._time.time())
 
     def transition_order(self, exchange: str, cid: str, new_status: OrderStatus) -> None:
         # The trading mixin arming PENDING_*: our own intent, not venue state.
-        reducer.transition(self._states[exchange], cid, new_status, self._time.time(), venue_state=False)
+        reducer.transition(
+            self._states[self.account_of(exchange)], cid, new_status, self._time.time(), venue_state=False
+        )
 
     def remove_order(self, exchange: str, cid: str) -> None:
-        self._states[exchange].remove_order(cid)
+        self._states[self.account_of(exchange)].remove_order(cid)
 
     # ---- state seeding & cash adjustments (runner/transfer boundary) ------ #
     # The only sanctioned out-of-AM mutation paths: AccountState mutators stay
@@ -223,7 +260,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         Seed a startup balance (restored state, initial paper/backtest capital).
         Returns False when this AM doesn't manage the exchange (record skipped).
         """
-        if (state := self._states.get(exchange)) is None:
+        if (state := self._states.get(self.account_of(exchange))) is None:
             return False
         state.update_balance(balance.currency, balance)
         return True
@@ -233,7 +270,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         Seed a restored position (exchange derived from the instrument).
         Returns False when this AM doesn't manage the exchange (record skipped).
         """
-        if (state := self._states.get(position.instrument.exchange)) is None:
+        if (state := self._states.get(self.account_of(position.instrument.exchange))) is None:
             return False
         state.set_position(position.instrument, position)
         return True
@@ -243,7 +280,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         Apply a cash delta (e.g. a simulated transfer leg) to an exchange balance,
         creating the Balance if missing.
         """
-        self._states[exchange].adjust_balance(currency, delta)
+        self._states[self.account_of(exchange)].adjust_balance(currency, delta)
 
     def settle_position(self, instrument: Instrument) -> None:
         """
@@ -252,7 +289,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         flat. Routed per-exchange via the instrument; no-op if the exchange is unmanaged
         or the position isn't held.
         """
-        if (state := self._states.get(instrument.exchange)) is not None:
+        if (state := self._states.get(self.account_of(instrument.exchange))) is not None:
             state.settle_position(instrument)
 
     def is_synced(self) -> bool:
@@ -339,15 +376,19 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         # - route by the most specific locator the event carries
         match event:
             case AccountSnapshotEvent():
+                # - a market's own connector (simulation) sees only its slice of the shared account;
+                #   the account's snapshot is the truth
+                if event.snapshot.exchange in self._market_account:
+                    return None
                 return self._states.get(event.snapshot.exchange)
 
             case BalanceUpdateEvent():
                 # balance pushes carry no instrument — route strictly by the balance's exchange
                 # (the sole-state fallback would misroute a push for an unmanaged exchange)
-                return self._states.get(event.balance.exchange)
+                return self._states.get(self.account_of(event.balance.exchange))
 
             case _ if event.instrument is not None:
-                return self._states.get(event.instrument.exchange)
+                return self._states.get(self.account_of(event.instrument.exchange))
 
         # no instrument: an order event (e.g. a reject emitted without one) routes by its own
         # ids; otherwise the sole managed state, else give up.
@@ -367,7 +408,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return next((s for s in states if s.get_order_by_venue_id(event.venue_order_id) is not None), None)
 
     def on_market_quote(self, instrument, quote) -> None:
-        if (state := self._states.get(instrument.exchange)) is None:
+        if (state := self._states.get(self.account_of(instrument.exchange))) is None:
             return
 
         # only mark positions we hold; never create one per quote
@@ -383,7 +424,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return None
 
     def get_state(self, exchange: str) -> AccountState:
-        return self._states[exchange]
+        return self._states[self.account_of(exchange)]
 
     def get_orders(
         self,
@@ -392,7 +433,10 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         origin: OrderOrigin | None = None,
     ) -> dict[str, Order]:
         if exchange is not None:
-            orders = self._states[exchange].get_orders()
+            orders = self._states[self.account_of(exchange)].get_orders()
+            # - orders and positions are per market; capital, balances and margin are per account
+            if self._market_account:
+                orders = {cid: o for cid, o in orders.items() if o.instrument.exchange == exchange}
         else:
             orders = {cid: o for s in self._states.values() for cid, o in s.get_orders().items()}
 
@@ -411,7 +455,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
     def get_order(self, client_order_id: str, exchange: str | None = None) -> Order | None:
         if exchange is not None:
-            return self._states[exchange].get_order(client_order_id)
+            return self._states[self.account_of(exchange)].get_order(client_order_id)
 
         if len(self._states) == 1:
             return next(iter(self._states.values())).get_order(client_order_id)
@@ -424,7 +468,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return None
 
     def get_position(self, instrument):
-        if (state := self._states.get(instrument.exchange)) is None:
+        if (state := self._states.get(self.account_of(instrument.exchange))) is None:
             return None
 
         if (pos := state.get_position(instrument)) is None:
@@ -438,7 +482,10 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
     def get_positions(self, exchange: str | None = None) -> dict[Instrument, Position]:
         if exchange is not None:
-            return self._states[exchange].get_positions()
+            positions = self._states[self.account_of(exchange)].get_positions()
+            if self._market_account:
+                positions = {i: p for i, p in positions.items() if i.exchange == exchange}
+            return positions
         return {ins: pos for s in self._states.values() for ins, pos in s.get_positions().items()}
 
     @property
@@ -453,7 +500,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         # read as an empty wallet.
         currency = currency.upper()
         if exchange is not None:
-            return self._states[exchange].get_balance(currency) or Balance(exchange, currency)
+            return self._states[self.account_of(exchange)].get_balance(currency) or Balance(exchange, currency)
 
         for state in self._states.values():
             if (b := state.get_balance(currency)) is not None:
@@ -463,7 +510,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
     def get_balances(self, exchange: str | None = None) -> list[Balance]:
         if exchange is not None:
-            return self._states[exchange].get_balances()
+            return self._states[self.account_of(exchange)].get_balances()
         return [b for s in self._states.values() for b in s.get_balances()]
 
     def get_fees_calculator(self, exchange: str | None = None) -> TransactionCostsCalculator:
@@ -472,7 +519,10 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         # so callers that only need fee arithmetic still work in fee-agnostic setups.
         if exchange is None:
             exchange = next(iter(self._states))
-        return self._tcc.get(exchange, ZERO_COSTS)
+        # - a market keeps its own fee schedule (spot vs futures), else its account's
+        if (tcc := self._tcc.get(exchange)) is not None:
+            return tcc
+        return self._tcc.get(self.account_of(exchange), ZERO_COSTS)
 
     def find_order_by_id(self, order_id: str) -> Order | None:
         for state in self._states.values():
@@ -506,11 +556,11 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 
     def _sum(self, metric: Callable[[AccountState], float], exchange: str | None) -> float:
         if exchange is not None:
-            return metric(self._states[exchange])
+            return metric(self._states[self.account_of(exchange)])
         return sum(metric(s) for s in self._states.values())
 
     def _states_for(self, exchange: str | None) -> list[AccountState]:
-        return [self._states[exchange]] if exchange is not None else list(self._states.values())
+        return [self._states[self.account_of(exchange)]] if exchange is not None else list(self._states.values())
 
     def get_total_capital(self, exchange: str | None = None) -> float:
         return self._sum(AccountState.total_capital, exchange)
@@ -543,11 +593,11 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return min(100.0, sum(s.collateral_equity() for s in states) / maint)
 
     def get_base_currency(self, exchange: str | None = None) -> str:
-        state = self._states[exchange] if exchange is not None else next(iter(self._states.values()))
+        state = self._states[self.account_of(exchange)] if exchange is not None else next(iter(self._states.values()))
         return state.base_currency
 
     def get_leverage(self, instrument: Instrument) -> float:
-        state = self._states.get(instrument.exchange)
+        state = self._states.get(self.account_of(instrument.exchange))
         return state.leverage(instrument) if state is not None else 0.0
 
     def get_net_leverage(self, exchange: str | None = None) -> float:
@@ -579,13 +629,13 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         leverage = self.get_position(instrument).leverage
         if leverage is not None:
             return leverage
-        connector = self._connectors.get(instrument.exchange)
+        connector = self._connector_for(instrument.exchange)
         return connector.get_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_leverage(self, instrument: Instrument) -> float | None:
         # - the venue cap, not a setting: the snapshot carries no such field, so it comes
         #   from the connector's cache of the venue's published maximum
-        connector = self._connectors.get(instrument.exchange)
+        connector = self._connector_for(instrument.exchange)
         return connector.get_max_instrument_leverage(instrument) if connector is not None else None
 
     def get_max_instrument_notional(self, instrument: Instrument) -> float:
@@ -603,7 +653,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         notional = self.get_position(instrument).max_notional
         if notional is not None:
             return notional
-        connector = self._connectors.get(instrument.exchange)
+        connector = self._connector_for(instrument.exchange)
         return connector.get_max_instrument_notional(instrument) if connector is not None else float("inf")
 
     def get_margin_mode(self, instrument: Instrument) -> Literal["cross", "isolated"] | None:
@@ -612,7 +662,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         mode = self.get_position(instrument).margin_mode
         if mode is not None:
             return mode
-        connector = self._connectors.get(instrument.exchange)
+        connector = self._connector_for(instrument.exchange)
         return connector.get_margin_mode(instrument) if connector is not None else None
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
@@ -642,7 +692,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         included — the universe seeds one for every instrument it adds
         (``UniverseManager._create_and_update_positions``), so our own writes always land.
         """
-        state = self._states.get(update.instrument.exchange)
+        state = self._states.get(self.account_of(update.instrument.exchange))
         if state is None:
             logger.warning(f"[{update.instrument.exchange}] no account state; dropping {update}")
             return
@@ -680,7 +730,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         self._send_instrument_leverage(instrument, leverage)
 
     def _send_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
-        connector = self._connectors.get(instrument.exchange)
+        connector = self._connector_for(instrument.exchange)
         if connector is None:
             logger.warning(f"[{instrument.exchange}] no connector; cannot set instrument leverage")
             return
@@ -726,7 +776,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         return self._default_instrument_leverage
 
     def set_margin_mode(self, instrument: Instrument, mode: str) -> bool:
-        connector = self._connectors.get(instrument.exchange)
+        connector = self._connector_for(instrument.exchange)
         if connector is None:
             logger.warning(f"[{instrument.exchange}] no connector; cannot set margin mode")
             return False
@@ -793,6 +843,7 @@ class SimulatedAccountManager(AccountManager):
         account_id: str = "SimulatedAccountManager",
         tcc: dict[str, TransactionCostsCalculator] | None = None,
         default_instrument_leverage: float | None = None,
+        account_markets: dict[str, Sequence[str]] | None = None,
     ):
         super().__init__(
             connectors=connectors,
@@ -802,6 +853,7 @@ class SimulatedAccountManager(AccountManager):
             account_id=account_id,
             tcc=tcc,
             default_instrument_leverage=default_instrument_leverage,
+            account_markets=account_markets,
         )
 
     def set_processing_manager(self, pm: IProcessingManager) -> None:
@@ -813,7 +865,7 @@ class SimulatedAccountManager(AccountManager):
         # The framework is the venue: the settlement cash is computed here from the market
         # funding tuple (−qty × multiplier × mark × rate) — the one non-connector
         # FundingPaymentEvent producer. Emits only while our position is open (account-scoped).
-        state = self._states.get(instrument.exchange)
+        state = self._states.get(self.account_of(instrument.exchange))
         pos = state.get_position(instrument) if state is not None else None
         if pos is None or abs(pos.quantity) < instrument.min_size:
             return None

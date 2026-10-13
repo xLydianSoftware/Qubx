@@ -86,6 +86,14 @@ class TestMaintMarginRate:
         assert "maint_margin_rate" not in params
 
 
+class TestAccounts:
+    def test_sim_params_carry_accounts(self):
+        _, params = _build_sim_params(_config({"accounts": {"BINANCE.UM": ["BINANCE.UM", "BINANCE"]}}))
+        assert params["accounts"] == {"BINANCE.UM": ["BINANCE.UM", "BINANCE"]}
+        _, params = _build_sim_params(_config({}))
+        assert "accounts" not in params
+
+
 class TestSignalStartAdjustment:
     def _start(self, monkeypatch, setup: SimulationSetup, listings: dict[str, list[Instrument]]) -> pd.Timestamp:
         captured = {}

@@ -60,7 +60,7 @@ class InstrumentServiceManager(IInstrumentServiceManager):
         fit thread)."""
         _ctx = ctx if ctx is not None else self._context
         positions = _ctx.get_positions()
-        held = [i for i, p in positions.items() if p.quantity != 0 and self._service.is_blacklisted(i)]
+        held = [i for i, p in positions.items() if p.is_open() and self._service.is_blacklisted(i)]
         if held:
             _ctx.remove_instruments(held, if_has_position_then="close")
         return held

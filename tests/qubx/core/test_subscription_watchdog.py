@@ -94,10 +94,12 @@ def _status(**kw) -> ExchangeDataStatus:
     return ExchangeDataStatus(**base)
 
 
-def _make_rig(*exchanges: str, venue_of: dict[str, str] | None = None):
+def _make_rig(*exchanges: str, venue_of: dict[str, str] | None = None, markets: dict[str, str] | None = None):
     """One watchdog over the given exchanges. `venue_of` maps a canonical exchange to the
-    name its provider is registered under (BINANCE.UM -> BINANCE.PM), defaulting to itself."""
+    name its provider is registered under (BINANCE.UM -> BINANCE.PM), defaulting to itself.
+    `markets` maps a further market to the exchange whose provider serves it (BINANCE -> BINANCE.UM)."""
     venue_of = venue_of or {}
+    markets = markets or {}
     clock = FixedTime()
     monitor = BaseHealthMonitor(clock)
     status = ContextStatus()
@@ -106,7 +108,7 @@ def _make_rig(*exchanges: str, venue_of: dict[str, str] | None = None):
     state = StrategyState()
     state.is_on_warmup_finished_called = True
     # - exchange -> subscription -> instruments, mutated by tests in place
-    universe: dict[str, dict[str, set[Instrument]]] = {ex: {} for ex in exchanges}
+    universe: dict[str, dict[str, set[Instrument]]] = {ex: {} for ex in (*exchanges, *markets)}
 
     watchdog = SubscriptionWatchdog(
         data_providers=list(providers.values()),
@@ -116,6 +118,7 @@ def _make_rig(*exchanges: str, venue_of: dict[str, str] | None = None):
         strategy_state=state,
         interval_seconds=30.0,
         settle_seconds=0.0,
+        market_data_providers={market: providers[ex] for market, ex in markets.items()},
     )
     return watchdog, monitor, status, clock, universe, providers
 
@@ -417,6 +420,46 @@ def test_maintenance_scope_is_the_canonical_exchange_not_the_venue_alias():
 
     assert status.info.is_degraded_for("BINANCE.UM")
     assert not status.info.is_degraded_for("BINANCE.PM")
+
+
+def _pm_rig():
+    # - a BINANCE.PM provider serving the account's two markets: BINANCE.UM perps and BINANCE spot
+    return _make_rig(EXCHANGE, venue_of={EXCHANGE: "BINANCE.PM"}, markets={"BINANCE": EXCHANGE})
+
+
+def test_a_dark_provider_degrades_every_market_it_serves():
+    watchdog, monitor, status, clock, universe, providers = _pm_rig()
+    _subscribe_stale_pair(monitor, clock, universe[EXCHANGE])
+    spot = _instrument("BTCUSDT", "BINANCE")
+    universe["BINANCE"][DataType.ORDERBOOK] = {spot}
+    monitor.subscribe(spot, DataType.ORDERBOOK)
+
+    watchdog.tick()
+    watchdog.tick()
+
+    assert status.info.is_degraded_for(EXCHANGE)
+    assert status.info.is_degraded_for("BINANCE")
+
+
+def test_a_stale_spot_instrument_is_repaired_and_the_resubscribe_keeps_the_perps():
+    """Spot is policed through the provider it shares with the perps, and the paired reset
+    subscribe carries both markets: a perp-only set would drop every spot subscription."""
+    watchdog, monitor, status, clock, universe, providers = _pm_rig()
+    btc, eth = _instrument("BTCUSDT"), _instrument("ETHUSDT")
+    spot = _instrument("BTCUSDT", "BINANCE")
+    universe[EXCHANGE][DataType.ORDERBOOK] = {btc, eth}
+    universe["BINANCE"][DataType.ORDERBOOK] = {spot}
+    for i in (btc, eth, spot):
+        monitor.subscribe(i, DataType.ORDERBOOK)
+    clock.advance(11)
+    monitor.on_data_arrival(btc, DataType.ORDERBOOK, clock.time())
+    monitor.on_data_arrival(eth, DataType.ORDERBOOK, clock.time())
+
+    watchdog.tick()
+
+    provider = providers[EXCHANGE]
+    assert provider.unsubscribed == [(DataType.ORDERBOOK, {spot})]
+    assert provider.subscribed == [(DataType.ORDERBOOK, {btc, eth, spot})]
 
 
 # --- repair mechanics (spec 3) ---

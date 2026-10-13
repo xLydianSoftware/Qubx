@@ -899,6 +899,14 @@ class BinancePortfolioMargin(BinanceQVUSDM):
 
     async def fetch_open_orders(self, symbol: str | None = None, since=None, limit=None, params={}) -> list[Order]:
         if not self.safe_bool_n(params, ["trigger", "stop", "conditional"], False):
+            if symbol is not None:
+                await self.load_markets()
+                market = self.market(symbol)
+                if market["spot"]:
+                    # ccxt takes the subType from defaultSubType (linear) for a spot market and
+                    # would query the UM book; spot orders live on the papi margin surface
+                    rows = await self.papiGetMarginOpenOrders(self.extend({"symbol": market["id"]}, params))
+                    return self.parse_orders(rows, market, since, limit)
             return await super().fetch_open_orders(symbol, since, limit, params)
         await self.load_markets()
         market = self.market(symbol) if symbol is not None else None

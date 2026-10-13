@@ -945,3 +945,137 @@ def test_redelivered_trade_does_not_double_book():
     apply(state, DealEvent(instrument=BTC, client_order_id="c1", venue_order_id="v1", deal=_fill("t1", 1.0)), T1)
 
     assert state.ensure_position(BTC).quantity == 1.0
+
+
+def test_historical_refetch_of_a_booked_trade_after_eviction_is_a_noop():
+    # A trade booked live, its order then evicted (terminal retention), and the SAME trade
+    # re-fetched by RequestHistDeals behind a later size mismatch (a spot buy's base-asset fee
+    # trims the holding, so every PM spot buy takes this path). The refetch carries only the
+    # venue order id, which no longer resolves; it must not book its fee (or pnl) a second time.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="V1")
+    fill = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=T0,
+        amount=0.5,
+        price=100.0,
+        aggressive=True,
+        fee_amount=0.05,
+        fee_currency="USDT",
+    )
+    apply(state, OrderFilledEvent(instrument=BTC, client_order_id="c1", venue_order_id="V1", fill=fill), T0)
+    pos = _present(state.get_position(BTC))
+    assert pos.commissions == pytest.approx(0.05)
+
+    state.evict_to_history("c1")
+    state.mark_position_reconcile(BTC, T1)
+    r = apply(
+        state, DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V1", deal=fill, historical=True), T1
+    )
+
+    assert r.deal is None
+    assert pos.commissions == pytest.approx(0.05)
+    assert state.get_order_by_venue_id("V1") is None  # no external phantom materialized
+
+
+def test_historical_trade_never_booked_still_realizes_after_eviction():
+    # The dedup is by trade id: a trade of an evicted order that was never booked live (WS fill
+    # missed) is still recovered realize-only.
+    state = _state()
+    _order(state, status=OrderStatus.ACCEPTED, venue_id="V1")
+    apply(state, OrderFilledEvent(instrument=BTC, client_order_id="c1", venue_order_id="V1", fill=_fill("t1", 0.5)), T0)
+    state.evict_to_history("c1")
+    state.mark_position_reconcile(BTC, T1)
+    missed = Deal(
+        trade_id="t2",
+        order_id="V1",
+        time=T0,
+        amount=0.5,
+        price=100.0,
+        aggressive=True,
+        fee_amount=0.05,
+        fee_currency="USDT",
+    )
+    r = apply(
+        state, DealEvent(instrument=BTC, client_order_id=None, venue_order_id="V1", deal=missed, historical=True), T1
+    )
+
+    assert r.deal is not None
+    assert _present(state.get_position(BTC)).commissions == pytest.approx(0.05)
+
+
+_TRX = Instrument(
+    symbol="TRXUSDT",
+    market_type=MarketType.SPOT,
+    exchange="binance",
+    base="TRX",
+    quote="USDT",
+    settle="USDT",
+    exchange_symbol="TRXUSDT",
+    tick_size=0.0001,
+    lot_size=0.1,
+    min_size=0.1,
+    contract_size=1.0,
+)
+
+
+def _spot_fill(state: AccountState, cid: str, tid: str, amount: float, price: float, fee: float, fee_ccy: str):
+    state.add_order(
+        Order(
+            client_order_id=cid,
+            type=OrderType.MARKET,
+            instrument=_TRX,
+            quantity=abs(amount),
+            side=OrderSide.BUY if amount > 0 else OrderSide.SELL,
+            time_in_force="gtc",
+            status=OrderStatus.ACCEPTED,
+            price=0.0,
+            origin=OrderOrigin.FRAMEWORK,
+        )
+    )
+    deal = Deal(tid, "v" + tid, T0, amount, price, True, fee_amount=fee, fee_currency=fee_ccy)
+    return apply(state, OrderFilledEvent(instrument=_TRX, client_order_id=cid, fill=deal), T1)
+
+
+def test_spot_buy_with_base_asset_fee_books_the_net_holding():
+    # Binance takes a spot buy's fee out of the bought asset: 36.3 bought, 36.2637 held. The fill
+    # books what the venue holds (off the lot grid), the fee's quote value as commission, and the
+    # base balance credited net. A later snapshot agrees: nothing to re-sync.
+    state = _state()
+    _seed_usdt(state, 100.0)
+    _spot_fill(state, "b1", "t1", 36.3, 0.3315, 0.0363, "TRX")
+    pos = _present(state.get_position(_TRX))
+    assert pos.quantity == pytest.approx(36.2637)
+    assert pos.commissions == pytest.approx(0.0363 * 0.3315)
+    assert pos.position_avg_price == pytest.approx(0.3315)
+    assert _present(state.get_balance("TRX")).total == pytest.approx(36.2637)
+    assert _present(state.get_balance("USDT")).total == pytest.approx(100.0 - 36.3 * 0.3315)
+
+    # - 36.2637 + 31 - 0.031
+    _spot_fill(state, "b2", "t2", 31.0, 0.3316, 0.031, "TRX")
+    assert pos.quantity == pytest.approx(67.2327)
+
+    # - a sell pays its fee in the quote: the lots go, the dust stays, as at the venue
+    _spot_fill(state, "s1", "t3", -67.2, 0.3314, 0.0223, "USDT")
+    assert pos.quantity == pytest.approx(0.0327)
+    assert not pos.is_open()
+    assert _present(state.get_balance("TRX")).total == pytest.approx(0.0327)
+
+
+def test_a_buy_on_top_of_dust_books_the_whole_holding():
+    # 0.0973 of dust + 45.2 bought - 0.0452 fee = 45.2521: a lot more than the fill alone nets
+    state = _state()
+    state.set_position(_TRX, Position(_TRX, quantity=0.0973, pos_average_price=0.33))
+    _spot_fill(state, "b1", "t1", 45.2, 0.3311, 0.0452, "TRX")
+    pos = _present(state.get_position(_TRX))
+    assert pos.quantity == pytest.approx(45.2521)
+    assert pos.is_open()
+
+
+def test_snapshot_size_is_the_exact_spot_holding():
+    state = _state()
+    state.set_position(_TRX, Position(_TRX, quantity=36.2637, pos_average_price=0.3315))
+    snap = Position(_TRX, quantity=36.2637, pos_average_price=0.33)
+    assert state.reconcile_position_from_snapshot(snap) is False  # same size: no change reported
+    assert _present(state.get_position(_TRX)).quantity == pytest.approx(36.2637)

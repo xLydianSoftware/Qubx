@@ -117,6 +117,8 @@ class SimulationSetup:
     enable_funding: bool = False
     maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN
     base_currencies: dict[str, str] = field(init=False, default_factory=dict)
+    # - account -> the markets it trades, its own first, for accounts trading more; see set_accounts
+    account_markets: dict[str, tuple[str, ...]] = field(init=False, default_factory=dict)
 
     def __post_init__(self) -> None:
         # Per-exchange base currency: explicit mapping wins, else the venue's shared settle
@@ -147,6 +149,26 @@ class SimulationSetup:
             n = len(self.exchanges)
             per_exchange = float(self.capital) / n if n > 0 else float(self.capital)
             self.capital = {exchange: per_exchange for exchange in self.exchanges}
+
+    def set_accounts(self, accounts: dict[str, list[str]] | dict[str, tuple[str, ...]]) -> None:
+        """Trade each account's further markets on that account: one capital pool, their capital
+        merged into the account's. Each market keeps its own simulated exchange (fees, execution).
+        Markets not traded in this setup are ignored."""
+        assert isinstance(self.capital, dict)
+        for account, markets in accounts.items():
+            further = [m for m in markets if m != account and m in self.exchanges]
+            if not further:
+                continue
+            if account not in self.exchanges:
+                raise SimulationConfigError(f"account {account}: not traded in this setup")
+            for market in further:
+                if self.base_currencies[market] != self.base_currencies[account]:
+                    raise SimulationConfigError(
+                        f"account {account}: market {market} has another base currency "
+                        f"({self.base_currencies[market]} vs {self.base_currencies[account]})"
+                    )
+                self.capital[account] = self.capital.get(account, 0.0) + self.capital.pop(market, 0.0)
+            self.account_markets[account] = (account, *further)
 
     def __str__(self) -> str:
         return f"{self.name} {self.setup_type} capital {self.capital} {self.base_currency} for [{','.join(map(lambda x: x.symbol, self.instruments))}] @ {self.exchanges}[{self.commissions}]"

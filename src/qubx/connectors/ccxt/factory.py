@@ -163,12 +163,16 @@ def get_ccxt_connector(
     ``EXCHANGE_ALIASES``. The connector itself is always constructed with the
     canonical ``exchange_name`` so its account events route to the canonical AM state.
     """
+    return ccxt_connector_class(exchange_name, venue_name)(exchange_name=exchange_name, **kwargs)
+
+
+def ccxt_connector_class(exchange_name: str, venue_name: str | None = None) -> type[CcxtConnector]:
     connector_cls = None
     if venue_name is not None:
         connector_cls = CUSTOM_CONNECTORS.get(venue_name.lower())
     if connector_cls is None:
         connector_cls = CUSTOM_CONNECTORS.get(exchange_name.lower(), CcxtConnector)
-    return connector_cls(exchange_name=exchange_name, **kwargs)
+    return connector_cls
 
 
 def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
@@ -201,6 +205,8 @@ def create_ccxt_connector(ctx: ConnectorBuildContext) -> CcxtConnector:
     return get_ccxt_connector(
         canonical_exchange(ctx.exchange_name),
         venue_name=ctx.exchange_name,
+        markets=ctx.markets,
+        ignore_assets=ctx.ignore_assets,
         channel=ctx.channel,
         time_provider=ctx.time_provider,
         exchange_manager=exchange_manager,

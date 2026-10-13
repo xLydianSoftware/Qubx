@@ -516,6 +516,8 @@ def create_strategy_context(
     _exchange_to_data_provider = {}
     _connectors: dict[str, IConnector] = {}
     _base_currencies: dict[str, str] = {}
+    # - account -> the markets it trades, for accounts trading more than their own
+    _account_markets: dict[str, tuple[str, ...]] = {}
     _instruments = []
 
     for venue_name, exchange_config in config.live.exchanges.items():
@@ -538,6 +540,13 @@ def create_strategy_context(
             _venue_api_key = None
         rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector, api_key=_venue_api_key)
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager))
+        markets = _account_markets_of(venue_name, exchange_name, exchange_config)
+        ignore_assets = _ignore_assets(venue_name, exchange_config, markets)
+        if len(markets) > 1:
+            # - one venue account trading several markets: one AccountState; each market keeps its fees
+            _account_markets[exchange_name] = markets
+            for market in markets[1:]:
+                _exchange_to_tcc[market] = _create_tcc(market, venue_name, account_manager)
         # Both paper and live use a REAL market-data provider (live quotes/OHLC); only paper's
         # *execution* is simulated. The data provider may come from a different source than the
         # connector (e.g. an xdata data service + a venue connector) — it is resolved by the
@@ -561,13 +570,23 @@ def create_strategy_context(
             _connectors[exchange_name] = _create_paper_connector(
                 exchange_name, time_provider=_time, channel=_chan, tcc=tcc
             )
+            # - each further market simulates its own execution and fees, booked into the account
+            for market in markets[1:]:
+                _connectors[market] = _create_paper_connector(
+                    market, time_provider=_time, channel=_chan, tcc=_exchange_to_tcc[market]
+                )
         else:
             if _rl_manager.is_enabled and rate_limiter is None:
                 logger.warning(
                     f"[{venue_name}] connector '{exchange_config.connector}' declares no rate limits — "
                     "venue calls are unthrottled (add rate_limits() to the plugin)."
                 )
-            _conn_ctx = ConnectorBuildContext(**vars(_base_ctx), data_provider=_data_provider)
+            _conn_ctx = ConnectorBuildContext(
+                **vars(_base_ctx),
+                data_provider=_data_provider,
+                markets=markets,
+                ignore_assets=ignore_assets,
+            )
             _connectors[exchange_name] = ConnectorRegistry.get_connector(exchange_config.connector.lower(), _conn_ctx)
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
         _base_currencies[exchange_name] = _resolve_base_currency(
@@ -606,6 +625,9 @@ def create_strategy_context(
 
     # - central account manager: paper uses SimulatedAccountManager (synchronous execution, no ticks).
     #   NB: the `account_manager` function param is the credentials manager — keep them distinct (`_am`).
+    _configured = {canonical_exchange(venue) for venue in config.live.exchanges}
+    if clash := {m for markets in _account_markets.values() for m in markets[1:]} & _configured:
+        raise ValueError(f"market(s) {sorted(clash)} are traded on another account and also configured on their own")
     _am_cls = SimulatedAccountManager if paper else AccountManager
     _am = _am_cls(
         connectors=_connectors,
@@ -615,6 +637,7 @@ def create_strategy_context(
         account_id=stg_name,
         tcc=_exchange_to_tcc,
         default_instrument_leverage=config.live.default_instrument_leverage,
+        account_markets=_account_markets,
     )
     # Paper seeds the configured initial capital per exchange (no venue to query); live seeds
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions
@@ -754,6 +777,31 @@ def _create_tcc(
     tcc = lookup.find_fees(exchange_name, settings.commissions)
     assert tcc is not None, f"Can't find fees calculator for {exchange_name} exchange"
     return tcc
+
+
+def _account_markets_of(venue_name: str, account: str, exchange_config: ExchangeConfig) -> tuple[str, ...]:
+    """The markets an account trades, its own first: ``ExchangeConfig.markets``, checked against
+    what the venue allows (``ExchangePlugin.extra_markets``), else only its own."""
+    if not exchange_config.markets:
+        return (account,)
+    markets = tuple(dict.fromkeys(m.upper() for m in exchange_config.markets))
+    if account not in markets:
+        raise ValueError(f"{venue_name}: markets {list(markets)} must include the account's own market {account}")
+    extra = tuple(m for m in markets if m != account)
+    allowed = ConnectorRegistry.get_plugin(exchange_config.connector).extra_markets(venue_name)
+    if refused := [m for m in extra if m not in allowed]:
+        raise ValueError(f"{venue_name}: cannot trade {refused} (allowed besides {account}: {list(allowed) or 'none'})")
+    return (account, *extra)
+
+
+def _ignore_assets(venue_name: str, exchange_config: ExchangeConfig, markets: tuple[str, ...]) -> tuple[str, ...]:
+    """``ExchangeConfig.ignore_assets``, upper-cased: coins of an account's further (spot) markets, so only an
+    account that trades one may set it."""
+    if not exchange_config.ignore_assets:
+        return ()
+    if len(markets) < 2:
+        raise ValueError(f"{venue_name}: ignore_assets needs an account that also trades a spot market (markets)")
+    return tuple(dict.fromkeys(a.upper() for a in exchange_config.ignore_assets))
 
 
 def _resolve_base_currency(
@@ -1058,21 +1106,25 @@ def _run_warmup(
     logger.info(f"<yellow>Running warmup from {warmup_start_time} to {current_time}</yellow>")
     try:
         ctx.initializer.simulation = True
+        # - accounts trading several markets warm up the same way
+        _accounts = ctx.account.get_account_markets() if isinstance(ctx.account, AccountManager) else {}
+        _warmup_setup = SimulationSetup(
+            setup_type=SetupTypes.STRATEGY,
+            name=ctx.strategy_name,
+            generator=ctx.strategy,
+            tracker=None,
+            instruments=instruments,
+            # ctx.exchanges are already canonical (the runner canonicalizes at the config boundary)
+            exchanges=[m for ex in ctx.exchanges for m in _accounts.get(ex, (ex,))],
+            capital=ctx.account.get_total_capital(),
+            base_currency=ctx.account.get_base_currency(),
+            commissions=None,  # TODO: get commissions from somewhere
+            enable_funding=enable_funding,
+            maint_margin_rate=maint_margin_rate,
+        )
+        _warmup_setup.set_accounts(_accounts)
         warmup_runner = SimulationRunner(
-            setup=SimulationSetup(
-                setup_type=SetupTypes.STRATEGY,
-                name=ctx.strategy_name,
-                generator=ctx.strategy,
-                tracker=None,
-                instruments=instruments,
-                # ctx.exchanges are already canonical (the runner canonicalizes at the config boundary)
-                exchanges=list(ctx.exchanges),
-                capital=ctx.account.get_total_capital(),
-                base_currency=ctx.account.get_base_currency(),
-                commissions=None,  # TODO: get commissions from somewhere
-                enable_funding=enable_funding,
-                maint_margin_rate=maint_margin_rate,
-            ),
+            setup=_warmup_setup,
             data_config=recognize_simulation_data_config(
                 data_storage=_warmup_data_storage,
                 custom_data=_warmup_custom_data,
@@ -1235,6 +1287,8 @@ def _build_sim_params(
         sim_params["prefetch_config"] = sim.prefetch
     if sim.trading_session is not None:
         sim_params["trading_sessions_time"] = sim.trading_session
+    if sim.accounts:
+        sim_params["accounts"] = sim.accounts
 
     # - resolve aux_data
     aux_configs = resolve_aux_config(cfg.aux, getattr(sim, "aux", None))

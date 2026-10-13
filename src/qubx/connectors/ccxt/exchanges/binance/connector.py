@@ -27,18 +27,37 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   and margin→futures negative-balance repay; both amount-less on the venue side.
 - **Debt repayment**: ``repayLoan`` pays cross-margin ``borrowed`` + ``interest`` from the
   margin wallet.
+- **Spot leg** (``markets: [BINANCE.UM, BINANCE]``): BINANCE spot orders go to the papi
+  cross-margin surface (ccxt routes a spot market under portfolioMargin there; cancels, order
+  queries and trades follow, margin fills arrive on the same ``/pm/ws`` stream). A holding is a
+  balance, not a venue position: the snapshot derives one position per non-stable asset from its
+  exact net cross-margin balance (sub-lot dust included), priced at the current mark (the venue
+  reports no entry price).
 """
 
+import json
 import math
 import uuid
 from decimal import Decimal
 from typing import Any
 
 import ccxt
+import pandas as pd
 
 from qubx import logger
-from qubx.core.basics import Balance, DebtRepaid, FundsMoved, Instrument, Position, WalletMove
+from qubx.core.basics import (
+    STABLE_CURRENCIES,
+    Balance,
+    DebtRepaid,
+    FundsMoved,
+    Instrument,
+    OrderRequest,
+    Position,
+    WalletMove,
+)
 from qubx.core.events import DebtRepaidEvent, FundsMovedEvent
+from qubx.core.exceptions import InvalidOrderParameters
+from qubx.utils.marketdata.ccxt import ccxt_symbol_to_instrument
 
 from ...connector import CcxtConnector, VenueFigures
 from ...utils import info_float, instrument_to_ccxt_symbol, set_liabilities
@@ -79,6 +98,15 @@ def _failure(e: Exception, sent: bool) -> tuple[str, str]:
     return ("UNKNOWN" if sent and maybe_applied else "FAILED"), reason
 
 
+def _net_margin_holding(row: dict[str, Any]) -> float:
+    """Net cross-margin holding of an asset: asset (free + locked) less what is borrowed and owed."""
+    return (
+        (info_float(row, "crossMarginAsset") or 0.0)
+        - (info_float(row, "crossMarginBorrowed") or 0.0)
+        - (info_float(row, "crossMarginInterest") or 0.0)
+    )
+
+
 def _parse_adl_quantiles(rows: Any) -> dict[str, int]:
     """Market id -> worst (max) ADL quantile across sides, from the papi adlQuantile
     response: ``[{"symbol": ..., "adlQuantile": {"LONG": n, "SHORT": n} | {"BOTH": n}}]``."""
@@ -104,15 +132,34 @@ class BinancePmCcxtConnector(CcxtConnector):
     # the REST path already sidesteps in BinanceQV.parse_balance_custom, which reads
     # whole-account totalWalletBalance. Snapshot-only here.
     _wants_ws_balance_push = False
+    # - papi margin: a client id is unique among OPEN orders only (live-checked 2026-10-12: a duplicate
+    #   is refused with -2010 while the first is open, accepted once it is cancelled)
+    _replaces_with_same_client_id = True
 
     _adl_levels: dict[str, int]
+    # - markets a PM account can trade besides BINANCE.UM: BINANCE spot, in the cross-margin wallet
+    EXTRA_MARKETS = ("BINANCE",)
+    # - the account trades BINANCE spot (configured in its markets)
+    _spot_margin: bool
+    # - quote of the spot instrument a held asset maps to
+    _spot_quote: str = "USDT"
 
     _COLLECT = WalletMove("futures_um", "margin", False)
     _REPAY = WalletMove("margin", "futures_um", False)
 
-    def __init__(self, **kwargs: Any):
+    def __init__(self, *, markets: tuple[str, ...] = (), ignore_assets: tuple[str, ...] = (), **kwargs: Any):
         super().__init__(**kwargs)
         self._adl_levels = {}
+        self._spot_margin = "BINANCE" in markets
+        # - coins left as plain balances: never a spot position, never traded (e.g. BNB for the fee discount)
+        self._ignored_assets = frozenset(a.upper() for a in ignore_assets)
+        self._unpriced_warned: set[str] = set()
+
+    def submit_order(self, request: OrderRequest) -> None:
+        instrument = request.instrument
+        if instrument is not None and instrument.is_spot() and instrument.base.upper() in self._ignored_assets:
+            raise InvalidOrderParameters(f"{instrument.base} is in the account's ignore_assets: not traded")
+        super().submit_order(request)
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         balances = super()._convert_balances(raw_balance)
@@ -165,6 +212,110 @@ class BinancePmCcxtConnector(CcxtConnector):
         await super()._fill_leverage_settings(positions)
         await self._fill_adl_levels(positions)
 
+    async def _balance_positions(self, raw_balance: dict[str, Any]) -> list[Position]:
+        """Spot positions from the cross-margin balances already in the snapshot payload: one per
+        non-stable asset with a spot market against ``_spot_quote``, sized by the exact net holding
+        (a base-asset fee leaves it off the lot grid), marked and averaged at the current price.
+
+        A missing price raises for a holding of at least a lot: the snapshot is authoritative, and
+        dropping a held asset would read as a sell. Sub-lot dust is priced from the live quote only
+        (a coin the bot does not trade has none) and left out without one: dust is never a
+        presence diff, so leaving it out changes nothing. An asset whose spot market is inactive, or that
+        the venue refuses to price, is left out with a warning: one halted coin in the wallet must not
+        fail every snapshot (a traded instrument is priced from its live quote and never gets there).
+        """
+        if not self._spot_margin:
+            return []
+        ex = self._em.exchange
+        held: list[tuple[Instrument, float, dict[str, Any]]] = []
+        for asset, row in _pm_rows(raw_balance).items():
+            if asset.upper() in STABLE_CURRENCIES or asset.upper() in self._ignored_assets:
+                continue
+            market = ex.markets.get(f"{asset}/{self._spot_quote}")
+            if market is None or not market.get("spot"):
+                continue
+            if market.get("active") is False:
+                self._warn_unpriced(asset, "its spot market is inactive")
+                continue
+            if (net := round(_net_margin_holding(row), 12)) != 0.0:
+                held.append((ccxt_symbol_to_instrument(ex.name, market), net, row))
+        if not held:
+            return []
+        prices = await self._spot_prices([i for i, q, _ in held if abs(q) >= i.lot_size])
+        positions = []
+        for instrument, quantity, row in held:
+            if (price := prices.get(instrument)) is None:
+                quote = self._data_provider.get_quote(instrument)
+                if quote is None or quote.mid_price() <= 0:
+                    continue
+                price = quote.mid_price()
+            pos = Position(instrument=instrument, quantity=quantity, pos_average_price=price)
+            updated = row.get("updateTime")
+            pos.update_market_price(
+                pd.Timestamp(int(updated), unit="ms").asm8 if updated else self._time.time(), price, 1
+            )
+            positions.append(pos)
+        return positions
+
+    async def _spot_prices(self, instruments: list[Instrument]) -> dict[Instrument, float]:
+        prices: dict[Instrument, float] = {}
+        for instrument in instruments:
+            quote = self._data_provider.get_quote(instrument)
+            if quote is not None and quote.mid_price() > 0:
+                prices[instrument] = quote.mid_price()
+        missing = {self._market_id(i): i for i in instruments if i not in prices}
+        if missing:
+            refused: set[str] = set()
+            try:
+                rows = await self._spot_tickers(list(missing))
+            except ccxt.NetworkError:
+                raise
+            except ccxt.ExchangeError:
+                # - the venue refuses the batch for one bad symbol (-1121): price them one by one
+                rows = []
+                for market_id in missing:
+                    try:
+                        rows.extend(await self._spot_tickers([market_id]))
+                    except ccxt.NetworkError:
+                        raise
+                    except ccxt.ExchangeError as e:
+                        refused.add(market_id)
+                        self._warn_unpriced(missing[market_id].symbol, f"the venue refuses to price it ({e})")
+            for row in rows:
+                if (instrument := missing.get(row.get("symbol"))) is not None and (price := info_float(row, "price")):
+                    prices[instrument] = price
+            if unpriced := [i.symbol for m, i in missing.items() if i not in prices and m not in refused]:
+                raise ValueError(f"no price for spot holding(s) {unpriced}")
+        return prices
+
+    async def _spot_tickers(self, market_ids: list[str]) -> list[dict[str, Any]]:
+        # - spot ticker endpoint directly: ccxt's fetch_tickers on this class takes the linear path
+        rows = await self._em.exchange.publicGetTickerPrice({"symbols": json.dumps(market_ids, separators=(",", ":"))})
+        return rows if isinstance(rows, list) else []
+
+    def _warn_unpriced(self, name: str, why: str) -> None:
+        if name not in self._unpriced_warned:
+            self._unpriced_warned.add(name)
+            logger.warning(f"[{self.exchange_name}] spot holding {name} left out of the snapshot: {why}")
+
+    async def _fetch_extra_open_orders(self) -> list[dict]:
+        orders = await super()._fetch_extra_open_orders()
+        if not self._spot_margin:
+            return orders
+        ex = self._em.exchange
+        return [*orders, *ex.parse_orders(await ex.papiGetMarginOpenOrders())]
+
+    def set_instrument_leverage(self, instrument: Instrument, leverage: float) -> None:
+        if instrument.is_spot():
+            logger.debug(f"[{self.exchange_name}] {instrument.symbol}: spot has no leverage setting; skipped")
+            return
+        super().set_instrument_leverage(instrument, leverage)
+
+    def _amends_in_place(self, instrument: Instrument) -> bool:
+        # - papi has no margin amend; ccxt's spot edit is the SPOT account's cancelReplace, which
+        #   cannot see a margin order. Spot amends run as cancel + recreate (connector._replace_async).
+        return not instrument.is_spot() and super()._amends_in_place(instrument)
+
     async def _fill_adl_levels(self, positions: list[Position]) -> None:
         """Stamp ``Position.adl_level`` from ONE account-wide adlQuantile call per
         snapshot and refresh the cache ``get_adl_level`` reads. Best-effort: a failure
@@ -178,6 +329,8 @@ class BinancePmCcxtConnector(CcxtConnector):
             return
         self._adl_levels = _parse_adl_quantiles(rows)
         for pos in positions:
+            if not pos.instrument.is_futures():
+                continue
             level = self._adl_levels.get(self._market_id(pos.instrument))
             if level is not None:
                 pos.adl_level = level
@@ -189,6 +342,8 @@ class BinancePmCcxtConnector(CcxtConnector):
             return instrument.symbol
 
     def get_adl_level(self, instrument: Instrument) -> int | None:
+        if not instrument.is_futures():
+            return None
         # local cache read (refreshed each snapshot) — never a blocking venue call;
         # strategies normally read ctx.get_adl_level -> Position.adl_level anyway
         return self._adl_levels.get(self._market_id(instrument))

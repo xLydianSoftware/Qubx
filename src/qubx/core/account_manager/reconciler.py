@@ -327,7 +327,7 @@ class ConfirmPositionBySnapshot(Task):
         wait: np.timedelta64,
         expected_delta: float,
     ):
-        self.key = instrument.symbol
+        self.key = str(instrument)
         self._instrument = instrument
         self._since = since
         self._deadline = now + wait
@@ -845,5 +845,5 @@ class Reconciler:
             if (v := getattr(event, attr, None)) is not None:
                 keys.add(v)
         if (instrument := getattr(event, "instrument", None)) is not None:
-            keys.add(getattr(instrument, "symbol", instrument))
+            keys.add(str(instrument))
         return keys

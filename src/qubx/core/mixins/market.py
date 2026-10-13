@@ -455,13 +455,15 @@ class MarketManager(IMarketManager):
         aux_data_storage: IStorage,
         max_buffer_size: int = 10_000,
         per_type_lengths: dict[str, int] | None = None,
+        market_data_providers: dict[str, IDataProvider] | None = None,
     ):
         self._time_provider = time_provider
         self._cache = CachedMarketDataHolder(max_buffer_size=max_buffer_size, per_type_lengths=per_type_lengths)
         self._data_providers = data_providers
         self._universe_manager = universe_manager
         self._aux_data_storage = aux_data_storage
-        self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
+        # - plus the markets served by another market's provider (BINANCE spot on a BINANCE.PM account)
+        self._exchange_to_data_provider = {dp.exchange(): dp for dp in data_providers} | (market_data_providers or {})
         self._aux_readers = dict()
 
     def get_market_data_cache(self) -> IMarketDataCache:

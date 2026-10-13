@@ -75,7 +75,9 @@ class AccountState:
         "_inflight_index",
         "_pending_evict_index",
         "_seen_trade_ids",
+        "_booked_trade_ids",
         "_terminal_history",
+        "_booked_trade_cap",
         "_pre_pending_status",
         "_pending_since",
         "_last_snapshot_as_of",
@@ -118,6 +120,12 @@ class AccountState:
         # fill (resting/canceled orders never allocate a set), dropped on
         # eviction so the memory dies with the order.
         self._seen_trade_ids: dict[str, set[str]] = {}
+        # (instrument, trade_id) of every applied/recorded trade, FIFO-bounded like the terminal
+        # history. Outlives order eviction: a trade re-fetched after its order was evicted (a
+        # RequestHistDeals behind a later size diff) carries only the venue order id, resolves
+        # to nothing and would otherwise book again as an external order.
+        self._booked_trade_ids: OrderedDict[tuple[Instrument, str], None] = OrderedDict()
+        self._booked_trade_cap: int = terminal_history_size
         # bounded ring buffer of evicted terminals (FIFO); slow-path lookups
         self._terminal_history: deque[Order] = deque(maxlen=terminal_history_size)
         # cid -> status captured on entry to PENDING_*; revert target on reject/give-up
@@ -427,6 +435,7 @@ class AccountState:
             logger.debug(f"duplicate fill {fill.trade_id} on {cid}; skipping")
             return False
         seen.add(fill.trade_id)
+        self._mark_trade_booked(order.instrument, fill.trade_id)
         order.record_fill(fill.amount, fill.price)  # filled_quantity + avg-price math lives on Order
         order.last_update_time = update_time if update_time is not None else now
         return True
@@ -441,6 +450,19 @@ class AccountState:
         calls this when a snapshot already counted the execution, so any later
         re-delivery on any path dedups via apply_fill."""
         self._seen_trade_ids.setdefault(cid, set()).add(trade_id)
+        if (order := self._active_orders.get(cid)) is not None:
+            self._mark_trade_booked(order.instrument, trade_id)
+
+    def is_trade_booked(self, instrument: Instrument, trade_id: str) -> bool:
+        """True if this trade was applied or recorded under any order, evicted ones included."""
+        return (instrument, trade_id) in self._booked_trade_ids
+
+    def _mark_trade_booked(self, instrument: Instrument | None, trade_id: str) -> None:
+        if instrument is None:
+            return
+        self._booked_trade_ids[(instrument, trade_id)] = None
+        if len(self._booked_trade_ids) > self._booked_trade_cap:
+            self._booked_trade_ids.popitem(last=False)
 
     def remove_order(self, cid: str) -> None:
         # Drop an order from state entirely (e.g. a submit that raised before reaching the
@@ -543,16 +565,20 @@ class AccountState:
         # half-lot / half-tick like the Differ: n * lot_size is not always the double the
         # venue's decimal parses to
         inst = snapshot.instrument
+        avg = snapshot.position_avg_price
+        if inst.is_spot() and existing.is_open() and np.sign(existing.quantity) == np.sign(snapshot.quantity):
+            # - a spot holding is a balance with no venue entry price: keep the ledger's average
+            avg = existing.position_avg_price
         changed = (
             abs(existing.quantity - snapshot.quantity) > inst.lot_size * 0.5
-            or abs(existing.position_avg_price - snapshot.position_avg_price) > inst.tick_size * 0.5
+            or abs(existing.position_avg_price - avg) > inst.tick_size * 0.5
         )
         if changed:
             logger.info(
                 f"[{self.exchange}] reconcile: position <y>{snapshot.instrument}</y> from snapshot -> "
-                f"size {existing.quantity}->{snapshot.quantity} avg {existing.position_avg_price}->{snapshot.position_avg_price}"
+                f"size {existing.quantity}->{snapshot.quantity} avg {existing.position_avg_price}->{avg}"
             )
-            existing.reconcile_size(snapshot.quantity, snapshot.position_avg_price, timestamp=snapshot.last_update_time)
+            existing.reconcile_size(snapshot.quantity, avg, timestamp=snapshot.last_update_time)
 
         # external margins first, so the mark refresh below skips recalculating them
         if snapshot._maint_margin_external:

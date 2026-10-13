@@ -91,6 +91,7 @@ from qubx.utils.time import to_timedelta
 
 from .exceptions import CcxtSymbolNotRecognized
 from .exchange_manager import ExchangeManager
+from .replace import Replacement
 from .utils import (
     FRAMEWORK_ONLY_OPTIONS,
     ccxt_convert_balance,
@@ -169,6 +170,25 @@ class _LeverageInfo:
     margin_mode: str | None = None
 
 
+@dataclass(frozen=True)
+class _ReplaceRequest:
+    """An amend to run as cancel + recreate, read off the Order synchronously in update_order."""
+
+    instrument: Instrument
+    client_order_id: str | None
+    venue_order_id: str | None
+    side: str
+    order_type: str
+    time_in_force: str
+    post_only: bool
+    reduce_only: bool
+    price: float | None
+    total: float
+    local_filled: float
+    requested_price: float | None
+    requested_total: float | None
+
+
 _VENUE_VERDICT_ERRORS: tuple[type[Exception], ...] = (
     ccxt.InsufficientFunds,
     ccxt.OrderNotFillable,
@@ -223,6 +243,9 @@ class CcxtConnector(ChannelEmitter):
     # make_client_id actually produces, so producer and classifier can never drift.
     cid_framework_prefix: str = FRAMEWORK_CID_PREFIX
 
+    # Markets an account of this venue can trade besides its own (ExchangePlugin.extra_markets).
+    EXTRA_MARKETS: tuple[str, ...] = ()
+
     # Whether the venue's ACCOUNT_UPDATE `a.B[].wb` is the ACCOUNT wallet balance.
     # True on plain UM/CM, where the futures wallet is the account. False on venues
     # whose stream reports a SUB-wallet (Binance PM) — there an absolute push would
@@ -269,6 +292,8 @@ class CcxtConnector(ChannelEmitter):
         self._leverage_future: Any = None
         # - venue leverage state per ccxt symbol, refreshed by _leverage_poll_loop
         self._leverage_cache: dict[str, _LeverageInfo] = {}
+        # - client id -> its amend-by-cancel+recreate record (see replace.py); touched on the loop only
+        self._replacements: dict[str, Replacement] = {}
 
         # Re-subscribe the account WS stream + resync against venue truth after the
         # ExchangeManager swaps in a fresh exchange (the running _subscribe_executions
@@ -396,6 +421,9 @@ class CcxtConnector(ChannelEmitter):
             if k in FRAMEWORK_ONLY_OPTIONS:
                 continue
             payload["params"].setdefault(k, v)
+        if instrument.is_spot():
+            # - spot has no reduce-only (Binance PM margin rejects it); executors may still set it
+            payload["params"].pop("reduceOnly", None)
 
         self._spawn(self._submit_async(instrument, request.client_id, payload))
 
@@ -483,6 +511,13 @@ class CcxtConnector(ChannelEmitter):
         outcome (the cancel may still have landed), so the order is left inflight for
         AM to reconcile rather than terminal-rejected.
         """
+        if client_order_id is not None and (r := self._replacements.get(client_order_id)) is not None:
+            if r.in_flight:
+                # - the replace resolves it: no recreate, or a cancel of the recreated order
+                r.cancel_requested = True
+                return
+            if venue_order_id in r.superseded and r.current_vid is not None:
+                venue_order_id = r.current_vid
         try:
             # Outside _cancel_with_retry: one slot per operation, and its broad handlers would eat the timeout.
             await self._acquire_endpoint_budget("cancel_order")
@@ -713,6 +748,35 @@ class CcxtConnector(ChannelEmitter):
                 f"update_order for {order.client_order_id}: effective amend amount "
                 f"{wire_amount} <= 0 (total {total}, filled {order.filled_quantity})"
             )
+        if not self._amends_in_place(order.instrument):
+            if not self._replaces_with_same_client_id:
+                # - no in-place amend and no verified emulation: refuse without touching the order
+                self._emit_update_rejected(
+                    order.client_order_id,
+                    order.venue_order_id,
+                    ccxt.NotSupported(f"{self.exchange_name} cannot amend {order.instrument.symbol} orders"),
+                )
+                return
+            self._spawn(
+                self._replace_async(
+                    _ReplaceRequest(
+                        instrument=order.instrument,
+                        client_order_id=order.client_order_id,
+                        venue_order_id=order.venue_order_id,
+                        side=order.side,
+                        order_type=str(order.type),
+                        time_in_force=order.time_in_force,
+                        post_only=order.post_only or str(order.time_in_force).upper() == "GTX",
+                        reduce_only=order.reduce_only,
+                        price=wire_price,
+                        total=total,
+                        local_filled=order.filled_quantity,
+                        requested_price=price,
+                        requested_total=quantity,
+                    )
+                )
+            )
+            return
         self._spawn(
             self._update_async(
                 order.client_order_id,
@@ -750,12 +814,7 @@ class CcxtConnector(ChannelEmitter):
         vid = venue_order_id
         try:
             await self._acquire_endpoint_budget("edit_order")
-            if self._em.exchange.has.get("editOrder", False):
-                r = await self._edit_order_direct(
-                    client_order_id, vid, symbol, side, order_type, wire_price, wire_amount
-                )
-            else:
-                r = await self._update_via_cancel_recreate(client_order_id, venue_order_id, wire_price, wire_amount)
+            r = await self._edit_order_direct(client_order_id, vid, symbol, side, order_type, wire_price, wire_amount)
         except RateLimitGateTimeout as e:
             self._emit_update_rejected(client_order_id, venue_order_id, e)
             return
@@ -829,18 +888,202 @@ class CcxtConnector(ChannelEmitter):
             params={},
         )
 
-    async def _update_via_cancel_recreate(
-        self, client_order_id: str | None, venue_order_id: str | None, price: float | None, quantity: float | None
-    ) -> dict[str, Any] | None:
-        # Raise BEFORE cancelling: cancelling first and then failing to recreate would leave
-        # the order DEAD at the venue while the strategy is told only "update rejected, order
-        # still alive". The AM now passes the whole Order, so wiring a real cancel+recreate
-        # (thread the order's side/type/tif + original price/qty) is straightforward — but it's
-        # deferred to the recreate follow-up. Until then, reject without touching the live order.
-        # TODO(account-mgmt): wire the recreate from the passed Order.
-        # TODO(account-mgmt): this path is itself a REPLACEMENT — when wired, size the recreate
-        # at total - filled, not the total-dialect `quantity` (wire_amount) it currently receives.
-        raise ccxt.NotSupported("cancel+recreate update is not yet wired for editOrder-less venues")
+    # - the venue lets a cancelled order's client id be reused by a new order (unique among OPEN
+    #   orders only), so an amend can be emulated as cancel + recreate; opt-in per venue, verified live
+    _replaces_with_same_client_id: bool = False
+
+    def _amends_in_place(self, instrument: Instrument) -> bool:
+        """True when the venue modifies an order of ``instrument`` in place; else ``update_order``
+        is emulated as cancel + recreate under the same client id (``_replace_async``)."""
+        return bool(self._em.exchange.has.get("editOrder", False))
+
+    async def _replace_async(self, req: "_ReplaceRequest") -> None:
+        """Amend as cancel + recreate, keeping the client id (see replace.py for the event rules).
+
+        The order stays live unless the cancel lands: any refusal before it is an update reject.
+        After it, the order is either recreated (OrderUpdatedEvent carrying the new venue id) or
+        it has ended (OrderCanceledEvent: nothing left to place, recreate refused, or the strategy
+        cancelled meanwhile). The recreate is sized from the cancel response's executed quantity,
+        the venue's final figure, not the local one, which may trail the fill stream.
+        """
+        cid, vid, instrument = req.client_order_id, req.venue_order_id, req.instrument
+        symbol = instrument_to_ccxt_symbol(instrument)
+        if vid is None:
+            self._emit_update_rejected(cid, vid, ccxt.NotSupported("order not acknowledged yet; amend after the ack"))
+            return
+        record = self._replacements.get(cid)
+        if record is not None and record.in_flight:
+            self._emit_update_rejected(cid, vid, ccxt.NotSupported("a replace of this order is already in flight"))
+            return
+        if record is not None and vid in record.superseded and record.current_vid is not None:
+            vid = record.current_vid
+        # - validate the replacement before touching the live order: a refusal now leaves it as is
+        try:
+            self._replacement_payload(req, req.total - req.local_filled)
+        except (InvalidOrderParameters, ccxt.BadRequest) as e:
+            self._emit_update_rejected(cid, vid, e)
+            return
+        if record is None:
+            record = self._replacements[cid] = Replacement(instrument=instrument, cancelling_vid=None)
+        record.begin(vid)
+
+        try:
+            await self._acquire_endpoint_budget("cancel_order")
+            ok, response = await self._cancel_with_retry(cid, vid, symbol)
+        except RateLimitGateTimeout as e:
+            self._end_replace(cid, record, vid, symbol)
+            self._emit_update_rejected(cid, vid, e)
+            return
+        except ccxt.NetworkError as e:
+            # - UNKNOWN whether the cancel landed: no recreate (two live orders would be worse than
+            #   none); stop filtering so the venue's own report of the old order gets through
+            self._end_replace(cid, record, vid, symbol)
+            logger.warning(f"[{self.exchange_name}] replace of {cid}: cancel outcome unknown ({e}); leaving inflight")
+            return
+        if ok is False:
+            self._end_replace(cid, record, vid, symbol)
+            self._emit_update_rejected(cid, vid, ccxt.OperationRejected("venue refused the cancel of the replace"))
+            return
+        if ok is None:
+            # - already gone (filled, or ended elsewhere): its terminal report is the truth, fetch it
+            self._end_replace(cid, record)
+            self._emit_update_rejected(cid, vid, ccxt.OrderNotFound("order no longer open; not replaced"))
+            self._spawn(self._order_status_async(cid, vid, symbol, instrument))
+            return
+
+        filled = float((response or {}).get("filled") or 0.0)
+        cost = float((response or {}).get("cost") or 0.0)
+        record.cancelled(vid, filled, cost)
+        remaining = req.total - record.filled_before
+        if record.cancel_requested:
+            self._finish_replace_as_cancel(cid, vid, record, "cancel requested during the replace")
+            return
+        try:
+            payload = self._replacement_payload(req, remaining)
+        except (InvalidOrderParameters, ccxt.BadRequest) as e:
+            self._finish_replace_as_cancel(cid, vid, record, f"remaining {remaining} not placeable: {e}")
+            return
+
+        try:
+            await self._acquire_endpoint_budget("create_order")
+            created = await self._em.exchange.create_order(**payload)
+        except (RateLimitGateTimeout, *_VENUE_VERDICT_ERRORS) as e:
+            # - verdicts first: rate-limit / maintenance are NetworkError subclasses (see _submit_async)
+            self._report_order_limit_hit(e)
+            self._finish_replace_as_cancel(cid, vid, record, f"recreate refused: {e}")
+            return
+        except ccxt.NetworkError as e:
+            logger.warning(f"[{self.exchange_name}] replace of {cid}: recreate outcome unknown ({e}); looking it up")
+            await self._resolve_unknown_recreate(req, vid, record)
+            return
+        except Exception as e:  # noqa: BLE001
+            logger.error(f"[{self.exchange_name}] replace of {cid}: unexpected recreate error {e!r}; looking it up")
+            await self._resolve_unknown_recreate(req, vid, record)
+            return
+        if created is None or created.get("id") is None:
+            await self._resolve_unknown_recreate(req, vid, record)
+            return
+        self._recreated(req, record, str(created["id"]))
+
+    def _replacement_payload(self, req: "_ReplaceRequest", amount: float) -> dict[str, Any]:
+        if amount <= 0:
+            raise InvalidOrderParameters(f"nothing left to place ({amount})")
+        quote = self._data_provider.get_quote(req.instrument)
+        price = req.price
+        if req.post_only and quote is not None and price is not None:
+            crosses = price >= quote.ask if req.side == "BUY" else price <= quote.bid
+            if crosses:
+                # - a post-only replacement at a crossing price would be refused AFTER the cancel
+                raise InvalidOrderParameters(f"post-only price {price} crosses the book ({quote.bid}/{quote.ask})")
+        payload = prepare_ccxt_order_payload(
+            instrument=req.instrument,
+            order_side=req.side,
+            order_type=req.order_type,
+            amount=amount,
+            price=price,
+            client_id=req.client_order_id,
+            time_in_force=req.time_in_force,
+            quote=quote,
+            reduce_only=req.reduce_only,
+            post_only=req.post_only,
+        )
+        if req.instrument.is_spot():
+            payload["params"].pop("reduceOnly", None)
+        return payload
+
+    def _recreated(self, req: "_ReplaceRequest", record: Replacement, new_vid: str) -> None:
+        record.recreated(new_vid)
+        logger.debug(f"[{self.exchange_name}] replace of {req.client_order_id}: now venue order {new_vid}")
+        self.send(
+            OrderUpdatedEvent(
+                instrument=None,
+                client_order_id=req.client_order_id,
+                venue_order_id=new_vid,
+                new_price=req.requested_price,
+                new_quantity=req.requested_total,
+            )
+        )
+        if record.cancel_requested:
+            self._spawn(self._cancel_async(req.client_order_id, new_vid, instrument_to_ccxt_symbol(req.instrument)))
+
+    async def _resolve_unknown_recreate(self, req: "_ReplaceRequest", old_vid: str, record: Replacement) -> None:
+        """The recreate may or may not have landed: look the client id up (the venue returns its
+        newest order) — a new venue id means it did, the cancelled one means it did not."""
+        cid = req.client_order_id
+        assert cid is not None
+        symbol = instrument_to_ccxt_symbol(req.instrument)
+        for attempt in range(3):
+            await asyncio.sleep(1.0 + attempt)
+            try:
+                raw = await self._em.exchange.fetch_order_with_client_order_id(cid, symbol)
+            except ccxt.OrderNotFound:
+                break
+            except Exception as e:  # noqa: BLE001
+                logger.warning(f"[{self.exchange_name}] replace of {cid}: lookup failed ({e}); retrying")
+                continue
+            found = None if raw is None else raw.get("id")
+            if found is not None and str(found) != old_vid and str(found) not in record.superseded:
+                self._recreated(req, record, str(found))
+                self._handle_ws_order(raw)
+                return
+            break
+        else:
+            # - could not tell: stop filtering and leave the order to the reconciler
+            logger.error(
+                f"[{self.exchange_name}] replace of {cid}: recreate outcome still unknown; reconciler takes over"
+            )
+            # - a recreated order's venue id is unknown here: a pending cancel goes by client id
+            self._end_replace(cid, record, None, symbol)
+            return
+        self._finish_replace_as_cancel(cid, old_vid, record, "recreate did not land")
+
+    def _finish_replace_as_cancel(self, cid: str | None, vid: str, record: Replacement, why: str) -> None:
+        logger.warning(f"[{self.exchange_name}] replace of {cid} ended the order: {why}")
+        self._end_replace(cid, record)
+        self.send(OrderCanceledEvent(instrument=None, client_order_id=cid, venue_order_id=vid))
+
+    def _end_replace(
+        self, cid: str | None, record: Replacement, live_vid: str | None = None, symbol: str | None = None
+    ) -> None:
+        """Stop the replace. With ``symbol`` given the order may still be live at the venue (``live_vid``, or
+        unknown): a cancel the strategy asked for meanwhile, held back by the replace, is sent now."""
+        # - kept only while a live recreated order needs its reports rewritten
+        record.abandoned()
+        if cid is not None and (record.current_vid is None or not record.superseded):
+            self._replacements.pop(cid, None)
+        if symbol is not None and record.cancel_requested:
+            record.cancel_requested = False
+            self._spawn(self._cancel_async(cid, live_vid, symbol))
+
+    def _replaced_view(self, order: Order) -> Order | None:
+        """Route one venue report of an order through its replace record, if it has one."""
+        record = self._replacements.get(order.client_order_id) if order.client_order_id else None
+        if record is None:
+            return order
+        viewed = record.view(order)
+        if viewed is not None and record.is_done(viewed):
+            self._replacements.pop(order.client_order_id, None)
+        return viewed
 
     def _emit_update_rejected(self, client_order_id: str | None, venue_order_id: str | None, error: Exception) -> None:
         logger.warning(f"[{self.exchange_name}] Update for {client_order_id or venue_order_id} rejected: {error}")
@@ -1536,7 +1779,9 @@ class CcxtConnector(ChannelEmitter):
             logger.warning(f"[{self.exchange_name}] WS order for unknown symbol {raw.get('symbol')}; skipped")
             return
         order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
-        self._emit_order_events(instrument, order, raw)
+        if (viewed := self._replaced_view(order)) is None:
+            return
+        self._emit_order_events(instrument, viewed, raw)
 
     def _emit_order_events(self, instrument: Instrument, order: Order, raw: dict[str, Any]) -> None:
         """Map a converted order's status to the typed lifecycle event(s).
@@ -1964,6 +2209,15 @@ class CcxtConnector(ChannelEmitter):
             logger.debug(f"[{self.exchange_name}] snapshot: no trigger open-orders surface ({e}); regular only")
             return []
 
+    async def _fetch_extra_open_orders(self) -> list[dict]:
+        """Open orders the venue-wide ``fetch_open_orders`` does not return: trigger orders here;
+        a venue with a further order surface (Binance PM margin) adds it."""
+        return await self._fetch_trigger_open_orders()
+
+    async def _balance_positions(self, raw_balance: dict[str, Any]) -> list[Position]:
+        """Positions the venue reports as balances rather than positions (spot holdings); none here."""
+        return []
+
     def _merge_open_orders(self, raw_orders: list[dict], raw_trigger_orders: list[dict]) -> list[Order]:
         """Merge regular + trigger raw open orders into framework Orders (dedup by venue id).
 
@@ -1983,6 +2237,9 @@ class CcxtConnector(ChannelEmitter):
                 )
                 continue
             order = ccxt_convert_order_info(instrument, raw, framework_prefix=self.cid_framework_prefix)
+            if (viewed := self._replaced_view(order)) is None:
+                continue
+            order = viewed
             key = order.venue_order_id or order.client_order_id
             if key is not None and key in seen:
                 continue
@@ -2028,7 +2285,7 @@ class CcxtConnector(ChannelEmitter):
             if include_orders:
                 raw_orders, raw_trigger_orders, raw_positions, raw_balance = await asyncio.gather(
                     ex.fetch_open_orders(),
-                    self._fetch_trigger_open_orders(),
+                    self._fetch_extra_open_orders(),
                     ex.fetch_positions(),
                     ex.fetch_balance(),
                 )
@@ -2038,6 +2295,7 @@ class CcxtConnector(ChannelEmitter):
                 open_orders = None  # - not observed this tick -> reconcile skips order diffing
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
+            positions += await self._balance_positions(raw_balance)
             balances = self._convert_balances(raw_balance)
             figures = self._extract_venue_figures(raw_balance)
         except Exception as e:  # noqa: BLE001 — AM retries on its next snapshot tick

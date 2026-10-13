@@ -66,11 +66,14 @@ class SubscriptionManager(ISubscriptionManager):
         auto_subscribe: bool = True,
         default_base_subscription: str = DataType.NONE,
         monitor_interval_seconds: float = 30.0,
+        market_data_providers: dict[str, IDataProvider] | None = None,
     ) -> None:
         self._time_provider = time_provider
         self._data_providers = data_providers
         self._channel = channel
-        self._exchange_to_data_provider = {data_provider.exchange(): data_provider for data_provider in data_providers}
+        # - plus the markets served by another market's provider (BINANCE spot on a BINANCE.PM account)
+        self._market_data_providers = dict(market_data_providers or {})
+        self._exchange_to_data_provider = {dp.exchange(): dp for dp in data_providers} | self._market_data_providers
         self._health_monitor = health_monitor
         self._strategy_state = strategy_state
         self._status = status
@@ -228,25 +231,27 @@ class SubscriptionManager(ISubscriptionManager):
                 self._desired[_sub] = set(_updated_instruments)
             else:
                 self._desired.pop(_sub, None)
-            _exchange_to_updated_instruments = defaultdict(set)
-            _exchange_to_current_sub_instruments = defaultdict(set)
+            # - grouped by the serving provider, not instrument.exchange: one provider can serve
+            #   several exchanges (BINANCE.PM: BINANCE.UM + BINANCE spot) and a reset subscribe
+            #   per exchange would drop the other's instruments
+            _provider_of = {
+                instr: self._get_data_provider(instr.exchange)
+                for instr in _updated_instruments | _current_sub_instruments
+            }
+            _providers = {id(dp): dp for dp in _provider_of.values()}
+            _provider_updated = defaultdict(set)
+            _provider_current = defaultdict(set)
             for instr in _updated_instruments:
-                _exchange_to_updated_instruments[instr.exchange].add(instr)
+                _provider_updated[id(_provider_of[instr])].add(instr)
             for instr in _current_sub_instruments:
-                _exchange_to_current_sub_instruments[instr.exchange].add(instr)
+                _provider_current[id(_provider_of[instr])].add(instr)
 
-            _exchanges_to_update = set(_exchange_to_updated_instruments.keys()).union(
-                _exchange_to_current_sub_instruments.keys()
-            )
-            for _exchange in _exchanges_to_update:
-                _data_provider = self._get_data_provider(_exchange)
-                _exchange_updated_instruments = _exchange_to_updated_instruments[_exchange]
-                _exchange_current_instruments = _exchange_to_current_sub_instruments[_exchange]
-                if _exchange_updated_instruments != _exchange_current_instruments:
+            for _key, _data_provider in _providers.items():
+                if _provider_updated[_key] != _provider_current[_key]:
                     try:
-                        _data_provider.subscribe(_sub, _exchange_updated_instruments, reset=True)
+                        _data_provider.subscribe(_sub, _provider_updated[_key], reset=True)
                     except NotSupported as e:
-                        logger.warning(f"Subscription not supported for {_exchange}: {e}")
+                        logger.warning(f"Subscription not supported for {_data_provider.exchange()}: {e}")
 
             # Notify health monitor of new subscriptions
             for instr in _added_instruments:
@@ -429,7 +434,7 @@ class SubscriptionManager(ISubscriptionManager):
         # TODO: think about appropriate handling of timeouts
         _warmups: dict[IDataProvider, dict[tuple[str, Instrument], str]] = {}
         for _data_provider in self._data_providers:
-            _warmup_configs = self._get_pending_warmups_for_exchange(_data_provider.exchange())
+            _warmup_configs = self._get_pending_warmups_for_provider(_data_provider)
             if _warmup_configs:
                 _warmups[_data_provider] = _warmup_configs
         self._pending_warmups.clear()
@@ -447,9 +452,12 @@ class SubscriptionManager(ISubscriptionManager):
         for instr in candidate_instruments.difference(_sub_instruments):
             self._pending_warmups[(sub, instr)] = _warmup_period
 
-    def _get_pending_warmups_for_exchange(self, exchange: str) -> dict[tuple[str, Instrument], str]:
+    def _get_pending_warmups_for_provider(self, data_provider: IDataProvider) -> dict[tuple[str, Instrument], str]:
+        # - by serving provider: a venue provider (BINANCE.PM) serves instruments of other exchanges
         return {
-            (sub, instr): period for (sub, instr), period in self._pending_warmups.items() if instr.exchange == exchange
+            (sub, instr): period
+            for (sub, instr), period in self._pending_warmups.items()
+            if self._get_data_provider(instr.exchange) is data_provider
         }
 
     def _get_data_provider(self, exchange: str) -> IDataProvider:
@@ -477,5 +485,6 @@ class SubscriptionManager(ISubscriptionManager):
             snapshot_fn=self.desired_snapshot,
             strategy_state=self._strategy_state,
             interval_seconds=self._monitor_interval_seconds,
+            market_data_providers=self._market_data_providers,
         )
         self._watchdog.start()

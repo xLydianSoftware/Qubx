@@ -745,6 +745,24 @@ class Deal:
     fee_currency: str | None = None
 
 
+def _add_exact(quantity: float, amount: float) -> float:
+    # - venue balances carry at most 8 decimals; 12 drops the float noise of the sum
+    return round(quantity + amount, 12)
+
+
+def deal_base_fee(instrument: Instrument, deal: Deal) -> float:
+    """The deal's fee when it was charged in the instrument's base asset (a spot buy's fee on
+    Binance), else 0."""
+    if (
+        not deal.fee_amount
+        or deal.fee_currency is None
+        or not instrument.is_spot()
+        or deal.fee_currency.upper() != instrument.base.upper()
+    ):
+        return 0.0
+    return deal.fee_amount
+
+
 class OrderType(StrEnum):
     MARKET = "MARKET"
     LIMIT = "LIMIT"
@@ -1454,16 +1472,21 @@ class Position:
         #   the result a few ulp short of the grid, which is how a position reached 0.0 locally
         #   while the venue still held one lot.
         lot = self.instrument.lot_size
-        if not is_lot_multiple(self.quantity, lot) or not is_lot_multiple(amount, lot):
-            # - stale instrument metadata or a connector fault. Reported, then booked to the
-            #   nearest lot: dropping the deal is the worse error.
-            logger.error(
-                f"[{self.instrument.symbol}] booking {self.quantity} + {amount} is not on the "
-                f"lot grid (lot_size {lot}) — rounding to the nearest lot"
-            )
+        if self.instrument.is_spot() and not is_lot_multiple(self.quantity, lot):
+            # - a spot holding a base-asset fee left off the grid: the venue holds the exact sum
+            new_quantity = _add_exact(self.quantity, amount)
+        else:
+            if not is_lot_multiple(self.quantity, lot) or not is_lot_multiple(amount, lot):
+                # - stale instrument metadata or a connector fault. Reported, then booked to the
+                #   nearest lot: dropping the deal is the worse error.
+                logger.error(
+                    f"[{self.instrument.symbol}] booking {self.quantity} + {amount} is not on the "
+                    f"lot grid (lot_size {lot}) — rounding to the nearest lot"
+                )
+            new_quantity = add_in_lots(self.quantity, amount, lot)
         return self.update_position(
             timestamp,
-            add_in_lots(self.quantity, amount, lot),
+            new_quantity,
             exec_price,
             fee_amount,
             conversion_rate=conversion_rate,
@@ -1585,11 +1608,17 @@ class Position:
         self, deal: Deal, conversion_rate: float = 1, *, realize_only: bool = False
     ) -> tuple[float, float]:
         time = deal.time.as_unit("ns").asm8 if isinstance(deal.time, pd.Timestamp) else deal.time
+        fee = deal.fee_amount or 0
+        if (base_fee := deal_base_fee(self.instrument, deal)) and not realize_only:
+            # - the fee came out of the bought asset: the position takes the net holding, off the
+            #   lot grid as the venue holds it; commissions take the fee's quote value
+            exact = _add_exact(self.quantity, deal.amount - base_fee)
+            return self.update_position(time, exact, deal.price, base_fee * deal.price, conversion_rate)
         return self.change_position_by(
             timestamp=time,
             amount=deal.amount,
             exec_price=deal.price,
-            fee_amount=deal.fee_amount or 0,
+            fee_amount=fee * deal.price if base_fee else fee,
             conversion_rate=conversion_rate,
             realize_only=realize_only,
         )

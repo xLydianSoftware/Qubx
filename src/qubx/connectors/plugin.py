@@ -44,6 +44,11 @@ class ConnectorBuildContext(BuildContext):
     """Adds the already-built data provider the connector depends on."""
 
     data_provider: IDataProvider
+    # markets the account trades, its own first (ExchangeConfig.markets, validated against
+    # ExchangePlugin.extra_markets); empty means only its own
+    markets: tuple[str, ...] = ()
+    # coins of its spot markets the account neither reports as positions nor trades (ExchangeConfig.ignore_assets)
+    ignore_assets: tuple[str, ...] = ()
 
 
 class ExchangePlugin(ABC):
@@ -64,3 +69,8 @@ class ExchangePlugin(ABC):
 
     def rate_limits(self, exchange_name: str) -> ExchangeRateLimitConfig | None:
         return None
+
+    def extra_markets(self, exchange_name: str) -> tuple[str, ...]:
+        """Markets an account of this venue can trade besides its own (``ExchangeConfig.markets``),
+        e.g. BINANCE spot on a BINANCE.PM portfolio-margin account. Nothing by default."""
+        return ()

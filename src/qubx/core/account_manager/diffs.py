@@ -80,8 +80,8 @@ def _close_margin(a: float, b: float) -> bool:
 
 
 def _material_pos(position: Position) -> bool:
-    # a position smaller than half a lot is effectively flat — never a presence diff
-    return abs(position.quantity) > _qeps(position.instrument)
+    # a position below a lot (a spot holding's dust) is flat — never a presence diff
+    return position.is_open()
 
 
 def _material_bal(balance: Balance) -> bool:
@@ -384,7 +384,10 @@ class Differ:
             if abs(lp.quantity - sp.quantity) > _qeps(sp.instrument):
                 diffs.append(PositionSizeMismatch(local=lp, origin=sp))
 
-            if abs(lp.position_avg_price - sp.position_avg_price) > _peps(sp.instrument):
+            # - a spot holding is a balance: the venue has no entry price, the local ledger owns it
+            if not sp.instrument.is_spot() and abs(lp.position_avg_price - sp.position_avg_price) > _peps(
+                sp.instrument
+            ):
                 diffs.append(PositionAvgPriceMismatch(local=lp, origin=sp))
 
             if not _close_margin(lp.maint_margin, sp.maint_margin):

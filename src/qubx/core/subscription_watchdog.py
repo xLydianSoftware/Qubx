@@ -1,6 +1,7 @@
 import threading
 import time
 from collections import defaultdict
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Callable
@@ -70,6 +71,9 @@ class _RepairRecord:
 class _ExchangeState:
     venue: str  # the provider's configured name; the health monitor keys is_connected by it
     provider: IDataProvider
+    # - every market the provider serves (BINANCE.UM + BINANCE spot on a BINANCE.PM account): policed
+    #   together, since a reset subscribe carries the provider's whole set, and degraded together
+    markets: tuple[str, ...] = ()
     dark_ticks: int = 0
     maintenance_held: bool = False
     repairs: dict[_Key, _RepairRecord] = field(default_factory=dict)
@@ -79,6 +83,15 @@ class _ExchangeState:
 
 def _base_type(sub: str) -> str:
     return str(DataType.from_str(sub)[0])
+
+
+def _merged(per_market: Iterable[_Subs]) -> _Subs:
+    # - one provider's desired set across the markets it serves, per subscription
+    out: dict[str, frozenset[Instrument]] = {}
+    for subs in per_market:
+        for sub, instruments in subs.items():
+            out[sub] = out.get(sub, frozenset()) | instruments
+    return out
 
 
 class SubscriptionWatchdog:
@@ -99,6 +112,7 @@ class SubscriptionWatchdog:
         strategy_state: StrategyState,
         interval_seconds: float = 30.0,
         settle_seconds: float = 3.0,
+        market_data_providers: dict[str, IDataProvider] | None = None,
     ) -> None:
         # - local import: qubx.core.mixins.__init__ imports subscription.py, which imports
         #   this module, so a module-level import here would close a cycle
@@ -113,11 +127,13 @@ class SubscriptionWatchdog:
         # - keyed by the canonical exchange instruments carry, which is also the scope the
         #   order path checks (is_degraded_for(instrument.exchange)); the provider itself
         #   may be registered under a venue alias (BINANCE.PM trades BINANCE.UM)
-        self._exchanges: dict[str, _ExchangeState] = {
-            canonical_exchange(p.exchange()): _ExchangeState(venue=p.exchange(), provider=p)
-            for p in data_providers
-            if not p.is_simulation
-        }
+        self._exchanges: dict[str, _ExchangeState] = {}
+        for p in data_providers:
+            if p.is_simulation:
+                continue
+            exchange = canonical_exchange(p.exchange())
+            served = (m for m, mp in (market_data_providers or {}).items() if mp is p and m != exchange)
+            self._exchanges[exchange] = _ExchangeState(venue=p.exchange(), provider=p, markets=(exchange, *served))
         self._thread: threading.Thread | None = None
         self._stop = threading.Event()
 
@@ -179,7 +195,7 @@ class SubscriptionWatchdog:
         # - per-exchange try/except: one venue's failure must not skip the rest
         for exchange, state in self._exchanges.items():
             try:
-                self._tick_exchange(exchange, state, universe.get(exchange, {}))
+                self._tick_exchange(exchange, state, _merged(universe.get(m, {}) for m in state.markets))
             except Exception as e:
                 logger.error(f"[{exchange}] :: watchdog tick failed: {e}")
 
@@ -332,16 +348,18 @@ class SubscriptionWatchdog:
         state.maintenance_held = True
         reason = "connection down" if status.connected is False else "no instrument delivering"
         logger.error(f"[{exchange}] :: exchange is dark ({reason}) - holding EXCHANGE_MAINTENANCE")
-        self._status.add(
-            DegradeReason.EXCHANGE_MAINTENANCE,
-            self._health_monitor.time_provider.time(),
-            scope=exchange,
-            message=reason,
-        )
+        for market in state.markets:
+            self._status.add(
+                DegradeReason.EXCHANGE_MAINTENANCE,
+                self._health_monitor.time_provider.time(),
+                scope=market,
+                message=reason,
+            )
 
     def _clear_maintenance(self, exchange: str, state: _ExchangeState) -> None:
         if not state.maintenance_held:
             return
         state.maintenance_held = False
         logger.info(f"[{exchange}] :: data resumed - clearing EXCHANGE_MAINTENANCE")
-        self._status.clear(DegradeReason.EXCHANGE_MAINTENANCE, scope=exchange)
+        for market in state.markets:
+            self._status.clear(DegradeReason.EXCHANGE_MAINTENANCE, scope=market)

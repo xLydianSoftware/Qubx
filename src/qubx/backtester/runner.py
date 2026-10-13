@@ -615,6 +615,7 @@ class SimulationRunner:
             cfg=AccountManagerConfig(maint_margin_rate=self.setup.maint_margin_rate),
             account_id=self.account_id,
             tcc=_exchange_to_tcc,
+            account_markets=self.setup.account_markets,
         )
 
         # - seed initial capital per exchange into the account state
