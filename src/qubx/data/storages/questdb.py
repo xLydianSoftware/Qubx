@@ -472,6 +472,38 @@ class QuestDBReader(IReader):
                 return number, units
         return c_tf, ""
 
+    def _bar_keys(self, x: xLTableMetaInfo) -> list[tuple[str, tuple]]:
+        """
+        Bar dtype keys (``ohlc(1h)`` ...) a bar table can serve, each with the table's rank for that key.
+
+        Several tables can serve one key (``candles_15m`` and ``candles_1h`` both resample to ``ohlc(1h)``,
+        ``candles_1h`` and ``ohlc_1h`` both claim it outright). The highest rank wins, compared in order:
+
+        1. ``candles_*`` over any other naming (``ohlc_*`` kernel tables lack quote_volume / count / taker_*)
+        2. table timeframe equal to the requested one, then one that divides it, then any other
+        3. finer table timeframe (a coarse table's missing bars would silently drop data from the resample)
+        4. table name, so the choice never depends on the order ``tables()`` lists them in
+        """
+        _type_ctor = DataType.OHLC if x.dtype == DataType.OHLC else DataType.AGGREGATED_LIQUIDATIONS
+        family = 1 if x.table_name.split(".")[-1].startswith("candles") else 0
+        if not x.data_timeframe:
+            return [(_type_ctor[x.data_timeframe], (family, 0, pd.Timedelta(0), x.table_name))]
+
+        base = to_timedelta(x.data_timeframe)
+        if self.synthetic_ohlc_timeframes_types:
+            # - all frames constructible from the base timeframe
+            frames = list(_ext_frames[_ext_frames.searchsorted(base) :])
+        else:
+            frames = [base]
+
+        keys = []
+        for f in frames:
+            tf = timedelta_to_str(f) if self.synthetic_ohlc_timeframes_types else x.data_timeframe
+            dt = _type_ctor[tf]
+            fit = 2 if f == base else (1 if f % base == pd.Timedelta(0) else 0)
+            keys.append((dt, (family, fit, -base, x.table_name)))
+        return keys
+
     def _build_lookups(self, available_data: list[xLTableMetaInfo], symbols_by_table: dict[str, set[str]]):
         """
         Build lookup dictionaries from pre-fetched symbols data.
@@ -482,25 +514,24 @@ class QuestDBReader(IReader):
         """
         _symbs_lookup = defaultdict(dict)
         _dtype_lookup = dict()
+        # - rank of the table currently holding a bar-type key; higher rank wins regardless of table order
+        _key_rank: dict[str, tuple] = {}
+        _symb_key_rank: dict[tuple[str, str], tuple] = {}
 
         for x in available_data:
             # - get symbols from pre-fetched data
             table_symbols = symbols_by_table.get(x.table_name, set())
             symbols, dtypes = [], []
+            bar_keys = self._bar_keys(x) if x.dtype in (DataType.OHLC, DataType.AGGREGATED_LIQUIDATIONS) else []
 
             for symb in table_symbols:
                 symbols.append(symb)
 
-                if x.dtype == DataType.OHLC or x.dtype == DataType.AGGREGATED_LIQUIDATIONS:
-                    _type_ctor = DataType.OHLC if x.dtype == DataType.OHLC else DataType.AGGREGATED_LIQUIDATIONS
-                    if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
-                        # - for making life bit easy let's generate all possible frames we can contruct from available base
-                        for f in _ext_frames[_ext_frames.searchsorted(to_timedelta(x.data_timeframe)) :]:
-                            _symbs_lookup[symb][dt := _type_ctor[timedelta_to_str(f)]] = x
-                            dtypes.append(dt)
-                    else:
-                        _symbs_lookup[symb][dt := _type_ctor[x.data_timeframe]] = x
-                        dtypes.append(dt)
+                if bar_keys:
+                    for dt, rank in bar_keys:
+                        if rank > _symb_key_rank.get((symb, dt), ()):
+                            _symb_key_rank[(symb, dt)] = rank
+                            _symbs_lookup[symb][dt] = x
                 elif x.dtype == DataType.QUOTE:
                     if self.synthetic_ohlc_timeframes_types and x.data_timeframe:
                         for f in _ext_frames[_ext_frames.searchsorted(to_timedelta(x.data_timeframe)) :]:
@@ -534,6 +565,12 @@ class QuestDBReader(IReader):
             # - for every dtype store symbols and reference to table meta info
             for d in dtypes:
                 _dtype_lookup[d] = (set(symbols), x)
+
+            if symbols:
+                for d, rank in bar_keys:
+                    if rank > _key_rank.get(d, ()):
+                        _key_rank[d] = rank
+                        _dtype_lookup[d] = (set(symbols), x)
 
         self._symbols_lookup = dict(_symbs_lookup)
         self._dtype_lookup = _dtype_lookup

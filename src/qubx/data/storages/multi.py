@@ -74,6 +74,20 @@ class MultiReader(IReader):
         self._readers = readers
         self._tolerance = tolerance
         self._keep = keep
+        self._warned_failures: set[tuple[int, str]] = set()
+
+    def _warn_read_failure(self, reader: IReader, dtype: DataType | str, what: str, e: Exception) -> None:
+        """
+        A failing source silently truncates the merged result to the other sources' rows, so say so -
+        once per (source, dtype) to keep repeated reads quiet.
+        """
+        key = (id(reader), str(dtype))
+        msg = f"{reader.__class__.__name__} failed to read {what} ({dtype}), merging other sources only: {e}"
+        if key in self._warned_failures:
+            logger.debug(msg)
+        else:
+            self._warned_failures.add(key)
+            logger.warning(msg)
 
     def _get_readers(self, **kwargs) -> list[IReader]:
         """Return readers to use, optionally filtering out rate-limited ones."""
@@ -154,9 +168,7 @@ class MultiReader(IReader):
                         dtype_ref = result.dtype
                     batches.append(result.data)
             except Exception as e:
-                # - expected when one storage doesn't carry this dtype (e.g. QuestDB has no
-                #   vendor microstructure tables); the next reader will be tried
-                logger.debug(f"{reader.__class__.__name__} has no '{data_id}' ({dtype}): {e}")
+                self._warn_read_failure(reader, dtype, f"'{data_id}'", e)
 
         return batches, time_idx, schema, dtype_ref
 
@@ -194,8 +206,7 @@ class MultiReader(IReader):
                             time_idx = raw.index
                             dtype_ref = raw.dtype
             except Exception as e:
-                # - expected when one storage doesn't carry this dtype; the next reader will be tried
-                logger.debug(f"{reader.__class__.__name__} has no ({dtype}) for multi data_ids: {e}")
+                self._warn_read_failure(reader, dtype, "multi data_ids", e)
 
         if not batches_per_id:
             # - all readers exhausted with no data — only now it's worth a warning
@@ -203,6 +214,13 @@ class MultiReader(IReader):
                 f"No data for ({dtype}) in any of {len(self._readers)} reader(s): {[r.__class__.__name__ for r in self._readers]}"
             )
             return RawMultiData([])
+
+        # - one schema for every symbol, so a symbol served by a single source still carries the union columns
+        all_batches = [b for blist in batches_per_id.values() for b in blist]
+        if any(not b.schema.equals(all_batches[0].schema) for b in all_batches[1:]):
+            normalized, _ = self._normalize_batches(all_batches)
+            it = iter(normalized)
+            batches_per_id = {did: [next(it) for _ in blist] for did, blist in batches_per_id.items()}
 
         merged_raws = [
             RawData.from_record_batch(did, dtype_ref, self._merge_batches(blist, time_idx))
@@ -222,72 +240,83 @@ class MultiReader(IReader):
 
     def _normalize_batches(self, batches: list[pa.RecordBatch]) -> tuple[list[pa.RecordBatch], int]:
         """
-        Project all batches to their common column intersection and unify timestamp precision
+        Project all batches onto the union of their columns and unify timestamp precision
         to the finest unit seen across all sources (e.g. ``ms`` + ``us`` → ``us``).
+
+        A column some source lacks is null in that source's rows, so the output schema does not
+        depend on which sources happen to return rows for the requested window. Column order:
+        first batch's columns, then new columns in order of first appearance.
+
+        Column type is the first non-null type seen; if sources disagree on a numeric type
+        the column is promoted (any float → ``float64``, all integers → ``int64``).
 
         Returns ``(normalized_batches, time_idx)`` where ``time_idx`` is the index of
         the timestamp column in the output schema.
-
-        This is needed when different storages produce different schemas for the same
-        logical data type — e.g. CCXT yields ``timestamp[ms]`` with 7 columns while
-        QuestDB yields ``timestamp[us]`` with 10 columns.
         """
         if len(batches) == 1:
             schema = batches[0].schema
             time_idx = next((i for i, f in enumerate(schema) if pa.types.is_timestamp(f.type)), 0)
             return batches, time_idx
 
-        # - common columns (intersection), preserving order from the first batch
-        common: set[str] = set(batches[0].schema.names)
-        for b in batches[1:]:
-            common &= set(b.schema.names)
-        ordered = [n for n in batches[0].schema.names if n in common]
+        ordered: list[str] = []
+        types_seen: dict[str, list[pa.DataType]] = {}
+        for b in batches:
+            for f in b.schema:
+                if f.name not in types_seen:
+                    ordered.append(f.name)
+                    types_seen[f.name] = []
+                if not pa.types.is_null(f.type):
+                    types_seen[f.name].append(f.type)
 
         if not ordered:
-            raise ValueError("MultiReader: no common columns across schemas — cannot merge")
+            raise ValueError("MultiReader: no columns in any schema — cannot merge")
 
-        # - find timestamp column and the finest precision across all batches
-        # - ts_unit is initialised lazily from the first batch so that batches
-        #   with coarser precision (e.g. "s") are not silently upcast to "ms"
+        # - timestamp column: first timestamp-typed column; finest precision across batches
         _precision_rank = {"s": 0, "ms": 1, "us": 2, "ns": 3}
         ts_name: str | None = None
         ts_unit: str | None = None
-        for b in batches:
-            for f in b.schema:
-                if f.name in common and pa.types.is_timestamp(f.type):
-                    if ts_name is None:
-                        ts_name = f.name
-                        ts_unit = f.type.unit
-                    elif f.name == ts_name and _precision_rank.get(f.type.unit, 0) > _precision_rank.get(
-                        ts_unit or "s", 0
-                    ):
-                        ts_unit = f.type.unit
-        # - fallback: if no timestamp column found, default to "ms"
+        for name in ordered:
+            ts_types = [t for t in types_seen[name] if pa.types.is_timestamp(t)]
+            if ts_types:
+                ts_name = name
+                ts_unit = max((t.unit for t in ts_types), key=lambda u: _precision_rank.get(u, 0))
+                break
         ts_unit = ts_unit or "ms"
 
-        # - build target schema from first batch's common fields with unified timestamp type
         target_fields = []
         for name in ordered:
-            f = batches[0].schema.field(name)
             if name == ts_name:
-                f = pa.field(name, pa.timestamp(ts_unit))
-            target_fields.append(f)
+                target_fields.append(pa.field(name, pa.timestamp(ts_unit)))
+            else:
+                target_fields.append(pa.field(name, self._unified_type(types_seen[name])))
         target_schema = pa.schema(target_fields)
 
-        # - project and cast each batch to target schema
         normalized: list[pa.RecordBatch] = []
         for b in batches:
             arrays = []
-            for name in ordered:
-                col = b.column(name)
-                tgt_type = target_schema.field(name).type
-                if col.type != tgt_type:
-                    col = col.cast(tgt_type)
+            for f in target_schema:
+                if f.name in b.schema.names:
+                    col = b.column(f.name)
+                    if col.type != f.type:
+                        col = col.cast(f.type)
+                else:
+                    col = pa.nulls(b.num_rows, type=f.type)
                 arrays.append(col)
             normalized.append(pa.RecordBatch.from_arrays(arrays, schema=target_schema))
 
         time_idx = ordered.index(ts_name) if ts_name is not None else 0
         return normalized, time_idx
+
+    @staticmethod
+    def _unified_type(types: list[pa.DataType]) -> pa.DataType:
+        if not types:
+            return pa.null()
+        first = types[0]
+        if all(t == first for t in types):
+            return first
+        if all(pa.types.is_integer(t) or pa.types.is_floating(t) for t in types):
+            return pa.float64() if any(pa.types.is_floating(t) for t in types) else pa.int64()
+        return first
 
     def _merge_batches(self, batches: list[pa.RecordBatch], time_idx: int) -> pa.RecordBatch:
         """
@@ -303,7 +332,7 @@ class MultiReader(IReader):
         if len(batches) == 1:
             return batches[0]
 
-        # - unify schemas (column intersection + timestamp precision) before concatenation
+        # - unify schemas (column union + timestamp precision) before concatenation
         batches, time_idx = self._normalize_batches(batches)
 
         # - pa.Table.from_batches() concatenates multiple RecordBatches into one table
