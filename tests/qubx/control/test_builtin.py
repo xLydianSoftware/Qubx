@@ -3,6 +3,7 @@ import math
 from unittest.mock import MagicMock
 
 from qubx.control.builtin import BUILTIN_ACTIONS, _refresh_instrument_service
+from qubx.core.basics import Balance
 
 
 def _make_mock_ctx():
@@ -146,6 +147,21 @@ class TestGetBalances:
         assert result.status == "ok"
         assert result.data["balances"]["BINANCE.UM:USDT"]["total"] == 10000.0
         assert result.data["balances"]["BINANCE.UM:USDT"]["free"] == 9500.0
+
+    def test_a_coin_keeps_its_precision_and_money_rounds_to_cents(self):
+        ctx = _make_mock_ctx()
+        usdt = Balance("BINANCE.UM", "USDT", free=99985.027985, locked=0.0, total=99985.027985)
+        sol = Balance("BINANCE.UM", "SOL", free=0.140859, locked=0.0, total=0.140859)
+        ctx.get_balances.return_value = [usdt, sol]
+        ctx.account.get_balances.return_value = [usdt, sol]
+
+        balances = BUILTIN_ACTIONS["get_balances"][1](ctx).data["balances"]
+        assert balances["BINANCE.UM:SOL"]["total"] == 0.140859
+        assert balances["BINANCE.UM:USDT"]["total"] == 99985.03
+
+        state = BUILTIN_ACTIONS["get_state"][1](ctx).data["exchanges"]["BINANCE.UM"]["balances"]
+        assert state["SOL"]["free"] == 0.140859
+        assert state["USDT"]["free"] == 99985.03
 
 
 class TestGetState:
