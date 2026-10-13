@@ -574,7 +574,9 @@ def create_strategy_context(
                     "venue calls are unthrottled (add rate_limits() to the plugin)."
                 )
             _conn_ctx = ConnectorBuildContext(
-                **vars(_base_ctx), data_provider=_data_provider, spot_exchange=spot_exchange
+                **vars(_base_ctx),
+                data_provider=_data_provider,
+                aliases=(spot_exchange,) if spot_exchange is not None else (),
             )
             _connectors[exchange_name] = ConnectorRegistry.get_connector(exchange_config.connector.lower(), _conn_ctx)
         _instruments.extend(_create_instruments_for_exchange(exchange_name, exchange_config))
@@ -771,9 +773,7 @@ def _spot_margin_exchange(venue_name: str, exchange_config: ExchangeConfig) -> s
     if not exchange_config.spot_margin:
         return None
     if (spot := SPOT_MARGIN_EXCHANGES.get(venue_name.upper())) is None:
-        raise ValueError(
-            f"{venue_name}: spot_margin is supported only for {', '.join(sorted(SPOT_MARGIN_EXCHANGES))}"
-        )
+        raise ValueError(f"{venue_name}: spot_margin is supported only for {', '.join(sorted(SPOT_MARGIN_EXCHANGES))}")
     return spot
 
 

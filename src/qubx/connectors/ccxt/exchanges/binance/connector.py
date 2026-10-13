@@ -27,7 +27,7 @@ the configured VENUE name (``binance.pm``) — the canonical name both venues sh
   and margin→futures negative-balance repay; both amount-less on the venue side.
 - **Debt repayment**: ``repayLoan`` pays cross-margin ``borrowed`` + ``interest`` from the
   margin wallet.
-- **Spot leg** (``spot_exchange``, from ``spot_margin: true``): BINANCE spot orders go to the papi
+- **Spot leg** (``spot_margin: true``, which aliases BINANCE to this connector): BINANCE spot orders go to the papi
   cross-margin surface (ccxt routes a spot market under portfolioMargin there; cancels, order
   queries and trades follow, margin fills arrive on the same ``/pm/ws`` stream). A holding is a
   balance, not a venue position: the snapshot derives one position per non-stable asset from its
@@ -133,18 +133,19 @@ class BinancePmCcxtConnector(CcxtConnector):
     _wants_ws_balance_push = False
 
     _adl_levels: dict[str, int]
-    # - spot exchange whose instruments this account also trades (None = UM only)
-    _spot_exchange: str | None
+    # - the account also trades the BINANCE spot universe (cross margin)
+    _spot_margin: bool
     # - quote of the spot instrument a held asset maps to
     _spot_quote: str = "USDT"
 
     _COLLECT = WalletMove("futures_um", "margin", False)
     _REPAY = WalletMove("margin", "futures_um", False)
 
-    def __init__(self, *, spot_exchange: str | None = None, **kwargs: Any):
+    def __init__(self, *, aliases: tuple[str, ...] = (), **kwargs: Any):
         super().__init__(**kwargs)
         self._adl_levels = {}
-        self._spot_exchange = spot_exchange
+        # - the only exchange a PM account can serve besides BINANCE.UM is its spot universe
+        self._spot_margin = bool(aliases)
 
     def _convert_balances(self, raw_balance: dict[str, Any]) -> list[Balance]:
         balances = super()._convert_balances(raw_balance)
@@ -207,7 +208,7 @@ class BinancePmCcxtConnector(CcxtConnector):
         (a coin the bot does not trade has none) and left out without one: dust is never a
         presence diff, so leaving it out changes nothing.
         """
-        if self._spot_exchange is None:
+        if not self._spot_margin:
             return []
         ex = self._em.exchange
         held: list[tuple[Instrument, float, dict[str, Any]]] = []
@@ -258,7 +259,7 @@ class BinancePmCcxtConnector(CcxtConnector):
 
     async def _fetch_extra_open_orders(self) -> list[dict]:
         orders = await super()._fetch_extra_open_orders()
-        if self._spot_exchange is None:
+        if not self._spot_margin:
             return orders
         ex = self._em.exchange
         return [*orders, *ex.parse_orders(await ex.papiGetMarginOpenOrders())]
