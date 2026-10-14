@@ -25,6 +25,17 @@ Performance metrics help evaluate the effectiveness of trading strategies. Qubx 
 | Daily/Monthly Returns | Returns broken down by time periods |
 | Compound Annual Growth Rate (CAGR) | Smoothed annualized return |
 
+### Trading Volume Metrics
+
+| Metric | Description |
+|--------|-------------|
+| `bps_volume` | Gross P&L per unit of traded volume, in basis points: `(gain + fees) / traded volume × 10,000`. It is the per-side commission rate at which net P&L would be zero, so it can be compared directly with a fee rate (for example 5 bps taker on Binance UM vip0). |
+
+- `gain` already includes funding payments, so funding counts as P&L.
+- Traded volume is the sum of `|filled quantity × fill price × quantity multiplier|` over all fills. Opening and closing trades both count. The quantity multiplier (contract size) comes from the session instruments, then from the instrument lookup; a symbol found in neither counts with 1 and is named in a warning.
+- It is NaN when nothing was traded.
+- It appears in `result.performance()["bps_volume"]`, in the tearsheet table ("Bps volume") and in the saved metadata, so backtests can be searched by it: `BacktestStorage("s3://backtests/").search("bps_volume > 20")`. Runs saved before it was added have no value.
+
 <!-- ### Risk Metrics
 
 | Metric | Description |

@@ -36,6 +36,22 @@ Now we can run it using qubx cli:
 
 Result will be stored into /backtests/tests folder.
 
+#### Instruments from a folder
+
+Instruments that the configured instrument lookup does not have (for example US stocks read from Yahoo) can be taken from a folder of instrument JSON files for this one run:
+
+```bash
+> qubx simulate test1.yml --lookup file:configs/instruments -o /backtests/tests
+```
+
+- The folder path may be relative; it is resolved against the working directory.
+- The option takes precedence over `~/.qubx/config.json` and the `QUBX_INSTRUMENT_LOOKUP__*` environment variables, and variations of the run that execute in parallel use the same folder.
+- `qubx validate test1.yml --lookup file:<folder>` accepts the same option; there it only checks that the folder exists.
+
+#### Data read errors
+
+If reading market data fails during a simulation (for example a network error from a remote store), the read is reopened from where it started, up to 4 attempts with waits of 1, 2 and 3 seconds. Rows already received are skipped, so each row arrives once. If the last attempt fails, the simulation stops with that error instead of continuing without data for some symbols.
+
 ### Variations (hyperparameter optimization)
 
 It’s possible to run variations for some parameters (kind of optimization preparation). For that it’s enough to add  variate section:
