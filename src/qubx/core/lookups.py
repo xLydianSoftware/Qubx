@@ -442,8 +442,16 @@ class FeesLookupFile(FeesLookup):
     def refresh(self):
         try:
             _packaged_fees = load_qubx_resources_as_text(_PACKAGED_FEES_FILE)
-            with open(os.path.join(self._path, "default.ini"), "w") as f:
-                f.write(_packaged_fees)
+            # - written aside and swapped in: a process loading at the same time sees no file or the whole file
+            fd, staging = tempfile.mkstemp(prefix=".default.ini-", dir=self._path)
+            try:
+                with os.fdopen(fd, "w") as f:
+                    f.write(_packaged_fees)
+                os.replace(staging, os.path.join(self._path, "default.ini"))
+            except BaseException:
+                with contextlib.suppress(FileNotFoundError):
+                    os.remove(staging)
+                raise
         except Exception as e:
             logger.error(f"Can't load resource file from {_PACKAGED_FEES_FILE} - {str(e)}")
 

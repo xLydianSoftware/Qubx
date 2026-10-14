@@ -4,6 +4,7 @@ import os
 import random
 import sys
 import tempfile
+import threading
 import time
 from unittest import mock
 
@@ -84,6 +85,26 @@ class TestFeesLookup:
                 costs = fees_lookup.find_fees("binance", "vip0_usdt")
                 assert costs.maker == 0.1000 / 100.0
                 assert costs.taker == 0.1000 / 100.0
+
+    def test_loaders_starting_together_on_an_empty_folder_all_get_the_fees(self, tmp_path):
+        # - a loader that globbed the default file while another was still writing it kept an empty table
+        workers = 8
+        for trial in range(20):
+            path = str(tmp_path / f"t{trial}")
+            os.makedirs(path)
+            barrier, sizes = threading.Barrier(workers), []
+
+            def load():
+                barrier.wait()
+                sizes.append(len(FeesLookupFile(path)._lookup))
+
+            threads = [threading.Thread(target=load) for _ in range(workers)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+            assert min(sizes) > 0, f"trial {trial}: a loader got an empty fees table"
+            assert os.listdir(path) == ["default.ini"]
 
 
 class TestFileInstrumentsLookupCache:
