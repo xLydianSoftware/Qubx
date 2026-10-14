@@ -54,6 +54,9 @@ uv run qubx run config.yml --paper
 # Run strategy simulation
 uv run qubx simulate config.yml
 
+# Run strategy simulation with instruments from a folder (instead of the configured lookup)
+uv run qubx simulate config.yml --lookup file:path/to/instruments
+
 # Validate strategy configuration
 uv run qubx validate config.yml
 

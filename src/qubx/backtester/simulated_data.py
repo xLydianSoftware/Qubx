@@ -1,3 +1,4 @@
+import time
 from collections import deque
 from collections.abc import Iterator
 
@@ -349,18 +350,19 @@ class RawSymbolBuffer:
         self._batches.clear()
         self._watermark = 0
 
-    def append(self, raw: RawData):
+    def append(self, raw: RawData) -> bool:
         """
         Append raw data chunk, filtering out rows with timestamp <= watermark.
+        Returns whether any row was new.
 
         Uses pyarrow vectorized filter for dedup — no Python loops.
         """
         if not self._active:
-            return
+            return False
 
         batch = raw.data
         if batch.num_rows == 0:
-            return
+            return False
 
         time_col = batch.column(raw.index)
 
@@ -376,7 +378,7 @@ class RawSymbolBuffer:
             mask = pa.compute.greater(time_col, wm_scalar)
             batch = batch.filter(mask)
             if batch.num_rows == 0:
-                return
+                return False
             # - rebuild RawData with filtered batch
             raw = RawData.from_record_batch(raw.data_id, raw.dtype, batch)
             time_col = batch.column(raw.index)
@@ -384,6 +386,7 @@ class RawSymbolBuffer:
         # - update watermark from last row (normalize to int nanoseconds)
         self._watermark = self._to_ns(time_col[-1].as_py())
         self._batches.append(raw)
+        return True
 
     def pop(self) -> RawData:
         """
@@ -417,7 +420,7 @@ class MemReader(Iterator):
     This is what gets registered in IteratedDataStreamsSlicer as a per-symbol stream.
     """
 
-    __slots__ = ("_symbol", "_buffer", "_pump", "_transformer")
+    __slots__ = ("_symbol", "_buffer", "_pump", "_transformer", "ended")
 
     def __init__(
         self,
@@ -430,6 +433,7 @@ class MemReader(Iterator):
         self._buffer = buffer
         self._pump = pump
         self._transformer = transformer
+        self.ended = False
 
     def __iter__(self) -> Iterator:
         return self
@@ -438,9 +442,14 @@ class MemReader(Iterator):
         # - pull from pump until our buffer has data
         while not self._buffer.has_data:
             if not self._buffer.active:
+                self.ended = True
                 raise StopIteration
             # - advance pump → reads next chunk for ALL symbols
-            self._pump.advance()
+            try:
+                self._pump.advance()
+            except StopIteration:
+                self.ended = True
+                raise
 
         raw = self._buffer.pop()
         return self._transformer.process_data(raw)
@@ -506,12 +515,16 @@ class DataPump:
         chunksize: int = 5000,
         open_close_time_indent_secs: float = 1.0,
         trading_session: tuple[int, int] = DEFAULT_DAILY_SESSION,
+        read_attempts: int = 4,
+        retry_wait: float = 1.0,
     ) -> None:
         self._reader = reader
         self._exchange = exchange
         self._market_type = market_type
         self._warmup_period = warmup_period
         self._chunksize = chunksize
+        self._read_attempts = read_attempts
+        self._retry_wait = retry_wait
 
         self._buffers = {}
         self._mem_readers = {}
@@ -519,6 +532,11 @@ class DataPump:
         self._warmed = set()
         self._b_iter = None
         self._end = None
+        self._read_start: pd.Timestamp | None = None
+        # - set while the backend read is down after an error: advance() reopens it instead of ending streams
+        self._failed: Exception | None = None
+        # - read errors since the read last delivered a row a buffer did not already hold
+        self._failures = 0
 
         # - determine transformer and data types based on subscription
         match subscription_type:
@@ -659,9 +677,7 @@ class DataPump:
             read_start = read_start - self._warmup_period
             self._warmed.update(symbols)
 
-        self._b_iter = self._reader.read(
-            symbols, self._requested_data_type, str(read_start), str(end), chunksize=self._chunksize
-        )
+        self._open(read_start)
 
         # - create MemReaders for all symbols
         result = {}
@@ -710,19 +726,46 @@ class DataPump:
             f"[<c>DataPump</c>] :: Restarting read for {len(symbols)} symbols "
             f"({len(new_symbols)} new) from {read_start}"
         )
-        self._b_iter = self._reader.read(
-            symbols, self._requested_data_type, str(read_start), str(self._end), chunksize=self._chunksize
-        )
+        self._open(read_start)
 
-        # - create MemReaders only for NEW symbols (continuing symbols already have them)
+        # - new symbols get a MemReader; so does a subscribed symbol whose stream ended (the slicer dropped it)
         result = {}
-        for sym in new_symbols:
-            if sym not in self._mem_readers:
+        for sym in symbols:
+            mem_reader = self._mem_readers.get(sym)
+            if mem_reader is None or mem_reader.ended:
+                if mem_reader is not None:
+                    logger.warning(f"[DataPump] :: {self._requested_data_type} stream of {sym} had ended, reattached")
                 mem_reader = MemReader(sym, self._buffers[sym], self, self._transformer)
                 self._mem_readers[sym] = mem_reader
                 result[self._make_slicer_key(sym)] = mem_reader
 
         return result
+
+    def _open(self, read_start: pd.Timestamp) -> None:
+        """
+        Open the backend read from `read_start` for all active symbols. A reader that fails here leaves
+        the pump marked failed; the next advance() retries instead of the error escaping from a universe
+        change half-applied.
+        """
+        self._read_start = read_start
+        self._failures = 0
+        try:
+            chunks = self._reader.read(
+                self._active_symbols(),
+                self._requested_data_type,
+                str(read_start),
+                str(self._end),
+                chunksize=self._chunksize,
+            )
+            if not isinstance(chunks, Iterator):
+                raise TypeError(
+                    f"{type(self._reader).__name__}.read(chunksize={self._chunksize}) returned "
+                    f"{type(chunks).__name__}, not an iterator"
+                )
+            self._b_iter, self._failed = chunks, None
+        except Exception as e:
+            self._b_iter, self._failed = None, e
+            logger.warning(f"[DataPump] :: opening {self._requested_data_type} read failed: {e}")
 
     def advance(self):
         """
@@ -730,30 +773,62 @@ class DataPump:
 
         Called by MemReader when its buffer is empty.
 
+        A read error reopens the read from its start (buffers drop rows they already hold) up to
+        `read_attempts` times; after that the error is raised rather than ending the streams.
+
         Raises:
             StopIteration: when backend reader is exhausted
         """
-        if self._b_iter is None:
+        if self._b_iter is None and self._failed is None:
             raise StopIteration
 
-        try:
-            chunk = next(self._b_iter)  # type: ignore
-        except StopIteration:
-            self._b_iter = None
-            raise
+        while True:
+            try:
+                if self._b_iter is None:
+                    self._reopen()
+                chunk = next(self._b_iter)  # type: ignore
+                break
+            except StopIteration:
+                self._b_iter, self._failed = None, None
+                raise
+            except Exception as e:
+                # - a reopened read repeats the chunks before the failure, so only new rows reset the count
+                self._b_iter, self._failed = None, e
+                self._failures += 1
+                if self._failures >= self._read_attempts:
+                    raise
+                logger.warning(
+                    f"[DataPump] :: {self._requested_data_type} read failed ({e}), reopening from "
+                    f"{self._read_start} ({self._failures}/{self._read_attempts})"
+                )
+                time.sleep(self._retry_wait * self._failures)
+        self._failed = None
 
         # - chunk can be RawMultiData (multi-symbol) or RawData (single-symbol)
+        new_rows = False
         if isinstance(chunk, RawMultiData):
             for raw in chunk:
                 sym = raw.data_id
                 if sym in self._buffers:
-                    self._buffers[sym].append(raw)
+                    new_rows |= self._buffers[sym].append(raw)
         elif isinstance(chunk, RawData):
             sym = chunk.data_id
             if sym in self._buffers:
-                self._buffers[sym].append(chunk)
+                new_rows = self._buffers[sym].append(chunk)
         else:
             logger.warning(f"[DataPump] :: Unexpected chunk type: {type(chunk)}")
+        if new_rows:
+            self._failures = 0
+
+    def _reopen(self) -> None:
+        """
+        Open the read again from its start without resetting the failure count.
+        """
+        failures = self._failures
+        self._open(self._read_start)  # type: ignore
+        self._failures = failures
+        if self._b_iter is None:
+            raise self._failed  # type: ignore
 
     def cleanup_inactive(self):
         """

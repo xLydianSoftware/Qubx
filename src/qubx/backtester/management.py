@@ -445,7 +445,7 @@ class BacktestStorage:
             return
 
         _l = lambda v: [] if v is None else list(v)  # noqa: E731 — numpy array → Python list
-        _METRIC_COLS = ["gain", "cagr", "sharpe", "qr", "mdd_pct", "mdd_usd", "fees", "execs"]
+        _METRIC_COLS = ["gain", "cagr", "sharpe", "qr", "mdd_pct", "mdd_usd", "fees", "execs", "bps_volume"]
 
         for _, row in df.iterrows():
             _id = row.get("backtest_id", "")

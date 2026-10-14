@@ -358,6 +358,37 @@ def test_chunked_read_yields_one_block_per_window(lake):
     assert [len(c) for c in chunks] == [60, 60, 0, 0]
 
 
+def _count_loads(reader, monkeypatch):
+    loads = []
+    load = reader._catalog.load_table
+    monkeypatch.setattr(
+        reader._catalog,
+        "load_table",
+        lambda identifier, *a, **k: loads.append(tuple(identifier)) or load(identifier, *a, **k),
+    )
+    return loads
+
+
+def test_repeated_reads_load_the_table_once(lake, monkeypatch):
+    reader = lake["BINANCE.UM", "SWAP"]
+    reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11")
+    loads = _count_loads(reader, monkeypatch)
+    for _ in range(5):
+        reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11")
+        list(reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-10T04:00", chunksize=60))
+    assert loads.count(("binance_perp", "bar_stats_1m")) == 0
+
+
+def test_a_table_older_than_the_ttl_is_loaded_again(lake, monkeypatch):
+    reader = lake["BINANCE.UM", "SWAP"]
+    reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11")
+    monkeypatch.setattr(reader, "TABLE_TTL_SECONDS", 0.0)
+    loads = _count_loads(reader, monkeypatch)
+    for _ in range(3):
+        reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-11")
+    assert loads.count(("binance_perp", "bar_stats_1m")) == 3
+
+
 def test_chunked_raw_read_walks_the_files_in_time_order(raw_lake):
     reader = raw_lake["BINANCE.UM", "SWAP"]
     chunks = list(reader.read("BTCUSDT", "quotes", "2026-08-10", "2026-08-12", chunksize=4000))

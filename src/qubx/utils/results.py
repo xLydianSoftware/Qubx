@@ -274,6 +274,7 @@ class SimulationResultsSaver:
             ("execs", pa.int64()),
             ("fees", pa.float64()),
             ("daily_turnover", pa.float64()),
+            ("bps_volume", pa.float64()),
         ]
     )
 
@@ -697,6 +698,7 @@ class SimulationResultsSaver:
             "execs": int(_perf.get("execs", 0)),
             "fees": float(_perf.get("fees", 0.0)),
             "daily_turnover": float(_perf.get("daily_turnover", 0.0)),
+            "bps_volume": float(_perf.get("bps_volume", float("nan"))),
         }
 
     # ── storage: save ────────────────────────────────────────────────────────

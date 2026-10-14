@@ -1078,6 +1078,7 @@ class TradingSessionResult:
                 performance_statistics_period=DAILY_365,
                 account_transactions=True,
                 commission_factor=1,
+                instruments=self.instruments,
             )
             # - convert timestamps to isoformat
             for k, v in self._metrics.items():
@@ -1240,6 +1241,7 @@ class TradingSessionResult:
                 "sortino": perf.get("sortino", 0.0),
                 "execs": perf.get("execs", 0),
                 "fees": perf.get("fees", 0.0),
+                "bps_volume": perf.get("bps_volume", float("nan")),
             },
             "config": {
                 "capital": self.capital,
@@ -1710,6 +1712,7 @@ def portfolio_metrics(
     rolling_sharpe_window=12,
     account_transactions=True,
     performance_statistics_period=DAILY_365,
+    instruments: list[Instrument] | None = None,
     **kwargs,
 ) -> dict:
     if len(portfolio_log) == 0:
@@ -1820,6 +1823,10 @@ def portfolio_metrics(
 
     # executions metrics
     sheet["execs"] = execs
+
+    # - gain is already net of fees only when they were accounted into the equity
+    gross_pnl = sheet["gain"] + (sheet["fees"] if account_transactions else 0.0)
+    sheet["bps_volume"] = bps_volume(gross_pnl, traded_notional(executions_log, instruments))
 
     return sheet
 
@@ -2032,6 +2039,7 @@ def _pfl_metrics_prepare(
         performance_statistics_period=performance_statistics_period,
         account_transactions=account_transactions,
         commission_factor=commission_factor,
+        instruments=session.instruments,
     )
     rpt = {}
     for k, v in mtrx.items():
@@ -2322,6 +2330,70 @@ def calculate_funding_per_asset(
     if filter_zero:
         df = df.loc[:, df.ne(0).any(axis=0)]
     return df
+
+
+def bps_volume(gross_pnl: float, traded_volume: float) -> float:
+    """
+    Gross P&L in bps of traded volume: the per-side commission rate at which net P&L would be zero.
+    NaN when nothing was traded.
+    """
+    return float(gross_pnl / traded_volume * 1e4) if traded_volume > 0 else float("nan")
+
+
+def traded_notional(executions_log: pd.DataFrame, instruments: list[Instrument] | None = None) -> float:
+    """
+    Traded volume in quote currency: the sum of |filled_qty × price × quantity_multiplier| over every fill.
+
+    `filled_qty` is logged in contracts. The multiplier comes from `instruments`, then from the instrument
+    lookup; a symbol found in neither counts with multiplier 1 and is named in a warning.
+    """
+    if executions_log is None or executions_log.empty or "filled_qty" not in executions_log.columns:
+        return 0.0
+
+    notional = (executions_log["filled_qty"] * executions_log["price"]).abs()
+    keys = [c for c in ("exchange", "market_type", "symbol") if c in executions_log.columns]
+    per_key = notional.groupby([executions_log[c] for c in keys], sort=False).sum()
+
+    known = [i for i in instruments or [] if isinstance(i, Instrument)]
+    by_exchange = {(i.exchange, i.symbol): i.quantity_multiplier for i in known}
+    by_symbol = {i.symbol: i.quantity_multiplier for i in known}
+
+    total, unresolved = 0.0, []
+    for key, volume in per_key.items():
+        attrs = dict(zip(keys, key if isinstance(key, tuple) else (key,)))
+        multiplier = _quantity_multiplier(
+            attrs.get("exchange"), attrs.get("market_type"), attrs["symbol"], by_exchange, by_symbol
+        )
+        if multiplier is None:
+            unresolved.append(attrs["symbol"])
+            multiplier = 1.0
+        total += volume * multiplier
+
+    if unresolved:
+        logger.warning(
+            f"[metrics] no quantity multiplier for {sorted(unresolved)}, their fills count with multiplier 1"
+        )
+    return float(total)
+
+
+def _quantity_multiplier(
+    exchange: str | None,
+    market_type: str | None,
+    symbol: str,
+    by_exchange: dict[tuple[str, str], float],
+    by_symbol: dict[str, float],
+) -> float | None:
+    if exchange is None:
+        return by_symbol.get(symbol)
+    if (exchange, symbol) in by_exchange:
+        return by_exchange[(exchange, symbol)]
+    try:
+        instrument = lookup.find_symbol(exchange, symbol, market_type)
+    except Exception as e:
+        # - metrics must not fail because the lookup is unreachable (e.g. a service lookup without a token)
+        logger.debug(f"[metrics] lookup of {exchange}:{symbol} failed: {e}")
+        return None
+    return instrument.quantity_multiplier if instrument is not None else None
 
 
 def calculate_turnover(
