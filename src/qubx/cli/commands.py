@@ -302,6 +302,33 @@ def run(
         )
 
 
+def _apply_lookup_option(ctx: click.Context, param: click.Parameter, value: str | None) -> None:
+    if value is None:
+        return
+    kind, _, folder = value.partition(":")
+    path = Path(folder).expanduser().resolve()
+    if kind != "file" or not folder or not path.is_dir():
+        raise click.BadParameter(f"expected file:<existing folder>, got '{value}'", ctx=ctx, param=param)
+
+    from qubx.config import ENV_INSTRUMENT_LOOKUP_PATH, ENV_INSTRUMENT_LOOKUP_TYPE, LookupConfig, settings
+
+    # - parallel variations run in new processes, which read the lookup from these variables
+    os.environ[ENV_INSTRUMENT_LOOKUP_TYPE] = "file"
+    os.environ[ENV_INSTRUMENT_LOOKUP_PATH] = str(path)
+    settings.instrument_lookup = LookupConfig(type="file", path=str(path))
+
+
+_lookup_option = click.option(
+    "--lookup",
+    default=None,
+    type=str,
+    expose_value=False,
+    callback=_apply_lookup_option,
+    help="Instruments for this run from a folder: file:<folder>. "
+    "Takes precedence over ~/.qubx/config.json and QUBX_INSTRUMENT_LOOKUP__* variables.",
+)
+
+
 @main.command()
 @click.argument("config-file", type=Path, required=True)
 @click.option(
@@ -335,6 +362,7 @@ def run(
 @click.option(
     "--dev", is_flag=True, default=False, help="Enable dev mode (adds ~/projects to path).", show_default=True
 )
+@_lookup_option
 def simulate(
     config_file: Path,
     start: str | None,
@@ -388,6 +416,7 @@ def ls(directory: str):
     help="Skip checking if strategy class can be imported",
     show_default=True,
 )
+@_lookup_option
 def validate(config_file: Path, no_check_imports: bool):
     """
     Validates a strategy configuration file without running it.

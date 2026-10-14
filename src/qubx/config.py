@@ -63,6 +63,11 @@ class LookupConfig(BaseModel):
     path: str | None = None
 
 
+# - environment variables for LookupConfig fields (QubxSettings: "QUBX_" prefix, "__" between nested names)
+ENV_INSTRUMENT_LOOKUP_TYPE = "QUBX_INSTRUMENT_LOOKUP__TYPE"
+ENV_INSTRUMENT_LOOKUP_PATH = "QUBX_INSTRUMENT_LOOKUP__PATH"
+
+
 class _QubxJsonConfigSource(PydanticBaseSettingsSource):
     """Load settings from ~/.qubx/config.json."""
 

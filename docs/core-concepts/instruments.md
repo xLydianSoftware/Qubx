@@ -37,6 +37,8 @@ Instruments carry no margin rates. Live positions use the margin the venue repor
 
 The instrument lookup is configured by `instrument_lookup` in the Qubx settings (`~/.qubx/config.json` or `QUBX_INSTRUMENT_LOOKUP__*` env vars).
 
+For a single run, `qubx simulate <config> --lookup file:<folder>` (also on `qubx validate`) reads instruments from the JSON files in `<folder>` instead; a relative folder is resolved against the working directory. It takes precedence over both, and parallel variations of the run use the same folder.
+
 | `type` | Source |
 |---|---|
 | `file` (default) | JSON files in `~/.qubx/instruments`, seeded from the packaged files on first use |
