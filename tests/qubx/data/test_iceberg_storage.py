@@ -232,6 +232,16 @@ def test_exchanges_and_readers(lake):
     assert reader.get_data_id("quotes") == ["BTCUSDT"]
 
 
+def test_binance_spot_namespace_maps_to_binance_spot(catalog):
+    _stats_table(catalog, "binance_perp", [(DAYS[0], ["BTCUSDT"])])
+    _stats_table(catalog, "binance_spot", [(DAYS[0], ["BTCUSDT"])])
+    lake = IcebergLakeStorage.from_catalog(catalog)
+    assert lake.get_exchanges() == ["BINANCE", "BINANCE.UM"]
+    assert lake.get_market_types("BINANCE") == ["SPOT"]
+    assert lake.get_market_types("BINANCE.UM") == ["SWAP"]
+    assert lake["BINANCE", "SPOT"].get_data_id("bar_stats") == ["BTCUSDT"]
+
+
 def test_get_reader_defers_discovery(lake, monkeypatch):
     def refuse(*args, **kwargs):
         raise AssertionError("handing out a reader must not touch the catalog")

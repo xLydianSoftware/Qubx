@@ -117,6 +117,7 @@ DISCOVERY_WORKERS = 16
 
 VENUE_MAP: dict[tuple[str, str], tuple[str, str]] = {
     ("binance", "perp"): ("BINANCE.UM", "SWAP"),
+    ("binance", "spot"): ("BINANCE", "SPOT"),
     ("hyperliquid", "perp"): ("HYPERLIQUID.F", "SWAP"),
     ("okx", "perp"): ("OKX.F", "SWAP"),
     ("bybit", "perp"): ("BYBIT.F", "SWAP"),
