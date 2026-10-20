@@ -1,4 +1,5 @@
 import re
+from collections.abc import Callable
 from dataclasses import KW_ONLY, dataclass, field
 from datetime import datetime
 from enum import StrEnum
@@ -383,6 +384,22 @@ class VenueAttributes(dict):
         return (VenueAttributes, (dict(self),))
 
 
+# - the facts a venue may change on a listing that keeps its symbol (Instrument.update_from)
+INSTRUMENT_SPEC_FIELDS = (
+    "exchange_symbol",
+    "tick_size",
+    "lot_size",
+    "min_size",
+    "min_notional",
+    "contract_size",
+    "margin_tradable",
+    "venue_attributes",
+    "listing_id",
+    "listed_at",
+    "delisted_at",
+)
+
+
 @total_ordering
 @dataclass(eq=False)
 class Instrument:
@@ -439,6 +456,25 @@ class Instrument:
         if not hasattr(self, "_size_precision"):
             self._size_precision = int(abs(np.log10(self.lot_size)))
         return self._size_precision
+
+    def update_from(self, other: "Instrument") -> dict[str, tuple[Any, Any]]:
+        """Copy `other`'s venue facts onto this object in place; returns {field: (old, new)} of what changed.
+
+        Identity (exchange, market_type, symbol) must match: held objects stay valid dict keys.
+        """
+        if str(other) != str(self):
+            raise ValueError(f"cannot update {self} from {other}")
+        changed = {}
+        for name in INSTRUMENT_SPEC_FIELDS:
+            old, new = getattr(self, name), getattr(other, name)
+            if old != new:
+                changed[name] = (old, new)
+                setattr(self, name, new)
+        if "tick_size" in changed:
+            self.__dict__.pop("_price_precision", None)
+        if "lot_size" in changed:
+            self.__dict__.pop("_size_precision", None)
+        return changed
 
     @property
     def asset(self) -> str:
@@ -1372,6 +1408,10 @@ class Position:
         self.__pos_incr_qty = 0
         self._qty_multiplier = self.instrument.quantity_multiplier
 
+    def sync_instrument_specs(self) -> None:
+        """Re-read the cached contract size after the instrument was updated in place."""
+        self._qty_multiplier = self.instrument.quantity_multiplier
+
     def flatten(self) -> None:
         """
         Mark the position flat WITHOUT trading: zero quantity and the derived
@@ -2113,7 +2153,35 @@ class RestoredState:
     positions: dict[Instrument, Position]
 
 
+@dataclass(frozen=True)
+class InstrumentChanges:
+    """What a lookup refresh changed, as the refreshed (new) objects."""
+
+    updated: list[Instrument] = field(default_factory=list)  # - same symbol, other venue facts
+    listed: list[Instrument] = field(default_factory=list)  # - symbols the previous snapshot did not have
+
+    def __bool__(self) -> bool:
+        return bool(self.updated or self.listed)
+
+
+@dataclass(frozen=True)
+class InstrumentUpdate:
+    """A held instrument updated in place: `changes` is {field: (old, new)}."""
+
+    instrument: Instrument
+    changes: dict[str, tuple[Any, Any]]
+
+
+InstrumentChangesListener: TypeAlias = Callable[[InstrumentChanges], None]
+
+
 class InstrumentsLookup:
+    def add_changes_listener(self, listener: InstrumentChangesListener) -> None:
+        """Call `listener(changes)` after each refresh that changed something, on the refreshing thread.
+        Lookups that never refresh never call it."""
+
+    def remove_changes_listener(self, listener: InstrumentChangesListener) -> None: ...
+
     def get_lookup(self) -> dict[str, Instrument]: ...
 
     def get_listings(self) -> list[Instrument]:

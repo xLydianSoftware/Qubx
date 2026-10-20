@@ -69,7 +69,9 @@ from qubx.core.interfaces import (
     StrategyState,
 )
 from qubx.core.loggers import StrategyLogging
+from qubx.core.lookups import LookupsManager
 from qubx.core.mixins.instrument_service import InstrumentServiceManager
+from qubx.core.mixins.instrument_updates import InstrumentUpdateManager
 from qubx.core.mixins.utils import EXCHANGE_MAPPINGS
 from qubx.core.status import ContextStatus, QubxStatusInfo
 from qubx.data.storage import IStorage
@@ -351,6 +353,13 @@ class StrategyContext(IStrategyContext):
             fit_state=self._fit_state,
         )
 
+        self._instrument_update_manager = InstrumentUpdateManager(
+            context=self,
+            strategy=self.strategy,
+            data_providers=self._data_providers,
+            check_delistings=self._processing_manager.check_delistings,
+        )
+
         # Late-wire the processing manager into the account manager (the AM is built
         # before the PM exists) so its periodic ticks can register.
         self._account_manager.set_processing_manager(self._processing_manager)
@@ -493,6 +502,7 @@ class StrategyContext(IStrategyContext):
 
         # - for live we run loop
         if not self.is_simulation:
+            self._instrument_update_manager.start(LookupsManager())
             self._thread_data_loop = Thread(
                 target=self.__process_incoming_data_loop, args=(databus,), daemon=True, name="ProcessorThread"
             )
@@ -558,6 +568,11 @@ class StrategyContext(IStrategyContext):
                     logger.error(f"[StrategyContext] :: Failed to notify strategy error: {e}")
 
         # PRIORITY 2: Stop data providers and thread
+
+        try:
+            self._instrument_update_manager.stop()
+        except Exception as e:
+            logger.error(f"[StrategyContext] :: Failed to stop instrument updates: {e}")
 
         # Close data providers
         if self._thread_data_loop:

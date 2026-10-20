@@ -1,10 +1,11 @@
+import asyncio
 from collections import defaultdict
 
 # CCXT exceptions are now handled in ConnectionManager
 from qubx import logger
 from qubx.connectors.ccxt.utils import ccxt_convert_timeframe_to_exchange_format, instrument_to_ccxt_symbol
 from qubx.connectors.plugin import BuildContext
-from qubx.core.basics import DataType, Instrument, ITimeProvider
+from qubx.core.basics import DataType, Instrument, InstrumentChanges, ITimeProvider
 from qubx.core.interfaces import IDataProvider
 from qubx.core.series import Bar, Quote
 from qubx.utils.misc import AsyncThreadLoop
@@ -225,6 +226,25 @@ class CcxtDataProvider(IDataProvider):
             return await ohlc_handler.get_historical_ohlc(instrument, timeframe, nbarsback)
 
         return self._loop.submit(_get_historical()).result(60)
+
+    def on_instruments_changed(self, changes: InstrumentChanges) -> None:
+        # - ccxt keeps its own markets (precision, active, new symbols); re-read them off the strategy thread
+        if not any(i.exchange.upper() == self.exchange() for i in changes.updated + changes.listed):
+            return
+
+        def _done(future) -> None:
+            if (e := future.exception()) is not None:  # unbounded-result-ok: done callback, already complete
+                logger.warning(f"<yellow>{self._exchange_id}</yellow> Failed to reload markets: {e}")
+            else:
+                logger.info(
+                    f"<yellow>{self._exchange_id}</yellow> Markets reloaded "
+                    f"({len(self._exchange_manager.exchange.markets or {})})"
+                )
+
+        reload = asyncio.wait_for(
+            self._exchange_manager.exchange.load_markets(reload=True), timeout=MARKETS_LOAD_TIMEOUT_SECONDS
+        )
+        self._loop.submit(reload).add_done_callback(_done)
 
     def start(self):
         # Eagerly load markets so is_instrument_listed() is authoritative before the

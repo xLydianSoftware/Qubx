@@ -3,6 +3,7 @@
 import asyncio
 import concurrent.futures
 import threading
+from dataclasses import replace
 from unittest.mock import AsyncMock, Mock, PropertyMock, patch
 
 import pytest
@@ -10,7 +11,7 @@ import pytest
 from qubx.connectors.ccxt.data import MARKETS_LOAD_TIMEOUT_SECONDS, CcxtDataProvider
 from qubx.connectors.ccxt.handlers.ohlc import OhlcDataHandler
 from qubx.connectors.plugin import BuildContext
-from qubx.core.basics import CtrlChannel, Instrument, MarketType
+from qubx.core.basics import CtrlChannel, Instrument, InstrumentChanges, MarketType
 from qubx.core.series import Bar, Quote
 from qubx.health.dummy import DummyHealthMonitor
 
@@ -219,6 +220,26 @@ class TestBasicFunctionality:
             data_provider.start()
 
         mock_loop.run_sync.assert_called_once()
+
+    def test_instrument_changes_reload_markets(self, data_provider, btc_instrument):
+        exchange = data_provider._exchange_manager.exchange
+        exchange.load_markets = AsyncMock()
+        exchange.markets = {}
+        mock_loop = Mock()
+        submitted = concurrent.futures.Future()
+        mock_loop.submit.side_effect = lambda coro: (submitted.set_result(asyncio.run(coro)), submitted)[1]
+
+        with patch.object(type(data_provider), "_loop", new_callable=PropertyMock, return_value=mock_loop):
+            data_provider.on_instruments_changed(InstrumentChanges(updated=[btc_instrument]))
+
+        exchange.load_markets.assert_awaited_once_with(reload=True)
+
+    def test_instrument_changes_of_other_exchanges_are_ignored(self, data_provider, btc_instrument):
+        mock_loop = Mock()
+        other = replace(btc_instrument, exchange="OTHER")
+        with patch.object(type(data_provider), "_loop", new_callable=PropertyMock, return_value=mock_loop):
+            data_provider.on_instruments_changed(InstrumentChanges(updated=[other], listed=[other]))
+        mock_loop.submit.assert_not_called()
 
     def test_close_calls_exchange_close(self, data_provider):
         """Test that close method calls exchange close."""

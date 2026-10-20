@@ -1530,11 +1530,15 @@ class ProcessingManager(IProcessingManager):
         Daily delisting check - close positions for instruments delisting within configured days.
         This is a system-wide scheduled event, so instrument will be None.
         """
+        self.check_delistings()
+
+    def check_delistings(self) -> None:
+        """Close positions in and remove universe instruments delisting within the configured days."""
         if not self._is_data_ready():
             return
 
         logger.debug(
-            f"Performing daily delisting check (checking {self._delisting_detector.delisting_check_days} days ahead)"
+            f"Performing delisting check (checking {self._delisting_detector.delisting_check_days} days ahead)"
         )
 
         # Find instruments delisting within configured days

@@ -17,11 +17,14 @@ import stackprinter
 
 from qubx import logger
 from qubx.core.basics import (
+    INSTRUMENT_SPEC_FIELDS,
     ZERO_COSTS,
     AccountsLookup,
     AssetKind,
     FeesLookup,
     Instrument,
+    InstrumentChanges,
+    InstrumentChangesListener,
     InstrumentsLookup,
     MarketType,
     TransactionCostsCalculator,
@@ -512,12 +515,22 @@ class _SnapshotIndex:
             by_symbol.setdefault((i.exchange, i.symbol), []).append(i)
         return cls(current, built, by_symbol)
 
+    def changes_since(self, prev: "_SnapshotIndex") -> InstrumentChanges:
+        updated, listed = [], []
+        for key, i in self.current.items():
+            if (old := prev.current.get(key)) is None:
+                listed.append(i)
+            elif any(getattr(old, f) != getattr(i, f) for f in INSTRUMENT_SPEC_FIELDS):
+                updated.append(i)
+        return InstrumentChanges(updated=updated, listed=listed)
+
 
 class InstrumentsLookupService(InstrumentsLookup):
     """Instruments from the platform instrument service ({url}/snapshot).
 
     The first load must succeed (after a few attempts). With a reload_interval, a daemon thread
     re-reads the snapshot with If-None-Match and swaps the index in; accessors never do I/O.
+    A refresh that changed listings tells the changes listeners, on the refreshing thread.
     A failed refresh keeps the in-memory copy and is retried only after a full interval.
     A snapshot without usable listings is an outage, never "everything delisted": it fails the
     first load and is refused on refresh. There is no fallback lookup.
@@ -546,6 +559,7 @@ class InstrumentsLookupService(InstrumentsLookup):
         self._index = _SnapshotIndex({}, [], {})
         self._refresh_lock = threading.Lock()
         self._stop = threading.Event()
+        self._listeners: list[InstrumentChangesListener] = []
 
         for attempt in range(1, self.FIRST_LOAD_ATTEMPTS + 1):
             try:
@@ -580,10 +594,27 @@ class InstrumentsLookupService(InstrumentsLookup):
         index = _SnapshotIndex.build(body["listings"])
         if not index.current:
             raise ValueError(f"snapshot has no usable listings (of {len(body['listings'])})")
-        self._index = index
+        prev, self._index = self._index, index
         self._etag = etag
         logger.info(f"[lookup] loaded {len(index.current)} instruments from the instrument service")
+        if prev.current and (changes := index.changes_since(prev)):
+            logger.info(f"[lookup] snapshot changed: {len(changes.updated)} updated, {len(changes.listed)} listed")
+            self._notify(changes)
         return True
+
+    def _notify(self, changes: InstrumentChanges) -> None:
+        for listener in list(self._listeners):
+            try:
+                listener(changes)
+            except Exception as e:
+                logger.error(f"[lookup] instrument changes listener failed: {e!r}")
+
+    def add_changes_listener(self, listener: InstrumentChangesListener) -> None:
+        self._listeners.append(listener)
+
+    def remove_changes_listener(self, listener: InstrumentChangesListener) -> None:
+        if listener in self._listeners:
+            self._listeners.remove(listener)
 
     def _refresh_loop(self) -> None:
         assert self._reload_interval is not None
@@ -710,6 +741,12 @@ class LookupsManager(InstrumentsLookup, FeesLookup, AccountsLookup):
                 return FeesLookupFile(**kwargs)
             case _:
                 raise ValueError(f"Invalid lookup type: {type}")
+
+    def add_changes_listener(self, listener: InstrumentChangesListener) -> None:
+        self._i_lookup.add_changes_listener(listener)
+
+    def remove_changes_listener(self, listener: InstrumentChangesListener) -> None:
+        self._i_lookup.remove_changes_listener(listener)
 
     def get_lookup(self) -> dict[str, Instrument]:
         return self._i_lookup.get_lookup()

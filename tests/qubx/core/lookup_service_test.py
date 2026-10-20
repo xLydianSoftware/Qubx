@@ -92,7 +92,11 @@ def _synthetic(listing_id_suffix: str) -> dict:
 
 
 def _listing(exchange: str, symbol: str) -> dict:
-    return next(l for l in SNAPSHOT["listings"] if l["exchange"] == exchange and l["versions"][-1]["symbol"] == symbol)
+    return _listing_in(SNAPSHOT, exchange, symbol)
+
+
+def _listing_in(body: dict, exchange: str, symbol: str) -> dict:
+    return next(l for l in body["listings"] if l["exchange"] == exchange and l["versions"][-1]["symbol"] == symbol)
 
 
 class TestInstrumentMapperTime:
@@ -303,6 +307,53 @@ class TestInstrumentsLookupService:
         lookup.refresh()
         assert lookup.find_symbol("BINANCE.UM", "BTCUSDT").tick_size == 0.5
         assert lookup.find_symbol("OKX.F", "BTCUSDT") is None
+
+    def test_refresh_reports_changes_to_listeners(self, service, lookups):
+        lookup = lookups(service.url)
+        seen = []
+        lookup.add_changes_listener(seen.append)
+
+        _listing_in(service.body, "BINANCE.UM", "BTCUSDT")["versions"][-1]["tick_size"] = 0.5
+        _listing_in(service.body, "BINANCE.UM", "1000PEPEUSDT")["delisted_at"] = "2026-11-01T00:00:00Z"
+        new = json.loads(json.dumps(_listing_in(service.body, "BINANCE.UM", "BTCUSDT")))
+        new["id"] = "00000000-0000-0000-0000-000000000001"
+        for v in new["versions"]:
+            v["symbol"] = v["exchange_symbol"] = "NEWUSDT"
+        service.body["listings"].append(new)
+
+        assert lookup.refresh() is True
+        [changes] = seen
+        assert sorted(i.symbol for i in changes.updated) == ["1000PEPEUSDT", "BTCUSDT"]
+        assert [i.symbol for i in changes.listed] == ["NEWUSDT"]
+        assert all(i is lookup.find_symbol(i.exchange, i.symbol) for i in changes.updated)
+
+    def test_refresh_without_changes_reports_nothing(self, service, lookups):
+        lookup = lookups(service.url)
+        seen = []
+        lookup.add_changes_listener(seen.append)
+        assert lookup.refresh() is False
+        service.raw = json.dumps(service.body, indent=1).encode()  # - new ETag, same listings
+        assert lookup.refresh() is True
+        assert seen == []
+
+    def test_removed_listener_is_not_called(self, service, lookups):
+        lookup = lookups(service.url)
+        seen = []
+        lookup.add_changes_listener(seen.append)
+        lookup.remove_changes_listener(seen.append)
+        _listing_in(service.body, "BINANCE.UM", "BTCUSDT")["versions"][-1]["tick_size"] = 0.5
+        lookup.refresh()
+        assert seen == []
+
+    def test_failing_listener_does_not_fail_the_refresh(self, service, lookups):
+        lookup = lookups(service.url)
+        seen = []
+        lookup.add_changes_listener(lambda _: 1 / 0)
+        lookup.add_changes_listener(seen.append)
+        _listing_in(service.body, "BINANCE.UM", "BTCUSDT")["versions"][-1]["tick_size"] = 0.5
+        assert lookup.refresh() is True
+        assert len(seen) == 1
+        assert lookup.find_symbol("BINANCE.UM", "BTCUSDT").tick_size == 0.5
 
     def test_failed_refresh_keeps_the_copy(self, service, lookups):
         lookup = lookups(service.url)
