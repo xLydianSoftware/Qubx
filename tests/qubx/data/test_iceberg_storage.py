@@ -462,9 +462,36 @@ def test_rollup_table_answers_the_coarse_request(catalog, lake):
     assert {s: len(r) for s, r in multi.raws.items()} == {"BTCUSDT": 4, "ETHUSDT": 4}
 
 
-def test_unsupported_timeframe_is_rejected(lake):
-    with pytest.raises(ValueError, match="15m"):
-        lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats(15m)", "2026-08-10", "2026-08-11")
+def test_any_whole_multiple_of_the_base_is_resampled(lake):
+    reader = lake["BINANCE.UM", "SWAP"]
+    df = reader.read("BTCUSDT", "bar_stats(15m)", "2026-08-10", "2026-08-11").to_pd()
+    assert len(df) == 8  # 120 minutes
+    assert str(df.index[1]) == "2026-08-10 00:15:00"
+    assert df.iloc[0]["buy_volume"] == sum(range(15))
+    assert df.iloc[1]["mean_score"] == pytest.approx(sum(range(15, 30)) / 15)
+
+    df = reader.read("BTCUSDT", "bar_stats(4h)", "2026-08-10", "2026-08-12").to_pd()
+    assert [str(t) for t in df.index] == ["2026-08-10 00:00:00", "2026-08-11 00:00:00"]
+    assert df["buy_volume"].tolist() == [sum(range(120))] * 2
+
+
+def test_a_week_bucket_starts_on_monday(lake):
+    df = lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats(1w)", "2026-08-10", "2026-08-12").to_pd()
+    assert [str(t) for t in df.index] == ["2026-08-10 00:00:00"]  # a Monday
+    assert df["buy_volume"].tolist() == [2 * sum(range(120))]
+
+
+def test_an_integer_sum_stays_an_integer():
+    stamps = pa.array([dt.datetime(2026, 8, 10, 0, m) for m in range(4)], pa.timestamp("us"))
+    data = pa.table({"timestamp": stamps, "symbol": ["BTCUSDT"] * 4, "count": pa.array([1, 2, 3, 4], pa.int32())})
+    out = aggregate(data, {"count": "sum"}, "1h")
+    assert out.schema.field("count").type == pa.int64()
+    assert out.column("count").to_pylist() == [10]
+
+
+def test_a_timeframe_that_is_no_whole_multiple_of_the_base_is_rejected(lake):
+    with pytest.raises(ValueError, match="90s"):
+        lake["BINANCE.UM", "SWAP"].read("BTCUSDT", "bar_stats(90s)", "2026-08-10", "2026-08-11")
 
 
 def test_read_venues_concatenates_in_the_given_order(two_venue_lake):

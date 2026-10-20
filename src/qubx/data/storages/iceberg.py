@@ -55,7 +55,6 @@ FEATURE_NAME_RE = re.compile(r"^(?P<stem>.+)_(?P<interval>\d+[a-zA-Z]+)$")
 # - pyarrow's S3 client aborts a request stalled for 3 s by default; R2 stalls that long often enough
 _S3_TIMEOUTS = {"s3.connect-timeout": "10", "s3.request-timeout": "60"}
 
-_INTERVAL_SQL = {"1h": "INTERVAL 1 HOUR", "1d": "INTERVAL 1 DAY"}
 _OP_SQL = {
     "sum": 'sum("{c}")',
     "avg": 'avg("{c}")',
@@ -86,12 +85,28 @@ def build_catalog(cfg: IcebergConfig, name: str = "r2") -> Catalog:
     return RestCatalog(name, uri=cfg.uri, warehouse=cfg.warehouse, token=cfg.token, **_S3_TIMEOUTS)
 
 
+def _interval_sql(interval: str) -> str:
+    seconds = int(_seconds(interval))
+    if seconds % 86400 == 0:
+        return f"INTERVAL {seconds // 86400} DAY"
+    return f"INTERVAL {seconds} SECOND"
+
+
+def _agg_sql(schema: pa.Schema, column: str, op: str) -> str:
+    sql = _OP_SQL[op].format(c=column)
+    # - DuckDB sums integers into a 128-bit integer, which reaches Arrow as decimal128
+    if op == "sum" and pa.types.is_integer(schema.field(column).type):
+        return f"CAST({sql} AS BIGINT)"
+    return sql
+
+
 def aggregate(data: pa.Table, aggs: dict[str, str], interval: str) -> pa.Table:
     """Resample (timestamp, symbol, ...) rows to `interval` with one aggregation per column —
-    the same SQL the lake's `_1h`/`_1d` rollup tables are built with."""
-    selects = ", ".join(f'{_OP_SQL[op].format(c=c)} AS "{c}"' for c, op in aggs.items())
+    the same SQL the lake's `_1h`/`_1d` rollup tables are built with. Buckets are stamped at
+    their start, aligned to DuckDB's `time_bucket` origin (2000-01-03, a Monday)."""
+    selects = ", ".join(f'{_agg_sql(data.schema, c, op)} AS "{c}"' for c, op in aggs.items())
     sql = (
-        f"SELECT time_bucket({_INTERVAL_SQL[interval]}, timestamp) AS timestamp, symbol, {selects} "
+        f"SELECT time_bucket({_interval_sql(interval)}, timestamp) AS timestamp, symbol, {selects} "
         f"FROM data GROUP BY 1, 2 ORDER BY symbol, timestamp"
     )
     con = duckdb.connect()
@@ -104,8 +119,8 @@ def aggregate(data: pa.Table, aggs: dict[str, str], interval: str) -> pa.Table:
         con.close()
 
 
-# - a coarser request without a sibling rollup table is resampled to one of these in DuckDB and nothing else
-RESAMPLE_INTERVALS = ("1h", "1d")
+# - the rollup tables the lake keeps beside a base table; any other coarser request is resampled in DuckDB
+ROLLUP_INTERVALS = ("1h", "1d")
 OHLC_AGGS = {"open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"}
 DISCOVERY_ROLLUP = "1d"
 DISCOVERY_PARTITIONS = 7
@@ -416,10 +431,12 @@ class IcebergLakeReader(IReader):
             chosen = claimed[timeframe]
         else:
             finer = sorted((tf for tf in claimed if tf and _seconds(tf) < _seconds(timeframe)), key=_seconds)
-            if timeframe not in RESAMPLE_INTERVALS and finer:
-                raise ValueError(f"{request!r}: no {timeframe} rollup, and only {RESAMPLE_INTERVALS} can be resampled")
+            # - a bucket is built from whole rows: 90s cannot come out of 1m
+            whole = [tf for tf in finer if _seconds(timeframe) % _seconds(tf) == 0]
+            if finer and not whole:
+                raise ValueError(f"{request!r}: {timeframe} is no whole multiple of {', '.join(finer)}")
             # - a resample aggregates the finest-grained truth it can: a base table, never another rollup
-            for tf in reversed(finer):
+            for tf in reversed(whole):
                 table = candidates[claimed[tf]][0] or self._load(claimed[tf])
                 if table is not None and table.kind != "rollup":
                     chosen, resample = claimed[tf], timeframe
@@ -440,7 +457,7 @@ class IcebergLakeReader(IReader):
         suffixed = _suffixed(identifier[-1])
         stem = suffixed[0] if suffixed else identifier[-1]
         names = set(self._names())
-        rollups = {i: (*identifier[:-1], f"{stem}_{i}") for i in RESAMPLE_INTERVALS}
+        rollups = {i: (*identifier[:-1], f"{stem}_{i}") for i in ROLLUP_INTERVALS}
         return {i: r for i, r in rollups.items() if r in names and r != identifier}
 
     def _aggs_for(self, table: LakeTable, columns: list[str]) -> dict[str, str]:
