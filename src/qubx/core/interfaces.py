@@ -30,6 +30,8 @@ from qubx.core.basics import (
     DebtRepaid,
     FundsMoved,
     Instrument,
+    InstrumentChanges,
+    InstrumentUpdate,
     ITimeProvider,
     MarketEvent,
     MarketType,
@@ -739,6 +741,13 @@ class IDataProvider:
         can answer authoritatively (e.g. ccxt via exchange.markets) override this.
         """
         return True
+
+    def on_instruments_changed(self, changes: InstrumentChanges) -> None:
+        """
+        The instrument lookup refreshed with changes; held instruments were already updated in place.
+        Connectors keeping their own copy of venue markets re-read it here. Runs on the strategy thread.
+        """
+        return None
 
     @property
     def is_simulation(self) -> bool:
@@ -2765,6 +2774,14 @@ class IStrategy(metaclass=Mixable):
     ) -> None:
         """
         This method is called when the trading universe is updated.
+        """
+        return None
+
+    def on_instrument_update(self, ctx: IStrategyContext, updates: list[InstrumentUpdate]) -> None:
+        """
+        Called after held instruments were updated in place from a refreshed instrument lookup
+        (tick/lot/min sizes, contract size, delisting date ...). Strategies caching values derived
+        from those facts refresh them here. A newly set delisting date is acted on by the framework.
         """
         return None
 
