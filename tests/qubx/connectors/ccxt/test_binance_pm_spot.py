@@ -142,6 +142,21 @@ class TestCcxtSpotRouting:
         finally:
             run(ex.close())
 
+    def test_spot_cancel_all_and_order_history_go_to_papi_margin(self):
+        # ccxt 4.5.89 routes these by subType, which a spot market inherits as "linear" from binanceusdm
+        ex = _pm_exchange()
+        try:
+            ex.papiDeleteMarginAllOpenOrders = AsyncMock(return_value=[])
+            ex.papiGetMarginAllOrders = AsyncMock(return_value=[MARGIN_ORDER])
+            ex.papiDeleteUmAllOpenOrders = AsyncMock(side_effect=AssertionError("UM cancel-all for a spot symbol"))
+            ex.papiGetUmAllOrders = AsyncMock(side_effect=AssertionError("UM history for a spot symbol"))
+            run(ex.cancel_all_orders("TRX/USDT"))
+            (row,) = run(ex.fetch_orders("TRX/USDT"))
+            assert row["symbol"] == "TRX/USDT"
+            ex.papiDeleteMarginAllOpenOrders.assert_awaited_once()
+        finally:
+            run(ex.close())
+
     def test_margin_rows_parse_as_spot_and_um_rows_as_swap(self):
         ex = _pm_exchange()
         try:

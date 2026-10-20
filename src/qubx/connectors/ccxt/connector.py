@@ -1675,7 +1675,7 @@ class CcxtConnector(ChannelEmitter):
         """True when the ccxt exchange trades derivatives (position/balance push
         streams only exist there). ccxt resolves the account stream from
         ``defaultType`` OR the linear/inverse ``defaultSubType`` — binanceusdm
-        carries ``defaultSubType='linear'`` while ``defaultType`` stays 'spot'."""
+        carries ``defaultType='swap'`` / ``defaultSubType='linear'``."""
         options = self._em.exchange.options
         return options.get("defaultType") in ("future", "delivery", "swap") or options.get("defaultSubType") in (
             "linear",

@@ -21,8 +21,11 @@ Everything here runs fully offline.
 """
 
 import asyncio
+import copy
 import io
+from typing import Any
 from unittest.mock import AsyncMock, MagicMock
+from urllib.parse import parse_qs
 
 from qubx import logger
 from qubx.connectors.ccxt.connector import CcxtConnector, VenueFigures
@@ -297,7 +300,7 @@ DOGE_MARKET = {
         "cost": {"min": None, "max": None},
         "leverage": {"min": 1, "max": 75},
     },
-    "info": {},
+    "info": {"orderTypes": ["LIMIT", "MARKET", "STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET"]},
     "created": None,
     "marginModes": {"cross": True, "isolated": False},
 }
@@ -324,19 +327,25 @@ ALGO_RESPONSE = {
 }
 
 
-def _pm_exchange_with_markets():
-    """PM exchange with preseeded DOGE market and a captured raw-request transport —
-    algo calls (place/cancel/query) never have implicit ccxt methods, so everything
-    goes through ``request``; capture it to assert paths and payloads offline."""
+def _pm_exchange_with_markets(response: Any = ALGO_RESPONSE):
+    """PM exchange with preseeded DOGE market and a captured HTTP transport: requests go
+    through ccxt's real sign(), so the captured (path, api, method, params) is what reaches
+    the wire. Only papi calls are recorded; anything else raises."""
     ex = _pm_exchange()
     ex.set_markets([DOGE_MARKET])
     calls = []
+    papi = ex.urls["api"]["papi"] + "/"
 
-    async def fake_request(path, api="public", method="GET", params={}, *args, **kwargs):
-        calls.append((path, api, method, dict(params)))
-        return dict(ALGO_RESPONSE)
+    async def fake_fetch(url, method="GET", headers=None, body=None):
+        base, _, query = url.partition("?")
+        if not base.startswith(papi):
+            raise AssertionError(f"unexpected non-papi request {method} {url}")
+        fields = parse_qs(body if body else query, keep_blank_values=True)
+        params = {k: v[0] for k, v in fields.items() if k not in ("timestamp", "signature", "recvWindow")}
+        calls.append((base[len(papi) :], "papi", method, params))
+        return copy.deepcopy(response)
 
-    ex.request = fake_request
+    ex.fetch = fake_fetch
     return ex, calls
 
 
@@ -501,11 +510,8 @@ class TestPmAlgoOrders:
     def test_non_trigger_orders_unaffected(self):
         ex, calls = _pm_exchange_with_markets()
         try:
-            try:
-                run(ex.create_order("DOGE/USDT:USDT", "limit", "buy", 300, 0.05, {}))
-            except Exception:
-                pass  # goes to the real papi order path (network) — only assert no algo call
-            assert calls == []
+            run(ex.create_order("DOGE/USDT:USDT", "limit", "buy", 300, 0.05, {}))
+            assert [c[:3] for c in calls] == [("um/order", "papi", "POST")]
         finally:
             run(ex.close())
 
@@ -527,12 +533,10 @@ class TestPmAlgoOrders:
         try:
             run(ex.fetch_order("4000001785373649", "DOGE/USDT:USDT", {"trigger": True}))
             assert calls[-1][:3] == ("um/algo/algoOrder", "papi", "GET")
-
-            async def fake_list(path, api="public", method="GET", params={}, *args, **kwargs):
-                calls.append((path, api, method, dict(params)))
-                return [dict(ALGO_RESPONSE)]
-
-            ex.request = fake_list
+        finally:
+            run(ex.close())
+        ex, calls = _pm_exchange_with_markets([ALGO_RESPONSE])
+        try:
             orders = run(ex.fetch_open_orders("DOGE/USDT:USDT", params={"trigger": True}))
             assert calls[-1][:3] == ("um/algo/openAlgoOrders", "papi", "GET")
             assert len(orders) == 1 and orders[0]["clientOrderId"] == "qubx_DOGEUSDT_1"

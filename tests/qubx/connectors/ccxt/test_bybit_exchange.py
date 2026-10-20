@@ -95,10 +95,13 @@ def test_recv_window_covers_the_http_timeout(bybit):
     assert bybit.options["recvWindow"] >= bybit.timeout
 
 
-def test_the_recv_window_reaches_the_signed_request(bybit):
+@pytest.mark.asyncio
+async def test_the_recv_window_reaches_the_signed_request(bybit):
     bybit.apiKey, bybit.secret = "k", "s"
-    request = bybit.sign("v5/account/wallet-balance", api="private", method="GET", params={"accountType": "UNIFIED"})
-    assert request["headers"]["X-BAPI-RECV-WINDOW"] == "10000"
+    bybit.fetch = AsyncMock(return_value={"retCode": 0, "result": {}})
+    await bybit.privateGetV5AccountWalletBalance({"accountType": "UNIFIED"})
+    headers = bybit.fetch.await_args.args[2]  # fetch(url, method, headers, body)
+    assert headers["X-BAPI-RECV-WINDOW"] == "10000"
 
 
 def test_cancel_by_client_id_sends_order_link_id(bybit):
@@ -247,14 +250,14 @@ def test_the_venue_maintenance_margin_survives_an_empty_bust_price(bybit):
     assert row["maintenanceMargin"] == 0.10419654
 
 
-def test_a_maintenance_margin_ccxt_derived_is_left_alone(bybit):
-    """With both prices present ccxt's |liqPrice - bustPrice| * size stands."""
+def test_the_venue_maintenance_margin_wins_over_the_bust_price_derivation(bybit):
+    """With both prices present the venue's positionMM stands, not |liqPrice - bustPrice| * size."""
     row = bybit.parse_position(_position_row(bustPrice="2180.0"), bybit.market("BTC/USDT:USDT"))
-    assert row["maintenanceMargin"] == 0.205
+    assert row["maintenanceMargin"] == 0.10419654
 
 
-@pytest.mark.parametrize("position_mm", [None, "", "n/a"])
-def test_an_unusable_position_mm_leaves_the_field_as_ccxt_left_it(bybit, position_mm):
+@pytest.mark.parametrize("position_mm", [None, ""])
+def test_an_absent_position_mm_leaves_the_field_empty(bybit, position_mm):
     raw = _position_row()
     raw["positionMM"] = position_mm
     if position_mm is None:
@@ -266,7 +269,7 @@ def test_no_other_position_field_is_touched(bybit):
     row = _position_row()
     mine = bybit.parse_position(row, bybit.market("BTC/USDT:USDT"))
     theirs = _upstream().parse_position(row, _upstream().market("BTC/USDT:USDT"))
-    touched = {"maintenanceMargin", "info"}
+    touched = {"info"}
     assert {k: v for k, v in mine.items() if k not in touched} == {k: v for k, v in theirs.items() if k not in touched}
     # the raw row is passed through with one key added, and the caller's dict is not mutated
     assert {k: v for k, v in mine["info"].items() if k != "adl"} == theirs["info"] == row
@@ -317,13 +320,20 @@ def test_the_adl_rank_reaches_the_position(bybit):
     assert ccxt_convert_position(worst, "BYBIT.F", {"BTC/USDT:USDT": market}).adl_level == 4
 
 
-def test_upstream_drops_the_maintenance_margin_when_the_bust_price_is_empty():
-    """If this fails, ccxt fixed it upstream and the parse_position override can be dropped."""
+def test_upstream_keeps_the_venue_maintenance_margin():
+    """ccxt 4.5.89 derives ``positionMM`` from the bust price only when it is absent; 4.5.50 replaced
+    it, so an empty UTA ``bustPrice`` dropped it and Qubx re-read it. If this fails, that patch is owed again."""
     upstream = _upstream()
     market = upstream.market("BTC/USDT:USDT")
-    assert upstream.parse_position(_position_row(), market)["maintenanceMargin"] is None
-    # the same row without a liquidation price keeps positionMM, so nothing else is wrong with it
-    assert upstream.parse_position(_position_row(liqPrice=""), market)["maintenanceMargin"] == 0.10419654
+    for row in (_position_row(), _position_row(bustPrice="2180.0"), _position_row(liqPrice="")):
+        assert upstream.parse_position(row, market)["maintenanceMargin"] == 0.10419654
+
+
+def test_upstream_raises_on_a_non_numeric_position_mm():
+    """ccxt feeds ``positionMM`` straight into Precise; a non-numeric value fails the whole row."""
+    upstream = _upstream()
+    with pytest.raises(ValueError):
+        upstream.parse_position(_position_row(positionMM="n/a"), upstream.market("BTC/USDT:USDT"))
 
 
 def test_the_venue_maintenance_margin_reaches_the_position(bybit):
@@ -649,10 +659,10 @@ def test_all_liquidation_side_is_inverted_to_the_order_side(bybit, position_side
     assert parsed["timestamp"] == 1739502302929
 
 
-def test_upstream_reads_the_all_liquidation_side_as_a_literal_s():
-    """ccxt passes 'S' as safe_string_lower's DEFAULT argument, not as a second key."""
+def test_upstream_reports_the_all_liquidation_position_side():
+    """ccxt reads ``S`` as the side as is: the POSITION side, which the override inverts."""
     row = {"T": 1739502302929, "s": "BTCUSDT", "S": "Sell", "v": "20000", "p": "0.04499"}
-    assert _upstream().parse_ws_liquidation(row)["side"] == "s"
+    assert _upstream().parse_ws_liquidation(row)["side"] == "sell"
 
 
 def test_the_single_symbol_liquidation_row_is_also_inverted(bybit):

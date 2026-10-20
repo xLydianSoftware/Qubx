@@ -21,6 +21,20 @@ from qubx.utils.time import now_utc, to_timedelta
 
 from ..base import CcxtFuturePatchMixin
 
+_QV_DESCRIBE = {
+    "options": {
+        "watchTrades": {
+            "name": "aggTrade",
+        },
+        # "localOrderBookLimit": 50_000,  # set a large limit to avoid cutting off the orderbook
+    },
+    "exceptions": {
+        "exact": {
+            "-2019": InsufficientFunds,  # ccxt doesn't have this code for some weird reason !!
+        },
+    },
+}
+
 
 class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
     """
@@ -34,22 +48,7 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
         """
         Overriding watchTrades to use aggTrade instead of trade.
         """
-        return self.deep_extend(
-            super().describe(),
-            {
-                "options": {
-                    "watchTrades": {
-                        "name": "aggTrade",
-                    },
-                    # "localOrderBookLimit": 50_000,  # set a large limit to avoid cutting off the orderbook
-                },
-                "exceptions": {
-                    "exact": {
-                        "-2019": InsufficientFunds,  # ccxt doesn't have this code for some weird reason !!
-                    },
-                },
-            },
-        )
+        return self.deep_extend(super().describe(), _QV_DESCRIBE)
 
     async def un_watch_bids_asks(self, symbols: Strings = None, params: dict = {}) -> Any:
         """
@@ -400,9 +399,15 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
         BINANCE_UM_MM) inherit this fix via ``super().describe()``.
         Remove the ``has`` block below once we bump our minimum ccxt past
         the regression.
+
+        Since ccxt 4.5.89 pro binanceusdm builds on ``super().describe_data()``
+        rather than ``super().describe()``, so BinanceQV.describe never runs in
+        this MRO: its additions (aggTrade, -2019 InsufficientFunds) are merged
+        here explicitly.
         """
         return self.deep_extend(
             super().describe(),
+            _QV_DESCRIBE,
             {
                 "has": {
                     "watchOHLCV": True,  # handlers/ohlc.py:61
@@ -410,11 +415,6 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
                     "watchOrderBookForSymbols": True,  # handlers/orderbook.py:101
                     "watchTradesForSymbols": True,  # handlers/trade.py:76
                     "watchBidsAsks": True,  # handlers/quote.py:46
-                },
-                "options": {
-                    "watchTrades": {
-                        "name": "aggTrade",
-                    },
                 },
             },
         )
@@ -609,7 +609,7 @@ class BinanceQVUSDM(cxp.binanceusdm, BinanceQV):
         await self.load_markets()
         market = self.market(symbol)
         marketType = self.get_market_type("createOrderWs", market, params)
-        if marketType != "spot" and marketType != "future":
+        if marketType != "spot" and marketType != "linear":
             raise BadRequest(self.id + " createOrderWs only supports spot or swap markets")
         url = self.urls["api"]["ws"]["ws-api"][marketType]
         requestId = self.request_id(url)
@@ -748,6 +748,26 @@ class BinancePortfolioMargin(BinanceQVUSDM):
             },
         )
 
+    def market(self, symbol):
+        # ccxt >= 4.5.89 resolves a listed spot symbol to its perpetual under defaultType "swap";
+        # the spot leg needs the spot market itself
+        if isinstance(symbol, str) and self.markets is not None and symbol in self.markets:
+            return self.markets[symbol]
+        return super().market(symbol)
+
+    def handle_sub_type_and_params(self, methodName, market=None, params={}, defaultValue=None):
+        # ccxt 4.5.89 moved these methods from the market's own flags to is_linear(type, subType), and
+        # a spot market inherits defaultSubType "linear" -> papi UM instead of papi margin. Only these:
+        # everywhere else a spot market already took that subType on 4.5.50.
+        if (
+            methodName in ("cancelOrder", "fetchOrder", "cancelAllOrders", "fetchOrders")
+            and market is not None
+            and market.get("spot")
+            and self.safe_string_2(params, "subType", "defaultSubType") is None
+        ):
+            return [None, params]
+        return super().handle_sub_type_and_params(methodName, market, params, defaultValue)
+
     def parse_balance_custom(self, response, type=None, marginMode=None, isPortfolioMargin=False) -> Balances:
         # With defaultType "swap" the routed type is linear, whose PM parse branch reports
         # umWalletBalance + umUnrealizedPNL (unrealized in totals, UM wallet only). Pin the
@@ -764,11 +784,7 @@ class BinancePortfolioMargin(BinanceQVUSDM):
     # ``clientAlgoId``, id is ``algoId``. ALGO_UPDATE WS events did not fire for
     # NEW/CANCELED in testing — algo lifecycle is REST-confirmed; a triggered algo
     # spawns a real order (``actualOrderId``) whose ORDER_TRADE_UPDATE/fills arrive on
-    # the normal stream. ccxt has no implicit methods for these (its abstract API map
-    # is pre-generated), hence raw ``self.request`` calls.
-    _ALGO_ORDER_PATH = "um/algo/order"
-    _ALGO_QUERY_PATH = "um/algo/algoOrder"
-    _ALGO_OPEN_PATH = "um/algo/openAlgoOrders"
+    # the normal stream.
     _ALGO_STATUSES = {
         "NEW": "open",
         "WORKING": "open",
@@ -851,7 +867,7 @@ class BinancePortfolioMargin(BinanceQVUSDM):
         working_type = self.safe_string(params, "workingType")
         if working_type is not None:
             request["workingType"] = working_type
-        response = await self.request(self._ALGO_ORDER_PATH, "papi", "POST", request)
+        response = await self.papiPostUmAlgoOrder(request)
         return self.parse_algo_order(response, market)
 
     async def cancel_order(self, id: str, symbol: str | None = None, params={}) -> Order:
@@ -869,7 +885,7 @@ class BinancePortfolioMargin(BinanceQVUSDM):
             request["clientAlgoId"] = cid
         else:
             raise BadRequest(f"{self.id} cancelOrder for algo orders requires an id or client order id")
-        response = await self.request(self._ALGO_ORDER_PATH, "papi", "DELETE", request)
+        response = await self.papiDeleteUmAlgoOrder(request)
         return self.safe_order(
             {
                 "info": response,
@@ -894,7 +910,7 @@ class BinancePortfolioMargin(BinanceQVUSDM):
             request["algoId"] = id
         elif cid is not None:
             request["clientAlgoId"] = cid
-        response = await self.request(self._ALGO_QUERY_PATH, "papi", "GET", request)
+        response = await self.papiGetUmAlgoAlgoOrder(request)
         return self.parse_algo_order(response, market)
 
     async def fetch_open_orders(self, symbol: str | None = None, since=None, limit=None, params={}) -> list[Order]:
@@ -913,7 +929,7 @@ class BinancePortfolioMargin(BinanceQVUSDM):
         request: dict = {}
         if market is not None:
             request["symbol"] = market["id"]
-        response = await self.request(self._ALGO_OPEN_PATH, "papi", "GET", request)
+        response = await self.papiGetUmAlgoOpenAlgoOrders(request)
         rows = response if isinstance(response, list) else []
         orders = [self.parse_algo_order(row, market) for row in rows]
         return self.filter_by_symbol_since_limit(orders, market["symbol"] if market else None, since, limit)
