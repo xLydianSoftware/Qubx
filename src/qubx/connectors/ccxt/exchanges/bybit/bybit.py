@@ -124,20 +124,12 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
         return balances
 
     def parse_position(self, position, market=None) -> Position:
-        """Keep the venue's own maintenance margin and put the ADL rank on the unified key.
-
-        ccxt reads ``positionMM`` and then replaces it with ``|liqPrice - bustPrice| * size``
-        whenever a liquidation price is set; a UTA account reports ``bustPrice=""``, so the
-        product is None and the framework falls back to a flat 5% of notional.
+        """Put the ADL rank on the unified key.
 
         ``info`` is ccxt's passthrough of the raw row, which is where ``ccxt_convert_position``
         reads ``adl`` — Bybit spells the same figure ``adlRankIndicator`` on a 1-based scale.
         """
         parsed = super().parse_position(position, market)
-        if parsed.get("maintenanceMargin") is None:
-            venue_mm = info_float(position, "positionMM")
-            if venue_mm is not None:
-                parsed["maintenanceMargin"] = venue_mm
         adl = _adl_level(position)
         if adl is not None:
             parsed["info"] = {**position, "adl": adl}
@@ -320,8 +312,9 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
         await self.load_markets()
         symbols = self.market_symbols(symbols)
         url = await self.get_url_by_market_type(symbols[0], False, "watchLiquidations", params)
-        params = self.clean_params(params)
-        method, params = self.handle_option_and_params(params, "watchLiquidations", "method", "allLiquidation")
+        method, params = self.handle_option_string_and_params(
+            self.clean_params(params), "watchLiquidations", "method", "allLiquidation"
+        )
         topics = [method + "." + self.market(symbol)["id"] for symbol in symbols]
         hashes = ["liquidations::" + symbol for symbol in symbols]
         liquidations = await self.watch_topics(url, hashes, topics, params)
@@ -332,8 +325,8 @@ class BybitF(CcxtFuturePatchMixin, cxp.bybit):
     def parse_ws_liquidation(self, liquidation, market=None) -> Liquidation:
         """Report the side of the liquidating ORDER, as other venues do.
 
-        ccxt passes ``'S'`` as ``safe_string_lower``'s default value instead of as a second key,
-        and Bybit's ``S`` is the POSITION side — the inverse of Binance's ``forceOrder``.
+        Bybit's ``side``/``S`` is the POSITION side — the inverse of Binance's ``forceOrder`` —
+        and ccxt passes it through as is.
         """
         parsed = super().parse_ws_liquidation(liquidation, market)
         position_side = self.safe_string_lower_2(liquidation, "side", "S")

@@ -18,9 +18,10 @@ paths need from market data is `lowercaseId`/`symbol`/contract flags.
 
 import asyncio
 
+import ccxt
 import pytest
 
-from qubx.connectors.ccxt.exchanges.binance.exchange import BinanceQVUSDM
+from qubx.connectors.ccxt.exchanges.binance.exchange import BINANCE_UM_MM, BinancePortfolioMargin, BinanceQVUSDM
 
 
 def run(coro):
@@ -70,7 +71,7 @@ def _usdm_market(base: str, amount_precision: float, price_precision: float) -> 
             "cost": {"min": None, "max": None},
             "leverage": {"min": 1, "max": 125},
         },
-        "info": {},
+        "info": {"orderTypes": ["LIMIT", "MARKET", "STOP", "STOP_MARKET", "TAKE_PROFIT", "TAKE_PROFIT_MARKET"]},
         "created": None,
         "marginModes": {"cross": True, "isolated": True},
     }
@@ -145,14 +146,17 @@ class TestBinanceUsdmWsUrlSplit:
         assert url.startswith("wss://fstream.binance.com/market/ws/"), url
 
     def test_private_ws_url_uses_split_path(self, offline_binance_usdm):
-        url = offline_binance_usdm.get_private_ws_url("future", "DUMMY_LISTEN_KEY")
+        ex = offline_binance_usdm
+        market_type = ex.get_market_type("watchOrders", ex.market("BTC/USDT:USDT"))
+        url = ex.get_private_ws_url(market_type, "DUMMY_LISTEN_KEY")
         assert url == "wss://fstream.binance.com/private/ws?listenKey=DUMMY_LISTEN_KEY"
 
     def test_spot_and_delivery_hosts_are_unchanged(self, offline_binance_usdm):
         # Binance's migration only affects USDⓈ-M. Spot and Coin-M stay legacy.
+        # ccxt 4.5.89 keys the Coin-M url "inverse" (was "delivery").
         ex = offline_binance_usdm
         assert ex.get_ws_url("spot", "public") == "wss://stream.binance.com:9443/ws"
-        assert ex.get_ws_url("delivery", "public") == "wss://dstream.binance.com/ws"
+        assert ex.get_ws_url("inverse", "public") == "wss://dstream.binance.com/ws"
 
 
 class TestBinanceUnWatchBidsAsks:
@@ -287,3 +291,44 @@ class TestBinanceCidOnlyEditRequest:
         assert "newClientOrderId" not in captured
         assert captured["origClientOrderId"] == "qubx-cid-1"
         assert captured["symbol"] == "BTCUSDT"
+
+
+class TestBinanceUsdmDescribeChain:
+    """ccxt 4.5.89's pro binanceusdm.describe builds on describe_data(), skipping BinanceQV.describe
+    in this MRO — BinanceQVUSDM merges BinanceQV's additions itself."""
+
+    @pytest.mark.parametrize("cls", [BinanceQVUSDM, BinancePortfolioMargin, BINANCE_UM_MM])
+    def test_qv_additions_reach_usdm_subclasses(self, cls):
+        ex = cls({})
+        try:
+            assert ex.options["watchTrades"]["name"] == "aggTrade"
+            with pytest.raises(ccxt.InsufficientFunds):
+                ex.handle_errors(
+                    400,
+                    "Bad Request",
+                    "https://fapi.binance.com/fapi/v1/order",
+                    "POST",
+                    {},
+                    '{"code":-2019,"msg":"Margin is insufficient."}',
+                    {"code": -2019, "msg": "Margin is insufficient."},
+                    None,
+                    None,
+                )
+        finally:
+            run(ex.close())
+
+
+class TestBinanceUsdmOrderWs:
+    def test_create_and_cancel_order_ws_use_the_fapi_ws_api(self, offline_binance_usdm):
+        ex = offline_binance_usdm
+        ex.apiKey, ex.secret = "k", "s"
+        urls = []
+
+        async def fake_watch(url, *args, **kwargs):
+            urls.append(url)
+            return {}
+
+        ex.watch = fake_watch
+        run(ex.create_order_ws("BTC/USDT:USDT", "limit", "buy", 0.01, 25000.0, {"clientOrderId": "qubx-1"}))
+        run(ex.cancel_order_ws("123", "BTC/USDT:USDT"))
+        assert urls == ["wss://ws-fapi.binance.com/ws-fapi/v1"] * 2

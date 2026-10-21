@@ -1,29 +1,33 @@
 """Tests for OKX exchange registration and custom class."""
 
 import asyncio
+import socket
 import time
 from unittest.mock import AsyncMock, Mock, patch
 
-import numpy as np
-
 import ccxt
 import ccxt.pro as cxp
+import numpy as np
 import pytest
-from ccxt.base.errors import ChecksumError
+from ccxt.base.errors import ExchangeClosedByUser, InvalidNonce
 
 from qubx import logger
-from qubx.connectors.ccxt.exchanges import EXCHANGE_ALIASES, OkxFutures
-from qubx.connectors.ccxt.exchanges.okx.connector import OkxCcxtConnector
-from qubx.connectors.ccxt.utils import ccxt_status_to_order_status
 from qubx.connectors.ccxt.connector import _LeverageInfo
-from qubx.connectors.ccxt.exchanges.okx.connector import _OKX_TIER_READS_PER_FLUSH, _max_size_at, _parse_tiers
+from qubx.connectors.ccxt.exchanges import EXCHANGE_ALIASES, OkxFutures
+from qubx.connectors.ccxt.exchanges.okx.connector import (
+    _OKX_TIER_READS_PER_FLUSH,
+    OkxCcxtConnector,
+    _max_size_at,
+    _parse_tiers,
+)
+from qubx.connectors.ccxt.utils import ccxt_status_to_order_status
 from qubx.core.account_manager import AccountManager
-from qubx.core.basics import OrderStatus
 from qubx.core.basics import (
     VENUE_SETTINGS_EVENT,
     CtrlChannel,
     Instrument,
     MarketType,
+    OrderStatus,
     Position,
     VenueSettingsUpdate,
 )
@@ -102,30 +106,6 @@ class TestOkxRegistration:
         options = OkxFutures().describe()["options"]
         assert options["defaultType"] == "swap"
         assert options["positionSide"] == "net"
-
-
-class TestOrderbookChecksumMessage:
-    """
-    A checksum mismatch on a book SNAPSHOT reaches ccxt with symbol=None, because its snapshot
-    branch passes no market and the payload carries no instId. The base implementation
-    concatenates the symbol and raises TypeError, which skips the subscription cleanup and
-    leaves the waiter unresolved — the stream then stalls with nothing raised.
-    """
-
-    def test_base_raises_on_missing_symbol(self):
-        with pytest.raises(TypeError):
-            cxp.okx().orderbook_checksum_message(None)
-
-    def test_message_survives_missing_symbol(self):
-        message = OkxFutures().orderbook_checksum_message(None)
-        assert "okx" in message
-
-    def test_message_keeps_the_symbol_when_present(self):
-        assert "BTC/USDT:USDT" in OkxFutures().orderbook_checksum_message("BTC/USDT:USDT")
-
-    def test_error_is_constructible_without_a_symbol(self):
-        exchange = OkxFutures()
-        assert isinstance(ChecksumError(exchange.orderbook_checksum_message(None)), ChecksumError)
 
 
 class TestProtectiveStopRouting:
@@ -353,7 +333,7 @@ class TestAlgoOrderStream:
 
 
 class _FakeWsClient:
-    """The two things ccxt's orderbook error path touches on a client."""
+    """The things ccxt's orderbook error path touches on a client."""
 
     def __init__(self, message_hash: str):
         self.subscriptions = {message_hash: True}
@@ -367,86 +347,199 @@ class _FakeWsClient:
         self.resolved.append(result)
 
 
-def _snapshot(checksum: int) -> dict:
+def _book_message(action: str, seq_id: int, prev_seq_id: int, checksum: int = 1, bid: str = "77999.9") -> dict:
     return {
         "arg": {"channel": "books", "instId": "BTC-USDT-SWAP"},
-        "action": "snapshot",
+        "action": action,
         "data": [
             {
                 "asks": [["78000.1", "1", "0", "1"]],
-                "bids": [["77999.9", "2", "0", "1"]],
+                "bids": [[bid, "2", "0", "1"]],
                 "ts": "1787305636893",
                 "checksum": checksum,
-                "seqId": 1,
-                "prevSeqId": -1,
+                "seqId": seq_id,
+                "prevSeqId": prev_seq_id,
             }
         ],
     }
 
 
-class TestOrderBookChecksumFailure:
+def _snapshot(seq_id: int = 1, checksum: int = 1) -> dict:
+    return _book_message("snapshot", seq_id, -1, checksum)
+
+
+class TestOrderBookIntegrity:
     """
-    Prod, 2026-08-04: a ping-pong timeout, then the reconnect's first snapshot failed its
-    checksum and ccxt raised TypeError while building the error message. The raise happens
+    Prod, 2026-08-04: a book integrity failure (then a checksum) raised TypeError inside ccxt
     before the cleanup, so the subscription was never dropped and the waiter never rejected —
     the stream went quiet with nothing raised to the connection manager.
 
-    ccxt's snapshot branch passes no market and the payload has no instId, so the symbol
-    resolves to None. Both master and 4.5.50 still do this.
+    From ccxt 4.5.55 OKX books carry no checksum check at all; seqId/prevSeqId continuity is
+    the only guard, and the guarantee now rides on it: a gap rejects the waiter with a retried
+    error, drops the stale book, and the retried watch resubscribes for a fresh snapshot.
     """
 
     MESSAGE_HASH = "books:BTC/USDT:USDT"
 
-    def test_the_base_class_raises_typeerror_instead_of_the_checksum_error(self):
-        exchange = cxp.okx()
-        exchange.set_markets([_swap_market()])
-        self._checksums_on(exchange)
-        with pytest.raises(TypeError):
-            exchange.handle_order_book(_FakeWsClient(self.MESSAGE_HASH), _snapshot(checksum=1))
-
-    @staticmethod
-    def _checksums_on(exchange) -> None:
-        # - OkxFutures ships with them off (see TestOrderBookChecksumDisabled); these two
-        #   cover the guard for anyone who turns them back on, and for other venues
-        exchange.options["watchOrderBook"]["checksum"] = True
-
-    def test_a_bad_checksum_rejects_the_waiter(self, offline_okx):
-        self._checksums_on(offline_okx)
+    def test_ccxt_no_longer_checks_the_checksum(self, offline_okx):
+        # - canary: OKX sends checksum 0 on every books message, so a check returning in ccxt
+        #   would end every stream on its first update (see TestOrderBookChecksumDisabled)
+        offline_okx.options["watchOrderBook"]["checksum"] = True
         client = _FakeWsClient(self.MESSAGE_HASH)
-        offline_okx.handle_order_book(client, _snapshot(checksum=1))
+        offline_okx.handle_order_book(client, _snapshot(seq_id=1, checksum=1))
+        offline_okx.handle_order_book(client, _book_message("update", 2, 1, checksum=0))
+        assert client.rejected == []
+        assert len(client.resolved) == 2
+        assert offline_okx.orderbooks["BTC/USDT:USDT"]["nonce"] == 2
+
+    def test_a_sequence_gap_rejects_the_waiter_with_a_retried_error(self, offline_okx):
+        client = _FakeWsClient(self.MESSAGE_HASH)
+        offline_okx.handle_order_book(client, _snapshot(seq_id=1))
+        offline_okx.handle_order_book(client, _book_message("update", 6, 5))
         assert len(client.rejected) == 1
-        assert isinstance(client.rejected[0], ChecksumError)
+        assert isinstance(client.rejected[0], InvalidNonce)
+        # - listen_to_stream retries a NetworkError
+        assert issubclass(InvalidNonce, ccxt.NetworkError)
 
-    def test_a_bad_checksum_drops_the_subscription_and_the_stale_book(self, offline_okx):
-        self._checksums_on(offline_okx)
+    def test_a_sequence_gap_drops_the_stale_book_and_marks_a_resync(self, offline_okx):
         client = _FakeWsClient(self.MESSAGE_HASH)
-        offline_okx.handle_order_book(client, _snapshot(checksum=1))
-        assert self.MESSAGE_HASH not in client.subscriptions
+        offline_okx.handle_order_book(client, _snapshot(seq_id=1))
+        offline_okx.handle_order_book(client, _book_message("update", 6, 5))
         assert "BTC/USDT:USDT" not in offline_okx.orderbooks
+        assert client.subscriptions[self.MESSAGE_HASH] == "resync"
 
-    def test_by_default_a_bad_checksum_is_ignored(self, offline_okx):
-        # - what keeps the stream alive: nothing is raised, nothing is torn down
+    def test_a_contiguous_update_keeps_the_book(self, offline_okx):
         client = _FakeWsClient(self.MESSAGE_HASH)
-        offline_okx.handle_order_book(client, _snapshot(checksum=1))
+        offline_okx.handle_order_book(client, _snapshot(seq_id=1))
+        offline_okx.handle_order_book(client, _book_message("update", 2, 1))
         assert client.rejected == []
-        assert self.MESSAGE_HASH in client.subscriptions
-        assert "BTC/USDT:USDT" in offline_okx.orderbooks
+        assert offline_okx.orderbooks["BTC/USDT:USDT"]["nonce"] == 2
 
-    def test_the_error_is_retried_by_the_connection_manager(self):
-        # - ChecksumError is a NetworkError, which listen_to_stream retries; the TypeError was
-        #   not raised out of the watch at all, so nothing retried
-        assert issubclass(ChecksumError, ccxt.NetworkError)
+    def test_the_retried_watch_resubscribes_and_gets_a_fresh_book(self):
+        # - the hang this guards against: a bare re-subscribe to a channel OKX still streams
+        #   gets no new snapshot, and updates without a book are dropped
+        async def scenario():
+            exchange = OkxFutures()
+            exchange.set_markets([_swap_market()])
+            client = exchange.client(exchange.get_url("books", "public"))
+            client.connected.resolve(True)
+            sent: list[dict] = []
 
-    def test_a_good_snapshot_keeps_the_book(self, offline_okx):
-        client = _FakeWsClient(self.MESSAGE_HASH)
-        offline_okx.handle_order_book(client, _snapshot(checksum=1))
-        good = _snapshot(checksum=1)
-        payload = "77999.9:2:78000.1:1"
-        good["data"][0]["checksum"] = offline_okx.crc32(payload, True)
-        client = _FakeWsClient(self.MESSAGE_HASH)
-        offline_okx.handle_order_book(client, good)
-        assert client.rejected == []
-        assert "BTC/USDT:USDT" in offline_okx.orderbooks
+            async def send(message):
+                sent.append(message)
+
+            client.send = send
+
+            async def sent_ops(n: int) -> list[str]:
+                # - sends wait on ccxt's ws throttle
+                for _ in range(200):
+                    if len(sent) >= n:
+                        break
+                    await asyncio.sleep(0.01)
+                return [m["op"] for m in sent]
+
+            def watch():
+                return asyncio.ensure_future(exchange.watch_order_book_for_symbols(["BTC/USDT:USDT"]))
+
+            try:
+                task = watch()
+                assert await sent_ops(1) == ["subscribe"]
+                exchange.handle_message(client, _snapshot(seq_id=1))
+                await task
+
+                task = watch()
+                await asyncio.sleep(0)
+                exchange.handle_message(client, _book_message("update", 6, 5))
+                with pytest.raises(InvalidNonce):
+                    await task
+
+                task = watch()
+                assert await sent_ops(2) == ["subscribe", "unsubscribe"]
+                exchange.handle_message(
+                    client, {"event": "unsubscribe", "arg": {"channel": "books", "instId": "BTC-USDT-SWAP"}}
+                )
+                assert await sent_ops(3) == ["subscribe", "unsubscribe", "subscribe"]
+                exchange.handle_message(client, _snapshot(seq_id=10))
+                book = await task
+                assert book["nonce"] == 10
+                assert book["bids"][0][0] == 77999.9
+            finally:
+                exchange.clients = {}
+                await exchange.close()
+
+        run(scenario())
+
+
+class TestOkxWebSocketUrls:
+    """OKX closes WebSocket port 8443 on 2026-10-31; ccxt >= 4.5.87 dials 443."""
+
+    @pytest.mark.parametrize("env", ["api", "test"])
+    def test_ws_urls_use_port_443(self, env):
+        url = OkxFutures().describe()["urls"][env]["ws"]
+        assert ":443/" in url
+        assert ":8443" not in url
+
+    @pytest.mark.parametrize("sandbox", [False, True])
+    @pytest.mark.parametrize("access", ["public", "private", "business"])
+    def test_every_dialled_endpoint_uses_port_443(self, sandbox, access):
+        exchange = OkxFutures()
+        exchange.set_sandbox_mode(sandbox)
+        url = exchange.get_url("books", access)
+        assert url.startswith("wss://wspap.okx.com:443/" if sandbox else "wss://ws.okx.com:443/")
+
+
+class TestQuoteChannel:
+    def test_bids_asks_stay_on_the_tickers_channel(self):
+        assert OkxFutures().describe()["options"]["watchBidsAsks"]["channel"] == "tickers"
+
+    def test_the_quote_subscription_asks_for_tickers(self):
+        async def scenario():
+            exchange = OkxFutures()
+            exchange.set_markets([_swap_market()])
+            client = exchange.client(exchange.get_url("tickers", "public"))
+            client.connected.resolve(True)
+            sent: list[dict] = []
+
+            async def send(message):
+                sent.append(message)
+
+            client.send = send
+            task = asyncio.ensure_future(exchange.watch_bids_asks(["BTC/USDT:USDT"]))
+            try:
+                for _ in range(5):
+                    await asyncio.sleep(0)
+                assert sent[0]["args"] == [{"channel": "tickers", "instId": "BTC-USDT-SWAP"}]
+            finally:
+                task.cancel()
+                exchange.clients = {}
+                await exchange.close()
+
+        run(scenario())
+
+
+class TestSession:
+    def test_the_lazy_open_every_rest_call_makes_builds_an_ipv4_session(self):
+        # - ccxt's fetch() calls open(True); an override without the argument broke every REST call
+        async def scenario():
+            exchange = OkxFutures()
+            try:
+                exchange.open(True)
+                assert exchange.tcp_connector._family == socket.AF_INET
+            finally:
+                await exchange.close()
+
+        run(scenario())
+
+    def test_a_closed_instance_refuses_the_lazy_open_like_ccxt(self):
+        async def scenario():
+            exchange = OkxFutures()
+            exchange.open()
+            await exchange.close()
+            with pytest.raises(ExchangeClosedByUser):
+                exchange.open(True)
+            assert exchange.session is None
+
+        run(scenario())
 
 
 class _OkxLeverageFixtures:

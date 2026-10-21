@@ -1,10 +1,10 @@
 import asyncio
 import socket
 import ssl
-import sys
 
 import aiohttp
 import ccxt.pro as cxp
+from ccxt.base.errors import ExchangeClosedByUser
 
 from qubx import logger
 
@@ -48,6 +48,9 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
                     #   builds and is a no-op on newer ones. seqId/prevSeqId continuity still runs
                     #   and is the real guard on this stream.
                     "watchOrderBook": {"checksum": False},
+                    # - ccxt moved the default from tickers to bbo-tbt after 4.5.50 (tick-by-tick L1,
+                    #   ~10ms vs 100ms); quotes stay on the tickers channel they have always used
+                    "watchBidsAsks": {"channel": "tickers"},
                 },
             },
         )
@@ -125,36 +128,12 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
             parsed["triggerPrice"] = self.safe_number_n(order, ["triggerPx", "slTriggerPx", "tpTriggerPx"])
         return parsed
 
-    def handle_order_book_message(self, client, message, orderbook, messageHash, market=None):
-        """
-        Give ccxt the market it does not pass on the snapshot path.
-
-        The per-item payload carries no ``instId`` — that sits in ``arg`` — and ccxt's snapshot
-        branch calls this without a market, so the symbol resolves to None. It is needed to drop
-        the stale book on a checksum failure, and to build the error at all.
-        """
-        if market is None and orderbook is not None:
-            market = self.markets.get(orderbook.get("symbol"))
-        return super().handle_order_book_message(client, message, orderbook, messageHash, market)
-
-    def orderbook_checksum_message(self, symbol: str | None) -> str:
-        """
-        Build the checksum-failure message even when ccxt could not resolve the symbol.
-
-        ccxt's snapshot branch calls ``handle_order_book_message`` without a market and the
-        per-item payload carries no ``instId``, so a checksum mismatch on a snapshot resolves
-        the symbol to None and the base implementation raises TypeError while building the
-        error. That exception skips the subscription cleanup and the waiter is never rejected,
-        so the stream stalls with nothing raised to the connection manager.
-        """
-        return super().orderbook_checksum_message(symbol if symbol is not None else self.id)
-
-    def open(self):
+    def open(self, lazy=False):
+        if lazy and self.closed_by_user:
+            raise ExchangeClosedByUser(self.id + " instance was closed by the user")
+        self.closed_by_user = False
         if self.asyncio_loop is None:
-            if sys.version_info >= (3, 7):
-                self.asyncio_loop = asyncio.get_running_loop()
-            else:
-                self.asyncio_loop = asyncio.get_event_loop()
+            self.asyncio_loop = asyncio.get_running_loop()
             self.throttler.loop = self.asyncio_loop  # type: ignore
 
         if self.ssl_context is None:
@@ -166,7 +145,8 @@ class OkxFutures(CcxtFuturePatchMixin, cxp.okx):
                     self.ssl_context.load_verify_locations(cafile=os_default_paths.cafile)
 
         if self.own_session and self.session is None:
-            # Pass this SSL context to aiohttp and create a TCPConnector
+            # - upstream's AF_UNSPEC + happy_eyeballs_delay=0 left out: IPv4 only (see class doc), and
+            #   connection attempts to the resolved addresses stay sequential as before
             self.tcp_connector = aiohttp.TCPConnector(
                 ssl=self.ssl_context, loop=self.asyncio_loop, enable_cleanup_closed=True, family=socket.AF_INET
             )

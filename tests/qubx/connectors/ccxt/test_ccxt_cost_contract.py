@@ -2,7 +2,7 @@
 
 The rate limit configs and the storage's "charge ccxt's real weight" path are sized against these
 numbers; a ccxt version bump that changes them silently invalidates those decisions. Verified
-against ccxt 4.5.50.
+against ccxt 4.5.89.
 """
 
 import ccxt
@@ -35,5 +35,6 @@ def test_fapi_open_orders_with_symbol_costs_1():
 
 def test_binance_spot_trades_costs_2():
     exchange = cxp.binance()
-    assert exchange.api["public"]["get"]["trades"] == 2
-    assert exchange.calculate_rate_limiter_cost("public", "GET", "trades", {}, {"cost": 2}) == 2
+    config = exchange.api["public"]["get"]["trades"]
+    assert config["cost"] == 2
+    assert exchange.calculate_rate_limiter_cost("public", "GET", "trades", {}, config) == 2

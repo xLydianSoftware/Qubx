@@ -221,7 +221,9 @@ class TestPoolWindowSafety:
 
     def test_kraken_public_reads_stay_within_the_documented_one_per_second(self):
         pool = create_ccxt_rate_limit_config("kraken").pools["ccxt_rest"]
-        ohlc_cost = cxp.kraken().api["public"]["get"]["OHLC"]
+        ohlc = cxp.kraken().api["public"]["get"]["OHLC"]
+        # ccxt 4.5.89 declares endpoint costs as {"cost": x} rather than a bare number
+        ohlc_cost = ohlc["cost"] if isinstance(ohlc, dict) else ohlc
         assert pool.refill_rate / ohlc_cost <= 1.0
 
     @pytest.mark.parametrize(
