@@ -332,3 +332,68 @@ class TestBinanceUsdmOrderWs:
         run(ex.create_order_ws("BTC/USDT:USDT", "limit", "buy", 0.01, 25000.0, {"clientOrderId": "qubx-1"}))
         run(ex.cancel_order_ws("123", "BTC/USDT:USDT"))
         assert urls == ["wss://ws-fapi.binance.com/ws-fapi/v1"] * 2
+
+
+class TestListenKeyKeepAlive:
+    """The user-data listen key must be kept alive for as long as its stream is subscribed.
+
+    ccxt 4.5.89 re-arms ``keep_alive_listen_key`` only after finding a client that holds the
+    stream's subscription, but looks the clients up with ``safe_dict``, which returns None for a
+    ``Client`` object: the keep-alive ran once and never again. On a quiet account (no user-data
+    events, so ``watch_orders`` never re-authenticated) the key expired ~60 min later and the
+    stream went silent with no error. Measured on BINANCE.PM 2026-10-23 with a 15 s refresh rate:
+    1 PUT in 70 s on ccxt 4.5.89, 4 on 4.5.46.
+    """
+
+    @staticmethod
+    async def _count_keep_alives(ex, put_name: str, auth_type: str, url: str, subscribed: bool, fail: bool = False):
+        ex.asyncio_loop = asyncio.get_running_loop()
+        ex.options["listenKeyRefreshRate"] = 20
+        ex.options[auth_type] = {"listenKey": "LK", "lastAuthenticatedTime": 0}
+        calls = []
+
+        async def put(params={}):
+            calls.append(params)
+            if fail:
+                raise ccxt.NetworkError("down")
+            return {}
+
+        setattr(ex, put_name, put)
+        client = ex.client(url)
+        if subscribed:
+            client.subscriptions[auth_type] = True
+        await ex.keep_alive_listen_key({"portfolioMargin": True} if put_name.startswith("papi") else {})
+        await asyncio.sleep(0.25)
+        client.subscriptions.clear()  # - stop the chain before the loop closes
+        await asyncio.sleep(0.05)
+        await ex.close()
+        return len(calls)
+
+    def test_pm_keep_alive_rearms_while_the_stream_is_subscribed(self):
+        ex = BinancePortfolioMargin({})
+        n = run(self._count_keep_alives(ex, "papiPutListenKey", "linear", "wss://fstream.binance.com/pm/ws/LK", True))
+        assert n >= 3, n
+
+    def test_um_keep_alive_rearms_while_the_stream_is_subscribed(self):
+        ex = BinanceQVUSDM({})
+        n = run(
+            self._count_keep_alives(
+                ex, "fapiPrivatePutListenKey", "linear", "wss://fstream.binance.com/private/ws?listenKey=LK", True
+            )
+        )
+        assert n >= 3, n
+
+    def test_keep_alive_stops_once_nothing_is_subscribed(self):
+        ex = BinancePortfolioMargin({})
+        n = run(self._count_keep_alives(ex, "papiPutListenKey", "linear", "wss://fstream.binance.com/pm/ws/LK", False))
+        assert n == 1, n
+
+    def test_failed_keep_alive_is_not_rearmed(self):
+        # - ccxt drops the key on failure; the next authenticate() creates a fresh one
+        ex = BinancePortfolioMargin({})
+        n = run(
+            self._count_keep_alives(
+                ex, "papiPutListenKey", "linear", "wss://fstream.binance.com/pm/ws/LK", True, fail=True
+            )
+        )
+        assert n == 1, n

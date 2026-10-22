@@ -337,6 +337,16 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal, now: np.
     return pos
 
 
+def _book_unless_reconciled(state: AccountState, instrument: Instrument, deal: Deal, now: np.datetime64) -> Position:
+    """Book ``deal``, or only realize its pnl when a snapshot already counted it into the size and
+    balances (a WS fill delivered late, or a REST status rescue arriving after the snapshot)."""
+    if _reconciled_past(state, instrument, deal):
+        pos = state.ensure_position(instrument)
+        pos.update_position_by_deal(deal, state.conversion_rate(instrument), realize_only=True)
+        return pos
+    return _book_deal(state, instrument, deal, now)
+
+
 def _apply_execution(
     state: AccountState, order: Order, deal: Deal, now: np.datetime64, *, update_time: np.datetime64 | None = None
 ) -> Deal | None:
@@ -374,7 +384,8 @@ def _reconcile_fill_gap(state: AccountState, order: Order, event: OrderFilledEve
     synthetic = Deal(
         trade_id=f"{order.venue_order_id or order.client_order_id}:fill-reconcile",
         order_id=order.venue_order_id or "",
-        time=now,
+        # - the report's venue time, so a snapshot that already counted the gap can be told apart
+        time=event.last_update_time if event.last_update_time is not None else now,
         amount=remainder if order.side == OrderSide.BUY else -remainder,
         price=price,
         aggressive=False,
@@ -396,12 +407,14 @@ def _handle_fill(state: AccountState, event: OrderFilledEvent, now: np.datetime6
         else None
     )
     position = (
-        _book_deal(state, order.instrument, deal, now) if deal is not None and order.instrument is not None else None
+        _book_unless_reconciled(state, order.instrument, deal, now)
+        if deal is not None and order.instrument is not None
+        else None
     )
     # Terminal fill-gap: book executions the venue counted but never delivered as deals so
     # position AND realized PnL converge now, not size-only at the next snapshot.
     if (gap := _reconcile_fill_gap(state, order, event, now)) is not None and order.instrument is not None:
-        position = _book_deal(state, order.instrument, gap, now)
+        position = _book_unless_reconciled(state, order.instrument, gap, now)
         deal = deal or gap
     order = transition(state, order.client_order_id, OrderStatus.FILLED, now, update_time=event.last_update_time)
     return ApplyResult(order=order, order_change=OrderChange.FILLED, deal=deal, position=position)
@@ -421,7 +434,9 @@ def _handle_partial_fill(state: AccountState, event: OrderPartiallyFilledEvent, 
         else None
     )
     position = (
-        _book_deal(state, order.instrument, deal, now) if deal is not None and order.instrument is not None else None
+        _book_unless_reconciled(state, order.instrument, deal, now)
+        if deal is not None and order.instrument is not None
+        else None
     )
     # a pending cancel/update is resolved by the venue separately — don't disturb its status
     pending = order.status.is_pending
@@ -471,12 +486,7 @@ def _handle_deal(state: AccountState, event: DealEvent, now: np.datetime64) -> A
     deal = _apply_execution(state, order, event.deal, now, update_time=event.last_update_time)
     if deal is None or order.instrument is None:
         return ApplyResult(deal=deal)
-    if _reconciled_past(state, order.instrument, deal):
-        # - snapshot already owns size + balance; realize the deal's pnl only (no size/balance)
-        pos = state.ensure_position(order.instrument)
-        pos.update_position_by_deal(deal, state.conversion_rate(order.instrument), realize_only=True)
-        return ApplyResult(deal=deal, position=pos)
-    return ApplyResult(deal=deal, position=_book_deal(state, order.instrument, deal, now))
+    return ApplyResult(deal=deal, position=_book_unless_reconciled(state, order.instrument, deal, now))
 
 
 def _handle_updated(state: AccountState, event: OrderUpdatedEvent, now: np.datetime64) -> ApplyResult:

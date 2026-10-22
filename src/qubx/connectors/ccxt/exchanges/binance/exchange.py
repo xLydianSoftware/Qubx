@@ -50,6 +50,34 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
         """
         return self.deep_extend(super().describe(), _QV_DESCRIBE)
 
+    def delay(self, timeout, method, *args):
+        if getattr(method, "__name__", None) == "keep_alive_listen_key":
+            self._keep_alive_arms = getattr(self, "_keep_alive_arms", 0) + 1
+        return super().delay(timeout, method, *args)
+
+    async def keep_alive_listen_key(self, params={}):
+        """
+        Re-arms the listen-key keep-alive while its user-data stream is subscribed.
+
+        ccxt 4.5.89 re-arms it only after finding a client holding the stream's subscription, but
+        reads the clients with ``safe_dict``, which is None for a ``Client`` object, so the
+        keep-alive ran once (20 min after authenticate) and never again. On a quiet account
+        ``watch_orders`` never re-authenticates either, the key expires 60 min later and the
+        stream goes silent without an error: every fill then surfaced only via REST status
+        checks and snapshots (BINANCE.PM, farb-sp-pm 2026-10-22). Re-arms only when ccxt did not.
+        """
+        arms = getattr(self, "_keep_alive_arms", 0)
+        await super().keep_alive_listen_key(params)
+        if getattr(self, "_keep_alive_arms", 0) == arms and self._listen_key_stream_subscribed():
+            self.delay(
+                self.safe_integer(self.options, "listenKeyRefreshRate", 1200000), self.keep_alive_listen_key, params
+            )
+
+    def _listen_key_stream_subscribed(self) -> bool:
+        # - a failed keep-alive drops the key (the next authenticate creates one), close() drops the clients
+        keys = [o["listenKey"] for o in self.options.values() if isinstance(o, dict) and o.get("listenKey")]
+        return any(client.subscriptions and any(k in client.url for k in keys) for client in self.clients.values())
+
     async def un_watch_bids_asks(self, symbols: Strings = None, params: dict = {}) -> Any:
         """
         Unsubscribes from the bookTicker stream for the given symbols.
