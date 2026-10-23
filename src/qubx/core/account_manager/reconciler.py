@@ -21,6 +21,7 @@ from qubx.core.account_manager.diffs import (
     BalanceMismatch,
     Diff,
     Differ,
+    LocalBalanceMissing,
     LocalOrderMissing,
     LocalPositionMissing,
     OrderFieldMismatch,
@@ -33,6 +34,7 @@ from qubx.core.account_manager.diffs import (
 from qubx.core.account_manager.state import AccountState, VenueAccountFigures
 from qubx.core.account_manager.state_machine import can_transition
 from qubx.core.basics import (
+    Balance,
     Instrument,
     Order,
     OrderOrigin,
@@ -452,13 +454,17 @@ class Reconciler:
         #   Measured LIGHTER 2026-08-28 (ENAUSDC 272.6 -> 181.8, 84ms after the deal booked) and
         #   BINANCE.UM (TRXUSDT 146 -> 127 against a snapshot 1.58s stale); on ALGOUSDT the
         #   executor sized its next clip off the rewound number and overshot by 16.9%.
+        #   A balance-backed spot position is its base asset's balance, so the guard covers that leg.
+        spot = state.get_spot_bindings() if snap.balances is not None else {}
         stale_for = {
             instr
-            for instr in {self._position_instrument(d) for d in differences}
+            for instr in {self._position_instrument(d) for d in differences} | set(spot.values())
             if instr is not None
             and (booked := state.get_position_deal_booked_at(instr)) is not None
             and booked > snap.as_of
         }
+        # - venue time of each base asset's holding, read before the apply restamps it
+        holding_since = {b.currency: b.last_update_time for b in snap.balances or () if b.currency in spot}
         for instr in stale_for:
             _log.info(
                 f"[{state.exchange}] reconcile: <y>{instr}</y> snapshot as_of={snap.as_of} predates a deal "
@@ -467,6 +473,8 @@ class Reconciler:
         for difference in differences:
             _log.debug(difference.describe())
             if self._position_instrument(difference) in stale_for:
+                continue
+            if (balance := self._balance_currency(difference)) in spot and spot[balance] in stale_for:
                 continue
             # - each atom is applied in isolation: a handler that raises (e.g. a venue/state
             #   surprise) must not sink the rest of the snapshot reconcile (balances/figures/
@@ -509,8 +517,25 @@ class Reconciler:
                         push_as_of = state.get_balance_push_as_of(snap_bal.currency)
                         if push_as_of is None or push_as_of < snap.as_of:
                             state.apply_balance_snapshot(snap_bal, snap.as_of)
+
+                    # - the venue holds none of a base asset: its spot position goes to zero
+                    case LocalBalanceMissing(balance=local_bal) if local_bal.currency in spot:
+                        push_as_of = state.get_balance_push_as_of(local_bal.currency)
+                        if push_as_of is None or push_as_of < snap.as_of:
+                            state.apply_balance_snapshot(Balance(state.exchange, local_bal.currency), snap.as_of)
             except Exception:
                 _log.exception(f"[{state.exchange}] reconcile: diff atom failed, skipping -> {difference.describe()}")
+
+        for asset, instr in spot.items():
+            if instr in stale_for:
+                continue
+            try:
+                if (
+                    pos := self._sync_spot(state, snap, now, asset, holding_since.get(asset), spawn_confirm)
+                ) is not None:
+                    changed.append(pos)
+            except Exception:
+                _log.exception(f"[{state.exchange}] reconcile: spot sync of {asset} failed, skipping")
 
         # - venue settings are size-independent and the differ emits no atom for them, so they
         #   refresh off every snapshot; never a `changed`
@@ -579,6 +604,58 @@ class Reconciler:
             case OriginalPositionMissing(position=pos) | LocalPositionMissing(position=pos):
                 return pos.instrument
         return None
+
+    @staticmethod
+    def _balance_currency(difference: Diff) -> str | None:
+        match difference:
+            case BalanceMismatch(origin=bal) | OriginalBalanceMissing(balance=bal) | LocalBalanceMissing(balance=bal):
+                return bal.currency
+        return None
+
+    def _sync_spot(
+        self,
+        state: AccountState,
+        snap: AccountSnapshot,
+        now: np.datetime64,
+        asset: str,
+        holding_since: np.datetime64 | None,
+        spawn_confirm: bool,
+    ) -> Position | None:
+        """Snap a balance-backed spot position to the holding the snapshot just applied. In session, a
+        move of at least one tradeable lot is missed deals (confirm-task them, as a position size diff
+        would); a dust move (interest, a dust conversion, a base-asset fee) snaps silently, and a short
+        growing by one is borrow interest, booked to commissions at the mark."""
+        instrument = state.spot_instrument_of(asset)
+        pos = state.get_position(instrument) if instrument is not None else None
+        if pos is None:
+            return None
+        prior = pos.quantity
+        since = holding_since if holding_since is not None else snap.as_of
+        if (delta := state.sync_spot(asset, since)) == 0:
+            return None
+        state.mark_position_reconcile(instrument, since)
+        mark = pos.last_update_price
+        if not instrument.is_dust(delta, mark):
+            if spawn_confirm:
+                _log.info(
+                    f"[{state.exchange}] reconcile: <y>{instrument}</y> holding {prior} -> {pos.quantity} "
+                    f"from snapshot; confirming the missed deals"
+                )
+                self._spawn(
+                    ConfirmPositionBySnapshot(
+                        instrument, since, now, wait=self._position_confirm_wait, expected_delta=delta
+                    )
+                )
+            else:
+                _log.info(
+                    f"[{state.exchange}] first reconcile: adopted venue holding <y>{instrument}</y> "
+                    f"size={pos.quantity} (was {prior}) without hist-deals"
+                )
+            return pos
+        if prior < 0 and delta < 0 and np.isfinite(mark):
+            pos.commissions += -delta * instrument.quantity_multiplier * mark / state.conversion_rate(instrument)
+        _log.debug(f"[{state.exchange}] reconcile: {instrument} dust holding move {prior} -> {pos.quantity}")
+        return pos
 
     @staticmethod
     def _recover_order(state: AccountState, snap_order: Order, as_of: np.datetime64) -> Order:

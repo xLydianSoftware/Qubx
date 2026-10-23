@@ -1104,9 +1104,9 @@ class Balance:
     free: float = 0.0
     locked: float = 0.0
     total: float = 0.0
-    # Venue update timestamp (venue clock). Available only from the WS push (event time `E`);
-    # the REST balance snapshot carries none on Binance UM (account updateTime=0). See the
-    # reconciliation design doc.
+    # Venue update timestamp (venue clock). From the WS push (event time `E`), or a REST row that
+    # carries one (Binance PM papi balance `updateTime`); the Binance UM REST snapshot carries none
+    # (account updateTime=0). See the reconciliation design doc.
     last_update_time: dt_64 | None = None
     # per-sub-wallet split where the venue has several (Binance PM margin/futures, OKX/Bybit
     # trading|unified/funding); every leg is listed, zeros included. None on single-wallet venues
@@ -1119,6 +1119,13 @@ class Balance:
     liabilities: dict[str, float] | None = None
     # sum of liabilities; same caveat — never `total - debt`
     debt: float = 0.0
+    # exact signed net holding of the asset, negative when borrowed (Binance PM cross margin); None
+    # where it is `total`. A balance-backed spot position takes its size from it.
+    holding: float | None = None
+
+    @property
+    def net_holding(self) -> float:
+        return self.total if self.holding is None else self.holding
 
     def __str__(self) -> str:
         return f"{self.exchange}:{self.currency} free={self.free:.2f} locked={self.locked:.2f} total={self.total:.2f}"
@@ -1133,6 +1140,7 @@ class Balance:
         self.wallets = balance.wallets
         self.liabilities = balance.liabilities
         self.debt = balance.debt
+        self.holding = balance.holding
 
 
 class TransferStatus(StrEnum):
@@ -1463,7 +1471,7 @@ class Position:
         r_pnl so the record stays identical to a normally-closed position.
 
         Episodes: no explicit change here. Going flat ends the current episode via the
-        canonical flat predicate (``abs(quantity) < lot_size``); the episode baselines are
+        canonical flat predicate (``is_open``); the episode baselines are
         left untouched so the closed episode's final values stay readable via the accessors.
         """
         self.quantity = 0.0
@@ -1704,6 +1712,20 @@ class Position:
         # - deal contains cumulative amount
         # return self.update_position(time, deal.amount, deal.price, deal.aggressive, conversion_rate)
 
+    def book_accounting(self, deal: Deal, conversion_rate: float = 1) -> tuple[float, float]:
+        """Book a deal the held size already carries (a venue holding that counted it): realize and move
+        the average against the size before the deal, and keep the size."""
+        held = self.quantity
+        self.quantity = _add_exact(held, -(deal.amount - deal_base_fee(self.instrument, deal)))
+        self.__pos_incr_qty = abs(self.quantity)
+        try:
+            return self.update_position_by_deal(deal, conversion_rate)
+        finally:
+            self.quantity = held
+            self.update_market_price(
+                self.last_update_time, self.last_update_price, self.last_update_conversion_rate, stamp_update_time=False
+            )
+
     def update_market_price(
         self, timestamp: dt_64, price: float, conversion_rate: float, *, stamp_update_time: bool = True
     ) -> float:
@@ -1794,7 +1816,8 @@ class Position:
         return self.episode_pnl() - self.episode_commissions()
 
     def is_open(self) -> bool:
-        return abs(self.quantity) >= self.instrument.lot_size
+        """Non-zero and tradeable: a dust remainder (see ``is_dust``) counts as closed."""
+        return self.quantity != 0 and not self.is_dust()
 
     @property
     def tradeable_quantity(self) -> float:

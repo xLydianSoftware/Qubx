@@ -160,6 +160,17 @@ class TestPositionDust:
         pos = _position(_instrument(), 0.064, 1000.0)
         assert pos.is_dust()
 
-    def test_is_open_is_unchanged(self):
-        pos = _position(_instrument(), 4.0, 1.0)
-        assert pos.is_dust() and pos.is_open()
+    @pytest.mark.parametrize(
+        "market_type, qty, price, is_open",
+        [
+            (MarketType.SPOT, 0.0, 1.0, False),
+            (MarketType.SPOT, 0.064, 1.0, False),  # sub-lot
+            (MarketType.SPOT, 4.0, 1.0, False),  # below min notional
+            (MarketType.SPOT, 4.0, None, True),  # unknown price: not dust
+            (MarketType.SPOT, 332.964, 1.0, True),
+            (MarketType.SWAP, 4.0, 1.0, True),  # notional clause is spot-only
+            (MarketType.SWAP, -0.064, 1.0, False),
+        ],
+    )
+    def test_is_open_is_non_zero_and_not_dust(self, market_type, qty, price, is_open):
+        assert _position(_instrument(market_type), qty, price).is_open() is is_open

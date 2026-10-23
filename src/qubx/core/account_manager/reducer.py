@@ -313,10 +313,17 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal, now: np.
     portfolio funded currency via state.conversion_rate (currently 1.0 — the
     multi-currency seam). Each balance leg is skipped when a venue balance push
     already covers it (see _covered_by_balance_push); position/r_pnl always book.
+
+    A balance-backed spot position takes its size from the base asset's holding: a deal the
+    holding already counts (push-covered) books accounting only.
     """
     pos = state.ensure_position(instrument)
     _before = pos.quantity
-    realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
+    spot = state.is_balance_backed(instrument)
+    if spot and _covered_by_balance_push(state, instrument.base, deal.time):
+        realized_pnl, fee = pos.book_accounting(deal, state.conversion_rate(instrument))
+    else:
+        realized_pnl, fee = pos.update_position_by_deal(deal, state.conversion_rate(instrument))
     logger.debug("deal {} amt={} {}->{} tid={}", instrument.symbol, deal.amount, _before, pos.quantity, deal.trade_id)
     # - a position snapshot requested before this moment cannot contain this deal
     state.mark_position_deal_booked(instrument, now)
@@ -333,7 +340,13 @@ def _book_deal(state: AccountState, instrument: Instrument, deal: Deal, now: np.
         if not _covered_by_balance_push(state, instrument.quote, deal.time):
             state.adjust_balance(instrument.quote, -(deal.amount * deal.price + (0.0 if base_fee else fee)))
         if not _covered_by_balance_push(state, instrument.base, deal.time):
-            state.adjust_balance(instrument.base, deal.amount - base_fee)
+            if spot:
+                state.book_holding(instrument.base, _before, pos.quantity, deal.amount - base_fee)
+            else:
+                state.adjust_balance(instrument.base, deal.amount - base_fee)
+        if spot:
+            state.sync_spot(instrument.base)
+        state.sync_spot(instrument.quote)
     return pos
 
 
@@ -342,7 +355,11 @@ def _book_unless_reconciled(state: AccountState, instrument: Instrument, deal: D
     balances (a WS fill delivered late, or a REST status rescue arriving after the snapshot)."""
     if _reconciled_past(state, instrument, deal):
         pos = state.ensure_position(instrument)
-        pos.update_position_by_deal(deal, state.conversion_rate(instrument), realize_only=True)
+        if state.is_balance_backed(instrument):
+            # - the snapshot holding already carries the deal's size
+            pos.book_accounting(deal, state.conversion_rate(instrument))
+        else:
+            pos.update_position_by_deal(deal, state.conversion_rate(instrument), realize_only=True)
         return pos
     return _book_deal(state, instrument, deal, now)
 
@@ -574,8 +591,13 @@ def _handle_balance_update(state: AccountState, event: BalanceUpdateEvent, now: 
     # without a real split MUST carry free/locked = NaN, not 0. The balance field on the
     # result is internal visibility only — no strategy callback fires (design.md: deliberately no balance callback).
     bal = event.balance
-    if not state.apply_balance_push(bal.currency, bal.total, event.as_of, free=bal.free, locked=bal.locked):
+    if not state.apply_balance_push(
+        bal.currency, bal.total, event.as_of, free=bal.free, locked=bal.locked, holding=bal.holding
+    ):
         return ApplyResult()
+    # - a base asset's holding is its spot position's size
+    if state.sync_spot(bal.currency) != 0 and (instrument := state.spot_instrument_of(bal.currency)) is not None:
+        return ApplyResult(balance=state.get_balance(bal.currency), positions=[state.get_position(instrument)])
     return ApplyResult(balance=state.get_balance(bal.currency))
 
 

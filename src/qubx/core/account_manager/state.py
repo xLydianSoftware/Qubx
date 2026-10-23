@@ -87,6 +87,8 @@ class AccountState:
         "_balance_push_as_of",
         "_position_reconcile_as_of",
         "_position_deal_booked_at",
+        "_ignore_assets",
+        "_spot_by_asset",
     )
 
     def __init__(
@@ -96,6 +98,7 @@ class AccountState:
         *,
         terminal_history_size: int = 10_000,
         maint_margin_rate: float = DEFAULT_MAINTENANCE_MARGIN,
+        ignore_assets: tuple[str, ...] = (),
     ):
         self.exchange: str = exchange
         self.base_currency: str = base_currency.upper()
@@ -159,6 +162,10 @@ class AccountState:
         #   size. Same domain as AccountSnapshot.as_of, which both connectors stamp before the
         #   fetch (ccxt connector.py:1708, lighter connector.py:487).
         self._position_deal_booked_at: dict[Instrument, np.datetime64] = {}
+        # - coins kept as plain balances, never a spot position (the connector refuses to trade them)
+        self._ignore_assets: frozenset[str] = frozenset(a.upper() for a in ignore_assets)
+        # - base asset -> its one spot instrument: the position whose size is the asset's net holding
+        self._spot_by_asset: dict[str, Instrument] = {}
 
     def __repr__(self) -> str:
         return (
@@ -229,6 +236,19 @@ class AccountState:
 
     def mark_position_deal_booked(self, instrument: Instrument, at: np.datetime64) -> None:
         self._position_deal_booked_at[instrument] = at
+
+    def spot_instrument_of(self, asset: str) -> Instrument | None:
+        return self._spot_by_asset.get(asset.upper())
+
+    def get_spot_bindings(self) -> dict[str, Instrument]:
+        return dict(self._spot_by_asset)
+
+    def is_balance_backed(self, instrument: Instrument) -> bool:
+        return self._spot_by_asset.get(instrument.base.upper()) == instrument
+
+    def holding_of(self, asset: str) -> float:
+        bal = self._balances.get(asset)
+        return bal.net_holding if bal is not None else 0.0
 
     def get_transition_counts(self) -> dict[str, int]:
         """Audit counter snapshot: status.value -> number of transitions into it."""
@@ -514,8 +534,14 @@ class AccountState:
             self._adopt_position(instrument, position)
         else:
             existing.reset_by_position(position)
+        # - a seeded (restored) spot size with no balance behind it seeds the holding, so the next
+        #   deal books on top of it; a venue snapshot overrides both
+        if position.quantity != 0 and self.is_balance_backed(instrument) and instrument.base not in self._balances:
+            q = position.quantity
+            self._balances[instrument.base] = Balance(exchange=self.exchange, currency=instrument.base, free=q, total=q)
 
     def _adopt_position(self, instrument: Instrument, position: Position) -> Position:
+        self._bind_spot(instrument)
         # - every held position margins at the account's rate, however it got here; a venue-reported
         #   margin is kept, a framework one is recomputed now rather than on the next mark
         position.maint_margin_rate = self.maint_margin_rate
@@ -523,6 +549,58 @@ class AccountState:
             position._update_maint_margin()
         self._positions[instrument] = position
         return position
+
+    def _bind_spot(self, instrument: Instrument) -> None:
+        # - a spot holding is a balance: one instrument per asset carries it as a position
+        if not instrument.is_spot():
+            return
+        asset = instrument.base.upper()
+        if asset in STABLE_CURRENCIES or asset in self._ignore_assets:
+            return
+        bound = self._spot_by_asset.setdefault(asset, instrument)
+        if bound != instrument:
+            raise ValueError(
+                f"[{self.exchange}] {instrument} and {bound} would both hold {asset}: "
+                "one spot instrument per asset per account"
+            )
+
+    def sync_spot(self, asset: str, at: np.datetime64 | None = None) -> float:
+        """Snap the size of the asset's spot position to the asset's net holding; accounting (avg,
+        r_pnl, commissions, funding) is kept and the moved quantity realizes nothing. A position
+        taking a holding from flat is averaged at its mark. ``at`` is the venue time of the holding.
+        Returns the size change."""
+        if (instrument := self._spot_by_asset.get(asset.upper())) is None:
+            return 0.0
+        pos = self._positions[instrument]
+        holding = self.holding_of(asset)
+        if (delta := holding - pos.quantity) == 0:
+            return 0.0
+        avg = pos.position_avg_price
+        if holding != 0 and (pos.quantity == 0 or np.sign(pos.quantity) != np.sign(holding)):
+            avg = pos.last_update_price if np.isfinite(pos.last_update_price) else 0.0
+        pos.reconcile_size(holding, avg, timestamp=at)
+        if not np.isnan(pos.last_update_price):
+            pos.update_market_price(
+                at, pos.last_update_price, pos.last_update_conversion_rate, stamp_update_time=at is not None
+            )
+        return delta
+
+    def book_holding(self, asset: str, before: float, after: float, delta: float) -> None:
+        """Book a spot deal's base leg. A holding in step with the position takes the position's exact
+        size (its lot arithmetic is exact, a float balance sum is not); otherwise it moves by ``delta``
+        and ``sync_spot`` brings the position to it."""
+        bal = self._balances.get(asset)
+        if (bal.net_holding if bal is not None else 0.0) != before:
+            self.adjust_balance(asset, delta)
+            return
+        if bal is None:
+            bal = self._balances[asset] = Balance(exchange=self.exchange, currency=asset)
+        bal.free += after - before
+        if bal.holding is None:
+            bal.total = after
+        else:
+            bal.total += after - before
+            bal.holding = after
 
     def settle_position(self, instrument: Instrument) -> None:
         # Reconcile a delisted/gone position to flat WITHOUT trading: the exchange has
@@ -639,7 +717,14 @@ class AccountState:
         self._position_reconcile_as_of[instrument] = as_of
 
     def apply_balance_push(
-        self, currency: str, total: float, as_of: np.datetime64, *, free: float = np.nan, locked: float = np.nan
+        self,
+        currency: str,
+        total: float,
+        as_of: np.datetime64,
+        *,
+        free: float = np.nan,
+        locked: float = np.nan,
+        holding: float | None = None,
     ) -> bool:
         """Apply an absolute venue balance push (WS user-data stream).
 
@@ -649,7 +734,8 @@ class AccountState:
         carry total only (free/locked NaN): total is overwritten and free moves by
         the same delta, preserving locked. When the venue reports a real split
         (free AND locked non-NaN), all three fields are overwritten. ``as_of`` is
-        venue event time (Deal.time clock domain).
+        venue event time (Deal.time clock domain). A push carrying no ``holding`` moves a held one by
+        the total's delta.
         """
         last = self._balance_push_as_of.get(currency)
         if last is not None and as_of < last:
@@ -659,14 +745,18 @@ class AccountState:
         if bal is None:
             bal = Balance(exchange=self.exchange, currency=currency)
             self._balances[currency] = bal
+        delta = total - bal.total
         if not np.isnan(free) and not np.isnan(locked):
             bal.free = free
             bal.locked = locked
             bal.total = total
         else:
-            delta = total - bal.total
             bal.total = total
             bal.free += delta
+        if holding is not None:
+            bal.holding = holding
+        elif bal.holding is not None:
+            bal.holding += delta
         bal.last_update_time = as_of  # venue event time E (Deal.time clock domain)
         return True
 
@@ -709,6 +799,8 @@ class AccountState:
             self._balances[currency] = bal
         bal.total += delta
         bal.free += delta
+        if bal.holding is not None:
+            bal.holding += delta
 
     def is_funding_applied(self, bucket: tuple) -> bool:
         return bucket in self._applied_funding_buckets

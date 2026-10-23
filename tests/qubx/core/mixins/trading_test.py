@@ -1261,3 +1261,33 @@ class TestSpotDust:
         trading_manager.trade = Mock()
         trading_manager.close_position(trx, without_signals=True)
         trading_manager.trade.assert_not_called()
+
+    def _quote(self, trading_manager, mid):
+        quote = Mock()
+        quote.mid_price.return_value = mid
+        trading_manager._context.quote = Mock(return_value=quote)
+
+    def test_a_spot_reduce_is_bound_by_min_notional(self, trading_manager, mock_account, trx):
+        # - a spot sell is not exempt from min notional the way a reduce-only derivative close is
+        self._quote(trading_manager, 0.33)
+        self._hold(mock_account, trx, 45.2521)
+        assert trading_manager._get_min_size(trx, -10.0) == pytest.approx(5 / 0.33)
+        assert trading_manager.set_target_position(trx, 35.0) is None
+
+    def test_a_close_sells_the_tradeable_size(self, trading_manager, mock_account):
+        init = Instrument(
+            "INITUSDT", MarketType.SPOT, "BINANCE", "INIT", "USDT", "USDT", "INITUSDT", 0.0001, 0.1, 0.1, 5.0
+        )
+        self._quote(trading_manager, 0.134)
+        mock_account.get_position.return_value = Position(init, quantity=332.964, pos_average_price=0.13)
+        assert trading_manager._adjust_size(init, -332.964) == pytest.approx(332.9)
+
+    def test_notional_dust_is_nothing_to_reduce(self, trading_manager, mock_account, trx):
+        self._quote(trading_manager, 0.33)
+        self._hold(mock_account, trx, 10.0)  # - $3.3, below the 5 USDT min notional
+        with pytest.raises(InvalidOrderSize, match="only dust held"):
+            trading_manager._adjust_size(trx, -10.0)
+        mock_account.get_position.return_value.update_market_price(np.datetime64(0, "ns"), 0.33, 1)
+        trading_manager.trade = Mock()
+        trading_manager.close_position(trx, without_signals=True)
+        trading_manager.trade.assert_not_called()

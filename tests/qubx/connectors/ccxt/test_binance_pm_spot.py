@@ -7,10 +7,9 @@ margin open orders in the snapshot, spot skipped for leverage/ADL/amend. Offline
 """
 
 import asyncio
-import json
 from unittest.mock import AsyncMock, MagicMock, Mock
 
-import ccxt
+import pandas as pd
 import pytest
 
 from qubx.connectors.ccxt.exchanges.binance.connector import BinancePmCcxtConnector
@@ -266,140 +265,51 @@ def _balance_row(asset: str, **fields) -> dict:
 
 
 def _raw_balance(*rows: dict) -> dict:
-    return {"info": {"balance": list(rows), "account": {}}}
+    totals = {r["asset"]: float(r.get("crossMarginAsset", 0)) for r in rows}
+    return {"info": {"balance": list(rows), "account": {}}, "total": totals, "used": {a: 0.0 for a in totals}}
 
 
-class TestSpotPositionsFromBalances:
-    def test_exact_net_holding_marked(self):
-        ex = _pm_exchange()
-        try:
-            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.30, 0.32, 1, 1))
-            raw = _raw_balance(
-                _balance_row("USDT", crossMarginAsset="40"),
-                _balance_row("USDC", crossMarginAsset="412.57"),  # stable: collateral, not a position
-                _balance_row("TRX", crossMarginAsset="60.37", crossMarginBorrowed="0", crossMarginInterest="0"),
-            )
-            (pos,) = run(conn._balance_positions(raw))
-            assert pos.instrument == _instr("BINANCE")
-            assert pos.quantity == pytest.approx(60.37)  # as held: 0.07 of it is sub-lot dust
-            assert pos.position_avg_price == pytest.approx(0.31)
-            assert pos.last_update_price == pytest.approx(0.31)
-            assert pos.market_value == pytest.approx(60.37 * 0.31)
-        finally:
-            run(ex.close())
+class TestSpotHoldingsAreBalances:
+    def test_the_holding_is_the_exact_net_cross_margin_balance(self):
+        conn, _ = _connector()
+        raw = _raw_balance(
+            _balance_row("USDT", crossMarginAsset="40"),
+            _balance_row("TRX", crossMarginAsset="60.37", crossMarginBorrowed="0", crossMarginInterest="0"),
+        )
+        balances = {b.currency: b for b in conn._convert_balances(raw)}
+        assert balances["TRX"].holding == pytest.approx(60.37)  # as held: 0.07 of it is sub-lot dust
+        assert balances["TRX"].last_update_time == pd.Timestamp(1784722758752, unit="ms").asm8
 
     def test_borrow_and_interest_reduce_the_holding(self):
-        ex = _pm_exchange()
-        try:
-            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.30, 0.30, 1, 1))
-            raw = _raw_balance(
-                _balance_row("TRX", crossMarginAsset="10", crossMarginBorrowed="45", crossMarginInterest="0.05")
-            )
-            (pos,) = run(conn._balance_positions(raw))
-            assert pos.quantity == pytest.approx(-35.05)  # net short: borrowed + interest beyond the holding
-        finally:
-            run(ex.close())
+        conn, _ = _connector()
+        raw = _raw_balance(
+            _balance_row("TRX", crossMarginAsset="10", crossMarginBorrowed="45", crossMarginInterest="0.05")
+        )
+        (trx,) = conn._convert_balances(raw)
+        assert trx.holding == pytest.approx(-35.05)  # net short: borrowed + interest beyond the holding
+        assert trx.total == pytest.approx(10.0)
 
-    def test_dust_stays_a_balance_and_disabled_spot_yields_nothing(self):
-        ex = _pm_exchange()
-        try:
-            ex.publicGetTickerPrice = AsyncMock(return_value=[])
-            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
-            # - below the min amount: left out, never priced
-            assert run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="0.05")))) == []
-            # - lots above the min amount but below the min notional (5 USDT): untradeable, left out
-            assert run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="16.6")))) == []
-            # - a net short below the min notional is dust too
-            raw_short = _raw_balance(_balance_row("TRX", crossMarginAsset="0", crossMarginBorrowed="16"))
-            assert run(conn._balance_positions(raw_short)) == []
-            ex.publicGetTickerPrice.assert_not_awaited()
-            (pos,) = run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="16.7"))))
-            assert pos.quantity == pytest.approx(16.7) and pos.is_open()
+    def test_a_short_with_no_wallet_total_is_still_reported(self):
+        conn, _ = _connector()
+        raw = _raw_balance(_balance_row("TRX", crossMarginAsset="0", crossMarginBorrowed="16"))
+        (trx,) = conn._convert_balances(raw)
+        assert trx.total == 0.0 and trx.holding == pytest.approx(-16.0)
 
-            # - the min notional is checked against the ticker price when there is no live quote
-            bare, _ = _connector(exchange=ex, quote=None)
-            ex.publicGetTickerPrice = AsyncMock(return_value=[{"symbol": "TRXUSDT", "price": "0.3"}])
-            assert run(bare._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="16.6")))) == []
-
-            off, _ = _connector(spot=False, exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
-            assert run(off._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="60")))) == []
-        finally:
-            run(ex.close())
-
-    def test_price_falls_back_to_ticker_and_missing_price_raises(self):
-        ex = _pm_exchange()
-        try:
-            conn, _ = _connector(exchange=ex, quote=None)
-            ex.publicGetTickerPrice = AsyncMock(return_value=[{"symbol": "TRXUSDT", "price": "0.33"}])
-            raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"))
-            (pos,) = run(conn._balance_positions(raw))
-            assert pos.position_avg_price == pytest.approx(0.33)
-            assert ex.publicGetTickerPrice.await_args.args[0] == {"symbols": '["TRXUSDT"]'}
-
-            ex.publicGetTickerPrice = AsyncMock(return_value=[])
-            with pytest.raises(ValueError):
-                run(conn._balance_positions(raw))
-        finally:
-            run(ex.close())
-
-    def test_an_inactive_spot_market_is_left_out_not_failing_the_snapshot(self):
-        ex = _pm_exchange()
-        try:
-            ex.set_markets(
-                [TRX_SPOT, TRX_SWAP, USDC_SPOT, {**_market("ADA/USDT", "ADAUSDT", "ADA", "spot"), "active": False}]
-            )
-            conn, _ = _connector(exchange=ex, quote=None)
-            ex.publicGetTickerPrice = AsyncMock(return_value=[{"symbol": "TRXUSDT", "price": "0.33"}])
-            raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"), _balance_row("ADA", crossMarginAsset="100"))
-            (pos,) = run(conn._balance_positions(raw))
-            assert pos.instrument.symbol == "TRXUSDT"
-            assert ex.publicGetTickerPrice.await_args.args[0] == {"symbols": '["TRXUSDT"]'}
-        finally:
-            run(ex.close())
-
-    def test_a_symbol_the_venue_refuses_to_price_is_left_out_the_rest_priced(self):
-        ex = _pm_exchange()
-        try:
-            ex.set_markets([TRX_SPOT, TRX_SWAP, USDC_SPOT, _market("ADA/USDT", "ADAUSDT", "ADA", "spot")])
-            conn, _ = _connector(exchange=ex, quote=None)
-
-            async def tickers(params):
-                symbols = json.loads(params["symbols"])
-                if "ADAUSDT" in symbols:
-                    raise ccxt.BadSymbol('binance {"code":-1121,"msg":"Invalid symbol."}')
-                return [{"symbol": "TRXUSDT", "price": "0.33"}]
-
-            ex.publicGetTickerPrice = AsyncMock(side_effect=tickers)
-            raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"), _balance_row("ADA", crossMarginAsset="100"))
-            (pos,) = run(conn._balance_positions(raw))
-            assert pos.instrument.symbol == "TRXUSDT" and pos.position_avg_price == pytest.approx(0.33)
-            assert ex.publicGetTickerPrice.await_count == 3  # - the batch, then one request per symbol
-        finally:
-            run(ex.close())
-
-    def test_a_network_error_while_pricing_still_fails_the_snapshot(self):
-        ex = _pm_exchange()
-        try:
-            conn, _ = _connector(exchange=ex, quote=None)
-            ex.publicGetTickerPrice = AsyncMock(side_effect=ccxt.RequestTimeout("timeout"))
-            with pytest.raises(ccxt.NetworkError):
-                run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="60"))))
-        finally:
-            run(ex.close())
+    def test_the_snapshot_carries_no_spot_positions(self):
+        ex = Mock()
+        ex.name = "binance"
+        ex.markets = {}
+        ex.fetch_positions = AsyncMock(return_value=[])
+        ex.fetch_balance = AsyncMock(return_value=_raw_balance(_balance_row("TRX", crossMarginAsset="60")))
+        ex.papiGetUmAdlQuantile = AsyncMock(return_value=[])
+        conn, sent = _connector(exchange=ex)
+        run(conn._snapshot_async(include_orders=False))
+        (event,) = sent
+        assert event.snapshot.positions == []
+        assert [(b.currency, b.holding) for b in event.snapshot.balances] == [("TRX", 60.0)]
 
 
 class TestIgnoredAssets:
-    def test_an_ignored_coin_stays_a_balance_not_a_position(self):
-        ex = _pm_exchange()
-        try:
-            ex.set_markets([TRX_SPOT, TRX_SWAP, USDC_SPOT, _market("BNB/USDT", "BNBUSDT", "BNB", "spot")])
-            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.30, 0.32, 1, 1), ignore_assets=("bnb",))
-            raw = _raw_balance(_balance_row("TRX", crossMarginAsset="60"), _balance_row("BNB", crossMarginAsset="2"))
-            (pos,) = run(conn._balance_positions(raw))
-            assert pos.instrument.symbol == "TRXUSDT"
-        finally:
-            run(ex.close())
-
     def test_an_ignored_coin_is_not_traded_on_spot(self):
         conn, _ = _connector(exchange=Mock(), quote=Quote(0, 600.0, 600.1, 1, 1), ignore_assets=("BNB",))
         bnb_spot = lookup.find_symbol("BINANCE", "BNBUSDT")
