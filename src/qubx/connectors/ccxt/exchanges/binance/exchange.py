@@ -4,7 +4,7 @@ import ccxt.pro as cxp
 import pandas as pd
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
-from ccxt.base.errors import BadRequest, InsufficientFunds
+from ccxt.base.errors import BadRequest, InsufficientFunds, NetworkError
 from ccxt.base.precise import Precise
 from ccxt.base.types import (
     Any,
@@ -72,6 +72,27 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
             self.delay(
                 self.safe_integer(self.options, "listenKeyRefreshRate", 1200000), self.keep_alive_listen_key, params
             )
+
+    def handle_message(self, client: Client, message):
+        if isinstance(message, dict) and message.get("e") == "listenKeyExpired":
+            self._handle_listen_key_expired(client, message)
+            return
+        return super().handle_message(client, message)
+
+    def _handle_listen_key_expired(self, client: Client, message: dict) -> None:
+        """
+        Binance pushes ``listenKeyExpired`` and then delivers nothing more on the stream; ccxt has no handler for it,
+        so the stream went silent without an error (BINANCE.PM 2026-10-23: event at +80 min, a later fill sent no
+        message). Drop the key and close the client: the watchers fail with a NetworkError, the connector's loop
+        retries and ``authenticate`` creates a new key on a new stream.
+        """
+        key = message.get("listenKey")
+        for options in self.options.values():
+            if isinstance(options, dict) and options.get("listenKey") and key in (None, options["listenKey"]):
+                options["listenKey"] = None
+                options["lastAuthenticatedTime"] = 0
+        client.reject(NetworkError(f"{self.id} user data stream listen key expired"))
+        client.on_close(1000)
 
     def _listen_key_stream_subscribed(self) -> bool:
         # - a failed keep-alive drops the key (the next authenticate creates one), close() drops the clients

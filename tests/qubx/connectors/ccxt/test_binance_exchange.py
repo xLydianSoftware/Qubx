@@ -397,3 +397,36 @@ class TestListenKeyKeepAlive:
             )
         )
         assert n == 1, n
+
+
+class TestListenKeyExpired:
+    """Binance pushes ``listenKeyExpired`` on the user stream and then delivers nothing more on it. ccxt has no handler
+    for the event, so the stream went silent with no error (measured BINANCE.PM 2026-10-23: event at +80 min, an order
+    filled 10 min later produced no message). The watcher must fail, so the connector's loop re-authenticates."""
+
+    def test_expiry_rejects_the_watchers_and_drops_the_key(self):
+        async def go():
+            ex = BinancePortfolioMargin({})
+            ex.asyncio_loop = asyncio.get_running_loop()
+            ex.options["linear"] = {"listenKey": "LK", "lastAuthenticatedTime": 123}
+            client = ex.client("wss://fstream.binance.com/pm/ws/LK")
+            future = client.future("orders")
+            ex.handle_message(client, {"e": "listenKeyExpired", "E": 1792715176064, "listenKey": "LK"})
+            with pytest.raises(ccxt.NetworkError):
+                await asyncio.wait_for(future, 1)
+            options = dict(ex.options["linear"])
+            assert "wss://fstream.binance.com/pm/ws/LK" not in ex.clients
+
+            async def post(params={}):
+                return {"listenKey": "LK2"}
+
+            ex.papiPostListenKey = post
+            ex.delay = lambda *a: None  # - no keep-alive chain in the test
+            await ex.authenticate({"portfolioMargin": True})
+            renewed = ex.options["linear"]["listenKey"]
+            await ex.close()
+            return options, renewed
+
+        options, renewed = run(go())
+        assert options["listenKey"] is None and options["lastAuthenticatedTime"] == 0
+        assert renewed == "LK2"
