@@ -501,6 +501,41 @@ class Instrument:
         # TODO: handle margin better
         return self.market_type in [MarketType.SPOT, MarketType.MARGIN]
 
+    @property
+    def min_notional_on_reduce(self) -> bool:
+        """Whether min_notional binds a reducing order: spot by default, derivatives close reduce-only.
+
+        A venue may override it per listing; the override is not a field, so the lookup cache format
+        is unchanged.
+        """
+        override = self.__dict__.get("_min_notional_on_reduce")
+        return self.is_spot() if override is None else override
+
+    @min_notional_on_reduce.setter
+    def min_notional_on_reduce(self, value: bool | None) -> None:
+        self.__dict__["_min_notional_on_reduce"] = value
+
+    def tradeable_size(self, qty: float, price: float | None = None) -> float:
+        """Signed part of |qty| the venue accepts in one order: floored to the lot, 0 below min_size,
+        0 below min_notional when the notional rule applies and price is known."""
+        if qty == 0 or self.lot_size <= 0:
+            return 0.0
+        size = grid_floor(qty, self.lot_size)
+        if abs(size) < self.min_size:
+            return 0.0
+        if self._applies_min_notional(price) and self._notional(size, price) < self.min_notional:  # type: ignore[arg-type]
+            return 0.0
+        return size
+
+    def _applies_min_notional(self, price: float | None) -> bool:
+        return price is not None and np.isfinite(price) and self.min_notional > 0 and self.min_notional_on_reduce
+
+    def _notional(self, size: float, price: float) -> float:
+        return abs(size) * self.contract_size * (1.0 if self.inverse else price)
+
+    def is_dust(self, qty: float, price: float | None = None) -> bool:
+        return qty != 0 and self.tradeable_size(qty, price) == 0
+
     def round_size_down(self, size: float) -> float:
         """
         Round size down onto the lot grid.
@@ -1325,8 +1360,12 @@ class Position:
     commissions_at_open: float = 0.0
     cumulative_funding_at_open: float = 0.0
 
+    dust_band: float = 1.25  # notional dust is left only at min_notional * dust_band
+
     # - helpers for position processing
     _qty_multiplier: float = 1.0
+    _dust_qty: float = np.nan  # quantity the dust latch was evaluated at
+    _dust_latched: bool = False
     __pos_incr_qty: float = 0
 
     def __init__(
@@ -1756,6 +1795,27 @@ class Position:
 
     def is_open(self) -> bool:
         return abs(self.quantity) >= self.instrument.lot_size
+
+    @property
+    def tradeable_quantity(self) -> float:
+        return self.instrument.tradeable_size(self.quantity, self.last_update_price)
+
+    def is_dust(self) -> bool:
+        """Non-zero but not tradeable in one order. The notional clause latches: entered below
+        min_notional, left only at min_notional * dust_band; a size change re-evaluates from scratch."""
+        q = self.quantity
+        if q != self._dust_qty:
+            self._dust_qty = q
+            self._dust_latched = False
+        inst = self.instrument
+        if (size := inst.tradeable_size(q)) == 0:
+            return q != 0
+        if not inst._applies_min_notional(self.last_update_price):
+            self._dust_latched = False
+            return False
+        band = self.dust_band if self._dust_latched else 1.0
+        self._dust_latched = inst._notional(size, self.last_update_price) < inst.min_notional * band
+        return self._dust_latched
 
     def get_amount_released_funds_after_closing(self, to_remain: float = 0.0) -> float:
         """
