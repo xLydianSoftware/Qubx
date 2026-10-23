@@ -134,6 +134,8 @@ class TestPositionEntry:
         entry = position_entry(_account(), instrument, _position(instrument, 1.0, 50_000.0, 50_000.0))
         assert list(entry) == [
             "quantity",
+            "dust",
+            "tradeable_quantity",
             "avg_price",
             "market_value",
             "unrealized_pnl",
@@ -182,4 +184,24 @@ class TestPositionEntry:
 
         assert entry["initial_margin"] is None
         assert entry["maint_margin"] is None
+        _dumps(entry)
+
+    @pytest.mark.parametrize(
+        "market_type, quantity, mark, dust, tradeable",
+        [
+            (MarketType.SPOT, 332.964, 1.0, False, 332.9),
+            (MarketType.SPOT, 0.064, 1.0, True, 0.0),
+            (MarketType.SPOT, -4.0, 1.0, True, 0.0),
+            (MarketType.SWAP, -4.0, 1.0, False, -4.0),
+            (MarketType.SPOT, 0.0, 1.0, False, 0.0),
+        ],
+    )
+    def test_the_entry_carries_dust_and_the_tradeable_quantity(self, market_type, quantity, mark, dust, tradeable):
+        instrument = Instrument(
+            "INITUSDT", market_type, "BINANCE", "INIT", "USDT", "USDT", "INITUSDT", 0.0001, 0.1, 0.1, 5.0
+        )
+        entry = position_entry(_account(), instrument, _position(instrument, quantity, 1.0, mark))
+
+        assert entry["dust"] is dust
+        assert entry["tradeable_quantity"] == pytest.approx(tradeable)
         _dumps(entry)

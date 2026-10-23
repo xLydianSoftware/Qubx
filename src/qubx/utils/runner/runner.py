@@ -518,6 +518,7 @@ def create_strategy_context(
     _base_currencies: dict[str, str] = {}
     # - account -> the markets it trades, for accounts trading more than their own
     _account_markets: dict[str, tuple[str, ...]] = {}
+    _ignore_assets: dict[str, tuple[str, ...]] = {}
     _instruments = []
 
     for venue_name, exchange_config in config.live.exchanges.items():
@@ -541,7 +542,9 @@ def create_strategy_context(
         rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector, api_key=_venue_api_key)
         _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager))
         markets = _account_markets_of(venue_name, exchange_name, exchange_config)
-        ignore_assets = _ignore_assets(venue_name, exchange_config, markets)
+        ignore_assets = _ignore_assets_of(venue_name, exchange_config, markets)
+        if ignore_assets:
+            _ignore_assets[exchange_name] = ignore_assets
         if len(markets) > 1:
             # - one venue account trading several markets: one AccountState; each market keeps its fees
             _account_markets[exchange_name] = markets
@@ -638,6 +641,7 @@ def create_strategy_context(
         tcc=_exchange_to_tcc,
         default_instrument_leverage=config.live.default_instrument_leverage,
         account_markets=_account_markets,
+        ignore_assets=_ignore_assets,
     )
     # Paper seeds the configured initial capital per exchange (no venue to query); live seeds
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions
@@ -794,7 +798,7 @@ def _account_markets_of(venue_name: str, account: str, exchange_config: Exchange
     return (account, *extra)
 
 
-def _ignore_assets(venue_name: str, exchange_config: ExchangeConfig, markets: tuple[str, ...]) -> tuple[str, ...]:
+def _ignore_assets_of(venue_name: str, exchange_config: ExchangeConfig, markets: tuple[str, ...]) -> tuple[str, ...]:
     """``ExchangeConfig.ignore_assets``, upper-cased: coins of an account's further (spot) markets, so only an
     account that trades one may set it."""
     if not exchange_config.ignore_assets:

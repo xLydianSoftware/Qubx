@@ -2214,10 +2214,6 @@ class CcxtConnector(ChannelEmitter):
         a venue with a further order surface (Binance PM margin) adds it."""
         return await self._fetch_trigger_open_orders()
 
-    async def _balance_positions(self, raw_balance: dict[str, Any]) -> list[Position]:
-        """Positions the venue reports as balances rather than positions (spot holdings); none here."""
-        return []
-
     def _merge_open_orders(self, raw_orders: list[dict], raw_trigger_orders: list[dict]) -> list[Order]:
         """Merge regular + trigger raw open orders into framework Orders (dedup by venue id).
 
@@ -2295,7 +2291,6 @@ class CcxtConnector(ChannelEmitter):
                 open_orders = None  # - not observed this tick -> reconcile skips order diffing
             positions = ccxt_convert_positions(raw_positions, ex.name, ex.markets)
             await self._fill_leverage_settings(positions)
-            positions += await self._balance_positions(raw_balance)
             balances = self._convert_balances(raw_balance)
             figures = self._extract_venue_figures(raw_balance)
         except Exception as e:  # noqa: BLE001 — AM retries on its next snapshot tick
