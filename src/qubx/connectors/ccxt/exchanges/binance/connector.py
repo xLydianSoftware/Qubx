@@ -217,10 +217,12 @@ class BinancePmCcxtConnector(CcxtConnector):
         non-stable asset with a spot market against ``_spot_quote``, sized by the exact net holding
         (a base-asset fee leaves it off the lot grid), marked and averaged at the current price.
 
-        A missing price raises for a holding of at least a lot: the snapshot is authoritative, and
-        dropping a held asset would read as a sell. Sub-lot dust is priced from the live quote only
-        (a coin the bot does not trade has none) and left out without one: dust is never a
-        presence diff, so leaving it out changes nothing. An asset whose spot market is inactive, or that
+        A holding the venue will not trade — below the market's min amount or min notional — stays a
+        balance, not a position: it can never be closed, and as a position it would keep a strategy
+        retrying the close. A position held locally that the venue reduces to such dust reconciles to
+        flat. A missing price raises for a holding of at least a lot: the snapshot is authoritative,
+        and dropping a held asset would read as a sell. Sub-lot dust is priced from the live quote
+        only (a coin the bot does not trade has none) and left out without one. An asset whose spot market is inactive, or that
         the venue refuses to price, is left out with a warning: one halted coin in the wallet must not
         fail every snapshot (a traded instrument is priced from its live quote and never gets there).
         """
@@ -237,8 +239,12 @@ class BinancePmCcxtConnector(CcxtConnector):
             if market.get("active") is False:
                 self._warn_unpriced(asset, "its spot market is inactive")
                 continue
-            if (net := round(_net_margin_holding(row), 12)) != 0.0:
-                held.append((ccxt_symbol_to_instrument(ex.name, market), net, row))
+            if (net := round(_net_margin_holding(row), 12)) == 0.0:
+                continue
+            instrument = ccxt_symbol_to_instrument(ex.name, market)
+            if abs(net) < instrument.min_size:
+                continue
+            held.append((instrument, net, row))
         if not held:
             return []
         prices = await self._spot_prices([i for i, q, _ in held if abs(q) >= i.lot_size])
@@ -249,6 +255,8 @@ class BinancePmCcxtConnector(CcxtConnector):
                 if quote is None or quote.mid_price() <= 0:
                     continue
                 price = quote.mid_price()
+            if abs(quantity) * price < instrument.min_notional:
+                continue
             pos = Position(instrument=instrument, quantity=quantity, pos_average_price=price)
             updated = row.get("updateTime")
             pos.update_market_price(

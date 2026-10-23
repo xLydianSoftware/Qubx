@@ -975,3 +975,95 @@ def test_filled_without_venue_cumulative_is_unchanged():
     )
     assert state.get_order("cid-1").filled_quantity == 0.3
     assert state.get_position(inst).quantity == 0.3
+
+
+# --- fills a snapshot already counted (late WS delivery / REST status rescue) ------------ #
+# farb-sp-pm 2026-10-22 22:34Z: a reduce-only BUY 423 trim of a -423 FFUSDT short filled at
+# 22:34:25 with no WS fill delivered; the 22:34:47 snapshot flattened the position (watermark);
+# at 22:34:54 the REST status rescue sent FILLED fill=None, venue_filled_quantity=423, and the
+# gap was booked on top of the snapshot -> phantom +423 long.
+
+
+def _short_flattened_by_snapshot(am, inst, snapshot_at):
+    state = am.get_state("binance")
+    add_order(state, cid="open-1", status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst,
+            client_order_id="open-1",
+            venue_order_id="V0",
+            fill=_fill(trade_id="t0", amount=-1.0),
+        )
+    )
+    assert state.get_position(inst).quantity == -1.0
+    add_order(state, cid="cid-1", status=OrderStatus.ACCEPTED, instrument=inst, quantity=1.0)
+    # - what the reconciler does when the venue reports the position flat (_flatten_missed_close)
+    state.settle_position(inst)
+    state.mark_position_reconcile(inst, snapshot_at)
+    return state
+
+
+def test_status_only_fill_gap_already_counted_by_snapshot_is_not_rebooked():
+    am = _am()
+    inst = _Inst()
+    state = _short_flattened_by_snapshot(am, inst, np.datetime64("2026-05-28T00:00:47"))
+    r = am.apply(
+        OrderFilledEvent(
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            last_update_time=np.datetime64("2026-05-28T00:00:25"),  # venue fill time, before the snapshot
+            fill=None,
+            venue_filled_quantity=1.0,
+            venue_avg_price=50_000.0,
+        )
+    )
+    assert state.get_order("cid-1").status is OrderStatus.FILLED
+    assert state.get_order("cid-1").filled_quantity == 1.0
+    assert state.get_position(inst).quantity == 0.0  # not a phantom +1.0
+    assert r.deal is not None and r.deal.time == np.datetime64("2026-05-28T00:00:25")
+
+
+def test_late_embedded_fill_already_counted_by_snapshot_is_not_rebooked():
+    am = _am()
+    inst = _Inst()
+    state = _short_flattened_by_snapshot(am, inst, np.datetime64("2026-05-28T00:00:47"))
+    fill = Deal(
+        trade_id="t1",
+        order_id="V1",
+        time=np.datetime64("2026-05-28T00:00:25"),
+        amount=1.0,
+        price=50_000.0,
+        aggressive=True,
+    )
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            fill=fill,
+            venue_filled_quantity=1.0,
+            venue_avg_price=50_000.0,
+        )
+    )
+    assert state.get_order("cid-1").filled_quantity == 1.0
+    assert state.get_position(inst).quantity == 0.0
+
+
+def test_status_only_fill_gap_after_the_snapshot_is_booked():
+    # - the snapshot predates the fill: it could not have counted it, so the gap books
+    am = _am()
+    inst = _Inst()
+    state = _short_flattened_by_snapshot(am, inst, np.datetime64("2026-05-28T00:00:10"))
+    am.apply(
+        OrderFilledEvent(
+            instrument=inst,
+            client_order_id="cid-1",
+            venue_order_id="V1",
+            last_update_time=np.datetime64("2026-05-28T00:00:25"),
+            fill=None,
+            venue_filled_quantity=1.0,
+            venue_avg_price=50_000.0,
+        )
+    )
+    assert state.get_position(inst).quantity == 1.0

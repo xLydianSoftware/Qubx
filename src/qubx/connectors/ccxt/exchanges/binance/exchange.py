@@ -4,7 +4,7 @@ import ccxt.pro as cxp
 import pandas as pd
 from ccxt.async_support.base.ws.cache import ArrayCache, ArrayCacheByTimestamp
 from ccxt.async_support.base.ws.client import Client
-from ccxt.base.errors import BadRequest, InsufficientFunds
+from ccxt.base.errors import BadRequest, InsufficientFunds, NetworkError
 from ccxt.base.precise import Precise
 from ccxt.base.types import (
     Any,
@@ -49,6 +49,55 @@ class BinanceQV(CcxtFuturePatchMixin, cxp.binance):
         Overriding watchTrades to use aggTrade instead of trade.
         """
         return self.deep_extend(super().describe(), _QV_DESCRIBE)
+
+    def delay(self, timeout, method, *args):
+        if getattr(method, "__name__", None) == "keep_alive_listen_key":
+            self._keep_alive_arms = getattr(self, "_keep_alive_arms", 0) + 1
+        return super().delay(timeout, method, *args)
+
+    async def keep_alive_listen_key(self, params={}):
+        """
+        Re-arms the listen-key keep-alive while its user-data stream is subscribed.
+
+        ccxt 4.5.89 re-arms it only after finding a client holding the stream's subscription, but
+        reads the clients with ``safe_dict``, which is None for a ``Client`` object, so the
+        keep-alive ran once (20 min after authenticate) and never again. On a quiet account
+        ``watch_orders`` never re-authenticates either, the key expires 60 min later and the
+        stream goes silent without an error: every fill then surfaced only via REST status
+        checks and snapshots (BINANCE.PM, farb-sp-pm 2026-10-22). Re-arms only when ccxt did not.
+        """
+        arms = getattr(self, "_keep_alive_arms", 0)
+        await super().keep_alive_listen_key(params)
+        if getattr(self, "_keep_alive_arms", 0) == arms and self._listen_key_stream_subscribed():
+            self.delay(
+                self.safe_integer(self.options, "listenKeyRefreshRate", 1200000), self.keep_alive_listen_key, params
+            )
+
+    def handle_message(self, client: Client, message):
+        if isinstance(message, dict) and message.get("e") == "listenKeyExpired":
+            self._handle_listen_key_expired(client, message)
+            return
+        return super().handle_message(client, message)
+
+    def _handle_listen_key_expired(self, client: Client, message: dict) -> None:
+        """
+        Binance pushes ``listenKeyExpired`` and then delivers nothing more on the stream; ccxt has no handler for it,
+        so the stream went silent without an error (BINANCE.PM 2026-10-23: event at +80 min, a later fill sent no
+        message). Drop the key and close the client: the watchers fail with a NetworkError, the connector's loop
+        retries and ``authenticate`` creates a new key on a new stream.
+        """
+        key = message.get("listenKey")
+        for options in self.options.values():
+            if isinstance(options, dict) and options.get("listenKey") and key in (None, options["listenKey"]):
+                options["listenKey"] = None
+                options["lastAuthenticatedTime"] = 0
+        client.reject(NetworkError(f"{self.id} user data stream listen key expired"))
+        client.on_close(1000)
+
+    def _listen_key_stream_subscribed(self) -> bool:
+        # - a failed keep-alive drops the key (the next authenticate creates one), close() drops the clients
+        keys = [o["listenKey"] for o in self.options.values() if isinstance(o, dict) and o.get("listenKey")]
+        return any(client.subscriptions and any(k in client.url for k in keys) for client in self.clients.values())
 
     async def un_watch_bids_asks(self, symbols: Strings = None, params: dict = {}) -> Any:
         """
