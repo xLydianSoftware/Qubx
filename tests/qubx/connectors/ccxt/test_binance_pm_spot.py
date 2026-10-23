@@ -293,27 +293,33 @@ class TestSpotPositionsFromBalances:
         try:
             conn, _ = _connector(exchange=ex, quote=Quote(0, 0.30, 0.30, 1, 1))
             raw = _raw_balance(
-                _balance_row("TRX", crossMarginAsset="10", crossMarginBorrowed="25", crossMarginInterest="0.05")
+                _balance_row("TRX", crossMarginAsset="10", crossMarginBorrowed="45", crossMarginInterest="0.05")
             )
             (pos,) = run(conn._balance_positions(raw))
-            assert pos.quantity == pytest.approx(-15.05)  # net short: borrowed + interest beyond the holding
+            assert pos.quantity == pytest.approx(-35.05)  # net short: borrowed + interest beyond the holding
         finally:
             run(ex.close())
 
-    def test_dust_only_is_a_flat_position_and_disabled_spot_yields_nothing(self):
+    def test_dust_stays_a_balance_and_disabled_spot_yields_nothing(self):
         ex = _pm_exchange()
         try:
-            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
-            (pos,) = run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="0.05"))))
-            assert pos.quantity == pytest.approx(0.05)
-            assert not pos.is_open()
-            assert pos.last_update_price == pytest.approx(0.3)
-
-            # - dust with no live quote is left out: no ticker request, no failed snapshot
-            bare, _ = _connector(exchange=ex, quote=None)
             ex.publicGetTickerPrice = AsyncMock(return_value=[])
-            assert run(bare._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="0.05")))) == []
+            conn, _ = _connector(exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
+            # - below the min amount: left out, never priced
+            assert run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="0.05")))) == []
+            # - lots above the min amount but below the min notional (5 USDT): untradeable, left out
+            assert run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="16.6")))) == []
+            # - a net short below the min notional is dust too
+            raw_short = _raw_balance(_balance_row("TRX", crossMarginAsset="0", crossMarginBorrowed="16"))
+            assert run(conn._balance_positions(raw_short)) == []
             ex.publicGetTickerPrice.assert_not_awaited()
+            (pos,) = run(conn._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="16.7"))))
+            assert pos.quantity == pytest.approx(16.7) and pos.is_open()
+
+            # - the min notional is checked against the ticker price when there is no live quote
+            bare, _ = _connector(exchange=ex, quote=None)
+            ex.publicGetTickerPrice = AsyncMock(return_value=[{"symbol": "TRXUSDT", "price": "0.3"}])
+            assert run(bare._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="16.6")))) == []
 
             off, _ = _connector(spot=False, exchange=ex, quote=Quote(0, 0.3, 0.3, 1, 1))
             assert run(off._balance_positions(_raw_balance(_balance_row("TRX", crossMarginAsset="60")))) == []
