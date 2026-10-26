@@ -517,20 +517,25 @@ class TradingManager(ITradingManager):
         if instrument.min_notional > 0 and (quote := self._context.quote(instrument)) is not None:
             min_size_based_on_notional = instrument.min_notional / (quote.mid_price() * instrument.quantity_multiplier)
 
-        return (
-            instrument.lot_size
-            if amount is not None and self._is_position_reducing(instrument, amount)
-            else max(min_size_based_on_notional, instrument.min_size)
-        )
+        # - a derivative closes reduce-only, exempt from min notional; a spot sell is not
+        if (
+            amount is not None
+            and not instrument.min_notional_on_reduce
+            and self._is_position_reducing(instrument, amount)
+        ):
+            return instrument.lot_size
+        return max(min_size_based_on_notional, instrument.min_size)
 
     def _adjust_size(self, instrument: Instrument, amount: float) -> float:
         abs_amount = abs(amount)
         if self._is_position_reducing(instrument, amount):
-            # - a reduce never rounds up past the whole lots held: a spot holding can carry sub-lot
-            #   dust (a base-asset fee) that no sell can take
-            held = instrument.round_size_down(abs(self._account_manager.get_position(instrument).quantity))
-            if held < instrument.lot_size:
-                raise InvalidOrderSize(f"[{instrument.symbol}] only sub-lot dust held, nothing to reduce")
+            # - a reduce never rounds up past what one order can take of the holding: the dust left
+            #   (a base-asset fee, a tail below min notional) is a balance, not a position
+            quote = self._context.quote(instrument)
+            position = self._account_manager.get_position(instrument)
+            held = abs(instrument.tradeable_size(position.quantity, quote.mid_price() if quote is not None else None))
+            if held == 0:
+                raise InvalidOrderSize(f"[{instrument.symbol}] only dust held, nothing to reduce")
             abs_amount = min(abs_amount, held)
         size_adj = instrument.round_size_down(abs_amount)
         min_size = self._get_min_size(instrument, amount)

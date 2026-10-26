@@ -28,6 +28,10 @@ RTOL = 1e-9
 # under 1 cent is not a reconcilable difference. Absolute, because "1 cent" is absolute.
 BALANCE_ABS_TOL = 0.01
 
+# A base asset's balance is a spot position's size: its tolerance scales with the lot (0.01 units
+# would hide whole lots of a low-priced coin).
+SPOT_HOLDING_LOT_TOL = 1e-3
+
 # Maintenance margin re-marks with every snapshot's mark price, so RTOL-tight comparison
 # emits a diff per position per poll. Only a material move (leverage/size change) is worth
 # re-syncing; sub-0.5% (and sub-cent) drift is mark noise. Measured over one live run: 175
@@ -80,13 +84,14 @@ def _close_margin(a: float, b: float) -> bool:
 
 
 def _material_pos(position: Position) -> bool:
-    # a position below a lot (a spot holding's dust) is flat — never a presence diff
-    return position.is_open()
+    # - a quantity below a lot is float noise — never a presence diff. Not is_open(): whether the venue
+    #   holds a position is a question of quantity, not of whether it can be traded
+    return abs(position.quantity) >= position.instrument.lot_size
 
 
 def _material_bal(balance: Balance) -> bool:
     # a balance that is zero on every leg is nothing — never a presence diff
-    return not (_close_rel(balance.free, 0.0) and _close_rel(balance.locked, 0.0) and _close_rel(balance.total, 0.0))
+    return not all(_close_rel(v, 0.0) for v in (balance.free, balance.locked, balance.total, balance.net_holding))
 
 
 @diffatom
@@ -371,10 +376,12 @@ class Differ:
     def _diff_positions(self, local: AccountState, origin: AccountSnapshot, diffs: list[Diff]) -> None:
         if origin.positions is None:
             return
-        local_pos = local.get_positions()
-        snap_instruments = {sp.instrument for sp in origin.positions}
+        # - a balance-backed spot position is sized from its balance, never from a position row
+        local_pos = {i: p for i, p in local.get_positions().items() if not local.is_balance_backed(i)}
+        snap_positions = [sp for sp in origin.positions if not local.is_balance_backed(sp.instrument)]
+        snap_instruments = {sp.instrument for sp in snap_positions}
 
-        for sp in origin.positions:
+        for sp in snap_positions:
             lp = local_pos.get(sp.instrument)
             if lp is None:
                 if _material_pos(sp):
@@ -412,9 +419,22 @@ class Differ:
                     diffs.append(OriginalBalanceMissing(balance=sb))
                 continue
 
-            if not (
-                _close_bal(lb.free, sb.free) and _close_bal(lb.locked, sb.locked) and _close_bal(lb.total, sb.total)
-            ):
+            if (spot := local.spot_instrument_of(sb.currency)) is not None:
+                tol = spot.lot_size * SPOT_HOLDING_LOT_TOL
+                close = all(
+                    abs(a - b) <= tol
+                    for a, b in (
+                        (lb.free, sb.free),
+                        (lb.locked, sb.locked),
+                        (lb.total, sb.total),
+                        (lb.net_holding, sb.net_holding),
+                    )
+                )
+            else:
+                close = (
+                    _close_bal(lb.free, sb.free) and _close_bal(lb.locked, sb.locked) and _close_bal(lb.total, sb.total)
+                )
+            if not close:
                 diffs.append(BalanceMismatch(local=lb, origin=sb))
 
         for lb in local.get_balances():

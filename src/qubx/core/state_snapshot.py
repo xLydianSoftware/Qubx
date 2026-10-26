@@ -34,10 +34,13 @@ def position_entry(account: IAccountViewer, instrument: Instrument, position: Po
     account manager when the venue publishes no cap, and None here. The two margins are dollar
     amounts as the Position holds them: the venue's own figures for a held position, and 0.0
     once flat, since a venue reports margin for open positions only and the framework drops
-    what it can no longer refresh.
+    what it can no longer refresh. ``dust`` is the latched ``Position.is_dust``;
+    ``tradeable_quantity`` is the signed part one order can trade.
     """
     return {
         "quantity": position.quantity,
+        "dust": position.is_dust(),
+        "tradeable_quantity": position.tradeable_quantity,
         "avg_price": finite(position.position_avg_price),
         "market_value": finite(position.market_value_funds),
         "unrealized_pnl": finite(position.unrealized_pnl()),

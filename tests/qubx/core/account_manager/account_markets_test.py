@@ -1,8 +1,8 @@
 """One venue account trading two markets: BINANCE spot on a BINANCE.PM account.
 
 The AM keeps ONE state for the account (its id is its own market, BINANCE.UM) and routes BINANCE
-instruments to it through ``account_markets``; capital is counted once. Spot holdings are balances,
-so a snapshot is authoritative for their size only — the average price stays the local ledger's.
+instruments to it through ``account_markets``; capital is counted once. Spot holdings are balances:
+the snapshot's base-asset balance sizes the spot position, the average price stays the local ledger's.
 """
 
 from unittest.mock import MagicMock
@@ -12,6 +12,7 @@ import pytest
 
 from qubx.core.account_manager.manager import AccountManager
 from qubx.core.basics import (
+    Balance,
     Deal,
     ITimeProvider,
     Order,
@@ -23,6 +24,7 @@ from qubx.core.basics import (
 )
 from qubx.core.events import AccountSnapshot, AccountSnapshotEvent, OrderAcceptedEvent, OrderFilledEvent
 from qubx.core.lookups import lookup
+from qubx.core.series import Quote
 
 T0 = np.datetime64("2026-10-12T00:00:00", "ns")
 T1 = np.datetime64("2026-10-12T00:01:00", "ns")
@@ -83,17 +85,15 @@ def _fill(am: AccountManager, instrument, cid: str, amount: float, price: float,
     )
 
 
-def _snapshot(as_of, positions, equity=454.0) -> AccountSnapshotEvent:
+def _snapshot(as_of, positions, balances=(), equity=454.0) -> AccountSnapshotEvent:
     return AccountSnapshotEvent(
         instrument=None,
-        snapshot=AccountSnapshot(exchange=UM, as_of=as_of, positions=positions, balances=[], equity=equity),
+        snapshot=AccountSnapshot(exchange=UM, as_of=as_of, positions=positions, balances=list(balances), equity=equity),
     )
 
 
-def _spot_pos(qty: float, price: float) -> Position:
-    pos = Position(instrument=SPOT, quantity=qty, pos_average_price=price)
-    pos.update_market_price(T0, price, 1)
-    return pos
+def _trx(qty: float) -> Balance:
+    return Balance(exchange=UM, currency="TRX", free=qty, total=qty, holding=qty)
 
 
 def test_the_account_must_be_a_managed_exchange():
@@ -146,7 +146,7 @@ def test_spot_and_perp_share_one_state_and_one_capital():
     assert am.get_position(SPOT).quantity == 60.0
     assert am.get_position(PERP).quantity == -60.0
 
-    am.apply(_snapshot(T1, [_spot_pos(60.0, 0.30)], equity=454.0))
+    am.apply(_snapshot(T1, [], [_trx(60.0)], equity=454.0))
     # one account, counted once — whichever exchange the caller names
     assert am.get_total_capital() == 454.0
     assert am.get_total_capital("BINANCE") == 454.0
@@ -169,8 +169,8 @@ def test_spot_snapshot_keeps_ledger_average_price():
     am, _, clock = _am()
     _fill(am, SPOT, "s1", 60.0, 0.30, "t1")
     clock.now = T2
-    # holding = balance, marked at today's price: avg must stay the 0.30 the fill booked
-    am.apply(_snapshot(T2, [_spot_pos(60.0, 0.35)]))
+    # holding = balance, the venue reports no entry price: avg must stay the 0.30 the fill booked
+    am.apply(_snapshot(T2, [], [_trx(60.0)]))
     pos = am.get_position(SPOT)
     assert pos.quantity == 60.0
     assert pos.position_avg_price == pytest.approx(0.30)
@@ -181,15 +181,17 @@ def test_spot_snapshot_corrects_size_but_not_average():
     _fill(am, SPOT, "s1", 60.0, 0.30, "t1")
     clock.now = T2
     # the venue charged the buy fee in TRX: holding is a lot short of the gross fill
-    am.apply(_snapshot(T2, [_spot_pos(59.9, 0.31)]))
+    am.apply(_snapshot(T2, [], [_trx(59.9)]))
     pos = am.get_position(SPOT)
     assert pos.quantity == pytest.approx(59.9)
     assert pos.position_avg_price == pytest.approx(0.30)
 
 
-def test_restart_adopts_spot_holding_at_snapshot_price():
+def test_restart_adopts_spot_holding_at_its_mark():
     am, _, _ = _am()
-    am.apply(_snapshot(T1, [_spot_pos(60.0, 0.31)]))
+    am.get_position(SPOT)  # - the universe tracks it
+    am.on_market_quote(SPOT, Quote(T0, 0.3099, 0.3101, 1.0, 1.0))
+    am.apply(_snapshot(T1, [], [_trx(60.0)]))
     pos = am.get_position(SPOT)
     assert pos.quantity == 60.0
     assert pos.position_avg_price == pytest.approx(0.31)
@@ -225,7 +227,7 @@ def _holding_both_legs() -> AccountManager:
     _fill(am, PERP, "p1", -60.0, 0.30, "t2")
     perp = Position(instrument=PERP, quantity=-60.0, pos_average_price=0.30)
     perp.update_market_price(T0, 0.30, 1)
-    am.apply(_snapshot(T1, [_spot_pos(60.0, 0.30), perp], equity=454.0))
+    am.apply(_snapshot(T1, [perp], [_trx(60.0)], equity=454.0))
     return am
 
 

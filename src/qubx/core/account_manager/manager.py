@@ -107,6 +107,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         tcc: dict[str, TransactionCostsCalculator] | None = None,
         default_instrument_leverage: float | None = None,
         account_markets: dict[str, Sequence[str]] | None = None,
+        ignore_assets: dict[str, Sequence[str]] | None = None,
     ):
         self._pm = pm
         self._pinned_leverage = {}
@@ -119,6 +120,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
             tcc=tcc,
             default_instrument_leverage=default_instrument_leverage,
             account_markets=account_markets,
+            ignore_assets=ignore_assets,
         )
         # Live passes pm=None and registers the ticks later — see set_processing_manager.
         if self._pm is not None:
@@ -146,6 +148,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         tcc: dict[str, TransactionCostsCalculator] | None,
         default_instrument_leverage: float | None,
         account_markets: dict[str, Sequence[str]] | None = None,
+        ignore_assets: dict[str, Sequence[str]] | None = None,
     ) -> None:
         # Shared field init for both the live and simulation managers, so the
         # subclass can't silently drift from the parent's field set.
@@ -183,6 +186,7 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
                 base_currency=base_currencies[ex],
                 terminal_history_size=self._cfg.terminal_order_history_size,
                 maint_margin_rate=self._cfg.maint_margin_rate,
+                ignore_assets=tuple((ignore_assets or {}).get(ex, ())),
             )
             for ex in managed
         }
@@ -415,6 +419,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
         if (pos := state.get_position(instrument)) is None:
             return
 
+        if pos.position_avg_price == 0 and pos.quantity != 0 and state.is_balance_backed(instrument):
+            # - a holding adopted from a snapshot before its first mark is averaged at that mark
+            pos.position_avg_price = pos.position_avg_price_funds = quote.mid_price()
         pos.update_market_price(
             self._time.time(), quote.mid_price(), state.conversion_rate(instrument), stamp_update_time=False
         )
@@ -844,6 +851,7 @@ class SimulatedAccountManager(AccountManager):
         tcc: dict[str, TransactionCostsCalculator] | None = None,
         default_instrument_leverage: float | None = None,
         account_markets: dict[str, Sequence[str]] | None = None,
+        ignore_assets: dict[str, Sequence[str]] | None = None,
     ):
         super().__init__(
             connectors=connectors,
@@ -854,6 +862,7 @@ class SimulatedAccountManager(AccountManager):
             tcc=tcc,
             default_instrument_leverage=default_instrument_leverage,
             account_markets=account_markets,
+            ignore_assets=ignore_assets,
         )
 
     def set_processing_manager(self, pm: IProcessingManager) -> None:
@@ -867,7 +876,7 @@ class SimulatedAccountManager(AccountManager):
         # FundingPaymentEvent producer. Emits only while our position is open (account-scoped).
         state = self._states.get(self.account_of(instrument.exchange))
         pos = state.get_position(instrument) if state is not None else None
-        if pos is None or abs(pos.quantity) < instrument.min_size:
+        if pos is None or not pos.is_open():
             return None
         mark = pos.last_update_price
         if np.isnan(mark):

@@ -55,6 +55,7 @@ while IFS= read -r msg; do
     # tformat (not format) terminates every line — format omits the trailing
     # newline, so `while read` drops the last commit (the whole range for a squash merge).
 done < <(git log "${LATEST_STABLE}..HEAD" --pretty=tformat:"%s" 2>/dev/null)
+git log "${LATEST_STABLE}..HEAD" --pretty=tformat:"%b" 2>/dev/null | grep -qE '^BREAKING[ -]CHANGE:' && HAS_BREAKING=true
 
 if [ "$HAS_BREAKING" = true ]; then
     MAJOR=$((MAJOR + 1)); MINOR=0; PATCH=0
