@@ -1238,7 +1238,10 @@ class TestSpotDust:
 
     @pytest.fixture
     def trx(self):
-        return lookup.find_symbol("BINANCE", "TRXUSDT")  # lot 0.1, min notional 5
+        # - explicit: the lookup's venue metadata (min notional) differs between environments
+        return Instrument(
+            "TRXUSDT", MarketType.SPOT, "BINANCE", "TRX", "USDT", "USDT", "TRXUSDT", 0.0001, 0.1, 0.1, 5.0
+        )
 
     def _hold(self, mock_account, trx, qty):
         mock_account.get_position.return_value = Position(trx, quantity=qty, pos_average_price=0.33)
