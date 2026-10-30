@@ -165,6 +165,8 @@ class CsvPositionRestorer(IPositionRestorer):
                 commissions_at_open=commissions_at_open,
                 cumulative_funding_at_open=cumulative_funding_at_open,
             )
+            if (last_funding_time := _time_or_none(row.get("last_funding_time"))) is not None:
+                position.last_funding_time = recognize_time(last_funding_time)
 
             timestamp = recognize_time(cast(str, row["timestamp"]))
             current_price = cast(float, row["current_price"])
@@ -214,8 +216,10 @@ class PostgresPositionRestorer(IPositionRestorer):
                         "symbol, exchange, market_type, quantity, avg_position_price, "
                         "realized_pnl_quoted, current_price, funding_pnl_quoted, commissions_quoted, "
                         "episode_start_time, realized_pnl_at_open_quoted, commissions_at_open_quoted, "
-                        "funding_at_open_quoted, timestamp "
-                        "FROM {table} "
+                        "funding_at_open_quoted, timestamp, "
+                        # - read by key: the column is added by the logs writer, which starts after the restore
+                        "to_jsonb(t) ->> 'last_funding_time' "
+                        "FROM {table} t "
                         "WHERE strategy_name = %s AND run_id = %s AND timestamp >= %s "
                         "ORDER BY symbol, exchange, market_type, timestamp DESC"
                     ).format(table=sql.Identifier(self.table_name)),
@@ -239,6 +243,7 @@ class PostgresPositionRestorer(IPositionRestorer):
                         commissions_at_open,
                         cumulative_funding_at_open,
                         ts,
+                        last_funding_time,
                     ) = log
 
                     if not (symbol and exchange and market_type):
@@ -269,6 +274,8 @@ class PostgresPositionRestorer(IPositionRestorer):
                         commissions_at_open=commissions_at_open,
                         cumulative_funding_at_open=cumulative_funding_at_open,
                     )
+                    if last_funding_time is not None:
+                        position.last_funding_time = recognize_time(last_funding_time)
 
                     if current_price is not None:
                         timestamp = recognize_time(ts)
