@@ -99,6 +99,14 @@ class TimeGuardedReader(IReader):
             return str(floored)
         return stop
 
+    @property
+    def inner(self) -> IReader:
+        """
+        The wrapped reader. Reads through it are NOT clamped to simulation time;
+        the caller is responsible for causality.
+        """
+        return self._reader
+
     def read(
         self,
         data_id: str | list[str],
@@ -157,6 +165,14 @@ class TimeGuardedStorage(IStorage):
         self._storage = storage
         self._time_provider = time_provider
         self._readers = {}
+
+    @property
+    def inner(self) -> IStorage:
+        """
+        The wrapped storage. Reads through it are NOT clamped to simulation time;
+        the caller is responsible for causality.
+        """
+        return self._storage
 
     def get_exchanges(self) -> list[str]:
         return self._storage.get_exchanges()
