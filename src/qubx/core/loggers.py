@@ -326,12 +326,16 @@ class BalanceLogger(_BaseIntervalDumper):
             self.dump(timestamp, timestamp)
 
     def dump(self, interval_start_time: np.datetime64, actual_timestamp: np.datetime64):
-        if self._balance:
+        self.dump_balances(interval_start_time, self._balance)
+
+    def dump_balances(self, timestamp: np.datetime64, balances: list[Balance]) -> None:
+        """Write ``balances`` now, leaving the set the interval dump writes unchanged."""
+        if balances:
             data = []
-            for d in self._balance:
+            for d in balances:
                 data.append(
                     {
-                        "timestamp": str(interval_start_time),
+                        "timestamp": str(timestamp),
                         "exchange": d.exchange,
                         "currency": d.currency,
                         "total": d.total,
@@ -454,10 +458,23 @@ class StrategyLogging:
     def save_deals(self, instrument: Instrument, deals: list[Deal]):
         if self.executions_logger:
             self.executions_logger.record_deals(instrument, deals)
-        if self.positions_log_on_change and self.positions_dumper and deals:
+        if self.positions_log_on_change and deals:
             latest_deal_time = max(d.time for d in deals)
             ts = latest_deal_time.as_unit("ns").asm8 if isinstance(latest_deal_time, pd.Timestamp) else latest_deal_time
-            self.positions_dumper.dump_instrument(instrument, ts)
+            self._log_change(instrument, ts, {d.fee_currency for d in deals if d.fee_currency})
+
+    def save_funding(self, instrument: Instrument, timestamp: np.datetime64) -> None:
+        if self.positions_log_on_change:
+            self._log_change(instrument, timestamp, set())
+
+    def _log_change(self, instrument: Instrument, timestamp: np.datetime64, currencies: set[str]) -> None:
+        # - a restore pairs each position's latest row with the latest balance rows: write the
+        #   currencies this change moved together with the position, not on the next interval
+        if self.positions_dumper:
+            self.positions_dumper.dump_instrument(instrument, timestamp)
+        if self.balance_logger and (account := getattr(self, "_account", None)) is not None:
+            moved = {instrument.base, instrument.quote, instrument.settle, *currencies}
+            self.balance_logger.dump_balances(timestamp, [b for b in account.get_balances() if b.currency in moved])
 
     def save_targets(self, targets: list[TargetPosition]):
         if self.signals_logger and targets:
