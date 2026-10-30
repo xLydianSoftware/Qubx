@@ -1174,6 +1174,7 @@ class ProcessingManager(IProcessingManager):
         # SimulatedAccountManager computes the settlement; the live AM returns None.
         if (event := self._account_manager.process_market_funding(instrument, payment)) is not None:
             self.process_event(event)
+            self._logging.save_funding(instrument, self._time_provider.time())
         self.__update_base_data(instrument, event_type, payment)
         return MarketEvent(self._time_provider.time(), event_type, instrument, payment)
 
