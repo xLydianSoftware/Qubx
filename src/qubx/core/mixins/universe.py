@@ -3,6 +3,7 @@ from qubx.core.basics import DataType, Instrument
 from qubx.core.detectors import DelistingDetector
 from qubx.core.instrument_service import IInstrumentService, NullInstrumentService
 from qubx.core.interfaces import (
+    BlacklistHeldPolicy,
     IAccountViewer,
     IMarketManager,
     IPositionGathering,
@@ -13,6 +14,7 @@ from qubx.core.interfaces import (
     ITradingManager,
     IUniverseManager,
     RemovalPolicy,
+    blacklist_held_policy,
 )
 from qubx.core.loggers import StrategyLogging
 from qubx.utils.time import to_timestamp
@@ -61,6 +63,10 @@ class UniverseManager(IUniverseManager):
         self._removal_in_progress = set()
         self._delisting_detector = delisting_detector
         self._instrument_service = instrument_service if instrument_service is not None else NullInstrumentService()
+        self._blacklist_held: BlacklistHeldPolicy = "close"
+
+    def set_blacklist_held(self, policy: BlacklistHeldPolicy) -> None:
+        self._blacklist_held = blacklist_held_policy(policy)
 
     def _has_position(self, instrument: Instrument) -> bool:
         return (
@@ -145,7 +151,12 @@ class UniverseManager(IUniverseManager):
         logger.warning(f"[UniverseManager] Force-settled position {instrument.symbol} (operator override)")
 
     def _filter_blacklisted(self, instruments: list[Instrument]) -> list[Instrument]:
-        kept = [i for i in instruments if not self._instrument_service.is_blacklisted(i)]
+        keep_held = self._blacklist_held == "keep"
+        kept = [
+            i
+            for i in instruments
+            if not self._instrument_service.is_blacklisted(i) or (keep_held and self._has_position(i))
+        ]
         dropped = [i for i in instruments if i not in set(kept)]
         if dropped:
             symbols = ", ".join(sorted(i.symbol for i in dropped))

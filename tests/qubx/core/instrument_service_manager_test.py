@@ -170,3 +170,29 @@ def test_run_cycle_force_closes_all_held_blacklisted_not_just_delta():
     ctx.remove_instruments.assert_called_once_with([wlfi], if_has_position_then="close")
     assert summary["force_closed"] == 1
     assert summary["force_closed_instruments"] == [str(wlfi)]
+
+
+def test_keep_policy_leaves_held_blacklisted_positions_open():
+    btc = MagicMock(symbol="BTCUSDT")
+    pos = MagicMock()
+    pos.is_open.return_value = True
+    svc = MagicMock()
+    svc.is_blacklisted.return_value = True
+    svc.refresh.return_value = InstrumentServiceDiff(blacklisted_added=[btc], blacklisted_removed=[])
+    m, ctx = _mgr(svc, instruments=[btc], positions={btc: pos}, callbacks=[])
+    m.set_blacklist_held("keep")
+    summary = m.run_cycle()
+    m.enforce_at_fit()
+    ctx.remove_instruments.assert_not_called()
+    assert summary["force_closed"] == 0
+
+
+def test_close_policy_is_the_default_and_closes_held_blacklisted_at_fit():
+    btc = MagicMock()
+    pos = MagicMock()
+    pos.is_open.return_value = True
+    svc = MagicMock()
+    svc.is_blacklisted.return_value = True
+    m, ctx = _mgr(svc, instruments=[btc], positions={btc: pos})
+    m.enforce_at_fit()
+    ctx.remove_instruments.assert_called_once_with([btc], if_has_position_then="close")

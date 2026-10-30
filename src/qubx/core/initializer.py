@@ -11,7 +11,14 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from qubx import logger
 from qubx.core.basics import Instrument, td_64
-from qubx.core.interfaces import IStrategyInitializer, ITransferManager, StartTimeFinderProtocol, StateResolverProtocol
+from qubx.core.interfaces import (
+    BlacklistHeldPolicy,
+    IStrategyInitializer,
+    ITransferManager,
+    StartTimeFinderProtocol,
+    StateResolverProtocol,
+    blacklist_held_policy,
+)
 from qubx.core.utils import recognize_timeframe
 
 if TYPE_CHECKING:
@@ -52,6 +59,9 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     # While the context is degraded, refuse orders that would open or increase a position
     deny_trading_when_degraded: bool = False
+
+    # What happens to a held instrument once it is blacklisted
+    blacklist_held: BlacklistHeldPolicy = "close"
 
     # Number of days ahead to check for delisting
     delisting_check_days: int = 1
@@ -259,6 +269,22 @@ class BasicStrategyInitializer(IStrategyInitializer):
         Whether exposure-increasing orders are refused while the context is degraded.
         """
         return self.deny_trading_when_degraded
+
+    def set_blacklist_held(self, policy: BlacklistHeldPolicy) -> None:
+        """
+        What happens to a held instrument once it is blacklisted: "close" (default) drops it and
+        closes its position; "keep" keeps it subscribed with its position, orders on it reduce-only.
+
+        Args:
+            policy: "close" or "keep"
+        """
+        self.blacklist_held = blacklist_held_policy(policy)
+
+    def get_blacklist_held(self) -> BlacklistHeldPolicy:
+        """
+        The held-blacklisted-instrument policy, "close" unless set.
+        """
+        return self.blacklist_held
 
     def get_stale_data_detection_config(self) -> tuple[bool, str | None, str | None]:
         """

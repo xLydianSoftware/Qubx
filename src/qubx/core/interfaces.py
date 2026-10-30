@@ -62,6 +62,14 @@ if TYPE_CHECKING:
     from qubx.health.status import ExchangeDataStatus
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
+# - what happens to a HELD instrument once it is blacklisted: closed and removed, or kept subscribed (reduce-only)
+BlacklistHeldPolicy = Literal["close", "keep"]
+
+
+def blacklist_held_policy(policy: str) -> BlacklistHeldPolicy:
+    if policy not in ("close", "keep"):
+        raise ValueError(f"blacklist_held must be 'close' or 'keep', got {policy!r}")
+    return policy  # type: ignore[return-value]
 
 
 @runtime_checkable
@@ -1175,6 +1183,12 @@ class IUniverseManager:
         """
         ...
 
+    def set_blacklist_held(self, policy: BlacklistHeldPolicy) -> None:
+        """What happens to a held instrument once it is blacklisted: "close" (default) drops it from the
+        universe and closes its position; "keep" keeps it subscribed with its position (orders stay reduce-only).
+        Applied from the initializer once on_init has run."""
+        ...
+
     def settle_position(self, instrument: Instrument) -> None:
         """Force-settle a held position in place: cancel resting orders and flatten the
         position to zero via the account WITHOUT trading, regardless of whether the market is
@@ -1234,6 +1248,11 @@ class IInstrumentServiceManager:
 
     def start(self) -> None:
         """Wire framework-automatic startup refresh (non-Null only). No periodic poll."""
+        ...
+
+    def set_blacklist_held(self, policy: BlacklistHeldPolicy) -> None:
+        """The held-blacklisted policy: with "close" (default) the refresh cycle and fit-time enforcement
+        force-close held blacklisted positions; with "keep" they are left open (orders on them stay reduce-only)."""
         ...
 
     def set_callbacks(self, callbacks: list) -> None:
@@ -2659,6 +2678,23 @@ class IStrategyInitializer:
     def get_deny_trading_when_degraded(self) -> bool:
         """
         Whether exposure-increasing orders are refused while the context is degraded.
+        """
+        ...
+
+    def set_blacklist_held(self, policy: BlacklistHeldPolicy) -> None:
+        """
+        What happens to a held instrument once it is blacklisted:
+        - "close" (default): it is dropped from the universe and its position closed, at start,
+          before each fit and on an instrument-service refresh
+        - "keep": it stays subscribed with its position; orders on it stay reduce-only, so the
+          strategy decides when (and whether) to reduce it. Unheld blacklisted instruments are
+          dropped either way.
+        """
+        ...
+
+    def get_blacklist_held(self) -> BlacklistHeldPolicy:
+        """
+        The held-blacklisted-instrument policy, "close" unless set.
         """
         ...
 

@@ -1,7 +1,7 @@
 from qubx import logger
 from qubx.core.basics import Instrument
 from qubx.core.instrument_service import IInstrumentService, NullInstrumentService
-from qubx.core.interfaces import IInstrumentServiceManager, IStrategyContext
+from qubx.core.interfaces import BlacklistHeldPolicy, IInstrumentServiceManager, IStrategyContext, blacklist_held_policy
 
 
 class InstrumentServiceManager(IInstrumentServiceManager):
@@ -13,6 +13,10 @@ class InstrumentServiceManager(IInstrumentServiceManager):
         self._context = context
         self._service = instrument_service
         self._callbacks: list = []
+        self.blacklist_held: BlacklistHeldPolicy = "close"
+
+    def set_blacklist_held(self, policy: BlacklistHeldPolicy) -> None:
+        self.blacklist_held = blacklist_held_policy(policy)
 
     def set_callbacks(self, callbacks: list) -> None:
         self._callbacks = list(callbacks)
@@ -61,6 +65,10 @@ class InstrumentServiceManager(IInstrumentServiceManager):
         _ctx = ctx if ctx is not None else self._context
         positions = _ctx.get_positions()
         held = [i for i, p in positions.items() if p.is_open() and self._service.is_blacklisted(i)]
+        if held and self.blacklist_held == "keep":
+            symbols = ", ".join(sorted(i.symbol for i in held))
+            logger.warning(f"[InstrumentService] :: held blacklisted instruments kept (reduce-only): {symbols}")
+            return []
         if held:
             _ctx.remove_instruments(held, if_has_position_then="close")
         return held
