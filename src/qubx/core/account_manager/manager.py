@@ -840,6 +840,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 class SimulatedAccountManager(AccountManager):
     """Simulated-account variant (backtest + paper) — no asyncio, no WS, no periodic ticks."""
 
+    # - the wallet lives only in this process: a restore rebuilds it from the logged balances
+    simulated_wallet = True
+
     def __init__(
         self,
         *,
