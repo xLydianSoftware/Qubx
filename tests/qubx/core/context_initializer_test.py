@@ -225,3 +225,47 @@ def test_on_instrument_service_change_registers_in_order():
     cbs[0](None, ["A"], ["B"])
     cbs[1](None, ["A"], ["B"])
     assert calls == [("cb1", ["A"], ["B"]), ("cb2", ["A"], ["B"])]
+
+
+class _KeepHeldBlacklistedStrategy(IStrategy):
+    def on_init(self, initializer: IStrategyInitializer):
+        initializer.set_blacklist_held("keep")
+
+
+def test_blacklist_held_policy_defaults_to_close_and_rejects_unknown_values():
+    initializer = BasicStrategyInitializer(simulation=True)
+    assert initializer.get_blacklist_held() == "close"
+    initializer.set_blacklist_held("keep")
+    assert initializer.get_blacklist_held() == "keep"
+    with pytest.raises(ValueError):
+        initializer.set_blacklist_held("wait_for_close")
+
+
+@pytest.mark.parametrize("strategy, policy", [(MockStrategy(), "close"), (_KeepHeldBlacklistedStrategy(), "keep")])
+def test_blacklist_held_policy_reaches_the_universe_and_instrument_service_managers(strategy, policy):
+    channel = CtrlChannel("test")
+    broker, data_provider = MagicMock(channel=channel), MagicMock(channel=channel)
+    time_provider = MagicMock()
+    time_provider.time.return_value = np.datetime64("2023-01-01", "ns")
+    with (
+        patch("qubx.core.context.MarketManager"),
+        patch("qubx.core.context.UniverseManager"),
+        patch("qubx.core.context.SubscriptionManager"),
+        patch("qubx.core.context.TradingManager"),
+        patch("qubx.core.context.ProcessingManager"),
+    ):
+        ctx = StrategyContext(
+            strategy=strategy,
+            connectors={"BINANCE.UM": broker},
+            data_providers=[data_provider],
+            account_manager=MagicMock(),
+            scheduler=MagicMock(),
+            channel=channel,
+            time_provider=time_provider,
+            instruments=[lookup.find_symbol("BINANCE.UM", "BTCUSDT")],
+            logging=MagicMock(),
+            initializer=BasicStrategyInitializer(simulation=True),
+            aux_data_storage=MagicMock(),
+        )
+    ctx._universe_manager.set_blacklist_held.assert_called_once_with(policy)
+    assert ctx._instrument_service_manager.blacklist_held == policy

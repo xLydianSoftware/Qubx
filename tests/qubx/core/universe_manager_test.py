@@ -1,3 +1,5 @@
+from unittest.mock import Mock
+
 import numpy as np
 import pytest
 from pytest_mock import MockerFixture
@@ -452,6 +454,68 @@ def test_add_instruments_drops_blacklisted(mock_dependencies, mocker):
     )
     um.add_instruments([btc, eth])
     assert set(um.instruments) == {eth}
+
+
+def _blacklisting_manager(deps, svc) -> UniverseManager:
+    deps["subscription_manager"].auto_subscribe = True
+    return UniverseManager(
+        context=deps["context"],
+        strategy=deps["strategy"],
+        market_data_manager=deps["market_data_manager"],
+        logging=deps["logging"],
+        subscription_manager=deps["subscription_manager"],
+        trading_manager=deps["trading_manager"],
+        time_provider=deps["time_provider"],
+        account=deps["account"],
+        position_gathering=deps["position_gathering"],
+        delisting_detector=deps["delisting_detector"],
+        instrument_service=svc,
+    )
+
+
+def _held(instrument: Instrument, quantity: float):
+    position = Mock()
+    position.quantity = quantity
+    return {instrument: position}
+
+
+def test_keep_policy_keeps_held_blacklisted_in_the_universe(mock_dependencies, mocker):
+    btc, eth, sol = _make_instrument("BTCUSDT"), _make_instrument("ETHUSDT"), _make_instrument("SOLUSDT")
+    svc = mocker.Mock()
+    svc.is_blacklisted.side_effect = lambda i: i in (btc, sol)
+    mock_dependencies["account"].positions = _held(btc, 1.0)
+    um = _blacklisting_manager(dict(mock_dependencies), svc)
+    um.set_blacklist_held("keep")
+    um.set_universe([btc, eth, sol], if_has_position_then="close")
+    assert set(um.instruments) == {btc, eth}
+    um.set_universe([btc, eth], if_has_position_then="close")
+    assert set(um.instruments) == {btc, eth}
+
+
+def test_keep_policy_lets_add_instruments_keep_a_held_blacklisted_one(mock_dependencies, mocker):
+    btc, eth = _make_instrument("BTCUSDT"), _make_instrument("ETHUSDT")
+    svc = mocker.Mock()
+    svc.is_blacklisted.side_effect = lambda i: i in (btc, eth)
+    mock_dependencies["account"].positions = _held(btc, 1.0)
+    um = _blacklisting_manager(dict(mock_dependencies), svc)
+    um.set_blacklist_held("keep")
+    um.add_instruments([btc, eth])
+    assert set(um.instruments) == {btc}
+
+
+def test_close_policy_drops_held_blacklisted_by_default(mock_dependencies, mocker):
+    btc, eth = _make_instrument("BTCUSDT"), _make_instrument("ETHUSDT")
+    svc = mocker.Mock()
+    svc.is_blacklisted.side_effect = lambda i: i is btc
+    mock_dependencies["account"].positions = _held(btc, 1.0)
+    um = _blacklisting_manager(dict(mock_dependencies), svc)
+    um.set_universe([btc, eth], if_has_position_then="close")
+    assert set(um.instruments) == {eth}
+
+
+def test_set_blacklist_held_rejects_unknown_policies(universe_manager):
+    with pytest.raises(ValueError):
+        universe_manager.set_blacklist_held("wait")
 
 
 def test_add_instruments_excludes_gone_and_settles(universe_manager, mock_dependencies, mocker):

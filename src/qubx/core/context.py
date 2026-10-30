@@ -400,6 +400,9 @@ class StrategyContext(IStrategyContext):
             for schedule_id, (cron_schedule, method) in custom_schedules.items():
                 self._processing_manager.schedule(cron_schedule, method)
 
+        blacklist_held = self.initializer.get_blacklist_held()
+        self._universe_manager.set_blacklist_held(blacklist_held)
+        self._instrument_service_manager.set_blacklist_held(blacklist_held)
         self._instrument_service_manager.set_callbacks(self.initializer.get_instrument_service_callbacks())
         self._instrument_service_manager.start()
 
