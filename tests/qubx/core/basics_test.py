@@ -123,7 +123,7 @@ class TestBasics:
 
         p.update_market_price(0, 0.1538, 1)
         # - 2024-10-12: fixed after part position closing fix
-        assert p.position_avg_price == 0.1647  # , p.r_pnl, p.pnl - p.r_pnl, p.commissions, p.market_value
+        assert p.position_avg_price == approx(0.164886, rel=1e-5)  # VWAP of the open quantity, unrounded
 
         p.change_position_by(0, -211, 0.1620)
         assert p.position_avg_price == 0.0
@@ -369,6 +369,21 @@ def test_update_position_with_conversion_rate():
     assert pnl == approx(2.0)  # returned realized in QUOTE units: 0.002 * (51_000 - 50_000)
     assert pos.r_pnl == approx(1.0)  # accumulated in FUNDED currency: 2.0 / conv
     assert pos.quantity == 0.0
+
+
+def test_avg_price_tracks_the_vwap_of_many_small_increments():
+    # rounding the running average down to tick on every increment ratchets it below the fills:
+    # FARB_SP paper 2026-10-29, ARKMUSDT short built in 62 slices at 0.1196..0.1229, avg stuck at 0.1194
+    inst = lookup.find_symbol("BINANCE.UM", "ARKMUSDT")
+    assert inst is not None and inst.tick_size == 0.0001
+    pos = Position(inst)
+    prices = np.linspace(0.1196, 0.1229, 62)
+    for n, price in enumerate(prices, start=1):
+        pos.update_position(TIME(n), -100.0 * n, float(price))
+
+    assert pos.position_avg_price == approx(prices.mean(), rel=1e-9)
+    pos.update_market_price(TIME(100), 0.1229, 1)
+    assert pos.unrealized_pnl() == approx(-6200.0 * (0.1229 - prices.mean()), rel=1e-6)
 
 
 def test_resolve_reduce_only_both_spellings_and_precedence():

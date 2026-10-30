@@ -1650,12 +1650,10 @@ class Position:
             if has_opening:
                 _abs_qty_open = abs(qty_opening)
 
-                pos_avg_price_raw = (_abs_qty_open * exec_price + self.__pos_incr_qty * self.position_avg_price) / (
-                    self.__pos_incr_qty + _abs_qty_open
-                )
-
-                # - round position average price to be in line with how it's calculated by broker
-                self.position_avg_price = self.instrument.round_price_down(pos_avg_price_raw)
+                # - unrounded, like the broker's entry price: rounding each step ratchets the average off the fills
+                self.position_avg_price = (
+                    _abs_qty_open * exec_price + self.__pos_incr_qty * self.position_avg_price
+                ) / (self.__pos_incr_qty + _abs_qty_open)
                 self.__pos_incr_qty += _abs_qty_open
 
             # - update position and position's price
