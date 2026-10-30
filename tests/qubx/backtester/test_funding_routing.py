@@ -219,6 +219,18 @@ class TestSimulatedAccountFunding:
 
         assert am.get_balance("USDT", exchange=instr.exchange).total == pytest.approx(1000.0 + first.amount)
 
+    def test_settlement_booked_before_a_restart_is_not_booked_again(self):
+        # the restored position carries the time of its last booked settlement; the feed redelivers it
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_balance(instr.exchange, Balance(exchange=instr.exchange, currency="USDT", free=1000.0, total=1000.0))
+        pos = _marked_position(instr, -0.5)
+        pos.last_funding_time = np.datetime64(0, "ns")
+        am.seed_position(pos)
+
+        assert am.process_market_funding(instr, _payment()) is None
+        assert am.get_balance("USDT", exchange=instr.exchange).total == pytest.approx(1000.0)
+
     def test_no_settle_balance_no_debit(self):
         # funding never creates a wallet entry (a coin-margined settle currency may never be funded)
         instr = _btc()

@@ -123,6 +123,7 @@ class PositionsDumper(_BaseIntervalDumper):
             "realized_pnl_at_open_quoted": position.r_pnl_at_open,
             "commissions_at_open_quoted": position.commissions_at_open,
             "funding_at_open_quoted": position.cumulative_funding_at_open,
+            "last_funding_time": None if np.isnat(position.last_funding_time) else str(position.last_funding_time),
         }
 
     def dump(self, interval_start_time: np.datetime64, actual_timestamp: np.datetime64):

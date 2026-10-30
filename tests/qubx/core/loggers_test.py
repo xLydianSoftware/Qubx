@@ -187,6 +187,17 @@ class TestPortfolioLoggers:
         dumper.dump_instrument(unknown, _DT(2))
         assert len(captured) == 1
 
+    def test_position_row_carries_the_last_funding_time(self):
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        pos = Position(btc)
+        pos.change_position_by(_DT(0), -0.1, 50000)
+        assert PositionsDumper._position_row(btc, pos, _DT(1))["last_funding_time"] is None
+
+        pos.apply_funding_payment(_DT(2), 1.5)
+
+        assert PositionsDumper._position_row(btc, pos, _DT(3))["last_funding_time"] == str(_DT(2))
+
     def test_save_deals_triggers_on_change_dump(self):
         btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         assert btc is not None
