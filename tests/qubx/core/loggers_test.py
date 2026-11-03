@@ -187,6 +187,17 @@ class TestPortfolioLoggers:
         dumper.dump_instrument(unknown, _DT(2))
         assert len(captured) == 1
 
+    def test_position_row_carries_the_last_funding_time(self):
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        pos = Position(btc)
+        pos.change_position_by(_DT(0), -0.1, 50000)
+        assert PositionsDumper._position_row(btc, pos, _DT(1))["last_funding_time"] is None
+
+        pos.apply_funding_payment(_DT(2), 1.5)
+
+        assert PositionsDumper._position_row(btc, pos, _DT(3))["last_funding_time"] == str(_DT(2))
+
     def test_save_deals_triggers_on_change_dump(self):
         btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
         assert btc is not None
@@ -214,6 +225,107 @@ class TestPortfolioLoggers:
         position_writes = [d for t, d in captured if t == "positions"]
         assert len(position_writes) == 1
         assert position_writes[0][0]["symbol"] == "BTCUSDT"
+
+    def test_save_deals_writes_the_balances_the_deal_moved_with_the_position(self):
+        # a restore pairs the latest position row with the latest balance rows, so a fill's cash
+        # must be logged with its position, not on the next balance interval
+        xrp = lookup.find_symbol("BINANCE", "XRPUSDT")
+        assert xrp is not None
+        pos = Position(xrp)
+        pos.change_position_by(_DT(0), 1000.0, 1.25)
+
+        captured: list[tuple[str, list[dict]]] = []
+
+        class _CapturingWriter(LogsWriter):
+            def write_data(self, log_type: str, data: list[dict]):
+                captured.append((log_type, data))
+
+        class _Account:
+            simulated_wallet = True
+
+            def get_balances(self, exchange=None):
+                return [
+                    Balance(exchange="BINANCE", currency="USDT", total=8750.0, free=8750.0),
+                    Balance(exchange="BINANCE", currency="XRP", total=1000.0, free=1000.0),
+                    Balance(exchange="BINANCE", currency="BNB", total=0.4, free=0.4),
+                    Balance(exchange="BINANCE", currency="ETH", total=2.0, free=2.0),
+                ]
+
+        logging = StrategyLogging(
+            logs_writer=_CapturingWriter("acc", "strat", "run"),
+            positions_log_freq="15Min",
+            portfolio_log_freq=None,
+            positions_log_on_change=True,
+        )
+        logging.initialize(_DT(0), {xrp: pos}, [], _Account())  # type: ignore[arg-type]
+
+        logging.save_deals(xrp, [Deal("1", "o1", _DT(5), 1000.0, 1.25, False, fee_amount=0.001, fee_currency="BNB")])
+
+        balance_rows = [r for t, d in captured if t == "balance" for r in d]
+        assert {r["currency"]: r["total"] for r in balance_rows} == {"USDT": 8750.0, "XRP": 1000.0, "BNB": 0.4}
+        assert {r["timestamp"] for r in balance_rows} == {str(_DT(5))}
+        assert any(t == "positions" for t, _ in captured)
+
+    def test_save_funding_writes_the_position_and_its_settle_balance(self):
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        pos = Position(btc)
+        pos.change_position_by(_DT(0), -0.1, 50000)
+        pos.apply_funding_payment(_DT(10), 2.5)
+
+        captured: list[tuple[str, list[dict]]] = []
+
+        class _CapturingWriter(LogsWriter):
+            def write_data(self, log_type: str, data: list[dict]):
+                captured.append((log_type, data))
+
+        class _Account:
+            simulated_wallet = True
+
+            def get_balances(self, exchange=None):
+                return [Balance(exchange="BINANCE.UM", currency="USDT", total=1002.5, free=1002.5)]
+
+        logging = StrategyLogging(
+            logs_writer=_CapturingWriter("acc", "strat", "run"),
+            positions_log_freq="15Min",
+            portfolio_log_freq=None,
+            positions_log_on_change=True,
+        )
+        logging.initialize(_DT(0), {btc: pos}, [], _Account())  # type: ignore[arg-type]
+
+        logging.save_funding(btc, _DT(11))
+
+        assert [r["last_funding_time"] for t, d in captured if t == "positions" for r in d] == [str(_DT(10))]
+        assert [(r["currency"], r["total"]) for t, d in captured if t == "balance" for r in d] == [("USDT", 1002.5)]
+
+    def test_a_live_account_writes_no_balance_rows_on_a_fill(self):
+        btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")
+        assert btc is not None
+        pos = Position(btc)
+        pos.change_position_by(_DT(0), 0.1, 50000)
+
+        captured: list[tuple[str, list[dict]]] = []
+
+        class _CapturingWriter(LogsWriter):
+            def write_data(self, log_type: str, data: list[dict]):
+                captured.append((log_type, data))
+
+        class _LiveAccount:
+            def get_balances(self, exchange=None):
+                return [Balance(exchange="BINANCE.UM", currency="USDT", total=1000.0, free=1000.0)]
+
+        logging = StrategyLogging(
+            logs_writer=_CapturingWriter("acc", "strat", "run"),
+            positions_log_freq="15Min",
+            portfolio_log_freq=None,
+            positions_log_on_change=True,
+        )
+        logging.initialize(_DT(0), {btc: pos}, [], _LiveAccount())  # type: ignore[arg-type]
+
+        logging.save_deals(btc, [Deal("1", "o1", _DT(5), 0.1, 50050, False)])
+
+        assert not [d for t, d in captured if t == "balance"]
+        assert any(t == "positions" for t, _ in captured)
 
     def test_save_deals_respects_flag_off(self):
         btc = lookup.find_symbol("BINANCE.UM", "BTCUSDT")

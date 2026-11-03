@@ -147,7 +147,7 @@ class TestSimulatedAccountFunding:
         assert event.amount == pytest.approx(-(2.0 * 10.0 * 100.0 * 0.0001))
 
     def test_no_mark_yet_yields_nothing(self):
-        # no quote seen yet -> the settlement cannot be valued; market tuples don't redeliver
+        # no quote seen yet -> the settlement cannot be valued
         instr = _btc()
         am = _sim_am(instr)
         am.seed_position(Position(instrument=instr, quantity=0.5, pos_average_price=50_000.0))
@@ -167,9 +167,7 @@ class TestSimulatedAccountFunding:
         assert _sim_am(instr).process_market_funding(instr, _payment()) is None
 
     def test_wallet_debited_once_per_settlement(self):
-        # the sim venue debits the wallet at emit time by exactly the settlement amount —
-        # once per settlement by construction: market tuples don't redeliver in sim, and
-        # process_market_funding runs once per tuple (reducer dedup guards only attribution)
+        # the sim venue debits the wallet at emit time by exactly the settlement amount
         instr = _btc()
         am = _sim_am(instr)
         am.seed_balance(instr.exchange, Balance(exchange=instr.exchange, currency="USDT", free=1000.0, total=1000.0))
@@ -180,6 +178,58 @@ class TestSimulatedAccountFunding:
         assert event is not None
         assert am.get_balance("USDT", exchange=instr.exchange).total == pytest.approx(1000.0 + event.amount)
         assert event.amount == pytest.approx(-(0.5 * 50_000.0 * 0.0001))
+
+    def test_settlement_from_before_the_episode_opened_is_not_owed(self):
+        # a live feed's snapshot redelivers its last settlement on (re)subscribe — after a restart
+        # that is a settlement from before the restored position was opened
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_balance(instr.exchange, Balance(exchange=instr.exchange, currency="USDT", free=1000.0, total=1000.0))
+        opened = np.datetime64("2024-01-01T13:47:00", "ns")
+        pos = Position(
+            instrument=instr,
+            quantity=-0.5,
+            pos_average_price=50_000.0,
+            episode_start_time=opened,
+            r_pnl_at_open=0.0,
+            commissions_at_open=0.0,
+            cumulative_funding_at_open=0.0,
+        )
+        pos.update_market_price(opened, 50_000.0, 1.0)
+        am.seed_position(pos)
+        settled_before_open = FundingPayment(
+            time=np.datetime64("2024-01-01T12:00:00", "ns").astype("int64"),
+            funding_rate=0.0001,
+            funding_interval_hours=4,
+        )
+
+        assert am.process_market_funding(instr, settled_before_open) is None
+        assert am.get_balance("USDT", exchange=instr.exchange).total == pytest.approx(1000.0)
+
+    def test_redelivered_settlement_debits_the_wallet_once(self):
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_balance(instr.exchange, Balance(exchange=instr.exchange, currency="USDT", free=1000.0, total=1000.0))
+        am.seed_position(_marked_position(instr, 0.5))
+
+        first = am.process_market_funding(instr, _payment())
+        assert first is not None
+        am.apply(first)
+        assert am.process_market_funding(instr, _payment()) is None
+
+        assert am.get_balance("USDT", exchange=instr.exchange).total == pytest.approx(1000.0 + first.amount)
+
+    def test_settlement_booked_before_a_restart_is_not_booked_again(self):
+        # the restored position carries the time of its last booked settlement; the feed redelivers it
+        instr = _btc()
+        am = _sim_am(instr)
+        am.seed_balance(instr.exchange, Balance(exchange=instr.exchange, currency="USDT", free=1000.0, total=1000.0))
+        pos = _marked_position(instr, -0.5)
+        pos.last_funding_time = np.datetime64(0, "ns")
+        am.seed_position(pos)
+
+        assert am.process_market_funding(instr, _payment()) is None
+        assert am.get_balance("USDT", exchange=instr.exchange).total == pytest.approx(1000.0)
 
     def test_no_settle_balance_no_debit(self):
         # funding never creates a wallet entry (a coin-margined settle currency may never be funded)

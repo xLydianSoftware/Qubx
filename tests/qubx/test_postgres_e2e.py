@@ -109,6 +109,7 @@ def pg_writer():
                 "current_price": 90000.0,
                 "market_value_quoted": 45000.0,
                 "commissions_quoted": 12.0,
+                "last_funding_time": "2025-01-01T08:00:00.000000000",
             },
             {
                 "timestamp": now,
@@ -342,6 +343,22 @@ class TestPostgresE2EPositionRestorer:
         assert eth_pos is not None
         assert eth_pos.quantity == 2.0
         assert eth_pos.position_avg_price == 2900.0
+
+    def test_restore_last_funding_time_in_a_non_utc_session(self, pg_conn, mock_lookup):
+        conn = psycopg.connect(POSTGRES_URI, autocommit=True)
+        try:
+            conn.execute("SET TIME ZONE 'Europe/Berlin'")
+            restorer = PostgresPositionRestorer(
+                strategy_name=STRATEGY_NAME,
+                connection=conn,
+                table_name=f"{TABLE_PREFIX}_positions",
+            )
+            positions = {i.symbol: p for i, p in restorer.restore_positions().items()}
+        finally:
+            conn.close()
+
+        assert positions["BTCUSDT"].last_funding_time == np.datetime64("2025-01-01T08:00:00", "ns")
+        assert np.isnat(positions["ETHUSDT"].last_funding_time)
 
 
 @pytest.mark.e2e

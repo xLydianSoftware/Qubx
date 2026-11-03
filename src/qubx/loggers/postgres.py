@@ -28,6 +28,7 @@ _TABLE_SCHEMAS: dict[str, list[tuple[str, str]]] = {
         ("realized_pnl_at_open_quoted", "DOUBLE PRECISION"),
         ("commissions_at_open_quoted", "DOUBLE PRECISION"),
         ("funding_at_open_quoted", "DOUBLE PRECISION"),
+        ("last_funding_time", "TIMESTAMPTZ"),
     ],
     "portfolio": [
         ("timestamp", "TIMESTAMPTZ NOT NULL"),

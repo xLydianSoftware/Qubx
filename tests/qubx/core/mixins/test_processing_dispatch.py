@@ -664,6 +664,7 @@ def test_funding_tuple_books_via_am_hook_before_strategy_reacts():
     pm._strategy.on_position_change.assert_called_once()
     assert pm._strategy.on_position_change.call_args.args[1] is position
     assert calls == ["book", "react"]
+    pm._logging.save_funding.assert_called_once_with(instrument, pm._time_provider.time.return_value)
 
 
 def test_funding_tuple_with_flat_position_does_not_book():
@@ -677,6 +678,7 @@ def test_funding_tuple_with_flat_position_does_not_book():
 
     pm._account_manager.apply.assert_not_called()
     pm._strategy.on_market_data.assert_called_once()
+    pm._logging.save_funding.assert_not_called()
 
 
 def test_on_fit_pumping_events_does_not_retrigger_fit():

@@ -840,6 +840,9 @@ class AccountManager(IAccountViewer, IAccountConfigurator):
 class SimulatedAccountManager(AccountManager):
     """Simulated-account variant (backtest + paper) — no asyncio, no WS, no periodic ticks."""
 
+    # - the wallet lives only in this process: a restore rebuilds it from the logged balances
+    simulated_wallet = True
+
     def __init__(
         self,
         *,
@@ -878,14 +881,18 @@ class SimulatedAccountManager(AccountManager):
         pos = state.get_position(instrument) if state is not None else None
         if pos is None or not pos.is_open():
             return None
+        settled_at = np.datetime64(int(payment.time), "ns")
+        # - a live feed redelivers its last settlement on (re)subscribe: one from before this episode
+        #   opened is not owed, one at or before the last booked one is already in the wallet
+        if settled_at < pos.episode_start_time or settled_at <= pos.last_funding_time:
+            return None
         mark = pos.last_update_price
         if np.isnan(mark):
-            return None  # no mark yet; market tuples don't redeliver — skip
+            return None  # no mark yet — skip
         amount = -(pos.quantity * instrument.quantity_multiplier * mark * payment.funding_rate)
-        # the sim venue debits the wallet here (once per settlement — market tuples don't
-        # redeliver); live venues debit on-venue and we observe via pushes/snapshots.
-        # Only an existing settle balance is adjusted — funding never creates one.
+        # the sim venue debits the wallet here; live venues debit on-venue and we observe via
+        # pushes/snapshots. Only an existing settle balance is adjusted — funding never creates one.
         if state.get_balance(instrument.settle) is not None:
             state.mark_cash_currency(instrument.settle)
             state.adjust_balance(instrument.settle, amount)
-        return FundingPaymentEvent(instrument=instrument, time=np.datetime64(int(payment.time), "ns"), amount=amount)
+        return FundingPaymentEvent(instrument=instrument, time=settled_at, amount=amount)

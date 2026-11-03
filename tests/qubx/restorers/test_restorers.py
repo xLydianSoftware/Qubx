@@ -368,6 +368,7 @@ class TestCsvPositionRestorer:
                     "realized_pnl_at_open_quoted": [90.0, np.nan],
                     "commissions_at_open_quoted": [2.0, np.nan],
                     "funding_at_open_quoted": [-4.0, np.nan],
+                    "last_funding_time": ["2025-01-08 08:00:00", np.nan],
                 }
             )
             df.to_csv(run_folder / "test_strategy_positions.csv", index=False)
@@ -383,6 +384,8 @@ class TestCsvPositionRestorer:
             assert btc.r_pnl_at_open == 90.0
             assert btc.commissions_at_open == 2.0
             assert btc.cumulative_funding_at_open == -4.0
+            assert btc.last_funding_time == pd.Timestamp("2025-01-08 08:00:00").asm8
+            assert np.isnat(eth.last_funding_time)
 
             # ETH: legacy -> episode-at-restore (baselines = accumulators, start = row timestamp)
             assert eth.episode_start_time == pd.Timestamp(ts).asm8
