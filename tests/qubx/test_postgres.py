@@ -232,19 +232,33 @@ class TestPostgresPositionRestorer:
         assert btc.cumulative_funding_at_open == -5.0
 
 
-    def test_last_funding_time_roundtrip(self, mock_lookup):
-        # the column reads back as text via to_jsonb (absent on tables the logs writer has not migrated yet)
+    def _restore_last_funding_time(self, last_funding_time):
         conn, cursor = _make_mock_connection()
         ts = datetime.now(timezone.utc) - timedelta(hours=1)
         cursor.fetchone.return_value = ("run-123",)
         cursor.fetchall.return_value = [
             ("BTCUSDT", "BINANCE.UM", "SWAP", -1.5, 90000.0, 7.0, 91000.0, 7.0, 3.0,
-             datetime(2025, 1, 1, tzinfo=timezone.utc), 0.0, 0.0, 0.0, ts, "2025-01-01T08:00:00+00:00"),
+             datetime(2025, 1, 1, tzinfo=timezone.utc), 0.0, 0.0, 0.0, ts, last_funding_time),
         ]
         restorer = PostgresPositionRestorer(strategy_name=self._strategy_name, connection=conn)
         btc = next(p for i, p in restorer.restore_positions().items() if i.symbol == "BTCUSDT")
+        return btc, cursor.execute.call_args[0][0].as_string(None)
+
+    def test_last_funding_time_roundtrip(self, mock_lookup):
+        # read by key through to_jsonb (absent on tables the logs writer has not migrated yet), cast back to timestamptz
+        btc, query = self._restore_last_funding_time(datetime(2025, 1, 1, 8, tzinfo=timezone.utc))
         assert btc.last_funding_time == np.datetime64("2025-01-01T08:00:00", "ns")
-        assert "to_jsonb" in cursor.execute.call_args[0][0].as_string(None)
+        assert "(to_jsonb(t) ->> 'last_funding_time')::timestamptz" in query
+
+    def test_last_funding_time_from_a_non_utc_session(self, mock_lookup):
+        # psycopg returns timestamptz in the session's time zone
+        btc, _ = self._restore_last_funding_time(datetime(2025, 1, 1, 10, tzinfo=timezone(timedelta(hours=2))))
+        assert btc.last_funding_time == np.datetime64("2025-01-01T08:00:00", "ns")
+        assert btc.last_funding_time.dtype == np.dtype("datetime64[ns]")
+
+    def test_last_funding_time_missing_column(self, mock_lookup):
+        btc, _ = self._restore_last_funding_time(None)
+        assert np.isnat(btc.last_funding_time)
 
 
 # --- Signal restorer tests ---

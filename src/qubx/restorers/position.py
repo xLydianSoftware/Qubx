@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import cast
 
+import numpy as np
 import pandas as pd
 from psycopg import Connection, sql
 
@@ -42,6 +43,14 @@ def _time_or_none(value):
     except (TypeError, ValueError):
         pass
     return value
+
+
+def _utc_dt64(value) -> np.datetime64:
+    """A timestamptz value (aware, in the session's time zone) as a UTC-naive datetime64[ns]."""
+    t = pd.Timestamp(value)
+    if t.tzinfo is not None:
+        t = t.tz_convert("UTC").tz_localize(None)
+    return t.as_unit("ns").asm8
 
 
 class CsvPositionRestorer(IPositionRestorer):
@@ -218,7 +227,7 @@ class PostgresPositionRestorer(IPositionRestorer):
                         "episode_start_time, realized_pnl_at_open_quoted, commissions_at_open_quoted, "
                         "funding_at_open_quoted, timestamp, "
                         # - read by key: the column is added by the logs writer, which starts after the restore
-                        "to_jsonb(t) ->> 'last_funding_time' "
+                        "(to_jsonb(t) ->> 'last_funding_time')::timestamptz "
                         "FROM {table} t "
                         "WHERE strategy_name = %s AND run_id = %s AND timestamp >= %s "
                         "ORDER BY symbol, exchange, market_type, timestamp DESC"
@@ -275,7 +284,7 @@ class PostgresPositionRestorer(IPositionRestorer):
                         cumulative_funding_at_open=cumulative_funding_at_open,
                     )
                     if last_funding_time is not None:
-                        position.last_funding_time = recognize_time(last_funding_time)
+                        position.last_funding_time = _utc_dt64(last_funding_time)
 
                     if current_price is not None:
                         timestamp = recognize_time(ts)
