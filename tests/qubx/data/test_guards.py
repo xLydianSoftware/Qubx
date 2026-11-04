@@ -329,6 +329,24 @@ class TestTimeGuardedReader:
 
 
 class TestTimeGuardedStorage:
+    def test_inner_is_unguarded(self):
+        """
+        inner exposes the wrapped storage/reader whose reads are not clamped to sim time.
+        """
+        storage = _build_storage()
+        tp = FixedTimeProvider("2024-01-01T12:00:00")
+        guarded_storage = TimeGuardedStorage(storage, tp)
+        assert guarded_storage.inner is storage
+
+        guarded_reader = guarded_storage.get_reader("BINANCE.UM", "SWAP")
+        assert isinstance(guarded_reader, TimeGuardedReader)
+        raw = guarded_storage.inner.get_reader("BINANCE.UM", "SWAP")
+        assert guarded_reader.inner is raw
+
+        clamped = guarded_reader.read("BTCUSDT", "ohlc(1h)", "2024-01-01", "2024-01-05").to_pd()
+        full = raw.read("BTCUSDT", "ohlc(1h)", "2024-01-01", "2024-01-05").to_pd()
+        assert len(full) > len(clamped)
+
     def test_get_reader_returns_guarded(self):
         """
         get_reader() should return a TimeGuardedReader instance.
