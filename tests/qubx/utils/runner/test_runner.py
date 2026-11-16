@@ -423,6 +423,121 @@ class TestRunStrategyYaml:
         ctx.account.on_market_quote(btc, quote)
         assert ctx.account.get_position(btc).last_update_price == quote.mid_price()
 
+    @pytest.mark.parametrize(
+        "paper_block, accounts_file, capital, commissions",
+        [
+            ({"capital": 10_000.0, "commissions": "vip1_usdt"}, None, 10_000.0, "vip1_usdt"),
+            (None, 'initial_capital = 5000.0\ncommissions = "vip9_usdt"\n', 5_000.0, "vip9_usdt"),
+            (
+                {"capital": 10_000.0, "commissions": "vip1_usdt"},
+                'initial_capital = 5000.0\ncommissions = "vip9_usdt"\n',
+                10_000.0,
+                "vip1_usdt",
+            ),
+            (None, None, 100_000.0, None),
+        ],
+        ids=["config-only", "accounts-file-only", "config-wins-over-accounts-file", "neither-gives-defaults"],
+    )
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_paper_capital_and_commissions_source(
+        self,
+        mock_create_data_provider,
+        mock_live_time_provider_class,
+        paper_block,
+        accounts_file,
+        capital,
+        commissions,
+        tmp_path,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        mock_live_time_provider_class.return_value = mock_time_provider
+        ctx = self._capital_and_fees_context(
+            mock_create_data_provider, mock_data_provider, tmp_path, temp_config_file, paper_block, accounts_file
+        )
+
+        assert ctx.account.get_balance("USDT", exchange="BINANCE.UM").total == capital
+        expected_fees = lookup.find_fees("BINANCE.UM", commissions)
+        fees = ctx.account.get_fees_calculator("BINANCE.UM")
+        assert (fees.maker, fees.taker) == (expected_fees.maker, expected_fees.taker)
+
+    @patch("qubx.utils.runner.runner.LiveTimeProvider")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_connector")
+    @patch("qubx.utils.runner.runner.ConnectorRegistry.get_data_provider")
+    def test_live_run_ignores_the_paper_block(
+        self,
+        mock_create_data_provider,
+        mock_get_connector,
+        mock_live_time_provider_class,
+        tmp_path,
+        temp_config_file,
+        mock_data_provider,
+        mock_time_provider,
+    ):
+        mock_live_time_provider_class.return_value = mock_time_provider
+        mock_get_connector.side_effect = lambda _name, build_ctx: MagicMock(channel=build_ctx.channel)
+        ctx = self._capital_and_fees_context(
+            mock_create_data_provider,
+            mock_data_provider,
+            tmp_path,
+            temp_config_file,
+            paper_block={"capital": 10_000.0, "commissions": "vip1_usdt"},
+            accounts_file='initial_capital = 5000.0\ncommissions = "vip9_usdt"\n',
+            paper=False,
+        )
+
+        expected_fees = lookup.find_fees("BINANCE.UM", "vip9_usdt")
+        fees = ctx.account.get_fees_calculator("BINANCE.UM")
+        assert (fees.maker, fees.taker) == (expected_fees.maker, expected_fees.taker)
+        # - a live account starts empty until the venue snapshot arrives
+        assert ctx.account.get_total_capital("BINANCE.UM") == 0.0
+
+    def _capital_and_fees_context(
+        self,
+        mock_create_data_provider,
+        mock_data_provider,
+        tmp_path,
+        temp_config_file,
+        paper_block: dict | None,
+        accounts_file: str | None,
+        paper: bool = True,
+    ):
+        from qubx.utils.runner.configs import load_strategy_config_from_yaml
+        from qubx.utils.runner.runner import create_strategy_context
+
+        _returns_data_provider(mock_create_data_provider, mock_data_provider)
+
+        raw = yaml.safe_load(temp_config_file.read_text())
+        if paper_block is not None:
+            raw["live"]["exchanges"]["BINANCE.UM"]["paper"] = paper_block
+        config_path = tmp_path / "paper.yml"
+        config_path.write_text(yaml.dump(raw))
+        config = load_strategy_config_from_yaml(config_path)
+        config.live.warmup = None
+
+        accounts_path = tmp_path / "accounts.toml"
+        if accounts_file is not None:
+            accounts_path.write_text('[[defaults]]\nexchange = "BINANCE.UM"\n' + accounts_file)
+        acc_manager = AccountConfigurationManager(account_config=accounts_path)
+
+        class MockStrategy(IStrategy):
+            def on_init(self, initializer: IStrategyInitializer) -> None:
+                initializer.set_base_subscription(DataType.OHLC["1h"])
+
+        with patch(
+            "qubx.utils.runner.runner.class_import",
+            side_effect=lambda arg: MockStrategy if arg == "strategy" else class_import(arg),
+        ):
+            return create_strategy_context(
+                config=config,
+                account_manager=acc_manager,
+                paper=paper,
+                restored_state=None,
+                stg_name="capital_and_fees_test",
+            )
+
     def _pm_spot_context(
         self,
         mock_create_data_provider,
