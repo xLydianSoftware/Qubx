@@ -62,6 +62,16 @@ class StrictBaseModel(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+class PaperConfig(StrictBaseModel):
+    """
+    A --paper run's account on one exchange, named as in ``simulation:``. A field set here wins over
+    the accounts file's ``initial_capital`` / ``commissions``; a field left out falls back to it.
+    """
+
+    capital: float | None = None
+    commissions: str | None = None
+
+
 class ExchangeConfig(StrictBaseModel):
     connector: str
     # Optional market-data source, resolved independently of the connector (e.g. an xdata data
@@ -77,6 +87,8 @@ class ExchangeConfig(StrictBaseModel):
     # coins of the account's spot markets never treated as positions nor traded: they stay plain balances
     # (e.g. BNB kept for the fee discount, coins posted as collateral)
     ignore_assets: list[str] | None = None
+    # - read only by a --paper run: live capital comes from the venue, the live fee tier from the accounts file
+    paper: PaperConfig | None = None
 
 
 class StorageConfig(StrictBaseModel):

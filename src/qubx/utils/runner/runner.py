@@ -540,7 +540,8 @@ def create_strategy_context(
         except KeyError:
             _venue_api_key = None
         rate_limiter = _rl_manager.get_or_create(venue_name, exchange_config.connector, api_key=_venue_api_key)
-        _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager))
+        _commissions = exchange_config.paper.commissions if paper and exchange_config.paper else None
+        _exchange_to_tcc[exchange_name] = (tcc := _create_tcc(exchange_name, venue_name, account_manager, _commissions))
         markets = _account_markets_of(venue_name, exchange_name, exchange_config)
         ignore_assets = _ignore_assets_of(venue_name, exchange_config, markets)
         if ignore_assets:
@@ -549,7 +550,7 @@ def create_strategy_context(
             # - one venue account trading several markets: one AccountState; each market keeps its fees
             _account_markets[exchange_name] = markets
             for market in markets[1:]:
-                _exchange_to_tcc[market] = _create_tcc(market, venue_name, account_manager)
+                _exchange_to_tcc[market] = _create_tcc(market, venue_name, account_manager, _commissions)
         # Both paper and live use a REAL market-data provider (live quotes/OHLC); only paper's
         # *execution* is simulated. The data provider may come from a different source than the
         # connector (e.g. an xdata data service + a venue connector) — it is resolved by the
@@ -647,8 +648,9 @@ def create_strategy_context(
     # nothing here — balances/positions come from the venue snapshot. Restored state (positions
     # + balances persisted across restarts) is injected into the AM for both modes.
     if paper:
-        for venue_name in config.live.exchanges:
-            _seed_paper_capital(_am, canonical_exchange(venue_name), venue_name, account_manager)
+        for venue_name, exchange_config in config.live.exchanges.items():
+            _capital = exchange_config.paper.capital if exchange_config.paper else None
+            _seed_paper_capital(_am, canonical_exchange(venue_name), venue_name, account_manager, _capital)
     if restored_state is not None:
         _inject_restored_state(_am, restored_state)
 
@@ -773,12 +775,17 @@ def _setup_strategy_logging(
 
 
 def _create_tcc(
-    exchange_name: str, venue_name: str, account_manager: AccountConfigurationManager
+    exchange_name: str,
+    venue_name: str,
+    account_manager: AccountConfigurationManager,
+    commissions: str | None = None,
 ) -> TransactionCostsCalculator:
     # Settings (commission tier) live under the configured venue name (e.g. BINANCE.PM);
     # the fee schedule is looked up by the canonical exchange whose instruments are traded.
-    settings = account_manager.get_exchange_settings(venue_name)
-    tcc = lookup.find_fees(exchange_name, settings.commissions)
+    # - a tier passed in (the config's paper block) wins over the accounts file
+    if commissions is None:
+        commissions = account_manager.get_exchange_settings(venue_name).commissions
+    tcc = lookup.find_fees(exchange_name, commissions)
     assert tcc is not None, f"Can't find fees calculator for {exchange_name} exchange"
     return tcc
 
@@ -860,16 +867,20 @@ def _seed_paper_capital(
     exchange_name: str,
     venue_name: str,
     credentials_manager: AccountConfigurationManager,
+    capital: float | None = None,
 ) -> None:
-    """Seed the per-exchange account state with the configured initial capital (paper mode).
+    """
+    Seed the per-exchange account state with the paper starting capital.
 
-    The base currency comes from the AM's state — already resolved from config at
-    construction — so seeding can't drift from the AM's own base-currency view.
-    ``exchange_name`` is the canonical AM state key; ``venue_name`` is the configured
-    name the settings (initial capital) live under.
+    ``capital`` (the config's paper block) wins; without it the accounts file's
+    ``initial_capital`` is used. The base currency comes from the AM's state — already
+    resolved from config at construction — so seeding can't drift from the AM's own
+    base-currency view. ``exchange_name`` is the canonical AM state key; ``venue_name``
+    is the configured name the accounts-file settings live under.
     """
     base_currency = account_manager.get_base_currency(exchange_name)
-    capital = credentials_manager.get_exchange_settings(venue_name).initial_capital
+    if capital is None:
+        capital = credentials_manager.get_exchange_settings(venue_name).initial_capital
     account_manager.seed_balance(
         exchange_name,
         Balance(exchange=exchange_name, currency=base_currency, total=capital, free=capital, locked=0.0),
