@@ -1129,3 +1129,50 @@ class TestBundledSeries:
         latest = bundle[0]
         assert latest["a"] == 3.0
         assert latest["b"] == 30.0
+
+
+def _t(ts: str) -> int:
+    return int(np.datetime64(ts, "ns").astype("int64"))
+
+
+def test_insert_replaces_the_last_bar_and_its_indicators_match_a_series_built_from_final_bars():
+    final = [
+        Bar(_t(f"2026-01-01T00:0{k}"), 10.0 + k, 12.0 + k, 9.0 + k, 11.0 + k, volume=5.0 + k, trade_count=3 + k)
+        for k in range(4)
+    ]
+    s = OHLCV("s", "1Min")
+    s_open, s_close = sma(s.open, 2), sma(s.close, 2)
+    for b in final[:-1]:
+        s.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, trade_count=b.trade_count)
+    # - the last bar first holds only the previous close
+    s.update_by_bar(final[-1].time, 13.0, 13.0, 13.0, 13.0)
+
+    assert s.insert(final[-1]) is False
+
+    ref = OHLCV("ref", "1Min")
+    r_open, r_close = sma(ref.open, 2), sma(ref.close, 2)
+    for b in final:
+        ref.update_by_bar(b.time, b.open, b.high, b.low, b.close, b.volume, trade_count=b.trade_count)
+    last = s[0]
+    assert (last.open, last.high, last.low, last.close, last.volume, last.trade_count) == (
+        13.0,
+        15.0,
+        12.0,
+        14.0,
+        8.0,
+        6,
+    )
+    assert not np.isnan(r_open[0]) and not np.isnan(r_close[0])
+    assert (s_open[0], s_close[0]) == (r_open[0], r_close[0])
+
+
+def test_insert_adds_a_later_bar_and_ignores_an_earlier_one():
+    s = OHLCV("s", "1Min")
+    s.update_by_bar(_t("2026-01-01T00:01"), 1.0, 2.0, 0.5, 1.5, 3.0)
+
+    assert s.insert(Bar(_t("2026-01-01T00:00:30"), 9.0, 9.0, 9.0, 9.0, volume=1.0)) is False
+    assert s.insert(Bar(_t("2026-01-01T00:02"), 2.0, 3.0, 1.0, 2.5, volume=4.0)) is True
+
+    assert len(s) == 2
+    assert (s[1].open, s[1].close, s[1].volume) == (1.0, 1.5, 3.0)
+    assert (s[0].open, s[0].close, s[0].volume) == (2.0, 2.5, 4.0)
