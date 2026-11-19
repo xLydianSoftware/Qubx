@@ -161,7 +161,8 @@ class EmulatedTickSequence(EmulatedUpdatesFromOHLC):
                     buffer.append(Quote(ti + self._t_mid2, h - s2, h + s2, self._bid_size, self._ask_size))
 
                 if self._trades:
-                    buffer.append(Trade(ti + self._t_mid2, h - s2, rv * (h - c)))  # sell 2
+                    buffer.append(Trade(ti + self._t_mid2, h - s2, rv * (h - c) / 2))  # sell 2
+                _close_px, _close_size = c - s2, rv * (h - c) / 2
             else:
                 if self._trades:
                     buffer.append(Trade(ti + self._t_start, o + s2, rv * (h - o)))  # buy 1
@@ -176,11 +177,16 @@ class EmulatedTickSequence(EmulatedUpdatesFromOHLC):
                     buffer.append(Quote(ti + self._t_mid2, l - s2, l + s2, self._bid_size, self._ask_size))
 
                 if self._trades:
-                    buffer.append(Trade(ti + self._t_mid2, l + s2, rv * (c - l)))  # buy 2
+                    buffer.append(Trade(ti + self._t_mid2, l + s2, rv * (c - l) / 2))  # buy 2
+                _close_px, _close_size = c + s2, rv * (c - l) / 2
 
             # - closing quote
             if self._quotes:
                 buffer.append(Quote(ti + self._t_end, c - s2, c + s2, self._bid_size, self._ask_size))
+
+            # - closing trade takes the other half of the last leg: with quotes off it is the only tick at the close
+            if self._trades:
+                buffer.append(Trade(ti + self._t_end, _close_px, _close_size))
         return buffer
 
 

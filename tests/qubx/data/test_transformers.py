@@ -535,14 +535,14 @@ class TestEmulatedSequenceTransformation:
         transformer = EmulatedTickSequence(trades=True, quotes=True, spread=2.0)
         ticks = transformer.process_data(raw_data)
 
-        # - 4 quotes + 3 trades per bar = 7 ticks per bar
-        assert len(ticks) == 7 * 2
+        # - 4 quotes + 4 trades per bar = 8 ticks per bar
+        assert len(ticks) == 8 * 2
 
         # - verify we have both quotes and trades
         quotes = [t for t in ticks if isinstance(t, Quote)]
         trades = [t for t in ticks if isinstance(t, Trade)]
         assert len(quotes) == 4 * 2
-        assert len(trades) == 3 * 2
+        assert len(trades) == 4 * 2
 
     def test_tick_series_trades_only(self):
         """
@@ -564,9 +564,30 @@ class TestEmulatedSequenceTransformation:
         transformer = EmulatedTickSequence(trades=True, quotes=False, spread=2.0)
         ticks = transformer.process_data(raw_data)
 
-        # - 3 trades per bar
-        assert len(ticks) == 3 * 2
+        # - 4 trades per bar
+        assert len(ticks) == 4 * 2
         assert all(isinstance(t, Trade) for t in ticks)
+
+    def test_trades_only_rebuild_the_bar(self):
+        """
+        Trades emulated without quotes rebuild each source bar: open, high, low, close and volume.
+        """
+        base_time = pd.Timestamp("2022-03-23 10:00:00").value
+        hour_ns = 3600 * 1_000_000_000
+        names = ["timestamp", "open", "high", "low", "close", "volume"]
+        r_data = [
+            [base_time, 100.0, 102.0, 98.0, 101.0, 1000.0],
+            [base_time + hour_ns, 101.0, 103.0, 99.0, 100.0, 1500.0],
+        ]
+        raw_data = RawData.from_pandas("BTCUSD", DataType.OHLC["1h"], pd.DataFrame(r_data, columns=names))
+
+        trades = EmulatedTickSequence(trades=True, quotes=False).process_data(raw_data)
+
+        for k, (_, o, h, l, c, v) in enumerate(r_data):
+            bar_trades = [t for t in trades if base_time + k * hour_ns <= t.time < base_time + (k + 1) * hour_ns]
+            prices = [t.price for t in bar_trades]
+            assert (prices[0], max(prices), min(prices), prices[-1]) == (o, h, l, c)
+            assert sum(t.size for t in bar_trades) == pytest.approx(v)
 
     def test_tick_series_stock_daily_session(self):
         """
@@ -631,7 +652,7 @@ class TestEmulatedSequenceTransformation:
 
         # - quotes with trades
         t2 = r1.transform(EmulatedTickSequence(trades=True, spread=2))
-        assert len(t2) == 2 * (4 + 3)  # - 4 quotes and 3 trades per bar
+        assert len(t2) == 2 * (4 + 4)  # - 4 quotes and 4 trades per bar
         assert isinstance(t2[1], Trade)
         assert t2[1].price == 99.0
 

@@ -158,8 +158,8 @@ class TestSimulator:
         # - 4 quotes per bar (open, mid1, mid2, close) × 5 bars = 20 (stop is exclusive: timestamp < stop)
         assert s._data_hits["quote"] >= 16, f"Expected >= 16 quote events, got {s._data_hits['quote']}"
 
-        # - 3 trades per bar (open, mid1, mid2) × 5 bars = 15 (stop is exclusive: timestamp < stop)
-        assert s._data_hits["trade"] >= 12, f"Expected >= 12 trade events, got {s._data_hits['trade']}"
+        # - 4 trades per bar (open, mid1, mid2, close) × 5 bars = 20 (stop is exclusive: timestamp < stop)
+        assert s._data_hits["trade"] >= 16, f"Expected >= 16 trade events, got {s._data_hits['trade']}"
 
     def test_external_subscription(self):
         stor = self.testing_csv_storage()
