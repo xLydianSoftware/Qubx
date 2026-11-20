@@ -11,17 +11,18 @@ style-check:
 	./scripts/check_style.sh
 
 
+# - unit tests read instruments from the files, whatever lookup ~/.qubx/config.json selects
 test:
-	uv run pytest -m "not integration and not e2e" --ignore=debug -v -n auto
+	QUBX_INSTRUMENT_LOOKUP__TYPE=file uv run pytest -m "not integration and not e2e" --ignore=debug -v -n auto
 
 
 test-verbose:
-	uv run pytest -m "not integration and not e2e" --ignore=debug -v -s
+	QUBX_INSTRUMENT_LOOKUP__TYPE=file uv run pytest -m "not integration and not e2e" --ignore=debug -v -s
 
 
 test-ci:
 	mkdir -p reports
-	uv run pytest -m "not integration and not e2e" --ignore=debug -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term -n auto
+	QUBX_INSTRUMENT_LOOKUP__TYPE=file uv run pytest -m "not integration and not e2e" --ignore=debug -v -ra --cov=src --cov-report=xml:reports/coverage.xml --cov-report=term -n auto
 
 
 test-integration:

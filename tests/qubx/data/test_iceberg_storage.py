@@ -18,6 +18,7 @@ from pyiceberg.transforms import DayTransform, MonthTransform  # noqa: E402
 from qubx.core.basics import DataType  # noqa: E402
 from qubx.data.containers import RawData, RawMultiData  # noqa: E402
 from qubx.data.storages.iceberg import (  # noqa: E402
+    FileBytesCache,
     IcebergConfig,
     IcebergLakeReader,
     IcebergLakeStorage,
@@ -948,3 +949,42 @@ def test_dvault_env_fills_what_settings_lack(qubx_settings, monkeypatch):
     assert _resolve_config("r2", None, None, None) == IcebergConfig("u", "w", "t")
     with pytest.raises(ValueError, match=r"iceberg account 'other': missing uri"):
         _resolve_config("other", None, None, None)
+
+
+def test_file_cache_drops_the_least_recently_used_file_past_its_cap():
+    cache = FileBytesCache(max_bytes=10)
+    cache.put("a", pa.py_buffer(b"aaaa"))
+    cache.put("b", pa.py_buffer(b"bbbb"))
+    cache.get("a")
+    cache.put("c", pa.py_buffer(b"cccc"))
+    cache.put("big", pa.py_buffer(b"x" * 11))
+    assert cache.get("b") is None and cache.get("big") is None
+    assert cache.get("a").to_pybytes() == b"aaaa" and cache.get("c").to_pybytes() == b"cccc"
+    assert cache.size == 8
+
+
+def test_a_repeated_read_fetches_no_file_again(lake):
+    reader = lake["BINANCE.UM", "SWAP"]
+    first = reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-12").to_pd()
+    fetched = lake._file_cache.misses
+    again = reader.read("BTCUSDT", "bar_stats", "2026-08-10", "2026-08-12").to_pd()
+    assert lake._file_cache.misses == fetched
+    pd.testing.assert_frame_equal(first, again)
+
+
+def test_a_repeated_chunked_raw_read_fetches_no_file_again(raw_lake):
+    reader = raw_lake["BINANCE.UM", "SWAP"]
+    first = [c.to_pd() for c in reader.read("BTCUSDT", "quotes", "2026-08-10", "2026-08-12", chunksize=3000)]
+    fetched = raw_lake._file_cache.misses
+    again = [c.to_pd() for c in reader.read("BTCUSDT", "quotes", "2026-08-10", "2026-08-12", chunksize=3000)]
+    assert raw_lake._file_cache.misses == fetched
+    for a, b in zip(first, again, strict=True):
+        pd.testing.assert_frame_equal(a, b)
+
+
+def test_reads_with_the_file_cache_off_match_reads_with_it_on(catalog, lake):
+    off = IcebergLakeStorage.from_catalog(catalog, file_cache_mb=0)
+    assert off._file_cache is None
+    on_df = lake["BINANCE.UM", "SWAP"].read([], "bar_stats", "2026-08-10", "2026-08-12").to_pd(id_in_index=True)
+    off_df = off["BINANCE.UM", "SWAP"].read([], "bar_stats", "2026-08-10", "2026-08-12").to_pd(id_in_index=True)
+    pd.testing.assert_frame_equal(on_df, off_df)
