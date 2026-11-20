@@ -16,6 +16,7 @@ import os
 import re
 import threading
 import time
+from collections import OrderedDict
 from collections.abc import Callable, Hashable, Iterable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, replace
@@ -29,6 +30,7 @@ import pyarrow.compute as pc
 from pyiceberg.catalog import Catalog
 from pyiceberg.catalog.rest import RestCatalog
 from pyiceberg.expressions import AlwaysTrue
+from pyiceberg.io import FileIO, InputFile, InputStream, OutputFile
 from pyiceberg.io.pyarrow import ArrowScan, _read_all_delete_files
 from pyiceberg.table import DataScan, FileScanTask, Table
 
@@ -54,6 +56,9 @@ FEATURE_NAME_RE = re.compile(r"^(?P<stem>.+)_(?P<interval>\d+[a-zA-Z]+)$")
 
 # - pyarrow's S3 client aborts a request stalled for 3 s by default; R2 stalls that long often enough
 _S3_TIMEOUTS = {"s3.connect-timeout": "10", "s3.request-timeout": "60"}
+
+# - default size of a storage's cache of lake file bytes; 0 turns it off
+FILE_CACHE_MB = 512.0
 
 _INTERVAL_SQL = {"1h": "INTERVAL 1 HOUR", "1d": "INTERVAL 1 DAY"}
 _OP_SQL = {
@@ -307,6 +312,92 @@ def _row_chunks(batches: Iterator[pa.RecordBatch], chunksize: int) -> Iterator[p
         yield pa.concat_tables(pending, promote_options="permissive")
 
 
+class FileBytesCache:
+    """
+    Bytes of lake files (data files and manifests) by location, the least recently used dropped first
+    once `max_bytes` is reached; a file larger than that is not kept. Iceberg never rewrites a file in
+    place, so a location always holds the same bytes.
+    """
+
+    def __init__(self, max_bytes: int) -> None:
+        self.max_bytes = max_bytes
+        self.size = 0
+        self.hits = 0
+        self.misses = 0
+        self.dropped = 0
+        self._files: OrderedDict[str, pa.Buffer] = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, location: str) -> pa.Buffer | None:
+        with self._lock:
+            data = self._files.get(location)
+            if data is None:
+                self.misses += 1
+                return None
+            self._files.move_to_end(location)
+            self.hits += 1
+            return data
+
+    def put(self, location: str, data: pa.Buffer) -> None:
+        if data.size > self.max_bytes:
+            return
+        with self._lock:
+            if (old := self._files.pop(location, None)) is not None:
+                self.size -= old.size
+            self._files[location] = data
+            self.size += data.size
+            while self.size > self.max_bytes:
+                _, gone = self._files.popitem(last=False)
+                self.size -= gone.size
+                self.dropped += 1
+
+    def clear(self) -> None:
+        with self._lock:
+            self._files.clear()
+            self.size = 0
+
+
+class _CachingInputFile(InputFile):
+    def __init__(self, inner: InputFile, cache: FileBytesCache) -> None:
+        super().__init__(inner.location)
+        self._inner = inner
+        self._cache = cache
+
+    def __len__(self) -> int:
+        return len(self._inner)
+
+    def exists(self) -> bool:
+        return self._inner.exists()
+
+    def open(self, seekable: bool = True) -> InputStream:
+        data = self._cache.get(self.location)
+        if data is None:
+            with self._inner.open(seekable=False) as f:
+                data = pa.py_buffer(f.read())
+            self._cache.put(self.location, data)
+        return pa.BufferReader(data)
+
+
+class _CachingFileIO(FileIO):
+    """
+    A table's FileIO whose reads go through a FileBytesCache.
+    """
+
+    def __init__(self, inner: FileIO, cache: FileBytesCache) -> None:
+        super().__init__(inner.properties)
+        self._inner = inner
+        self._cache = cache
+
+    def new_input(self, location: str) -> InputFile:
+        return _CachingInputFile(self._inner.new_input(location), self._cache)
+
+    def new_output(self, location: str) -> OutputFile:
+        return self._inner.new_output(location)
+
+    def delete(self, location: str | InputFile | OutputFile) -> None:
+        self._inner.delete(location)
+
+
 class IcebergLakeReader(IReader):
     """Reads one (exchange, market) slice of the lake."""
 
@@ -322,10 +413,12 @@ class IcebergLakeReader(IReader):
         tables: list[LakeTable] | Callable[[], list[LakeTable]],
         names: Callable[[], list[tuple[str, ...]]] | None = None,
         load: Callable[[tuple[str, ...]], LakeTable | None] | None = None,
+        file_cache: FileBytesCache | None = None,
     ) -> None:
         """`tables` enumerates the slice; `names` and `load` let a single request
         resolve from table names and load only what it reads. Without them the
-        enumeration stands in for both."""
+        enumeration stands in for both. `file_cache` keeps the bytes of the files
+        read, shared with the other readers of the same storage."""
         self.exchange = exchange
         self.market = market
         self._catalog = catalog
@@ -337,6 +430,7 @@ class IcebergLakeReader(IReader):
         self._days: dict[tuple[str, ...], dict[str, tuple[np.datetime64, np.datetime64]]] = {}
         self._loaded: dict[tuple[str, ...], tuple[Table, float]] = {}
         self._loaded_lock = threading.Lock()
+        self._file_cache = file_cache
 
     def _table(self, identifier: tuple[str, ...]) -> Table:
         """The loaded table, reloaded once it is older than `TABLE_TTL_SECONDS` so a long-lived reader
@@ -347,6 +441,8 @@ class IcebergLakeReader(IReader):
             if hit is not None and now - hit[1] < self.TABLE_TTL_SECONDS:
                 return hit[0]
         table = self._catalog.load_table(identifier)
+        if self._file_cache is not None:
+            table.io = _CachingFileIO(table.io, self._file_cache)
         with self._loaded_lock:
             self._loaded[identifier] = (table, now)
         return table
@@ -683,24 +779,29 @@ class IcebergLakeStorage(IStorage):
         warehouse: str | None = None,
         token: str | None = None,
         namespace_prefix: str = "",
+        file_cache_mb: float = FILE_CACHE_MB,
     ) -> None:
+        """`file_cache_mb` caps the bytes of lake files kept in memory and shared by the readers; 0 turns it off."""
         prefix = _resolve_namespace_prefix(account, namespace_prefix)
         catalog = build_catalog(_resolve_config(account, uri, warehouse, token), name=account)
-        self._setup(catalog, namespace_prefix=prefix)
+        self._setup(catalog, namespace_prefix=prefix, file_cache_mb=file_cache_mb)
 
     @classmethod
-    def from_catalog(cls, catalog: Catalog, *, namespace_prefix: str | None = None) -> "IcebergLakeStorage":
+    def from_catalog(
+        cls, catalog: Catalog, *, namespace_prefix: str | None = None, file_cache_mb: float = FILE_CACHE_MB
+    ) -> "IcebergLakeStorage":
         """`namespace_prefix` omitted (`None`) falls back to
         `DVAULT_ICEBERG_NAMESPACE_PREFIX`, same as `__init__`; there is no
         `account` here, so `~/.qubx/config.json`'s per-account prefix does not
         apply. An explicit value -- including `""` -- always wins."""
         instance = cls.__new__(cls)
         prefix = namespace_prefix if namespace_prefix is not None else _namespace_prefix_from_env()
-        instance._setup(catalog, namespace_prefix=prefix)
+        instance._setup(catalog, namespace_prefix=prefix, file_cache_mb=file_cache_mb)
         return instance
 
-    def _setup(self, catalog: Catalog, *, namespace_prefix: str = "") -> None:
+    def _setup(self, catalog: Catalog, *, namespace_prefix: str = "", file_cache_mb: float = FILE_CACHE_MB) -> None:
         self._catalog = catalog
+        self._file_cache = FileBytesCache(int(file_cache_mb * 2**20)) if file_cache_mb > 0 else None
         self._namespace_prefix = namespace_prefix
         self._namespaces: dict[tuple[str, str], str] | None = None
         self._names: dict[str, list[tuple[str, ...]]] = {}
@@ -749,6 +850,7 @@ class IcebergLakeStorage(IStorage):
             partial(self._tables_for, exchange, market),
             names=partial(self._table_names, exchange, market),
             load=self._load_table,
+            file_cache=self._file_cache,
         )
 
     def read_venues(
@@ -831,6 +933,8 @@ class IcebergLakeStorage(IStorage):
         self._names.clear()
         self._tables.clear()
         self._decoded.clear()
+        if self._file_cache is not None:
+            self._file_cache.clear()
 
 
 def _no_tables(exchange: str, market: str) -> ValueError:
