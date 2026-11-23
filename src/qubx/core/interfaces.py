@@ -59,6 +59,7 @@ from qubx.core.status import NORMAL_STATUS, ContextStatus, QubxStatusInfo
 from qubx.data.storage import IReader, IStorage
 
 if TYPE_CHECKING:
+    from qubx.core.order_gate import IOrderGate
     from qubx.health.status import ExchangeDataStatus
 
 RemovalPolicy = Literal["close", "wait_for_close", "wait_for_change"]
@@ -1123,6 +1124,14 @@ class ITradingManager:
     def set_deny_trading_when_degraded(self, enabled: bool) -> None:
         """While the context is degraded, refuse orders that would open or increase a
         position (QubxDegradedState). Applied from the initializer once on_init has run."""
+        ...
+
+    def set_order_gate(self, gate: "IOrderGate | None") -> None:
+        """Install or clear a pre-trade order gate checked before venue submission."""
+        ...
+
+    def get_order_gate(self) -> "IOrderGate | None":
+        """Return the active pre-trade order gate, or None."""
         ...
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
@@ -2660,6 +2669,14 @@ class IStrategyInitializer:
         """
         Whether exposure-increasing orders are refused while the context is degraded.
         """
+        ...
+
+    def set_order_gate(self, gate: "IOrderGate | None") -> None:
+        """Configure an optional pre-trade order gate enforced before venue submission."""
+        ...
+
+    def get_order_gate(self) -> "IOrderGate | None":
+        """Return the configured pre-trade order gate, or None."""
         ...
 
     def set_stale_data_detection(

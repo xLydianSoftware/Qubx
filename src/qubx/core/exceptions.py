@@ -90,3 +90,16 @@ class StatePersistenceUnavailable(BaseError):
     silently lost its persisted state is worse than crash-looping until the
     backend returns.
     """
+
+
+class OrderGateRejected(BaseError):
+    """Raised when a configured pre-trade order gate rejects an order or cancel before venue submission."""
+
+    def __init__(self, decision: object):
+        self.decision = decision
+        self.code: str = getattr(decision, "code", "REJECTED")
+        self.reason: str = getattr(decision, "reason", "")
+        msg = (
+            f"Order gate rejected ({self.code}): {self.reason}" if self.reason else f"Order gate rejected ({self.code})"
+        )
+        super().__init__(msg)

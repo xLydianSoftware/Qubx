@@ -404,6 +404,9 @@ class StrategyContext(IStrategyContext):
         self._instrument_service_manager.start()
 
         self._trading_manager.set_deny_trading_when_degraded(self.initializer.get_deny_trading_when_degraded())
+        if (order_gate := self.initializer.get_order_gate()) is not None:
+            self._trading_manager.set_order_gate(order_gate)
+            logger.info(f"[StrategyContext] :: Using pre-trade order gate: {type(order_gate).__name__}")
 
         # - only when on_init actually set one: the account manager already holds
         #   live.default_instrument_leverage, passed by the runner at construction
@@ -988,6 +991,13 @@ class StrategyContext(IStrategyContext):
 
     def get_min_size(self, instrument: Instrument, amount: float | None = None) -> float:
         return self._trading_manager.get_min_size(instrument, amount)
+
+    def set_order_gate(self, gate: Any) -> None:
+        self._assert_not_fit_thread("set_order_gate")
+        self._trading_manager.set_order_gate(gate)
+
+    def get_order_gate(self) -> Any:
+        return self._trading_manager.get_order_gate()
 
     def _assert_not_fit_thread(self, name: str) -> None:
         """Tripwire: a stashed real-ctx reference used inside a threaded on_fit must
