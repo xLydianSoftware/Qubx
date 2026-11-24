@@ -448,3 +448,99 @@ class TestIsInstrumentListed:
         sym = instrument_to_ccxt_symbol(btc_instrument)
         data_provider._exchange_manager.exchange.markets = {sym: {"id": "x", "active": None}}
         assert data_provider.is_instrument_listed(btc_instrument) is True
+
+
+class TestLastQuoteLifecycle:
+    """A last quote lives exactly as long as some subscription streams the instrument (Qubx#466).
+
+    Live kept the final tick of an unsubscribed instrument forever; when the universe re-added it
+    days later the executor anchored on that price. The simulated provider has always forgotten it.
+    """
+
+    @staticmethod
+    def _quote(price: float) -> Quote:
+        return Quote(time=1234567890, bid=price - 0.5, ask=price + 0.5, bid_size=1.0, ask_size=1.0)
+
+    @staticmethod
+    def _eth() -> Instrument:
+        return Instrument(
+            symbol="ETHUSDT",
+            market_type=MarketType.SWAP,
+            exchange="TEST",
+            base="ETH",
+            quote="USDT",
+            settle="USDT",
+            exchange_symbol="ETHUSDT",
+            tick_size=0.01,
+            lot_size=0.001,
+            min_size=0.001,
+        )
+
+    @pytest.fixture
+    def provider(self, data_provider):
+        with (
+            patch.object(data_provider._data_type_handler_factory, "get_handler", return_value=Mock()),
+            patch.object(data_provider._subscription_orchestrator, "execute_subscription"),
+            patch.object(data_provider._subscription_orchestrator, "execute_unsubscription"),
+        ):
+            yield data_provider
+
+    def test_unsubscribing_the_last_type_forgets_the_quote(self, provider, btc_instrument):
+        provider.subscribe("quote", [btc_instrument])
+        provider._last_quotes[btc_instrument] = self._quote(100.0)
+
+        provider.unsubscribe("quote", [btc_instrument])
+
+        assert provider.get_quote(btc_instrument) is None
+        assert btc_instrument not in provider._last_quotes
+
+    def test_quote_survives_while_another_type_still_streams(self, provider, btc_instrument):
+        provider.subscribe("quote", [btc_instrument])
+        provider.subscribe("trade", [btc_instrument])
+        quote = self._quote(100.0)
+        provider._last_quotes[btc_instrument] = quote
+
+        provider.unsubscribe("trade", [btc_instrument])
+        assert provider.get_quote(btc_instrument) is quote
+
+        provider.unsubscribe("quote", [btc_instrument])
+        assert provider.get_quote(btc_instrument) is None
+
+    def test_partial_unsubscription_keeps_the_remaining_instruments_quotes(self, provider, btc_instrument):
+        eth = self._eth()
+        provider.subscribe("trade", [btc_instrument, eth])
+        eth_quote = self._quote(10.0)
+        provider._last_quotes[btc_instrument] = self._quote(100.0)
+        provider._last_quotes[eth] = eth_quote
+
+        # - the remainder is restated through subscribe(reset=True): that must not count as new
+        provider.unsubscribe("trade", [btc_instrument])
+
+        assert provider.get_quote(btc_instrument) is None
+        assert provider.get_quote(eth) is eth_quote
+
+    def test_a_re_added_instrument_starts_without_a_quote(self, provider, btc_instrument):
+        provider.subscribe("quote", [btc_instrument])
+        provider.unsubscribe("quote", [btc_instrument])
+        # - a tick of the old stream landing after the unsubscribe (or any other leftover)
+        provider._last_quotes[btc_instrument] = self._quote(216.88)
+
+        provider.subscribe("quote", [btc_instrument])
+
+        assert provider.get_quote(btc_instrument) is None
+
+    def test_adding_a_type_to_a_streaming_instrument_keeps_its_quote(self, provider, btc_instrument):
+        provider.subscribe("quote", [btc_instrument])
+        quote = self._quote(100.0)
+        provider._last_quotes[btc_instrument] = quote
+
+        provider.subscribe("trade", [btc_instrument])
+
+        assert provider.get_quote(btc_instrument) is quote
+
+    def test_unsubscribing_an_unknown_type_still_forgets_an_unstreamed_quote(self, provider, btc_instrument):
+        provider._last_quotes[btc_instrument] = self._quote(100.0)
+
+        provider.unsubscribe("orderbook", [btc_instrument])
+
+        assert provider.get_quote(btc_instrument) is None
