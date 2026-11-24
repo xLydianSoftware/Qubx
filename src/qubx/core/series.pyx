@@ -1378,6 +1378,33 @@ cdef class OHLCV(TimeSeries):
 
         return self._is_new_item
     
+    def insert(self, Bar bar) -> bool:
+        """
+        Write `bar` as it is, without merging it into a bar already there. A bar starting where the last
+        bar starts replaces it in every field, and the indicators recompute their last value from it; a
+        later bar is added; an earlier one is ignored.
+
+        Returns:
+            True if a new bar was added
+        """
+        cdef long long bar_start_time = floor_t64(bar.time, self.timeframe)
+        cdef Bar b
+        if not self.times or bar_start_time != self.times[0]:
+            return bool(self.update_by_bar(
+                bar.time, bar.open, bar.high, bar.low, bar.close, bar.volume, bar.bought_volume,
+                bar.volume_quote, bar.bought_volume_quote, bar.trade_count,
+            ))
+
+        b = Bar(
+            bar_start_time, bar.open, bar.high, bar.low, bar.close, volume=bar.volume, bought_volume=bar.bought_volume,
+            volume_quote=bar.volume_quote, bought_volume_quote=bar.bought_volume_quote, trade_count=bar.trade_count,
+        )
+        self._update_last_item(bar_start_time, b)
+        # - _update_indicators feeds the open series only when a bar starts
+        self.open._update_indicators(bar_start_time, b.open, False)
+        self._update_indicators(bar_start_time, b, False)
+        return False
+
     cpdef object update_by_bars(self, list bars):
         """
         Update the OHLCV series with a list of bars, handling both new bars and updates to existing bars.

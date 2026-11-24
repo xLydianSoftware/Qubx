@@ -31,6 +31,17 @@ INVERSE_EXCHANGE_MAPPINGS = {mapping: exchange for exchange, mapping in EXCHANGE
 MIN_TIMEFRAMES_GAP_TO_REQUEST_PROVIDER = 1.5
 
 
+def _written_by_finalize(ser: OHLCV, time: int, last_update_time: int) -> bool:
+    """
+    `time` falls in the series' last bar, and the last real update came before that bar started: the bar
+    holds no data, only the last known price finalize_ohlc_for_instruments wrote into it.
+    """
+    if len(ser) == 0:
+        return False
+    start = ser.times[0]
+    return last_update_time < start <= time < start + ser.timeframe
+
+
 class CachedMarketDataHolder(IMarketDataCache):
     """
     Collected cached data updates from market
@@ -361,6 +372,9 @@ class CachedMarketDataHolder(IMarketDataCache):
         if instrument in self._ohlcvs:
             self._last_bar[instrument] = bar
             for ser in self._ohlcvs[instrument].values():
+                if _last_bar is not None and _written_by_finalize(ser, bar.time, _last_bar.time):
+                    ser.insert(bar)
+                    continue
                 ser.update_by_bar(
                     bar.time,
                     bar.open,
@@ -391,6 +405,7 @@ class CachedMarketDataHolder(IMarketDataCache):
             self._update_by_trade(instrument, trade)
 
     def _update_by_trade(self, instrument: Instrument, trade: Trade):
+        _previous = self._updates.get(instrument)
         self._updates[instrument] = trade
         series = self._ohlcvs.get(instrument)
         if series:
@@ -405,6 +420,22 @@ class CachedMarketDataHolder(IMarketDataCache):
                     if trade_bar_start < current_bar_start:
                         # Trade belongs to a previous bar - skip it
                         continue
+                    if _previous is not None and _written_by_finalize(ser, trade.time, _previous.time):
+                        ser.insert(
+                            Bar(
+                                trade.time,
+                                trade.price,
+                                trade.price,
+                                trade.price,
+                                trade.price,
+                                volume=total_vol,
+                                bought_volume=bought_vol,
+                                volume_quote=volume_quote,
+                                bought_volume_quote=bought_volume_quote,
+                                trade_count=1,
+                            )
+                        )
+                        continue
                 ser.update(
                     trade.time,
                     trade.price,
@@ -418,24 +449,22 @@ class CachedMarketDataHolder(IMarketDataCache):
     def finalize_ohlc_for_instruments(self, time: dt_64, instruments: list[Instrument]):
         """
         Finalize all OHLCV series at the given time for the given instruments.
+
+        A series with no bar yet for the period of `time` gets a flat bar at the last known price.
+        A series that already has one is left as it is.
+
         FIXME: (2025-06-17) This is part of urgent live fix and must be removed in future !!!.
         """
-        for instrument in instruments:
-            # - use most recent update
-            if (_u := self._updates.get(instrument)) is not None:
+        with self._series_lock:
+            for instrument in instruments:
+                if (_u := self._updates.get(instrument)) is None or instrument not in self._ohlcvs:
+                    continue
                 _px = extract_price(_u)
-
-                # Floor the timestamp to the bar start time for each timeframe
-                # This ensures proper consolidation in the cached data holder
-                if instrument in self._ohlcvs:
-                    for timeframe_ns, _ in self._ohlcvs[instrument].items():
-                        # Convert timeframe_ns to timedelta64[ns] and use datetime64 for floor_t64
-                        timeframe_td = np.timedelta64(timeframe_ns, "ns")
-                        floored_time = floor_t64(time, timeframe_td)
-                        floored_time_ns = time_as_nsec(floored_time)
-                        self.update_by_bar(
-                            instrument, Bar(floored_time_ns, _px, _px, _px, _px, volume=0, bought_volume=0)
-                        )
+                for ser in self._ohlcvs[instrument].values():
+                    _t = time_as_nsec(floor_t64(time, np.timedelta64(ser.timeframe, "ns")))
+                    if len(ser) > 0 and ser.times[0] >= _t:
+                        continue
+                    ser.update_by_bar(_t, _px, _px, _px, _px)
 
 
 class MarketManager(IMarketManager):

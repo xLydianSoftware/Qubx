@@ -424,3 +424,86 @@ def test_snapshots_stay_readable_while_another_thread_appends(cache_holder, mock
 
     assert not failures, f"reader saw a torn series: {failures[0]!r}"
     assert len(cache_holder.get_data(mock_instrument, DataType.TRADE)) == n_writes
+
+
+def _ns(ts: str) -> int:
+    return int(np.datetime64(ts, "ns").astype("int64"))
+
+
+@pytest.fixture
+def minute_cache(mock_instrument):
+    cache = CachedMarketDataHolder(default_timeframe="1Min")
+    cache.get_ohlcv(mock_instrument, "1Min")
+    return cache
+
+
+def test_finalize_before_first_venue_bar_keeps_venue_open(minute_cache, mock_instrument):
+    """
+    A trigger at second 59 of a minute with no venue bar yet, then the venue's bar for that
+    minute arrives: the stored bar must be the venue's bar, not one opened at the previous close.
+    """
+    i = mock_instrument
+    minute_cache.update_by_bar(i, Bar(_ns("2026-11-18T11:58"), 589.70, 589.75, 589.60, 589.61, volume=3.0))
+
+    minute_cache.finalize_ohlc_for_instruments(np.datetime64("2026-11-18T11:59:59", "ns"), [i])
+    minute_cache.update_by_bar(i, Bar(_ns("2026-11-18T11:59"), 589.39, 589.39, 589.39, 589.39, volume=0.5))
+
+    b = minute_cache.get_ohlcv(i, "1Min")[0]
+    assert b.time == _ns("2026-11-18T11:59")
+    assert (b.open, b.high, b.low, b.close) == (589.39, 589.39, 589.39, 589.39)
+    assert b.volume == pytest.approx(0.5)
+
+
+def test_finalize_after_last_venue_bar_keeps_volume(minute_cache, mock_instrument):
+    """
+    The venue's last message for a minute arrives before the trigger at second 59 and nothing
+    follows for that minute: the stored bar keeps the venue's volume and trade count.
+    """
+    i = mock_instrument
+    minute_cache.update_by_bar(i, Bar(_ns("2026-11-18T04:30"), 10.0, 10.2, 9.9, 10.1, volume=217.4, trade_count=40))
+
+    minute_cache.finalize_ohlc_for_instruments(np.datetime64("2026-11-18T04:30:59", "ns"), [i])
+
+    b = minute_cache.get_ohlcv(i, "1Min")[0]
+    assert (b.open, b.high, b.low, b.close) == (10.0, 10.2, 9.9, 10.1)
+    assert b.volume == pytest.approx(217.4)
+    assert b.trade_count == 40
+
+
+def test_finalize_opened_higher_timeframe_bar_takes_first_venue_bar(minute_cache, mock_instrument):
+    """
+    The trigger opens a new hour with no venue bar in it yet: the hourly bar starts from the
+    first venue bar of the hour, not from the previous close.
+    """
+    i = mock_instrument
+    minute_cache.get_ohlcv(i, "1h")
+    minute_cache.update_by_bar(i, Bar(_ns("2026-11-18T11:59"), 100.0, 101.0, 99.0, 100.5, volume=2.0))
+
+    minute_cache.finalize_ohlc_for_instruments(np.datetime64("2026-11-18T12:00:59", "ns"), [i])
+    minute_cache.update_by_bar(i, Bar(_ns("2026-11-18T12:00"), 98.0, 98.5, 97.5, 98.2, volume=1.0))
+
+    h = minute_cache.get_ohlcv(i, "1h")[0]
+    assert h.time == _ns("2026-11-18T12:00")
+    assert (h.open, h.high, h.low, h.close) == (98.0, 98.5, 97.5, 98.2)
+    assert h.volume == pytest.approx(1.0)
+
+
+def test_finalize_before_first_trade_takes_the_trade_as_open(mock_instrument):
+    """
+    Bars built from trades: a trigger at the start of a minute opens it at the last trade price; the
+    minute's first trade then gives the bar its open, high and low.
+    """
+    i = mock_instrument
+    cache = CachedMarketDataHolder(default_timeframe="1Min")
+    cache.get_ohlcv(i, "1Min")
+    cache.update_by_trade(i, Trade(_ns("2026-11-18T11:58:50"), 589.61, 1.0, 1))
+
+    cache.finalize_ohlc_for_instruments(np.datetime64("2026-11-18T11:59:00", "ns"), [i])
+    cache.update_by_trade(i, Trade(_ns("2026-11-18T11:59:05"), 589.39, 0.5, -1))
+    cache.update_by_trade(i, Trade(_ns("2026-11-18T11:59:40"), 589.45, 0.2, 1))
+
+    b = cache.get_ohlcv(i, "1Min")[0]
+    assert b.time == _ns("2026-11-18T11:59")
+    assert (b.open, b.high, b.low, b.close) == (589.39, 589.45, 589.39, 589.45)
+    assert b.volume == pytest.approx(0.7)
+    assert b.trade_count == 2
