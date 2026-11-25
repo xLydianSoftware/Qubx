@@ -135,6 +135,13 @@ class CcxtDataProvider(IDataProvider):
             return
 
         with self._subscription_manager.transition():
+            # An instrument nothing streams yet starts without a quote. The entry its previous
+            # subscription left in _last_quotes (or a tick that landed while that stream was shutting
+            # down) is days old by the time a universe re-adds it, and a stale quote defeats the
+            # no-quote parking in processing.py: the executor anchors on it (Qubx#466). Instruments
+            # already streaming under another type, or restated by a reset resubscribe, keep theirs.
+            self._forget_quotes_of_unstreamed(instruments)
+
             # Delegate to subscription manager for state management
             _updated_instruments = self._subscription_manager.add_subscription(subscription_type, instruments, reset)
 
@@ -163,6 +170,7 @@ class CcxtDataProvider(IDataProvider):
             # Early exit if no subscription exists
             if not current_instruments:
                 logger.debug(f"No active subscription for {subscription_type}")
+                self._forget_quotes_of_unstreamed(instruments)
                 return
 
             # Remove instruments from subscription manager
@@ -186,6 +194,22 @@ class CcxtDataProvider(IDataProvider):
                 )
                 # important to update subscription manager
                 self.subscribe(subscription_type, list(remaining_instruments), reset=True)
+
+            # After the stream swap: the bulk stream stop above is synchronous, so no tick of the
+            # leaving instruments can land once their entries are gone.
+            self._forget_quotes_of_unstreamed(instruments)
+
+    def _forget_quotes_of_unstreamed(self, instruments: list[Instrument]) -> None:
+        """Drop the last quote of every given instrument that no subscription of any type carries.
+
+        A quote is only meaningful while the instrument streams. The simulated provider has always
+        cleared it on unsubscribe and on a fresh subscribe; live kept the final tick forever, so a
+        pruned instrument re-entering the universe days later was priced off it (Qubx#466).
+        """
+        streaming = self._subscription_manager.get_all_subscribed_instruments()
+        for instrument in instruments:
+            if instrument not in streaming:
+                self._last_quotes.pop(instrument, None)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
