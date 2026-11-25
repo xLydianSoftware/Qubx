@@ -664,6 +664,17 @@ class IDataProvider:
         """
         ...
 
+    def forget_quote(self, instrument: Instrument) -> None:
+        """
+        Drop the cached last quote of an instrument that is about to (re)join the streamed set.
+
+        A quote is only meaningful while the instrument streams: the one left behind when it
+        stopped is days old by the time a universe re-adds it, and a stale quote defeats the
+        no-quote parking of signals (the executor would price off it). Providers that cache
+        quotes implement this; the default is a no-op.
+        """
+        ...
+
     def is_instrument_listed(self, instrument: Instrument) -> bool:
         """
         Whether the instrument currently exists / is tradeable on the exchange.

@@ -153,6 +153,9 @@ class SimulatedDataProvider(IDataProvider):
     def get_quote(self, instrument: Instrument) -> Quote | None:
         return self._last_quotes[instrument]
 
+    def forget_quote(self, instrument: Instrument) -> None:
+        self._last_quotes.pop(instrument, None)
+
     def close(self):
         pass
 

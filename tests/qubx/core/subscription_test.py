@@ -341,3 +341,39 @@ class TestSubscriptionWatchdog:
 
         provider.unsubscribe.assert_not_called()
         provider.subscribe.assert_not_called()
+
+
+class TestJoiningInstrumentForgetsItsQuote:
+    """subscribe() drops a joining instrument's cached provider quote at once, not at the swap (Qubx#466).
+
+    A commit that needs warmup applies the provider swap seconds later, on another thread, while the
+    signal that follows add_instruments is processed immediately; the forget must not wait for it.
+    """
+
+    @pytest.fixture(autouse=True)
+    def setup(self):
+        self.exchange = "BINANCE.UM"
+        self.provider = Mock()
+        self.provider.is_simulated_trading = False
+        self.provider.exchange.return_value = self.exchange
+        self.btc = lookup.find_symbol(self.exchange, "BTCUSDT")
+        self.eth = lookup.find_symbol(self.exchange, "ETHUSDT")
+        assert self.btc is not None and self.eth is not None
+        self.provider.get_subscribed_instruments.side_effect = lambda sub=None: [self.btc]
+        time_provider = Mock()
+        time_provider.time.return_value = 0.0
+        self.manager = SubscriptionManager(time_provider, [self.provider], DummyHealthMonitor(), StrategyState())
+
+    def test_a_joining_instrument_is_forgotten_before_commit(self):
+        self.manager.subscribe(DataType.QUOTE, [self.btc, self.eth])
+
+        # - before any commit: ETH joins from outside the streamed set, BTC already streams
+        self.provider.forget_quote.assert_called_once_with(self.eth)
+        self.provider.subscribe.assert_not_called()
+
+    def test_adding_a_type_to_a_streaming_instrument_keeps_its_quote(self):
+        self.provider.get_subscribed_instruments.side_effect = lambda sub=None: [self.btc] if sub is None else []
+
+        self.manager.subscribe(DataType.TRADE, self.btc)
+
+        self.provider.forget_quote.assert_not_called()

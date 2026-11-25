@@ -544,3 +544,29 @@ class TestLastQuoteLifecycle:
         provider.unsubscribe("orderbook", [btc_instrument])
 
         assert provider.get_quote(btc_instrument) is None
+
+    def test_warmup_after_a_re_add_prices_off_the_fetched_bars_not_the_old_tick(self, provider, btc_instrument):
+        """Re-add + warmup: the OHLC warmup writes a quote from the last fetched bar's close, stamped
+        with the fetch time. With the current (in-progress) bar in the fetch that is the latest trade;
+        the tick of the instrument's previous life never gets a say."""
+        import numpy as np
+
+        provider.subscribe("quote", [btc_instrument])
+        provider._last_quotes[btc_instrument] = self._quote(216.88)  # - last tick before the prune
+        provider.unsubscribe("quote", [btc_instrument])
+
+        provider.subscribe("quote", [btc_instrument])  # - re-added days later
+        assert provider.get_quote(btc_instrument) is None
+
+        fetch_time = np.datetime64("2026-11-22T00:06:49.300", "ns")
+        provider.time_provider.time.return_value = fetch_time
+        handler = OhlcDataHandler(
+            data_provider=provider, exchange_manager=provider._exchange_manager, exchange_id="TEST"
+        )
+        bars = [[1, 186.0, 186.5, 185.5, 186.2, 10.0], [2, 186.2, 186.3, 185.8, 185.87, 3.0]]  # - last = current bar
+        handler._update_quote(btc_instrument, bars)
+
+        quote = provider.get_quote(btc_instrument)
+        assert quote is not None
+        assert quote.mid_price() == pytest.approx(185.87)
+        assert quote.time == fetch_time.astype("datetime64[ns]").view("int64")

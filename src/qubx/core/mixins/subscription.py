@@ -307,6 +307,15 @@ class SubscriptionManager(ISubscriptionManager):
                 self._subscribe(sub, instruments)
             return
 
+        # - an instrument joining from outside the streamed set may still carry the last quote of
+        #   its previous life in the provider's cache (Qubx#466). Forget it here, on the caller's
+        #   thread: the signal that follows add_instruments is processed before a deferred (warmup)
+        #   commit applies the swap, and a stale quote would let it through the no-quote parking.
+        _streaming = set(self.get_subscribed_instruments())
+        for instr in instruments:
+            if instr not in _streaming:
+                self._get_data_provider(instr.exchange).forget_quote(instr)
+
         self._pending_stream_subscriptions[subscription_type].update(instruments)
         self._update_pending_warmups(subscription_type, instruments)
 

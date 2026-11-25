@@ -296,6 +296,9 @@ class TardisDataProvider(IDataProvider):
         """Get the latest quote for an instrument."""
         return self._last_quotes[instrument]
 
+    def forget_quote(self, instrument: Instrument) -> None:
+        self._last_quotes.pop(instrument, None)
+
     def close(self):
         """Close the data provider."""
         # Cancel any ongoing WebSocket tasks

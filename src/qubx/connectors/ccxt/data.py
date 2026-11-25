@@ -194,8 +194,9 @@ class CcxtDataProvider(IDataProvider):
                 # important to update subscription manager
                 self.subscribe(subscription_type, list(remaining_instruments), reset=True)
 
-            # After the stream swap: the bulk stream stop above is synchronous, so no tick of the
-            # leaving instruments can land once their entries are gone.
+            # After the stream swap. A bulk stream is stopped synchronously, so none of its ticks can
+            # land after this; individual streams stop asynchronously (wait=False) and a last tick of a
+            # leaving instrument can still slip in — the forget on its next subscribe covers that.
             self._forget_quotes_of_unstreamed(instruments)
 
     def _forget_quotes_of_unstreamed(self, instruments: list[Instrument]) -> None:
@@ -208,7 +209,7 @@ class CcxtDataProvider(IDataProvider):
         streaming = self._subscription_manager.get_all_subscribed_instruments()
         for instrument in instruments:
             if instrument not in streaming:
-                self._last_quotes.pop(instrument, None)
+                self.forget_quote(instrument)
 
     def get_subscriptions(self, instrument: Instrument | None = None) -> list[str]:
         """Get list of active subscription types (delegated to subscription manager)."""
@@ -232,6 +233,9 @@ class CcxtDataProvider(IDataProvider):
 
     def get_quote(self, instrument: Instrument) -> Quote | None:
         return self._last_quotes.get(instrument, None)
+
+    def forget_quote(self, instrument: Instrument) -> None:
+        self._last_quotes.pop(instrument, None)
 
     def get_ohlc(self, instrument: Instrument, timeframe: str, nbarsback: int) -> list[Bar]:
         """Get historical OHLC data (delegated to OhlcDataHandler)."""
