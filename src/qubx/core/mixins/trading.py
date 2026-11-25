@@ -20,6 +20,7 @@ from qubx.core.events import OrderCancelRejectedEvent, OrderUpdateRejectedEvent
 from qubx.core.exceptions import (
     InvalidOrderSize,
     OrderAlreadyTerminal,
+    OrderGateRejected,
     OrderNotFound,
     QubxDegradedState,
     ReadOnlyConnector,
@@ -30,6 +31,7 @@ from qubx.core.interfaces import (
     ITimeProvider,
     ITradingManager,
 )
+from qubx.core.order_gate import IOrderGate
 
 
 class ClientIdStore:
@@ -63,6 +65,7 @@ class TradingManager(ITradingManager):
     _exchange_to_connector: dict[str, IConnector]
     _read_only: bool
     _deny_trading_when_degraded: bool
+    _order_gate: IOrderGate | None
 
     def __init__(
         self,
@@ -72,6 +75,7 @@ class TradingManager(ITradingManager):
         health_monitor: IHealthMonitor,
         strategy_name: str,
         read_only: bool = False,
+        order_gate: IOrderGate | None = None,
     ) -> None:
         self._context = context
         self._account_manager = account_manager
@@ -82,6 +86,7 @@ class TradingManager(ITradingManager):
         self._read_only = read_only
         # - set from the initializer once on_init has run (see StrategyContext.start)
         self._deny_trading_when_degraded = False
+        self._order_gate = order_gate
 
     def _ensure_writable(self) -> None:
         """Single read-only check for the venue-write boundary (trade/cancel/update)."""
@@ -90,6 +95,34 @@ class TradingManager(ITradingManager):
 
     def set_deny_trading_when_degraded(self, enabled: bool) -> None:
         self._deny_trading_when_degraded = enabled
+
+    def set_order_gate(self, gate: IOrderGate | None) -> None:
+        self._order_gate = gate
+
+    def get_order_gate(self) -> IOrderGate | None:
+        return self._order_gate
+
+    def _check_order_gate(self, request: OrderRequest) -> None:
+        if self._order_gate is None:
+            return
+        decision = self._order_gate.check_order(request)
+        if not decision.allowed:
+            logger.warning(
+                f"[OrderGate] :: Rejected {request.order_type} {request.side} {request.quantity} "
+                f"{request.instrument.symbol} ({decision.code}: {decision.reason})"
+            )
+            raise OrderGateRejected(decision)
+
+    def _check_cancel_gate(self, order: Order) -> None:
+        if self._order_gate is None:
+            return
+        decision = self._order_gate.check_cancel(order)
+        if not decision.allowed:
+            logger.warning(
+                f"[OrderGate] :: Rejected cancel {order.client_order_id} "
+                f"{order.instrument.symbol} ({decision.code}: {decision.reason})"
+            )
+            raise OrderGateRejected(decision)
 
     def _reduce_only_amount(self, instrument: Instrument, amount: float) -> tuple[float, float]:
         """Clamp *amount* so it can only move the position toward zero. Returns the
@@ -222,6 +255,8 @@ class TradingManager(ITradingManager):
             time_in_force=time_in_force,
             options=options,
         )
+
+        self._check_order_gate(request)
 
         # Register the order BEFORE submitting. This is required for synchronous
         # connectors (the simulator): submit_order emits Accepted/Filled events inline,
@@ -386,6 +421,8 @@ class TradingManager(ITradingManager):
 
         cid = order.client_order_id
         target_exchange = exchange or order.instrument.exchange
+
+        self._check_cancel_gate(order)
 
         self._health_monitor.record_order_cancel_request(
             exchange=target_exchange,

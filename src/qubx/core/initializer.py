@@ -16,6 +16,7 @@ from qubx.core.utils import recognize_timeframe
 
 if TYPE_CHECKING:
     from qubx.core.interfaces import IStrategyContext
+    from qubx.core.order_gate import IOrderGate
 
 
 @dataclass
@@ -58,6 +59,9 @@ class BasicStrategyInitializer(IStrategyInitializer):
 
     # Transfer manager for fund transfers
     _transfer_manager: ITransferManager | None = None
+
+    # Optional pre-trade risk gate enforced before venue submission
+    _order_gate: "IOrderGate | None" = None
 
     # Additional configuration that might be needed
     config: dict[str, Any] = field(default_factory=dict)
@@ -307,3 +311,9 @@ class BasicStrategyInitializer(IStrategyInitializer):
             ITransferManager | None: The transfer manager if set, None otherwise
         """
         return self._transfer_manager
+
+    def set_order_gate(self, gate: "IOrderGate | None") -> None:
+        self._order_gate = gate
+
+    def get_order_gate(self) -> "IOrderGate | None":
+        return self._order_gate
